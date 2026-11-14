@@ -1,0 +1,166 @@
+RED / ATOMG .ADD.F32.FTZ.RN as one OpAtomicFAddEXT when the host has float atomic add on buffers (IGpuAccessor.QueryHostSupportsFloatAtomicAdd,
+the job's "float_atomics"), instead of patch 0022's compare-and-swap loop. Every lane of a reduction into one word retried against all the
+others: OoT's 16x16 kernels that sum into four words took 2-5 ms a dispatch (acc70d7fd4a21a9b, 2af742e8c18226ef). A storage
+buffer gets a float-typed alias of its binding for the pointer; a global memory access uses a float physical pointer.
+
+--- a/src/Ryujinx.Graphics.Shader/CodeGen/Spirv/CodeGenContext.cs
++++ b/src/Ryujinx.Graphics.Shader/CodeGen/Spirv/CodeGenContext.cs
+@@ -30,6 +30,8 @@
+ 
+         public Dictionary<int, Instruction> ConstantBuffers { get; } = new();
+         public Dictionary<int, Instruction> StorageBuffers { get; } = new();
++        public Dictionary<int, Instruction> StorageBuffersF32 { get; } = new();   // TOTK: float aliases for OpAtomicFAddEXT (Instructions.StorageBufferF32)
++        public bool UsesFloatAtomicAdd { get; set; }                              // TOTK: its capability and extension are declared
+ 
+         public Dictionary<int, Instruction> LocalMemories { get; } = new();
+         public Dictionary<int, Instruction> SharedMemories { get; } = new();
+--- a/src/Ryujinx.Graphics.Shader/CodeGen/Spirv/Instructions.cs
++++ b/src/Ryujinx.Graphics.Shader/CodeGen/Spirv/Instructions.cs
+@@ -177,9 +177,63 @@
+ 
+         private static OperationResult GenerateAtomicAdd(CodeGenContext context, AstOperation operation)
+         {
++            if ((operation.Inst & Instruction.FP32) != 0)
++            {
++                return GenerateAtomicFloatAdd(context, operation);
++            }
++
+             return GenerateAtomicMemoryBinary(context, operation, context.Delegates.AtomicIAdd);
+         }
+ 
++        // TOTK: AtomicAdd | FP32 (InstEmitAmpereMem.AFloatAdd with host float atomics): OpAtomicFAddEXT through a float pointer to the same word, the
++        // result the word before the add as the integer operations return it.
++        private static OperationResult GenerateAtomicFloatAdd(CodeGenContext context, AstOperation operation)
++        {
++            if (!context.UsesFloatAtomicAdd)   // the module keeps capabilities and extensions in lists: once each
++            {
++                context.UsesFloatAtomicAdd = true;
++                context.AddCapability(Capability.AtomicFloat32AddEXT);
++                context.AddExtension("SPV_EXT_shader_atomic_float_add");
++            }
++
++            SpvInstruction elemPointer = GetStoragePointer(context, operation, out _, asFloat: true);
++            SpvInstruction value = context.Get(AggregateType.FP32, operation.GetSource(operation.SourcesCount - 1));
++
++            SpvInstruction one = context.Constant(context.TypeU32(), 1);
++            SpvInstruction zero = context.Constant(context.TypeU32(), 0);
++
++            return new OperationResult(AggregateType.FP32, context.AtomicFAddEXT(context.TypeFP32(), elemPointer, one, zero, value));
++        }
++
++        // TOTK: a float-typed alias of a storage buffer (same set and binding, its one field a float array) for OpAtomicFAddEXT, which needs a pointer
++        // to a float; storage buffer pointers cannot be cast. Made once per binding on first use.
++        private static SpvInstruction StorageBufferF32(CodeGenContext context, int bindingIndex)
++        {
++            if (context.StorageBuffersF32.TryGetValue(bindingIndex, out SpvInstruction alias))
++            {
++                return alias;
++            }
++
++            BufferDefinition buffer = context.Properties.StorageBuffers[bindingIndex];
++            StorageClass bufferClass = context.StorageBufferClass ? StorageClass.StorageBuffer : StorageClass.Uniform;
++
++            // Own type ids (forceIdAllocation): an equal type declared elsewhere must not get these decorations twice.
++            SpvInstruction arrayType = context.TypeRuntimeArray(context.TypeFP32(), true);
++            context.Decorate(arrayType, Decoration.ArrayStride, (SpvLiteralInteger)4);
++            SpvInstruction structType = context.TypeStruct(true, arrayType);
++            context.Decorate(structType, context.StorageBufferClass ? Decoration.Block : Decoration.BufferBlock);
++            context.MemberDecorate(structType, 0, Decoration.Offset, (SpvLiteralInteger)0);
++
++            alias = context.Variable(context.TypePointer(bufferClass, structType), bufferClass);
++            context.Name(alias, buffer.Name + "_f32");
++            context.Decorate(alias, Decoration.DescriptorSet, (SpvLiteralInteger)(context.TargetApi == TargetApi.Vulkan ? buffer.Set : 0));
++            context.Decorate(alias, Decoration.Binding, (SpvLiteralInteger)buffer.Binding);
++            context.AddGlobalVariable(alias);
++            context.StorageBuffersF32.Add(bindingIndex, alias);
++
++            return alias;
++        }
++
+         private static OperationResult GenerateAtomicAnd(CodeGenContext context, AstOperation operation)
+         {
+             return GenerateAtomicMemoryBinary(context, operation, context.Delegates.AtomicAnd);
+@@ -1967,7 +2021,8 @@
+             }
+         }
+ 
+-        private static SpvInstruction GetStoragePointer(CodeGenContext context, AstOperation operation, out AggregateType varType)
++        // TOTK: asFloat (GenerateAtomicFloatAdd): a pointer to the word as a float, through a float physical pointer or the buffer's float alias.
++        private static SpvInstruction GetStoragePointer(CodeGenContext context, AstOperation operation, out AggregateType varType, bool asFloat = false)
+         {
+             StorageKind storageKind = operation.StorageKind;
+ 
+@@ -1986,10 +2041,10 @@
+                         context.Get(AggregateType.U32, operation.GetSource(0)),
+                         context.Get(AggregateType.U32, operation.GetSource(1)));
+ 
+-                    varType = AggregateType.U32;
++                    varType = asFloat ? AggregateType.FP32 : AggregateType.U32;
+ 
+                     return context.ConvertUToPtr(
+-                        context.TypePointer(StorageClass.PhysicalStorageBuffer, context.TypeU32()),
++                        context.TypePointer(StorageClass.PhysicalStorageBuffer, asFloat ? context.TypeFP32() : context.TypeU32()),
+                         context.Bitcast(context.TypeInt(64, 0), addressWords));
+ 
+                 case StorageKind.ConstantBuffer:
+@@ -2014,6 +2069,18 @@
+                     baseObj = storageKind == StorageKind.ConstantBuffer
+                         ? context.ConstantBuffers[bindingIndex.Value]
+                         : context.StorageBuffers[bindingIndex.Value];
++
++                    if (asFloat && storageKind == StorageKind.StorageBuffer && varType == AggregateType.U32 && fieldIndex.Value == 0 &&
++                        field.Type.HasFlag(AggregateType.Array) && field.ArrayLength == 0)
++                    {
++                        varType = AggregateType.FP32;
++                        baseObj = StorageBufferF32(context, bindingIndex.Value);
++                    }
++                    else if (asFloat)
++                    {
++                        throw new InvalidOperationException($"Float atomic add on {storageKind} field {fieldIndex.Value} of type {field.Type}.");
++                    }
++
+                     break;
+ 
+                 case StorageKind.LocalMemory:
+--- a/src/Ryujinx.Graphics.Shader/IGpuAccessor.cs
++++ b/src/Ryujinx.Graphics.Shader/IGpuAccessor.cs
+@@ -231,6 +231,10 @@
+         // TOTK: true when function-local variables start at 0 (CodeGen/Spirv/Declarations.cs DeclareLocals).
+         bool QueryZeroLocals() => false;
+ 
++        // TOTK: true when the host has 32-bit float atomic add on storage buffers and physical storage buffer pointers
++        // (VK_EXT_shader_atomic_float shaderBufferFloat32AtomicAdd): RED / ATOMG .ADD.F32 become OpAtomicFAddEXT, not a compare-and-swap loop.
++        bool QueryHostSupportsFloatAtomicAdd() => false;
++
+         // TOTK: true when the host binds the memory pool table and write log of GlobalToStorage.TryGenerateRawStorageOp (storage
+         // buffers with constant buffer slot GlobalToStorage.GmemMapCbSlot): a global memory access traced to no storage buffer
+         // then goes through a physical pointer instead of being dropped.
+--- a/src/Ryujinx.Graphics.Shader/Instructions/InstEmitAmpereMem.cs
++++ b/src/Ryujinx.Graphics.Shader/Instructions/InstEmitAmpereMem.cs
+@@ -372,6 +372,14 @@
+                 return null;
+             }
+ 
++            // TOTK: with host float atomics, one atomic add (AtomicAdd | FP32, OpAtomicFAddEXT). The loop made every lane of a reduction into one word
++            // retry against all the others: OoT's 16x16 kernels summing into four words took 2-5 ms a dispatch (acc70d7fd4a21a9b,
++            // 2af742e8c18226ef). The host's float atomics flush denormals, as .FTZ asks.
++            if (context.TranslatorContext.GpuAccessor.QueryHostSupportsFloatAtomicAdd())
++            {
++                return context.Add(Instruction.AtomicAdd | Instruction.FP32, StorageKind.GlobalMemory, Local(), lo, hi, value);
++            }
++
+             Operand lblLoop = Label();
+             context.MarkLabel(lblLoop);
+ 
+--- a/src/Ryujinx.Graphics.Shader/Translation/Optimizations/GlobalToStorage.cs
++++ b/src/Ryujinx.Graphics.Shader/Translation/Optimizations/GlobalToStorage.cs
+@@ -1071,6 +1071,9 @@
+                     case Instruction.AtomicAdd:
+                         resultValue = context.AtomicAdd(StorageKind.StorageBuffer, binding, Const(0), wordOffset, value);
+                         break;
++                    case Instruction.AtomicAdd | Instruction.FP32:   // TOTK: a host float atomic add (InstEmitAmpereMem.AFloatAdd)
++                        resultValue = context.Add(inst, StorageKind.StorageBuffer, Local(), Const(binding), Const(0), wordOffset, value);
++                        break;
+                     case Instruction.AtomicAnd:
+                         resultValue = context.AtomicAnd(StorageKind.StorageBuffer, binding, Const(0), wordOffset, value);
+                         break;

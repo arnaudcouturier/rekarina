@@ -1,0 +1,3 @@
+/* The icon of Rekarina's launcher: runtime/rekarina.ico, the icon of the game (tools/make_rekarina_icon.py). Compiled
+   with llvm-windres -I runtime and linked with rekarina.c. */
+1 ICON "rekarina.ico"

@@ -1,0 +1,9 @@
+/* The application manifest of totk.exe (totk.manifest) and its icon (totk.ico, also the icon of TotK-Setup.exe and of
+   the installer window). tools/build_game.py compiles it with the runtime objects, so it is also a member of
+   libtotkrt.a, which the release links with --whole-archive. */
+1 24 "totk.manifest"
+#ifdef GAME_OOT
+1 ICON "rekarina.ico" /* Rekarina (OoT): tools/make_rekarina_icon.py draws it */
+#else
+1 ICON "totk.ico"
+#endif

@@ -1,0 +1,149 @@
+TOTK: NVN2 mesh shaders that output points or lines, and a point size (docs/oot-xlate.md). Seven of OoT's 854
+mesh shaders (Foliage.Nin_Ounce_NVN2.bfsha) draw the grass into a shadow map of its own as points, a vertex a blade's tip:
+their control section has 1 at +0x5f (vertices of a primitive; 3 everywhere else) and their SPH enables the point size
+(OMAP byte 0x35 bit 3), which comes before the position in the attribute area. The entry point took every mesh shader as
+triangles of position and generic attributes, so these got the point size as x, w from the index bytes and a triangle
+across three unrelated blades: a wedge over the shadow map that changed every frame. MeshStage.PrimitiveVertices picks
+OutputPoints / OutputLinesEXT / OutputTrianglesEXT, the index built-in and one, two or three index bytes a primitive;
+MeshStage.PointSize in VertexComponents is stored as the PointSize built-in (1 for points without one). A shader of three
+vertices a primitive without the point size translates as before, byte for byte.
+
+--- a/src/Ryujinx.Graphics.Shader/CodeGen/Spirv/MeshStageWrapper.cs
++++ b/src/Ryujinx.Graphics.Shader/CodeGen/Spirv/MeshStageWrapper.cs
+@@ -20,7 +20,9 @@
+     //   3. a task copies its output payload to the TaskPayloadWorkgroupEXT block and launches output word 1 mesh workgroups; a mesh shader
+     //      sets its outputs: max_vertices vertices, the primitive count byte (primitive bytes + 3) primitives, each vertex's attribute
+     //      words from its block of 32 (a word per component, the SPH's OMAP order; a component the shader does not have reads 0, w 1)
+-    //      and three index bytes per triangle from the primitive bytes + 4.
++    //      and three index bytes per triangle from the primitive bytes + 4. A shader that outputs points or lines
++    //      (MeshStage.PrimitiveVertices) has one or two index bytes a primitive, and points take their size from the point size's
++    //      block (1 when the shader writes none).
+     // The module is SPIR-V 1.4 (SPV_EXT_mesh_shader needs it), so the entry point lists every global variable.
+     static class MeshStageWrapper
+     {
+@@ -60,20 +62,31 @@
+             SpvInstruction perVertex = null, indices = null;
+             List<(int Location, SpvInstruction Variable)> attributes = new(), primitiveAttributes = new();
+             Dictionary<int, int[]> components = new(), primitiveComponents = new();
++            int primitiveVertices = mesh.PrimitiveVertices;
++            int pointSizeSlot = mesh.IsTask ? -1 : Array.IndexOf(mesh.VertexComponents, MeshStage.PointSize);
++            bool hasPointSize = !mesh.IsTask && (pointSizeSlot >= 0 || primitiveVertices == 1);
+ 
+             if (!mesh.IsTask)
+             {
+-                SpvInstruction perVertexType = context.TypeStruct(true, vec4);
++                SpvInstruction perVertexType = hasPointSize ? context.TypeStruct(true, vec4, f32) : context.TypeStruct(true, vec4);
+                 context.Decorate(perVertexType, Decoration.Block);
+                 context.MemberDecorate(perVertexType, 0, Decoration.BuiltIn, (SpvLiteralInteger)BuiltIn.Position);
++
++                if (hasPointSize)
++                {
++                    context.MemberDecorate(perVertexType, 1, Decoration.BuiltIn, (SpvLiteralInteger)BuiltIn.PointSize);
++                }
+                 SpvInstruction perVertexArray = context.TypeArray(perVertexType, C(mesh.MaxVertices));
+                 perVertex = context.Variable(context.TypePointer(StorageClass.Output, perVertexArray), StorageClass.Output);
+                 context.AddGlobalVariable(perVertex);
+                 context.Name(perVertex, "mesh_vertices");
+ 
+-                SpvInstruction indexArray = context.TypeArray(context.TypeVector(u32, 3), C(mesh.MaxPrimitives));
++                SpvInstruction indexType = primitiveVertices == 1 ? u32 : context.TypeVector(u32, primitiveVertices);
++                SpvInstruction indexArray = context.TypeArray(indexType, C(mesh.MaxPrimitives));
+                 indices = context.Variable(context.TypePointer(StorageClass.Output, indexArray), StorageClass.Output);
+-                context.Decorate(indices, Decoration.BuiltIn, (SpvLiteralInteger)SpvModule.BuiltInPrimitiveTriangleIndicesEXT);
++                context.Decorate(indices, Decoration.BuiltIn, (SpvLiteralInteger)(
++                    primitiveVertices == 1 ? SpvModule.BuiltInPrimitivePointIndicesEXT :
++                    primitiveVertices == 2 ? SpvModule.BuiltInPrimitiveLineIndicesEXT : SpvModule.BuiltInPrimitiveTriangleIndicesEXT));
+                 context.AddGlobalVariable(indices);
+                 context.Name(indices, "mesh_indices");
+ 
+@@ -81,6 +94,12 @@
+                 for (int i = 0; i < mesh.VertexComponents.Length; i++)
+                 {
+                     int c = mesh.VertexComponents[i];
++
++                    if (c <= MeshStage.PointSize)
++                    {
++                        continue;   // the point size is stored on its own below; an unused system value only takes its block
++                    }
++
+                     int attr = c < 0 ? -1 : c >> 2;
+                     int comp = c < 0 ? -1 - c : c & 3;
+ 
+@@ -249,6 +268,15 @@
+                         context.Store(context.AccessChain(outVec4, perVertex, n, context.Constant(context.TypeS32(), 0)), Vector(block, position));
+                     }
+ 
++                    if (hasPointSize)
++                    {
++                        SpvInstruction size = pointSizeSlot < 0
++                            ? context.Constant(f32, 1f)
++                            : context.Bitcast(f32, context.Load(u32, Shared(context.IAdd(u32, block, C(pointSizeSlot * MeshStage.Block)))));
++
++                        context.Store(context.AccessChain(context.TypePointer(StorageClass.Output, f32), perVertex, n, context.Constant(context.TypeS32(), 1)), size);
++                    }
++
+                     foreach ((int attr, SpvInstruction variable) in attributes)
+                     {
+                         context.Store(context.AccessChain(outVec4, variable, n), Vector(block, components[attr]));
+@@ -257,14 +285,16 @@
+ 
+                 SpvInstruction outU32 = context.TypePointer(StorageClass.Output, u32);
+ 
+-                Loop(context.IMul(u32, count, C(3)), n =>
++                Loop(context.IMul(u32, count, C(primitiveVertices)), n =>
+                 {
+                     SpvInstruction at = context.IAdd(u32, n, C(primitives + 4));
+                     SpvInstruction word = context.Load(u32, Shared(context.ShiftRightLogical(u32, at, C(2))));
+                     SpvInstruction shift = context.IMul(u32, context.BitwiseAnd(u32, at, C(3)), C(8));
+                     SpvInstruction index = context.BitwiseAnd(u32, context.ShiftRightLogical(u32, word, shift), C(0xff));
+ 
+-                    context.Store(context.AccessChain(outU32, indices, context.UDiv(u32, n, C(3)), context.UMod(u32, n, C(3))), index);
++                    context.Store(primitiveVertices == 1
++                        ? context.AccessChain(outU32, indices, n)
++                        : context.AccessChain(outU32, indices, context.UDiv(u32, n, C(primitiveVertices)), context.UMod(u32, n, C(primitiveVertices))), index);
+                 });
+ 
+                 context.Return();
+@@ -279,7 +309,9 @@
+             {
+                 context.AddExecutionMode(entry, ExecutionMode.OutputVertices, (SpvLiteralInteger)mesh.MaxVertices);
+                 context.AddExecutionMode(entry, SpvModule.ExecutionModeOutputPrimitivesEXT, (SpvLiteralInteger)mesh.MaxPrimitives);
+-                context.AddExecutionMode(entry, SpvModule.ExecutionModeOutputTrianglesEXT);
++                context.AddExecutionMode(entry,
++                    primitiveVertices == 1 ? ExecutionMode.OutputPoints :
++                    primitiveVertices == 2 ? SpvModule.ExecutionModeOutputLinesEXT : SpvModule.ExecutionModeOutputTrianglesEXT);
+             }
+         }
+ 
+--- a/src/Ryujinx.Graphics.Shader/MeshStage.cs
++++ b/src/Ryujinx.Graphics.Shader/MeshStage.cs
+@@ -26,9 +26,15 @@
+ 
+         /// <summary>
+         /// The components of the attribute area, in its order (the SPH's OMAP): -1 - c for the position's component c,
+-        /// 4 n + c for generic attribute n's.
++        /// 4 n + c for generic attribute n's, PointSize for the point size and Unused for a system value the entry point
++        /// hands to nothing (it still takes its block).
+         /// </summary>
+         public int[] VertexComponents { get; init; }
++        public const int PointSize = -5;
++        public const int Unused = -6;
++
++        /// <summary>Vertices of a primitive (control +0x5f): 3 triangles, 2 lines, 1 points; an index byte each.</summary>
++        public int PrimitiveVertices { get; init; } = 3;
+ 
+         /// <summary>
+         /// A mesh shader's per-primitive components (the second SPH's OMAP), 4 n + c for generic attribute n's; they follow the vertex components
+--- a/src/Spv.Generator/MeshShading.cs
++++ b/src/Spv.Generator/MeshShading.cs
+@@ -11,7 +11,10 @@
+         public const ExecutionModel ExecutionModelMeshEXT = (ExecutionModel)5365;
+         public const Capability CapabilityMeshShadingEXT = (Capability)5283;
+         public const StorageClass StorageClassTaskPayloadWorkgroupEXT = (StorageClass)5402;
++        public const BuiltIn BuiltInPrimitivePointIndicesEXT = (BuiltIn)5294;
++        public const BuiltIn BuiltInPrimitiveLineIndicesEXT = (BuiltIn)5295;
+         public const BuiltIn BuiltInPrimitiveTriangleIndicesEXT = (BuiltIn)5296;
++        public const ExecutionMode ExecutionModeOutputLinesEXT = (ExecutionMode)5269;
+         public const ExecutionMode ExecutionModeOutputPrimitivesEXT = (ExecutionMode)5270;
+         public const ExecutionMode ExecutionModeOutputTrianglesEXT = (ExecutionMode)5298;
+         private const Op OpEmitMeshTasksEXT = (Op)5294;

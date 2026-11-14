@@ -1,0 +1,117 @@
+TOTK: a guarded Ampere warp-collective instruction (VOTE, VOTEU, SHFL, MATCH, REDUX) runs in every active lane and its guard
+only masks its register writes, as on the hardware. EmitOpsAmpere wrapped every guarded instruction in a branch, so a guarded
+vote counted the lanes whose guard held and nothing else. The NVN2 compiler's warp-aggregated atomics take a VOTEU under the
+leader lane's guard to count the lanes the leader adds for (VOTEU, POPC, ATOM.ADD): OoT's foliage culling kernel
+(fe89d4116c26fddf) added one instance per warp, the other lanes wrote their instances over the next warps' slots, and the
+mesh draws' counts and instance lists changed every frame with the camera still (trees, bushes and grass flickered and
+vanished). Maxwell jobs are unchanged.
+
+--- a/src/Ryujinx.Graphics.Shader/Translation/Translator.cs
++++ b/src/Ryujinx.Graphics.Shader/Translation/Translator.cs
+@@ -465,8 +465,15 @@ namespace Ryujinx.Graphics.Shader.Translation
+ 
+                 Operand predSkipLbl = null;
+                 Operand guardPred = null;
++                bool warpGuard = a.Pred != RegisterConsts.PredicateTrueIndex && IsWarpCollective(a.Opcode);
+ 
+-                if (a.Pred != RegisterConsts.PredicateTrueIndex && a.Opcode != Instructions.AmpereOpcodes.Bra)
++                if (warpGuard)
++                {
++                    // A guarded warp-collective instruction runs in every active lane; its guard only masks its register writes
++                    // (GuardWarpWrites): a branch around it would leave the lanes whose guard is false out of the vote or shuffle
++                    guardPred = Register(a.Pred, Instructions.AmpereTable.HasUniformGuard(a.Opcode) ? RegisterType.UniformPredicate : RegisterType.Predicate);
++                }
++                else if (a.Pred != RegisterConsts.PredicateTrueIndex && a.Opcode != Instructions.AmpereOpcodes.Bra)
+                 {
+                     Operand label;
+ 
+@@ -501,6 +508,11 @@ namespace Ryujinx.Graphics.Shader.Translation
+ 
+                 op.Emitter?.Invoke(context);
+ 
++                if (warpGuard)
++                {
++                    GuardWarpWrites(context, opStart, guardPred, a.PredInv);
++                }
++
+                 if (predSkipLbl != null)
+                 {
+                     context.MarkLabel(predSkipLbl);
+@@ -515,6 +527,77 @@ namespace Ryujinx.Graphics.Shader.Translation
+             CommitAll();
+         }
+ 
++        // Ampere instructions that exchange values between the lanes of a warp: VOTE, VOTEU, SHFL, MATCH and REDUX
++        private static bool IsWarpCollective(int opcode)
++        {
++            return opcode is 0x806 or 0x886 or 0x389 or 0x589 or 0x989 or 0xf89 or 0x3a1 or 0x3c4;
++        }
++
++        // A guarded warp-collective instruction (EmitOpsAmpere): the hardware takes every active lane's operands, and the guard
++        // only decides which lanes' destinations are written. The operations emitted for it from opStart on run unguarded and
++        // write fresh locals (one per write, later reads of the register in the range read the local); after them, the lanes
++        // whose guard holds copy the locals to the registers. Emitted as `if (guard) { op }`, the vote saw only those lanes:
++        // the NVN2 compiler's warp-aggregated atomics take a VOTEU under the leader lane's guard to count the lanes it adds for
++        // (VOTEU, POPC, ATOM), so OoT's foliage culling kernel (fe89d4116c26fddf) counted one instance per warp,
++        // the other lanes wrote their instances over the next warps' slots, and the mesh draws' counts and lists changed from
++        // frame to frame: trees, bushes and grass flickered and vanished with the camera still.
++        private static void GuardWarpWrites(EmitterContext context, int opStart, Operand guard, bool guardInv)
++        {
++            int end = context.OperationsCount;
++            Dictionary<Register, Operand> locals = new();
++
++            for (int i = opStart; i < end; i++)
++            {
++                Operation operation = context.GetOperation(i);
++
++                for (int s = 0; s < operation.SourcesCount; s++)
++                {
++                    Operand src = operation.GetSource(s);
++
++                    if (src != null && src.Type == OperandType.Register && locals.TryGetValue(src.GetRegister(), out Operand local))
++                    {
++                        operation.SetSource(s, local);
++                    }
++                }
++
++                for (int d = 0; d < operation.DestsCount; d++)
++                {
++                    Operand dest = operation.GetDest(d);
++
++                    if (dest != null && dest.Type == OperandType.Register)
++                    {
++                        Operand local = Local();
++
++                        locals[dest.GetRegister()] = local;
++                        operation.SetDest(d, local);
++                    }
++                }
++            }
++
++            if (locals.Count == 0)
++            {
++                return;
++            }
++
++            Operand skip = Label();
++
++            if (guardInv)
++            {
++                context.BranchIfTrue(skip, guard);
++            }
++            else
++            {
++                context.BranchIfFalse(skip, guard);
++            }
++
++            foreach ((Register reg, Operand local) in locals)
++            {
++                context.Copy(Register(reg), local);
++            }
++
++            context.MarkLabel(skip);
++        }
++
+         // The registers written by the operations from opStart on become shadow registers (every use in the range too), each first set to the register's value
+         private static void DeferAmpereWrites(
+             EmitterContext context,

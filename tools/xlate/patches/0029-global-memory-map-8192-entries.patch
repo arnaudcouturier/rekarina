@@ -1,0 +1,22 @@
+TOTK: the memory pool table for global memory at loaded addresses has 8192 entries (GmemMapLog2 13), the size
+runtime/vk_exec_draw.c GMEM_ENTRIES builds. With 4096, OoT's forest map had 4,136 to 4,142 pools: the host
+left the smallest imported ones out, and loads and stores through them went nowhere (the pause menu's tab label and
+button glyphs came out garbled; with 8192 they are right). The binary search takes one more step; the 2 MiB hint is
+still tried below 2^40, where the game's pools and its device pool at 0x8000000000 lie.
+
+--- a/src/Ryujinx.Graphics.Shader/Translation/Optimizations/GlobalToStorage.cs
++++ b/src/Ryujinx.Graphics.Shader/Translation/Optimizations/GlobalToStorage.cs
+@@ -789,7 +789,12 @@ namespace Ryujinx.Graphics.Shader.Translation.Optimizations
+         // slot, which no constant buffer of the game has (dmsh_build.py turns it into DMSH_KIND_GMEM_MAP). 1 << GmemMapLog2 entries of GmemMapEntryWords words each,
+         // {start lo, start hi, end lo, end hi, delta lo, delta hi, hint, 0}, sorted by start; entry 0 is empty (start 0, end 0) and unused entries start at ~0
+         public const int GmemMapCbSlot = 0xff;
+-        private const int GmemMapLog2 = 12;
++
++        // TOTK: 8192 entries (runtime/vk_exec_draw.c GMEM_ENTRIES). With 4096, the forest's 4,136 to 4,142 pools did not
++        // fit, the host left the smallest out, and loads and stores through them went nowhere (the pause menu's tab label and
++        // button glyphs came out garbled). The hint is still tried below 2^40, where the game's pools and its device pool at
++        // 0x8000000000 lie.
++        private const int GmemMapLog2 = 13;
+         private const int GmemMapEntryWords = 8;
+         private const int GmemHintShift = 21;
+ 

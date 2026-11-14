@@ -1,0 +1,249 @@
+// DLSS Frame Generation (TOTK_FRAMEGEN = dlss; applies after a restart) through totk_dlssg.dll
+// (runtime/dlssg/nx2_sl.cpp), which drives NVIDIA Streamline. Like AMD's frame generation (vk_fg.cpp) it needs DLSS or
+// FSR 3.1 upscaling on, whose depth, motion vectors and camera it hands over, and an RTX 40 or 50 GPU.
+//
+// The DLL and Streamline (sl.interposer.dll and its plugins, nvngx_dlssg.dll) sit next to the game. The instance and
+// device are created through Streamline's proxies (vk_device.c), so it can add the extensions, features and queues
+// DLSS-G needs; the present path calls Streamline's swapchain functions (gfx_present.c), and every present records the
+// frame's constants and tags first (vk_dlssg_frame). Generation pauses while the menu is open.
+//
+// DLSS-G needs Reflex, whose low-latency mode paces the game (TOTK_REFLEX, default 1; 0 off, 2 on with boost): the
+// game's frame sleeps in Reflex where it starts (its acquire of a window image), and each frame carries the latency
+// markers from that start to the host present, all with the frame's number, the count of the game's presents up to it.
+// The mode is the swapchain's, so it is set again after each one (vk_dlssg_create_swapchain).
+#ifdef _WIN32
+#include <windows.h>
+#endif
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#include "cfg.h"
+#include "host.h"
+#include "vk.h"
+#include "vk_dlaa.h"
+#include "vk_dlssg.h"
+#include "dlssg/nx2_sl.h"
+#include "ui/menu.h"
+
+static struct {
+    int wanted, loaded, active;
+    PFN_nx2sl_init init;
+    PFN_nx2sl_instance_proc gipa;
+    PFN_nx2sl_device_proc gdpa;
+    PFN_nx2sl_available available;
+    PFN_nx2sl_frame frame;
+    PFN_nx2sl_present_marker marker;
+    PFN_nx2sl_sleep sleep;
+    PFN_nx2sl_submit_end submit_end;
+    PFN_nx2sl_shown shown;
+    PFN_nx2sl_reflex reflex;
+    uint32_t game;   // the game's presents (vk_dlssg_game_present)
+    uint32_t cur;    // the frame the present thread blits and presents next (vk_dlssg_present_frame)
+    uint32_t started;      // the last frame vk_dlssg_frame_start started
+    uint64_t hosted_ns;    // kern_now_ns after the last host present
+    PFN_nx2sl_shutdown shutdown;
+    PFN_vkCreateSwapchainKHR create_sc;
+    PFN_vkDestroySwapchainKHR destroy_sc;
+    PFN_vkGetSwapchainImagesKHR images;
+    PFN_vkAcquireNextImageKHR acquire;
+    PFN_vkQueuePresentKHR present;
+} S = {.wanted = -1};
+
+static void sl_line(const char *line) { rt_log("%s", line); }
+
+static int reflex_mode(void) {
+    static int m = -1;
+    if (m < 0) {
+        const char *s = cfg_get("TOTK_REFLEX");
+        m = s && *s ? atoi(s) : 1;
+        if (m < 0 || m > 2) m = 1;
+    }
+    return m;
+}
+
+int vk_dlssg_wanted(void) {
+    if (S.wanted < 0) {
+        S.wanted = !strcmp(cfg_value("TOTK_FRAMEGEN"), "dlss");
+        if (S.wanted && !vk_dlaa_wanted()) {
+            rt_log("dlssg: frame generation needs DLSS or FSR 3.1 upscaling (any mode): off");
+            S.wanted = 0;
+        }
+    }
+    return S.wanted;
+}
+
+int vk_dlssg_early(void) {
+    if (!vk_dlssg_wanted()) return 0;
+    if (S.loaded) return S.loaded > 0;
+    S.loaded = -1;
+#ifdef _WIN32
+    wchar_t dir[MAX_PATH], path[MAX_PATH + 32];
+    DWORD n = GetModuleFileNameW(NULL, dir, MAX_PATH);
+    while (n && dir[n - 1] != L'\\') n--;
+    dir[n ? n - 1 : 0] = 0;
+    swprintf(path, MAX_PATH + 32, L"%ls\\%hs_dlssg.dll", dir, RT_FILE_STEM);
+    HMODULE m = LoadLibraryW(path);
+#ifdef RT_OLD_FILE_STEM   // a folder packaged before the file was renamed, or a build folder
+    if (!m) {
+        swprintf(path, MAX_PATH + 32, L"%ls\\%hs_dlssg.dll", dir, RT_OLD_FILE_STEM);
+        m = LoadLibraryW(path);
+    }
+#endif
+    if (!m) {
+        rt_log("dlssg: " RT_FILE_STEM "_dlssg.dll is not next to the game: DLSS Frame Generation off");
+        return 0;
+    }
+    PFN_nx2sl_version ver = (PFN_nx2sl_version)(void *)GetProcAddress(m, "nx2sl_version");
+    S.init = (PFN_nx2sl_init)(void *)GetProcAddress(m, "nx2sl_init");
+    S.gipa = (PFN_nx2sl_instance_proc)(void *)GetProcAddress(m, "nx2sl_instance_proc");
+    S.gdpa = (PFN_nx2sl_device_proc)(void *)GetProcAddress(m, "nx2sl_device_proc");
+    S.available = (PFN_nx2sl_available)(void *)GetProcAddress(m, "nx2sl_available");
+    S.frame = (PFN_nx2sl_frame)(void *)GetProcAddress(m, "nx2sl_frame");
+    S.marker = (PFN_nx2sl_present_marker)(void *)GetProcAddress(m, "nx2sl_present_marker");
+    S.sleep = (PFN_nx2sl_sleep)(void *)GetProcAddress(m, "nx2sl_sleep");
+    S.submit_end = (PFN_nx2sl_submit_end)(void *)GetProcAddress(m, "nx2sl_submit_end");
+    S.shown = (PFN_nx2sl_shown)(void *)GetProcAddress(m, "nx2sl_shown");
+    S.shutdown = (PFN_nx2sl_shutdown)(void *)GetProcAddress(m, "nx2sl_shutdown");
+    S.reflex = (PFN_nx2sl_reflex)(void *)GetProcAddress(m, "nx2sl_reflex");
+    if (!ver || ver() != NX2SL_VERSION || !S.init || !S.gipa || !S.gdpa || !S.available || !S.frame || !S.marker ||
+        !S.sleep || !S.submit_end || !S.shown || !S.reflex) {
+        rt_log("dlssg: " RT_FILE_STEM "_dlssg.dll is from another build: DLSS Frame Generation off");
+        return 0;
+    }
+    if (!S.init(dir, sl_line)) return 0;
+    S.loaded = 1;
+    return 1;
+#else
+    return 0;
+#endif
+}
+
+VkResult vk_dlssg_create_instance(const VkInstanceCreateInfo *ci, VkInstance *out) {
+    PFN_vkCreateInstance f = S.loaded > 0 ? (PFN_vkCreateInstance)S.gipa()(VK_NULL_HANDLE, "vkCreateInstance") : NULL;
+    return f ? f(ci, NULL, out) : vkCreateInstance(ci, NULL, out);
+}
+
+// An instance function through the interposer while Streamline is loaded, else NULL (the caller takes the loader's).
+// The window surface goes through it: Streamline learns the window a swapchain shows from vkCreateWin32SurfaceKHR, and
+// without that its swapchain hook found "no window corresponding to this application" and generated no frames.
+PFN_vkVoidFunction vk_dlssg_instance_proc(VkInstance inst, const char *name) {
+    return S.loaded > 0 ? S.gipa()(inst, name) : NULL;
+}
+
+// The interposer's vkCreateDevice finds the device's instance in a map its own vkEnumeratePhysicalDevices fills; a
+// physical device enumerated through the loader alone left it a null instance, so the plugins got an empty instance
+// table and sl.common called a null GetPhysicalDeviceMemoryProperties while it set up. Enumerate through it as well.
+VkResult vk_dlssg_enumerate(VkInstance inst, uint32_t *n, VkPhysicalDevice *pd) {
+    PFN_vkEnumeratePhysicalDevices f =
+        S.loaded > 0 ? (PFN_vkEnumeratePhysicalDevices)S.gipa()(inst, "vkEnumeratePhysicalDevices") : NULL;
+    return f ? f(inst, n, pd) : vkEnumeratePhysicalDevices(inst, n, pd);
+}
+
+VkResult vk_dlssg_create_device(VkInstance inst, VkPhysicalDevice pd, const VkDeviceCreateInfo *ci, VkDevice *out) {
+    PFN_vkCreateDevice f = S.loaded > 0 ? (PFN_vkCreateDevice)S.gipa()(inst, "vkCreateDevice") : NULL;
+    return f ? f(pd, ci, NULL, out) : vkCreateDevice(pd, ci, NULL, out);
+}
+
+void vk_dlssg_device_ready(VkDevice dev) {
+    if (S.loaded <= 0 || !S.available()) return;
+    PFN_vkGetDeviceProcAddr g = S.gdpa();
+    S.create_sc = (PFN_vkCreateSwapchainKHR)g(dev, "vkCreateSwapchainKHR");
+    S.destroy_sc = (PFN_vkDestroySwapchainKHR)g(dev, "vkDestroySwapchainKHR");
+    S.images = (PFN_vkGetSwapchainImagesKHR)g(dev, "vkGetSwapchainImagesKHR");
+    S.acquire = (PFN_vkAcquireNextImageKHR)g(dev, "vkAcquireNextImageKHR");
+    S.present = (PFN_vkQueuePresentKHR)g(dev, "vkQueuePresentKHR");
+    S.active = S.create_sc && S.destroy_sc && S.images && S.acquire && S.present;
+    rt_log("dlssg: %s", S.active ? "DLSS Frame Generation on the swapchain" : "the swapchain hooks are missing: off");
+    if (S.active) S.reflex(reflex_mode());
+}
+
+int vk_dlssg_active(void) { return S.active; }
+
+VkResult vk_dlssg_create_swapchain(VkDevice d, const VkSwapchainCreateInfoKHR *ci, VkSwapchainKHR *sc) {
+    VkResult r = S.create_sc(d, ci, NULL, sc);
+    if (r == VK_SUCCESS) S.reflex(reflex_mode());
+    return r;
+}
+void vk_dlssg_destroy_swapchain(VkDevice d, VkSwapchainKHR sc) { S.destroy_sc(d, sc, NULL); }
+VkResult vk_dlssg_get_images(VkDevice d, VkSwapchainKHR sc, uint32_t *n, VkImage *img) { return S.images(d, sc, n, img); }
+VkResult vk_dlssg_acquire(VkDevice d, VkSwapchainKHR sc, uint64_t t, VkSemaphore sem, uint32_t *idx) {
+    return S.acquire(d, sc, t, sem, VK_NULL_HANDLE, idx);
+}
+
+VkResult vk_dlssg_present(VkQueue q, const VkPresentInfoKHR *pi) {
+    S.marker(0, S.cur);
+    VkResult r = S.present(q, pi);
+    S.marker(1, S.cur);
+    __atomic_store_n(&S.hosted_ns, kern_now_ns(), __ATOMIC_RELAXED);
+    return r;
+}
+
+// Reflex holds the frame's start until the time the driver computes from the measured render and queue times, so the
+// game's CPU work ends about when the GPU is free for it; then the frame's first markers. Once a frame: the game may
+// acquire again before it presents. No hold while no host present went out for HOLD_IDLE_NS (the window minimized:
+// gfx_present.c skips the host presents while the game runs on): the driver then has no present to time the frame by,
+// and the sleep would wait out Streamline's half-second timeout each frame.
+#define HOLD_IDLE_NS 200000000ull
+void vk_dlssg_frame_start(void) {
+    if (!S.active) return;
+    uint32_t f = __atomic_load_n(&S.game, __ATOMIC_RELAXED) + 1;
+    if (f == S.started) return;
+    S.started = f;
+    uint64_t hosted = __atomic_load_n(&S.hosted_ns, __ATOMIC_RELAXED);
+    S.sleep(f, hosted && kern_now_ns() - hosted < HOLD_IDLE_NS);
+}
+
+void vk_dlssg_game_present(void) { __atomic_add_fetch(&S.game, 1, __ATOMIC_RELAXED); }
+
+void vk_dlssg_submitted(uint64_t frame) {
+    if (S.active) S.submit_end((uint32_t)frame);
+}
+
+void vk_dlssg_present_frame(uint64_t frame) { S.cur = (uint32_t)frame; }
+
+uint64_t vk_dlssg_shown(void) { return S.active ? S.shown() : 0; }
+
+void vk_dlssg_frame(VkCommandBuffer cb, VkExtent2D ext, VkImage hudless, VkImageView hudless_view, VkFormat hudless_fmt) {
+    if (!S.active) return;
+    static int asked;
+    if (!asked) asked = 1, vk_dlaa_hudless_wanted = 1;   // the upscaling pass keeps a copy of the picture before the HUD
+    VkFfxImage d, m;
+    VkImageView dv, mvv;
+    VkDlaaCamera c;
+    float jx = 0, jy = 0;
+    int reset = 0;
+    int have = vk_dlaa_fg_inputs(&d, &m, &jx, &jy, &reset) && vk_dlaa_fg_views(&dv, &mvv) && vk_dlaa_fg_camera(&c);
+    // Once on, it stays on through frames without the inputs (the game's pause screens have no camera): every switch
+    // off and on again re-created its resources, 400-750 ms per frame for four or five frames at each inventory opening.
+    static int went_on;
+    int on = (have || went_on) && !menu_is_open();
+    if (on) went_on = 1;
+    Nx2SlImage zd = {d.image, dv, d.format, d.width, d.height, VK_IMAGE_LAYOUT_GENERAL,
+                     VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT};
+    Nx2SlImage zm = {m.image, mvv, m.format, m.width, m.height, VK_IMAGE_LAYOUT_GENERAL,
+                     VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT};
+    Nx2SlCamera k;
+    memset(&k, 0, sizeof k);
+    if (have) {
+        memcpy(k.view_to_clip, c.view_to_clip, 64), memcpy(k.clip_to_view, c.clip_to_view, 64);
+        memcpy(k.clip_to_prev_clip, c.clip_to_prev_clip, 64), memcpy(k.prev_clip_to_clip, c.prev_clip_to_clip, 64);
+        memcpy(k.pos, c.pos, 12), memcpy(k.up, c.up, 12), memcpy(k.right, c.right, 12), memcpy(k.fwd, c.fwd, 12);
+        k.znear = 0.1f, k.zfar = 1e8f, k.fov_y = c.fov_y, k.aspect = c.aspect;   // OoT's projection (vk_ffx.cpp)
+        k.jitter[0] = jx, k.jitter[1] = jy;
+        k.mv_scale[0] = 1.0f / (float)d.width, k.mv_scale[1] = 1.0f / (float)d.height;   // render pixels
+        k.reset = reset;
+    }
+    // The picture without the HUD (gfx_present.c hudless_record): without it the generated frames blend the game's
+    // interface as if it were the scene, and a dialogue box that changes between two frames blinks in the frames between.
+    Nx2SlImage zh = {hudless, hudless_view, hudless_fmt, ext.width, ext.height, VK_IMAGE_LAYOUT_GENERAL,
+                     VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
+                         VK_IMAGE_USAGE_STORAGE_BIT};
+    S.frame(cb, have ? &zd : NULL, have ? &zm : NULL, have && hudless && hudless_view ? &zh : NULL, have ? &k : NULL,
+            ext.width, ext.height, on, S.cur);
+}
+
+void vk_dlssg_release(void) {
+    if (S.loaded > 0 && S.shutdown) S.shutdown();
+    S.active = 0;
+}

@@ -1,0 +1,68 @@
+TOTK: the AST optimizer leaves warp-collective operations (ballot, vote, shuffle) where the shader put them. It propagated
+an expression into each of its uses, and a ballot moved into a divergent branch saw only that branch's lanes. The NVN2
+compiler's warp-aggregated atomics take one VOTEU of the lanes that append, pick the leader from it (FLO) and, in the
+leader's branch, add the vote's POPC to the counter: with the ballot folded into the POPC the leader counted only itself,
+each warp reserved one slot and its other lanes wrote over the next warps' entries. OoT's GPU culling
+(FoliageShader) kept a fraction of its lists: tree crowns, bushes and most shadow casters were missing, and the fog
+lit through the empty shadow cascades washed the frame out. Maxwell jobs get the same rule (a moved vote is wrong there
+too).
+
+--- a/src/Ryujinx.Graphics.Shader/StructuredIr/AstOptimizer.cs
++++ b/src/Ryujinx.Graphics.Shader/StructuredIr/AstOptimizer.cs
+@@ -27,7 +27,16 @@ namespace Ryujinx.Graphics.Shader.StructuredIr
+                         // use, and removing the assignment removed the operation itself (the reduction kernel c7830fac
+                         // lost its atomicMin on 2026-10-13; every translation ran in DebugMode since, to avoid this).
+                         bool sideEffects = HasSideEffects(assignment.Source);
+-                        bool isWorthPropagating = !sideEffects && (propVar.Uses.Count == 1 || IsWorthPropagating(assignment.Source));
++
++                        // TOTK: a warp-collective operation (ballot, vote, shuffle) depends on the lanes active where it runs,
++                        // so it stays where the shader put it. Propagated, it ran again at each use: the NVN2 compiler's
++                        // warp-aggregated atomics take one VOTEU of the appending lanes, find the leader from it and, in the
++                        // leader's branch, add its POPC to the counter; with the ballot folded into the POPC the leader counted
++                        // only itself, each warp reserved one slot, and its other lanes wrote over the next warps' entries.
++                        // OoT's GPU culling (FoliageShader) kept a fraction of the trees' crowns, bushes and shadow
++                        // casters.
++                        bool collective = HasWarpCollective(assignment.Source);
++                        bool isWorthPropagating = !sideEffects && !collective && (propVar.Uses.Count == 1 || IsWorthPropagating(assignment.Source));
+ 
+                         // TOTK: SPIR-V passes call arguments by pointer to a variable (StructuredProgram copies them
+                         // into temporaries); folding an expression into a call argument breaks GenerateCall.
+@@ -60,6 +69,38 @@ namespace Ryujinx.Graphics.Shader.StructuredIr
+             RemoveEmptyBlocks(mainBlock);
+         }
+ 
++        // TOTK: whether the expression holds an operation whose result depends on the warp's active lanes
++        private static bool HasWarpCollective(IAstNode node)
++        {
++            if (node is not AstOperation op)
++            {
++                return false;
++            }
++
++            switch (op.Inst & Instruction.Mask)
++            {
++                case Instruction.Ballot:
++                case Instruction.Shuffle:
++                case Instruction.ShuffleDown:
++                case Instruction.ShuffleUp:
++                case Instruction.ShuffleXor:
++                case Instruction.VoteAll:
++                case Instruction.VoteAllEqual:
++                case Instruction.VoteAny:
++                    return true;
++            }
++
++            for (int i = 0; i < op.SourcesCount; i++)
++            {
++                if (HasWarpCollective(op.GetSource(i)))
++                {
++                    return true;
++                }
++            }
++
++            return false;
++        }
++
+         private static bool HasSideEffects(IAstNode source)
+         {
+             if (source is AstOperation op)

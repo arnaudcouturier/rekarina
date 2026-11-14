@@ -1,0 +1,4 @@
+Contact: https://discord.gg/6N8PKr9zZA
+Expires: 2027-11-14T00:00:00.000Z
+Preferred-Languages: en, ru
+Canonical: https://rekarina.dev/.well-known/security.txt

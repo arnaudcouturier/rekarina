@@ -1,0 +1,25 @@
+# The generated chunks of OoT 1.1.1 that hold the game's hottest functions in play (a sampling profile of every thread in forest village, 2026-11-10): build_game.py compiles them at -O2 (TOTK_HOT_OBJS), the other chunks stay at -O1.
+main_0001.o
+main_0004.o
+main_0005.o
+main_0007.o
+main_0008.o
+main_0010.o
+main_0012.o
+main_0013.o
+main_0014.o
+main_0016.o
+main_0017.o
+main_0020.o
+main_0026.o
+main_0037.o
+main_0048.o
+main_0072.o
+main_0082.o
+main_0169.o
+main_0188.o
+main_0255.o
+main_0447.o
+sdk_0010.o
+sdk_0049.o
+sdk_0051.o

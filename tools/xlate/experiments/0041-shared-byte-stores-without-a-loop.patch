@@ -1,0 +1,90 @@
+TOTK: a byte or 16-bit store into shared memory as an atomic AND and an atomic OR where the host asks for it
+(IGpuAccessor.QuerySharedStoresWithoutLoop, the job's "stores_no_loop"), in place of Ryujinx's compare-and-swap loop
+(HelperFunctionManager.GenerateSharedStore). A mesh shader's primitive count and index bytes go through that store
+(patch 0019 AStageOut). Without the query every translation is as before.
+
+--- a/src/Ryujinx.Graphics.Shader/IGpuAccessor.cs
++++ b/src/Ryujinx.Graphics.Shader/IGpuAccessor.cs
+@@ -239,6 +239,11 @@
+         // HMMA.16816 with an f16 accumulator then uses the tensor cores (HelperFunctionManager.GenerateHmma16816F16).
+         bool QueryHostSupportsCooperativeMatrix() => false;
+ 
++        // TOTK: true when a byte or 16-bit store into shared memory is an atomic AND and an atomic OR in place of the
++        // compare-and-swap loop (HelperFunctionManager.GenerateSharedStore): for hosts whose compiler does not get the
++        // loop right in a task or mesh stage.
++        bool QuerySharedStoresWithoutLoop() => false;
++
+         // TOTK: true when the host binds the memory pool table and write log of GlobalToStorage.TryGenerateRawStorageOp (storage
+         // buffers with constant buffer slot GlobalToStorage.GmemMapCbSlot): a global memory access traced to no storage buffer
+         // then goes through a physical pointer instead of being dropped.
+--- a/src/Ryujinx.Graphics.Shader/Translation/TranslatorContext.cs
++++ b/src/Ryujinx.Graphics.Shader/Translation/TranslatorContext.cs
+@@ -277,7 +277,7 @@
+                 funcs.Add(null);
+             }
+ 
+-            HelperFunctionManager hfm = new(funcs, Definitions.Stage, GpuAccessor.QueryHostSupportsCooperativeMatrix());
++            HelperFunctionManager hfm = new(funcs, Definitions.Stage, GpuAccessor.QueryHostSupportsCooperativeMatrix(), GpuAccessor.QuerySharedStoresWithoutLoop());
+ 
+             for (int i = 0; i < functions.Length; i++)
+             {
+--- a/src/Ryujinx.Graphics.Shader/Translation/HelperFunctionManager.cs
++++ b/src/Ryujinx.Graphics.Shader/Translation/HelperFunctionManager.cs
+@@ -12,13 +12,15 @@
+         private readonly ShaderStage _stage;
+ 
+         private readonly bool _coopMatrix;   // TOTK: IGpuAccessor.QueryHostSupportsCooperativeMatrix
++        private readonly bool _storesWithoutLoop;   // TOTK: IGpuAccessor.QuerySharedStoresWithoutLoop
+ 
+-        public HelperFunctionManager(List<Function> functionList, ShaderStage stage, bool coopMatrix = false)
++        public HelperFunctionManager(List<Function> functionList, ShaderStage stage, bool coopMatrix = false, bool storesWithoutLoop = false)
+         {
+             _functionList = functionList;
+             _functionIds = new Dictionary<int, int>();
+             _stage = stage;
+             _coopMatrix = coopMatrix;
++            _storesWithoutLoop = storesWithoutLoop;
+         }
+ 
+         public int AddFunction(Function function)
+@@ -178,8 +180,8 @@
+             {
+                 HelperFunctionName.SharedAtomicMaxS32 => GenerateSharedAtomicSigned(id, isMin: false),
+                 HelperFunctionName.SharedAtomicMinS32 => GenerateSharedAtomicSigned(id, isMin: true),
+-                HelperFunctionName.SharedStore8 => GenerateSharedStore8(id),
+-                HelperFunctionName.SharedStore16 => GenerateSharedStore16(id),
++                HelperFunctionName.SharedStore8 => GenerateSharedStore(id, 8, _storesWithoutLoop),
++                HelperFunctionName.SharedStore16 => GenerateSharedStore(id, 16, _storesWithoutLoop),
+                 HelperFunctionName.Hmma16816F16 => GenerateHmma16816F16(id, _coopMatrix),
+                 _ => throw new ArgumentException($"Invalid function name {functionName}"),
+             };
+@@ -299,7 +301,7 @@
+             return GenerateSharedStore(id, 16);
+         }
+ 
+-        private static Function GenerateSharedStore(int id, int bitSize)
++        private static Function GenerateSharedStore(int id, int bitSize, bool withoutLoop = false)
+         {
+             EmitterContext context = new();
+ 
+@@ -309,6 +311,20 @@
+             Operand wordOffset = context.ShiftRightU32(offset, Const(2));
+             Operand bitOffset = GetBitOffset(context, offset);
+ 
++            if (withoutLoop)
++            {
++                // TOTK: the field is cleared and set by two atomics. Threads that store to other bytes of the word do not
++                // disturb each other, which is all the loop gave (two stores to one byte race either way); between the two
++                // a reader sees the field as zero.
++                int field = (1 << bitSize) - 1;
++
++                context.AtomicAnd(StorageKind.SharedMemory, Const(id), wordOffset, context.BitwiseNot(context.ShiftLeft(Const(field), bitOffset)));
++                context.AtomicOr(StorageKind.SharedMemory, Const(id), wordOffset, context.ShiftLeft(context.BitwiseAnd(value, Const(field)), bitOffset));
++                context.Return();
++
++                return new Function(ControlFlowGraph.Create(context.GetOperations()).Blocks, $"SharedStore{bitSize}_{id}", false, 2, 0);
++            }
++
+             GenerateSharedAtomicCasLoop(context, wordOffset, id, (memValue) =>
+             {
+                 return context.BitfieldInsert(memValue, value, bitOffset, Const(bitSize));

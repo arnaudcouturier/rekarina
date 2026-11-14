@@ -1,0 +1,63 @@
+TOTK: a mesh primitive's index vector stored whole by one thread where the host asks for it (the job's "mesh":
+{"whole_indices": 1}, MeshStage.WholeIndices). The entry point let thread n store index byte n, so a triangle's three
+components came from three threads; AMD's Windows driver for RDNA 1 and 2 ("AMD proprietary shader compiler") loses
+those stores and every mesh draw of OoT came out empty there (docs/oot-xlate.md). Without the field every
+translation is as before.
+
+--- a/src/Ryujinx.Graphics.Shader/MeshStage.cs
++++ b/src/Ryujinx.Graphics.Shader/MeshStage.cs
+@@ -37,6 +37,13 @@
+         public int PrimitiveVertices { get; init; } = 3;
+ 
+         /// <summary>
++        /// A primitive's index vector is stored whole, by the thread whose number is the primitive's. Otherwise thread n stores
++        /// index byte n, so the components of a triangle's vector come from three threads: AMD's Windows driver for RDNA 1 and 2
++        /// loses such stores, and every mesh draw comes out empty.
++        /// </summary>
++        public bool WholeIndices { get; init; }
++
++        /// <summary>
+         /// A mesh shader's per-primitive components (the second SPH's OMAP), 4 n + c for generic attribute n's; they follow the vertex components
+         /// in each attribute block.
+         /// </summary>
+--- a/src/Ryujinx.Graphics.Shader/CodeGen/Spirv/MeshStageWrapper.cs
++++ b/src/Ryujinx.Graphics.Shader/CodeGen/Spirv/MeshStageWrapper.cs
+@@ -22,7 +22,8 @@
+     //      words from its block of 32 (a word per component, the SPH's OMAP order; a component the shader does not have reads 0, w 1)
+     //      and three index bytes per triangle from the primitive bytes + 4. A shader that outputs points or lines
+     //      (MeshStage.PrimitiveVertices) has one or two index bytes a primitive, and points take their size from the point size's
+-    //      block (1 when the shader writes none).
++    //      block (1 when the shader writes none). Thread n stores index byte n; with MeshStage.WholeIndices thread n stores
++    //      primitive n's whole vector.
+     // The module is SPIR-V 1.4 (SPV_EXT_mesh_shader needs it), so the entry point lists every global variable.
+     static class MeshStageWrapper
+     {
+@@ -285,6 +286,28 @@
+ 
+                 SpvInstruction outU32 = context.TypePointer(StorageClass.Output, u32);
+ 
++                if (mesh.WholeIndices && primitiveVertices > 1)
++                {
++                    SpvInstruction indexVector = context.TypeVector(u32, primitiveVertices);
++                    SpvInstruction outVector = context.TypePointer(StorageClass.Output, indexVector);
++
++                    Loop(count, n =>
++                    {
++                        SpvInstruction[] v = new SpvInstruction[primitiveVertices];
++
++                        for (int k = 0; k < primitiveVertices; k++)
++                        {
++                            SpvInstruction at = context.IAdd(u32, context.IMul(u32, n, C(primitiveVertices)), C(primitives + 4 + k));
++                            SpvInstruction word = context.Load(u32, Shared(context.ShiftRightLogical(u32, at, C(2))));
++                            SpvInstruction shift = context.IMul(u32, context.BitwiseAnd(u32, at, C(3)), C(8));
++
++                            v[k] = context.BitwiseAnd(u32, context.ShiftRightLogical(u32, word, shift), C(0xff));
++                        }
++
++                        context.Store(context.AccessChain(outVector, indices, n), context.CompositeConstruct(indexVector, v));
++                    });
++                }
++                else
+                 Loop(context.IMul(u32, count, C(primitiveVertices)), n =>
+                 {
+                     SpvInstruction at = context.IAdd(u32, n, C(primitives + 4));

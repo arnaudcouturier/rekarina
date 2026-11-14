@@ -1,0 +1,125 @@
+# Code patches for OoT (Switch 2) 1.1.1 main (recomp/patches.py). The patch page holds the floats the
+# runtime writes at every present (runtime/frame_rate.c): +0 seconds * 30, +4 the frame step in seconds.
+
+set realtime TOTK_REALTIME 1
+
+# Real-time step. Each frame the scene update (main+0x6e6be0) turns the frame controller's frame rate (framework+0x2c8,
+# 40..60 from the VRR controller main+0x4dbda0 or 60 / interval from the fixed one main+0x3b4ef60) into the game's step
+# in frames of its base rate: ratio = base / fps with base 60 (30 when framework+0x24f bit 0 is set). The VFR manager
+# (main+0x3b4e300, both calls in that function) keeps ratio, 1 / ratio, seconds = ratio / 60 and fps = 60 / ratio, and
+# the game's VFR code (QueryVFRCounter, ExecuteActorChaseAngleVFR, ...) steps by them. The shipping game presents with
+# interval 1 and steps a whole 1/60 s per frame, so any faster pacing ran it fast (the title movie's 1800 pictures in
+# 15 s at 120 Hz). With the set: ratio = base * the measured step (x10 is free here: the ldclr before consumed it).
+site realtime main 6e6cc4 1e201828 @page:x10 bd400548 1e280828   # fdiv s8, s1, s0 -> adrp x10, page; ldr s8, [x10, #4]; fmul s8, s1, s8
+
+set ripple TOTK_RIPPLE_STEPS 1
+
+# Water simulation steps. The interactive water surface (the ripple around the hero, main+0x472e0) runs its compute passes
+# param * (int)ratio times a frame (param 5, ratio the VFR manager's step in 60 Hz frames, 1.0 at 60 fps). Above 60 fps
+# the ratio is below 1, the truncation gives 0 and the simulation stops while its origin keeps following the hero, so the
+# ripple froze, stood off to a side and jumped on the odd slow frame. With the set the count is round(param * ratio): the
+# passes run every frame and the same number of them per second of game time as at 60 fps.
+site ripple main 4760c 1b097d08 1e220101 1e210800 1e240008   # mul w8, w8, w9 -> scvtf s1, w8; fmul s0, s0, s1; fcvtas w8, s0
+
+set pickup TOTK_PICKUP_COUNT 1
+
+# The count above the hero after a pick-up (rupees, sticks and the other stacking items; the update is main+0xa67e50).
+# Each frame the shown count (+0x35c is the total, +0x360 the count shown) moves toward the total by
+# (int)(step * max(distance / 50, 1)), step the VFR manager's step in 60 Hz frames, and the counter fades only when the
+# two meet. Above 60 fps the step is below 1, the truncation gives 0 every frame, and the counter stayed on screen with
+# the old count until a door or a talk replaced it. With the set the amount is rounded up: at least 1 a frame (the
+# move stops at the total), so the count runs to its total at any frame rate, a little faster than at 60 fps.
+# That the counter sticks above 60 fps, and which function moves it, is from the Hookshot project's pull request 2006
+# (github.com/NotRexed/Hookshot, GPL-3.0; read for what the game does, its fix carries the fraction in host code).
+site pickup main a68300 1e38000c 1e28000c   # fcvtzs w12, s0 -> fcvtps w12, s0
+
+set solver TOTK_SOLVER_STEPS 1
+
+# Physics solver steps. Each update the game sets the solver's step count (two copies of the code, in main+0x38aeb80
+# and main+0x38afc10) to (int)(step * steps + 0.001): step the frame's step in 60 Hz frames, steps the count of a 60 Hz
+# frame (8 in the places seen). Above 60 fps the truncation cuts the count short (4.8 gives 4 at 100 fps), so one solver
+# step covers more time than at 60 fps, and the count changes from frame to frame as the measured step wanders (3.92
+# gives 3, 4.0 gives 4 at 120 fps): moving platforms slide out from under the hero. With the set the count is
+# max(the game's count, min(ceil(step * steps + 0.001 - 0.1), steps)): rounded up while the step is under one frame,
+# with a tenth of a solver step of room so a step that wanders around a whole number keeps one count, and the game's
+# own count for a frame of 1/60 s or longer. w1 and s1, s2 are free here: w1 is the result, s1 and s2 the two operands
+# loaded for this sum, loaded again after the call that follows.
+# The cause and the two places are from the Hookshot project's pull request 2470 (github.com/NotRexed/Hookshot,
+# GPL-3.0; read for what the game does, its fix is a hook into host code).
+# mov w1, #0xcccd; movk w1, #0x3dcc, lsl #16; fmov s2, w1 (0.1); fsub s2, s0, s2; frintp s2, s2; fmin s2, s2, s1;
+# frintz s1, s0; fmax s1, s1, s2; fcvtzs w1, s1
+site solver main 38aebf4 1e380001 529999a1 72a7b981 1e270022 1e223802 1e24c042 1e215842 1e25c001 1e224821 1e380021
+site solver main 38afd20 1e380001 529999a1 72a7b981 1e270022 1e223802 1e24c042 1e215842 1e25c001 1e224821 1e380021
+
+set resguard TOTK_RES_GUARD 1
+
+# Resource lookup by handle (main+0xc938d0): a type-0 handle's id indexes the resource manager's table
+# ([[main+0x4e22540]+0x120], count +0x840, entries +0x848); a negative id, one past the table or an empty entry went on
+# to read the entry's +0x150 at address 0x150. On PC an entry was sometimes still empty when a scene looked it up
+# (walking or turning the camera in the forest, at any frame rate, rarely). The three cases take the function's
+# own path for an invalid handle (main+0xc93a18): the output gets null, which the callers test (main+0x560b38).
+site resguard main c93918 37f80148 37f80808   # tbnz w8, #31 -> the invalid-handle path
+site resguard main c93924 540000ed 540007ad   # b.le -> the invalid-handle path
+site resguard main c93930 b4000093 b4000753   # cbz x19 -> the invalid-handle path
+
+set gpuload TOTK_GPU_LOAD_ZERO 0
+
+# The GPU time the frame controller measures (main+0x346cb20): the end-of-frame timestamp report minus the CPU frame
+# start (framework+0x108), stored at framework+0x150 and folded into framework+0x140 = max(CPU work, GPU time). Here the
+# replay's latency is part of it. With the set the GPU time is 0 (test: whether the load the game adapts to moves).
+site gpuload main 346cbb0 cb080008 aa1f03e8   # sub x8, x0, x8 -> mov x8, xzr
+
+set res_fixed TOTK_PATCH_RES_FIXED 0
+
+# Render scale: the game sizes its 3D scene by a dynamic-resolution controller that follows its GPU-time reports. Bit 0
+# of an engine config word at +0x94 picks it (main+0x805bd0); the other path takes a fixed scale of 1.0 (main+0x806420).
+# The set always takes the fixed path and reads its scale from the patch page at +240, a float written by
+# runtime/frame_rate.c (res_fixed_present). A size change makes the game create every scene target anew for that frame,
+# and a target that is new holds nothing: the frame reads black and stale pictures, with a hard horizontal edge, and
+# about 40 images are made on the replay thread at once. The controller returns its scale with a state in bits 32..39,
+# and its caller makes a new scene scale only on state 0; the fixed path returns state 0 here, so the page's scale
+# applies. The set goes on only after the controller has run for a while, as its fields would otherwise stay unset and
+# the scene stay black.
+site res_fixed main 805bd0 360041e8 1400020f            # tbz w8, #0, #0x80640c -> b #0x80640c
+site res_fixed main 80641c 9a888128 aa1f03e8            # csel x8, x9, x8, hi -> mov x8, xzr (state 0)
+site res_fixed main 806420 52a7f009 @page:x9 b940f129   # mov w9, #0x3f800000 -> adrp x9, page; ldr w9, [x9, #240]
+
+# Widescreen (runtime/widescreen.c writes the page and switches the sets): +96 the game image size and +104 the scene size as
+# {w, h} in one 64-bit word, +112 the 16:9 ratio a camera is matched against, +116 the ratio that replaces it, +120 the
+# tolerance, as floats; +144 the UI's full-screen orthographic projection, +160..+175 and +208..+223 the screens that keep
+# it, +176 the UI's horizontal squeeze in four lanes, +192 the movie's margin. The matrix-update, UI and movie sites:
+# Copyright (c) 2026 Ivan0xFF (MIT; see THIRD_PARTY_NOTICES.md).
+set wide_out    TOTK_PATCH_WIDE_OUT    0
+set wide_scene  TOTK_PATCH_WIDE_SCENE  0
+set wide_aspect TOTK_PATCH_WIDE_ASPECT 0
+set wide_hud    TOTK_PATCH_WIDE_HUD    0
+set wide_movie  TOTK_PATCH_WIDE_MOVIE  0
+site wide_out main 1202ee0 d2814008 @page:x8   # mov x8, #0xa00 -> adrp x8, page
+site wide_out main 1202ee4 f2c0b408 f9403108   # movk x8, #0x5a0, lsl #32 -> ldr x8, [x8, #96]
+site wide_out main 31f39f4 d2814008 @page:x8   # mov x8, #0xa00 -> adrp x8, page
+site wide_out main 31f39f8 f2c0b408 f9403108   # movk x8, #0x5a0, lsl #32 -> ldr x8, [x8, #96]
+site wide_scene main 31f3a00 d280f008 @page:x8  # mov x8, #0x780 -> adrp x8, page
+site wide_scene main 31f3a04 f2c08708 f9403508  # movk x8, #0x438, lsl #32 -> ldr x8, [x8, #104]
+site wide_aspect main 4c5334 bd414260 bd414260 @page:x9 2d4e0921 bd407923 7ea1d404 7e24e464 2ea41c40   # ldr s0, [x19, #0x140]; ldp s1, s2, [x9, #112]; ldr s3, [x9, #120]; fabd s4, s0, s1; fcmge s4, s3, s4; bit v0, v2, v4
+site wide_aspect main 3485cc0 2d558400 2d558400 @page:x9 2d4e0d22 bd407924 7ea2d422 7e22e482 2ea21c61 bd00b001   # doUpdateMatrix: ldp s0, s1, [x0, #0xac]
+site wide_aspect main 4f1e8 2d558ea0 2d558ea0 @page:x9 2d4e1524 bd407922 7ea4d464 7e24e444 2ea41ca3 bd00b2a3   # inlined matrix update: ldp s0, s3, [x21, #0xac]
+site wide_aspect main 23b9a8 2d558c00 2d558c00 @page:x9 2d4e1524 bd407922 7ea4d464 7e24e444 2ea41ca3 bd00b003   # inlined matrix update: ldp s0, s3, [x0, #0xac]
+site wide_aspect main 33b82c 2d558440 2d558440 @page:x9 2d4e1123 bd407922 7ea3d423 7e23e443 2ea31c81 bd00b041   # inlined matrix update: ldp s0, s1, [x2, #0xac]
+site wide_hud main 774368 ad401041 ad401041 @page:x16 fd404a10 6e040431 6e0c2491 0ea0fa31 2eb08e31 2eb1ae31 0e040631 9e660231 d106e010 8a110210 8a310011 aa110210 fd400210 @page:x17 3dc02a32 3dc03633 4e080610 6ef28e12 6ef38e13 4eb31e52 6e124253 0eb31e52 0e721e31 4e040631 3dc02e33 6e33dc33 6eb11e61   # 2D canvas: ldp q1, q4, [x2]
+site wide_movie main 3b5c758 a941a269 d100a3b0 bd400a10 bd401211 1e303a32 @page:x17 bd40c233 1e330a52 1e322a10 1e323a31 bd000a10 bd001211 a941a269   # movie layer viewport: ldp x9, x8, [x19, #0x18]
+
+# The game's zstd decoder (BSD zstd, statically linked into main) through the host's libzstd (runtime/ov_zstd.c), as
+# the set of the same name does for TotK: the three calls of ZSTD_decompressMultiFrame (main+0xeb380:
+# dctx, dst, capacity, src, size, dict, dict size, ddict; it checks the frame magic and skippable frames itself) go to
+# the host function on the patch page (+0xff0). Lifted, the decoder's sequence loop (main+0xeffc0..0xf0860) runs as a
+# chain of small functions and was the hottest game code while a scene loads. Each caller resets a decoding context
+# inline before the call, two of them (main+0xbf72e0, main+0xf50164) as a static context of 0x271f8 bytes: in TotK
+# one such caller relied on the game's decoder rejecting frames the host decodes, so the set went on only
+# after a run with TOTK_ZSTD_NATIVE=1 TOTK_ZSTD_CHECK=1 through a load had shown no difference (the check decodes both
+# ways, keeps the game's result and logs each call where the two differ): 4,096 calls into the village, 394 MiB in and
+# 830 MiB out, none differing, 958 ms on the host against 2,377 ms in the lifted decoder (2026-11-11). runtime/cfg.c
+# holds the default the game runs with (ZSTD_NATIVE).
+set zstd     TOTK_ZSTD_NATIVE    1
+site zstd   main e910c 9400089d 9536dfb9    # bl ZSTD_decompressMultiFrame -> page+0xff0 (with a ZSTD_DDict in x7)
+site zstd   main bf72e0 97d3d028 950aa744   # bl ZSTD_decompressMultiFrame -> page+0xff0
+site zstd   main f50164 97c66c87 94fd43a3   # bl ZSTD_decompressMultiFrame -> page+0xff0

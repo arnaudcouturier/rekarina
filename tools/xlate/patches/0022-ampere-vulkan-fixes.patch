@@ -1,0 +1,337 @@
+TOTK: Ampere translation fixes for Vulkan, found on OoT's corpus (docs/oot-xlate.md):
+* 1D fetches read row 0 of the one-row 2D texture, as Maxwell's (nxnative's (x & 0x3FFF, x >> 14) read is for a Metal
+  host that binds texture buffers as 2D rows); IGpuAccessor.RecordTexelFetch1D goes again;
+* TXQ: a component past the texture's dimensions reads 1 instead of an out-of-bounds OpCompositeExtract (74 shaders);
+* StorageImageReadWithoutFormat declared for format-less storage images of Ampere jobs (56 compute shaders);
+* ATOMG.CAS (0x3a9, field layout of Mesa NAK sm70_encode.rs OpAtom, MIT) and float add reductions (RED / ATOMG .F32.FTZ.RN)
+  as compare-and-swap loops (34 shaders lost them);
+* from MacNativeGames' patch 0006 (MIT, https://github.com/ly05010419/MacNativeGames @ 5843ee56f3ab6911e32d61d46e96fee4ce8137de), lost when patch 0019 took nxnative's files: F2FP.MERGE_C .H1 and CCTL
+  (0x98f) as a no-op;
+* patch 0017's goto elimination rule (no else that a goto may jump into) only for Ampere jobs, so a Maxwell translation
+  keeps Ryujinx's structure (MacNativeGames measured 48 of TotK 1.4.3's 8,673 variants changing with it).
+
+--- a/src/Ryujinx.Graphics.Shader/CodeGen/Spirv/Declarations.cs
++++ b/src/Ryujinx.Graphics.Shader/CodeGen/Spirv/Declarations.cs
+@@ -232,6 +232,7 @@ namespace Ryujinx.Graphics.Shader.CodeGen.Spirv
+         private static void DeclareImages(CodeGenContext context, IEnumerable<TextureDefinition> images)
+         {
+             bool writeWithoutFormat = false;
++            bool readWithoutFormat = false;
+ 
+             foreach (TextureDefinition image in images)
+             {
+@@ -254,6 +255,12 @@ namespace Ryujinx.Graphics.Shader.CodeGen.Spirv
+                 // feature backs it. Reads without a format need no capability under Vulkan 1.3 (format feature flags 2).
+                 writeWithoutFormat |= image.Format == TextureFormat.Unknown && image.Flags.HasFlag(TextureUsageFlags.ImageStore);
+ 
++                // TOTK: reads of such an image (OpImageRead, a formatted SULD) need StorageImageReadWithoutFormat all the same: spirv-val
++                // (SPIRV-Tools 2026.4, --target-env vulkan1.3) rejects them without it, as in 56 of OoT's compute shaders.
++                // Vulkan 1.3 devices back it per format (VK_FORMAT_FEATURE_2_STORAGE_READ_WITHOUT_FORMAT_BIT). Only for Ampere jobs
++                // (HostCapabilities.ImageReadWithoutFormat), so TotK's Maxwell modules stay as they were.
++                readWithoutFormat |= image.Format == TextureFormat.Unknown && context.HostCapabilities.ImageReadWithoutFormat;
++
+                 SpvInstruction imagePointerType = context.TypePointer(StorageClass.UniformConstant, imageType);
+                 SpvInstruction imageArrayPointerType = imagePointerType;
+ 
+@@ -288,6 +295,11 @@ namespace Ryujinx.Graphics.Shader.CodeGen.Spirv
+             {
+                 context.AddCapability(Capability.StorageImageWriteWithoutFormat);
+             }
++
++            if (readWithoutFormat)
++            {
++                context.AddCapability(Capability.StorageImageReadWithoutFormat);
++            }
+         }
+ 
+         private static Dim GetDim(SamplerType type)
+--- a/src/Ryujinx.Graphics.Shader/IGpuAccessor.cs
++++ b/src/Ryujinx.Graphics.Shader/IGpuAccessor.cs
+@@ -536,15 +536,6 @@ namespace Ryujinx.Graphics.Shader
+             return 0;
+         }
+ 
+-        /// <summary>
+-        /// nxnative: a 1D integer-coordinate fetch (TLD / TLDS 1D) of the bound texture handle was translated as a 2D read at (x &amp; 0x3FFF, x &gt;&gt; 14),
+-        /// because the texture type query did not say it is a texture buffer.
+-        /// </summary>
+-        /// <param name="handle">Texture handle</param>
+-        void RecordTexelFetch1D(int handle)
+-        {
+-        }
+-
+         /// <summary>
+         /// Registers a texture used by the shader.
+         /// </summary>
+--- a/src/Ryujinx.Graphics.Shader/Instructions/InstEmitAmpere.cs
++++ b/src/Ryujinx.Graphics.Shader/Instructions/InstEmitAmpere.cs
+@@ -65,8 +65,9 @@ namespace Ryujinx.Graphics.Shader.Instructions
+             X(AmpereOpcodes.Kill, InstName.Kil, InstEmit.AKill, B, writesRd: false);
+             X(AmpereOpcodes.Ret, InstName.Ret, InstEmit.ARet, B, writesRd: false);
+             X(AmpereOpcodes.Call, InstName.Cal, InstEmit.ACall, B, writesRd: false);
+-            // ERRBAR 0x9ab, which follows a MEMBAR, only orders error reporting.
+-            foreach (int op in new[] { 0x918, 0x91a, 0x945, 0x941, 0x942, 0x948, 0x9ab })
++            // ERRBAR 0x9ab, which follows a MEMBAR, only orders error reporting. CCTL 0x98f (cache control) ends a thread fence after MEMBAR (MEMBAR.SC.GPU,
++            // ERRBAR, CCTL.IVALL): the memory barrier MEMBAR translates to covers it (MacNativeGames totk_xlate patch 0006, MIT).
++            foreach (int op in new[] { 0x918, 0x91a, 0x945, 0x941, 0x942, 0x948, 0x9ab, 0x98f })
+             {
+                 X(op, InstName.Nop, InstEmit.ANop, InstProps.None, writesRd: false);
+             }
+--- a/src/Ryujinx.Graphics.Shader/Instructions/InstEmitAmpereAlu.cs
++++ b/src/Ryujinx.Graphics.Shader/Instructions/InstEmitAmpereAlu.cs
+@@ -424,7 +424,8 @@ namespace Ryujinx.Graphics.Shader.Instructions
+         {
+             AmpereOp x = new(context.CurrOp);
+ 
+-            if (x.Bit(72))
++            // .H1 (72) with .MERGE_C takes c's high half instead (MacNativeGames totk_xlate patch 0006, MIT; Mesa NAK sm70_encode.rs OpF2FP)
++            if (x.Bit(72) && !x.Bit(78))
+             {
+                 throw AFail(context, "F2FP bit 72");
+             }
+@@ -434,7 +435,9 @@ namespace Ryujinx.Graphics.Shader.Instructions
+             if (x.Bit(78))
+             {
+                 Operand low = context.PackHalf2x16(AFloat(context, b), ConstF(0f));
+-                Operand high = context.ShiftLeft(Register(x.Rc, RegisterType.Gpr), Const(16));
++                Operand high = x.Bit(72)
++                    ? context.BitwiseAnd(Register(x.Rc, RegisterType.Gpr), Const(unchecked((int)0xffff0000u)))
++                    : context.ShiftLeft(Register(x.Rc, RegisterType.Gpr), Const(16));
+ 
+                 ASet(context, x, context.BitwiseOr(high, low), AUniform(context));
+                 return;
+--- a/src/Ryujinx.Graphics.Shader/Instructions/InstEmitAmpereMem.cs
++++ b/src/Ryujinx.Graphics.Shader/Instructions/InstEmitAmpereMem.cs
+@@ -29,6 +29,7 @@ namespace Ryujinx.Graphics.Shader.Instructions
+             x(0x98e, InstName.Red, ARed, N, writesRd: false);
+             x(0x9a8, InstName.Atom, AAtomg, N);
+             x(0x3a8, InstName.Atom, AAtomg, N);
++            x(0x3a9, InstName.Atom, AAtomgCas, N);
+             x(AmpereOpcodes.Ldl, InstName.Ldl, ALdLocalShared, N);
+             x(0x984, InstName.Lds, ALdLocalShared, N);
+             x(0x387, InstName.Stl, AStLocalShared, N, writesRd: false);
+@@ -353,7 +354,32 @@ namespace Ryujinx.Graphics.Shader.Instructions
+             AmpereOp x = new(context.CurrOp);
+             (Operand lo, Operand hi) = AGlobalAddress(context, x, 90, 64, 0);
+ 
+-            EmitAtomicOp(context, StorageKind.GlobalMemory, (AtomOp)x.Bits(87, 90), (AtomSize)x.Bits(73, 76), lo, hi, Register(x.Rb, RegisterType.Gpr));
++            if (AFloatAdd(context, (AtomOp)x.Bits(87, 90), (AtomSize)x.Bits(73, 76), lo, hi, Register(x.Rb, RegisterType.Gpr)) == null)
++            {
++                EmitAtomicOp(context, StorageKind.GlobalMemory, (AtomOp)x.Bits(87, 90), (AtomSize)x.Bits(73, 76), lo, hi, Register(x.Rb, RegisterType.Gpr));
++            }
++        }
++
++        // TOTK: RED.ADD.F32.FTZ.RN / ATOMG.ADD.F32.FTZ.RN on global memory as a compare-and-swap loop (EmitAtomicOp has no float add and logged "Invalid
++        // reduction type: F32FtzRn", dropping the operation: 34 of OoT's shaders). The loop needs no float atomics on the host. Returns the
++        // word before the add, null for any other operation or type.
++        private static Operand AFloatAdd(EmitterContext context, AtomOp op, AtomSize size, Operand lo, Operand hi, Operand value)
++        {
++            if (op != AtomOp.Add || size != AtomSize.F32FtzRn)
++            {
++                return null;
++            }
++
++            Operand lblLoop = Label();
++            context.MarkLabel(lblLoop);
++
++            Operand old = context.Load(StorageKind.GlobalMemory, lo, hi);
++            Operand sum = FlushDenormal(context, context.FPAdd(old, value));
++            Operand seen = context.AtomicCompareAndSwap(StorageKind.GlobalMemory, lo, hi, old, sum);
++
++            context.BranchIfTrue(lblLoop, context.ICompareNotEqual(seen, old));
++
++            return old;
+         }
+ 
+         // ATOMG Rd, [Ra + UR + offset], Rb: operation 87..91; the uniform form keeps Ra's pair bit at 70
+@@ -362,11 +388,31 @@ namespace Ryujinx.Graphics.Shader.Instructions
+             AmpereOp x = new(context.CurrOp);
+             (Operand lo, Operand hi) = AGlobalAddress(context, x, 70, 64, 0);
+ 
+-            Operand res = EmitAtomicOp(context, StorageKind.GlobalMemory, (AtomOp)x.Bits(87, 91), (AtomSize)x.Bits(73, 76), lo, hi, Register(x.Rb, RegisterType.Gpr));
++            Operand res = AFloatAdd(context, (AtomOp)x.Bits(87, 91), (AtomSize)x.Bits(73, 76), lo, hi, Register(x.Rb, RegisterType.Gpr)) ??
++                EmitAtomicOp(context, StorageKind.GlobalMemory, (AtomOp)x.Bits(87, 91), (AtomSize)x.Bits(73, 76), lo, hi, Register(x.Rb, RegisterType.Gpr));
+ 
+             ASet(context, x, res);
+         }
+ 
++        // TOTK: ATOMG.CAS Rd, [Ra + offset], Rb (expected), Rc (new value) (0x3a9; field layout of Mesa NAK sm70_encode.rs OpAtom, MIT: the compare
++        // value at 32..40, the data at 64..72, a 64-bit address with bit 72, type 73..76): Rd = the word before the operation, as ATOMG's other
++        // operations. OoT's foliage compute shaders (13002657609092b4 and five more) take it on 32-bit words; other sizes stay refused.
++        public static void AAtomgCas(EmitterContext context)
++        {
++            AmpereOp x = new(context.CurrOp);
++
++            if (x.Bits(73, 76) != 0 || x.Bit(91))
++            {
++                throw AFail(context, $"ATOMG.CAS type {x.Bits(73, 76)}");
++            }
++
++            (Operand lo, Operand hi) = AGlobalAddress(context, x, 70, 64, 0);
++            Operand expected = x.Rb >= RegisterConsts.RegisterZeroIndex ? Const(0) : Register(x.Rb, RegisterType.Gpr);
++            Operand value = x.Rc >= RegisterConsts.RegisterZeroIndex ? Const(0) : Register(x.Rc, RegisterType.Gpr);
++
++            ASet(context, x, context.AtomicCompareAndSwap(StorageKind.GlobalMemory, lo, hi, expected, value));
++        }
++
+         // MEMBAR: the order of this thread's memory operations
+         public static void AMembar(EmitterContext context)
+         {
+@@ -826,17 +872,10 @@ namespace Ryujinx.Graphics.Shader.Instructions
+ 
+                     if (!plainFetch || context.TranslatorContext.GpuAccessor.QuerySamplerType(handle) != SamplerType.TextureBuffer)
+                     {
+-                        if (plainFetch)
+-                        {
+-                            Operand fetchX = sources[^1];
+-                            sources[^1] = context.BitwiseAnd(fetchX, Const(0x3FFF));
+-                            sources.Add(context.ShiftRightU32(fetchX, Const(14)));
+-                            context.TranslatorContext.GpuAccessor.RecordTexelFetch1D(handle);
+-                        }
+-                        else
+-                        {
+-                            sources.Add(opcode == 0xb66 ? Const(0) : ConstF(0));
+-                        }
++                        // TOTK (Vulkan): every 1D form reads row 0 of the one-row 2D texture, as Maxwell's TLD / TLDS do (InstEmitTexture);
++                        // nxnative's (x & 0x3FFF, x >> 14) read of a plain fetch is for a Metal host that binds a texture buffer as 2D rows.
++                        // A texture buffer the job answers as "buffer" is fetched as one (below).
++                        sources.Add(opcode == 0xb66 ? Const(0) : ConstF(0));
+ 
+                         type = SamplerType.Texture2D | (type & SamplerType.Array);
+                         is1DTo2D = true;
+@@ -1011,11 +1050,17 @@ namespace Ryujinx.Graphics.Shader.Instructions
+                     Instruction.TextureQuerySize, type, TextureFormat.Unknown, TextureFlags.None, cbufSlot, handle);
+                 int r = 0;
+ 
++                // TOTK: a component past the texture's dimensions (the depth of a 2D texture: OoT's effect vertex shaders query x, y and z of
++                // textures the job types 2D) reads 1, as the texture header's depth of a 2D texture; querying it was an out-of-bounds
++                // OpCompositeExtract, which spirv-val rejects. Component 3 is the level count. A bindless handle keeps every component: its type is
++                // only known once BindlessElimination resolves it.
++                int dimensions = ((type & SamplerType.Mask) == SamplerType.TextureCube ? 2 : type.Dimensions) + (type.HasFlag(SamplerType.Array) ? 1 : 0);
++
+                 for (int comp = 0; comp < 4; comp++)
+                 {
+                     if ((mask & (1 << comp)) != 0)
+                     {
+-                        context.Copy(results[r++], context.TextureQuerySize(type, flags, setAndBinding, comp, sources));
++                        context.Copy(results[r++], bindless || comp < dimensions || comp == 3 ? context.TextureQuerySize(type, flags, setAndBinding, comp, sources) : Const(1));
+                     }
+                 }
+             }
+--- a/src/Ryujinx.Graphics.Shader/StructuredIr/GotoElimination.cs
++++ b/src/Ryujinx.Graphics.Shader/StructuredIr/GotoElimination.cs
+@@ -9,7 +9,9 @@ namespace Ryujinx.Graphics.Shader.StructuredIr
+     {
+         // This is a modified version of the algorithm presented on the paper
+         // "Taming Control Flow: A Structured Approach to Eliminating Goto Statements".
+-        public static void Eliminate(GotoStatement[] gotos)
++        // TOTK: noElseForGotoInto enables the rule of MoveOutward that leaves out the else a goto may jump into (MacNativeGames' patch 0006, for
++        // Ampere code); off, the else is always made, as in Ryujinx, so a Maxwell translation does not change.
++        public static void Eliminate(GotoStatement[] gotos, bool noElseForGotoInto = false)
+         {
+             for (int index = gotos.Length - 1; index >= 0; index--)
+             {
+@@ -35,7 +37,7 @@ namespace Ryujinx.Graphics.Shader.StructuredIr
+                     }
+                     while (!DirectlyRelated(drBlock, lBlock, drLevel, lLevel));
+ 
+-                    MoveOutward(gotos, index, stmt, gLevel, drLevel);
++                    MoveOutward(gotos, index, stmt, gLevel, drLevel, noElseForGotoInto);
+ 
+                     gBlock = drBlock;
+                     gLevel = drLevel;
+@@ -61,7 +63,7 @@ namespace Ryujinx.Graphics.Shader.StructuredIr
+                 {
+                     if (gLevel > lLevel)
+                     {
+-                        MoveOutward(gotos, index, stmt, gLevel, lLevel);
++                        MoveOutward(gotos, index, stmt, gLevel, lLevel, noElseForGotoInto);
+                     }
+                     else
+                     {
+@@ -164,7 +166,7 @@ namespace Ryujinx.Graphics.Shader.StructuredIr
+             stmt.IsLoop = false;
+         }
+ 
+-        private static void MoveOutward(GotoStatement[] gotos, int index, GotoStatement stmt, int gLevel, int lLevel)
++        private static void MoveOutward(GotoStatement[] gotos, int index, GotoStatement stmt, int gLevel, int lLevel, bool noElseForGotoInto)
+         {
+             AstBlock origin = ParentBlock(stmt.Goto);
+ 
+@@ -234,7 +236,7 @@ namespace Ryujinx.Graphics.Shader.StructuredIr
+                     // way to its label or an earlier one in this if may. Into an else it can only with a loop around the if and the else,
+                     // which closes where the else does: Splatoon Raiders' uber shaders, with their switches one after another, came out as
+                     // 26 such loops nested around the whole program (it has no jump back), which Metal's compilers cannot finish.
+-                    AstBlock newBlock = HasGotoInto(gotos, index, child, block, Next(stmt.Goto), last) ? null : Enclose(block, AstBlockType.Else, null, Next(stmt.Goto), last);
++                    AstBlock newBlock = noElseForGotoInto && HasGotoInto(gotos, index, child, block, Next(stmt.Goto), last) ? null : Enclose(block, AstBlockType.Else, null, Next(stmt.Goto), last);
+ 
+                     if (newBlock != null)
+                     {
+--- a/src/Ryujinx.Graphics.Shader/StructuredIr/StructuredProgram.cs
++++ b/src/Ryujinx.Graphics.Shader/StructuredIr/StructuredProgram.cs
+@@ -18,7 +18,8 @@ namespace Ryujinx.Graphics.Shader.StructuredIr
+             ShaderDefinitions definitions,
+             ResourceManager resourceManager,
+             TargetLanguage targetLanguage,
+-            bool debugMode)
++            bool debugMode,
++            bool noElseForGotoInto = false)
+         {
+             StructuredProgramContext context = new(attributeUsage, definitions, resourceManager, debugMode);
+ 
+@@ -68,7 +69,7 @@ namespace Ryujinx.Graphics.Shader.StructuredIr
+                     }
+                 }
+ 
+-                GotoElimination.Eliminate(context.GetGotos());
++                GotoElimination.Eliminate(context.GetGotos(), noElseForGotoInto);
+ 
+                 AstOptimizer.Optimize(context);
+ 
+--- a/src/Ryujinx.Graphics.Shader/Translation/HostCapabilities.cs
++++ b/src/Ryujinx.Graphics.Shader/Translation/HostCapabilities.cs
+@@ -3,6 +3,7 @@ namespace Ryujinx.Graphics.Shader.Translation
+     class HostCapabilities
+     {
+         public readonly bool MetalImageAtomics;
++        public readonly bool ImageReadWithoutFormat;
+         public readonly bool ReducedPrecision;
+         public readonly bool SupportsFragmentShaderInterlock;
+         public readonly bool SupportsFragmentShaderOrderingIntel;
+@@ -27,9 +28,11 @@ namespace Ryujinx.Graphics.Shader.Translation
+             bool supportsTextureShadowLod,
+             bool supportsViewportMask,
+             bool zeroLocals,
+-            bool metalImageAtomics)
++            bool metalImageAtomics,
++            bool imageReadWithoutFormat = false)
+         {
+             MetalImageAtomics = metalImageAtomics;
++            ImageReadWithoutFormat = imageReadWithoutFormat;
+             ReducedPrecision = reducedPrecision;
+             SupportsFragmentShaderInterlock = supportsFragmentShaderInterlock;
+             SupportsFragmentShaderOrderingIntel = supportsFragmentShaderOrderingIntel;
+--- a/src/Ryujinx.Graphics.Shader/Translation/TranslatorContext.cs
++++ b/src/Ryujinx.Graphics.Shader/Translation/TranslatorContext.cs
+@@ -338,7 +338,8 @@ namespace Ryujinx.Graphics.Shader.Translation
+                 definitions,
+                 resourceManager,
+                 Options.TargetLanguage,
+-                Options.Flags.HasFlag(TranslationFlags.DebugMode));
++                Options.Flags.HasFlag(TranslationFlags.DebugMode),
++                Options.Flags.HasFlag(TranslationFlags.Ampere));   // TOTK: MacNativeGames' goto elimination rule for Ampere code only
+ 
+             int geometryVerticesPerPrimitive = Definitions.OutputTopology switch
+             {
+@@ -375,7 +376,10 @@ namespace Ryujinx.Graphics.Shader.Translation
+                 GpuAccessor.QueryHostSupportsTextureShadowLod(),
+                 GpuAccessor.QueryHostSupportsViewportMask(),
+                 GpuAccessor.QueryZeroLocals(),
+-                Options.Flags.HasFlag(TranslationFlags.MetalImageAtomics));
++                Options.Flags.HasFlag(TranslationFlags.MetalImageAtomics),
++                // TOTK: Ampere jobs declare StorageImageReadWithoutFormat for their format-less storage images (CodeGen/Spirv/Declarations.cs
++                // DeclareImages); Maxwell jobs keep the module they had.
++                Options.Flags.HasFlag(TranslationFlags.Ampere));
+ 
+             CodeGenParameters parameters = new CodeGenParameters(attributeUsage, definitions, resourceManager.Properties, hostCapabilities, GpuAccessor, Options.TargetApi);
+ 

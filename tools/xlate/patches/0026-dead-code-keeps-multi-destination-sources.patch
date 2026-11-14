@@ -1,0 +1,23 @@
+TOTK: Optimizer.RemoveNode (as in Ryujinx) follows a removed node's sources into their producers and strips the producers'
+own sources' use lists once a source has no uses left, so the next dead code pass removes the chain feeding it. A producer
+with more than one destination keeps the others in use: here it is followed only when every destination is unused. An
+Ampere HMMA is one operation with two (Rd and Rd + 1); in OoT's NDVE upscaler (4f41ccf24f163e0d) the last
+one's Rd + 1 is overwritten unread, and removing that copy took the lane, the block, the LDS, LDSM and MOVM results and
+the 45 HMMAs before it out of the module, so the one left read uninitialised values (dashes over the title movie and the
+3D frame). A single-destination producer is followed as before; TotK's 3,763 compared jobs are byte-identical.
+
+--- a/src/Ryujinx.Graphics.Shader/Translation/Optimizations/Optimizer.cs
++++ b/src/Ryujinx.Graphics.Shader/Translation/Optimizations/Optimizer.cs
+@@ -390,7 +390,11 @@ namespace Ryujinx.Graphics.Shader.Translation.Optimizations
+                         // result is unused, so its sources are still live: stripping their use lists here made the next
+                         // DCE pass delete the whole chain feeding a global-memory atomic turned into a helper call, which
+                         // then read an uninitialised value (TOTK's sun-visibility kernel; our c7830fac lost its atomicMin).
+-                        if (!HasSideEffects(src.AsgOp))
++                        // TOTK (2026-11-06): nor into one with another destination still in use. An Ampere HMMA is one operation
++                        // with two (Rd, Rd + 1); in OoT's upscaler (4f41ccf24f163e0d) the last one's Rd + 1 is
++                        // overwritten unread, removing that copy stripped the HMMA's sources, and the next pass deleted the lane,
++                        // the block and the 45 HMMAs before it, leaving it to read uninitialised values.
++                        if (!HasSideEffects(src.AsgOp) && DestHasNoUses(src.AsgOp))
+                         {
+                             nodes.Enqueue(src.AsgOp);
+                         }

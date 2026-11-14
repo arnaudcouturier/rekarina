@@ -1,0 +1,21 @@
+An address that adds a c1 constant (BRX tables, offsets) to a pointer from another bank takes the pointer as its
+base.
+
+--- a/src/Ryujinx.Graphics.Shader/Translation/Optimizations/GlobalToStorage.cs
++++ b/src/Ryujinx.Graphics.Shader/Translation/Optimizations/GlobalToStorage.cs
+@@ -1276,6 +1276,15 @@
+                 return GetBaseAddressCbWithOffset(src1, src2, constOffset);
+             }
+ 
++            // c1 holds the compiler's constants (BRX jump tables, offsets), never a buffer address; an address
++            // that adds one of them to a pointer from another bank (OoT's NVN2 compute: a push-constant pointer in
++            // c0 plus the constant 12 from c1) has the pointer as its base. Taking c1 sent those stores to nothing.
++            if (src1.Type == OperandType.ConstantBuffer && src2.Type == OperandType.ConstantBuffer &&
++                src2.GetCbufSlot() == 1 && src1.GetCbufSlot() != 1)
++            {
++                return GetBaseAddressCbWithOffset(src1, src2, constOffset);
++            }
++
+             if (src1.Type != OperandType.ConstantBuffer ||
+                 (src1.Type == OperandType.ConstantBuffer && src2.Type == OperandType.ConstantBuffer) ||
+                 (src2.Type == OperandType.ConstantBuffer && src2.GetCbufSlot() == DriverReservedCb))

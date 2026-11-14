@@ -1,0 +1,72 @@
+The memory pool table entry of GlobalToStorage.TryGenerateRawStorageOp from a two-level index the host writes after the
+entries (a word per 2 MiB chunk below 2^40, 512-word page tables for the chunks several entries share) instead of the
+chunk hint and the binary search. The driver inlines the lookup function at every global memory access: the 13 unrolled
+search steps made OoT's foliage mesh shaders (some 500 accesses) 1-2 MB of machine code at 255 registers,
+and an access to a pool smaller than a chunk took 13 dependent loads.
+
+--- a/src/Ryujinx.Graphics.Shader/Translation/Optimizations/GlobalToStorage.cs
++++ b/src/Ryujinx.Graphics.Shader/Translation/Optimizations/GlobalToStorage.cs
+@@ -797,6 +797,12 @@
+         private const int GmemMapLog2 = 13;
+         private const int GmemMapEntryWords = 8;
+         private const int GmemHintShift = 21;
++        // The host's index of the table (vk_exec_draw.c gmem_snapshot), after the entries in the same buffer, in words: a
++        // word per 2 MiB chunk below 2^40, then 512-word page tables for the chunks several entries share
++        private const int GmemL1Base = (1 << GmemMapLog2) * GmemMapEntryWords;
++        private const int GmemL1Words = 1 << (40 - GmemHintShift);
++        private const int GmemL2Base = GmemL1Base + GmemL1Words;
++        private const int GmemL2Words = 1 << (GmemHintShift - 12);
+ 
+         // nxnative: the write log is a bitmap indexed by the entry the access uses. NDVE's full-frame writes used to overflow the page hash table even in a single pool.
+         private const int GmemLogCbOffset = 1;
+@@ -858,36 +864,24 @@
+                 return context.Load(StorageKind.StorageBuffer, mapBinding, Const(0), context.IAdd(entry, Const(word)));
+             }
+ 
+-            // The host's tagged hint covers a whole chunk inside one entry. NDVE repeatedly accesses the same large pools from adjacent lanes.
++            // The entry holding the address, from the host's two-level index: the chunk's word holds the entry whose range
++            // holds the whole 2 MiB chunk, or 0x80000000 | n when several entries share it, and then word (address >> 12)
++            // & 511 of the n-th page table holds the page's entry; 0 is none (entry 0 is empty), as is an address at or
++            // above 2^40. It replaced a hint for whole chunks and else a binary search over the entries: 13 unrolled steps,
++            // ~520 instructions per access, which the driver inlines at every access (OoT's foliage mesh
++            // shaders, some 500 accesses, compiled to 1-2 MB of machine code at 255 registers), and as a loop still 13
++            // dependent loads for each access to a pool smaller than a chunk.
+             Operand chunk = context.BitwiseOr(context.ShiftLeft(addrHigh, Const(32 - GmemHintShift)), context.ShiftRightU32(addrLow, Const(GmemHintShift)));
+-            Operand indexMask = Const((1 << GmemMapLog2) - 1);
+-            Operand hint = MapWord(context.IMultiply(context.BitwiseAnd(chunk, indexMask), Const(GmemMapEntryWords)), 6);
+-            Operand hintIndex = context.BitwiseAnd(hint, indexMask);
+-            Operand hintFits = context.BitwiseAnd(context.ICompareNotEqual(hintIndex, Const(0)), context.ICompareEqual(context.ShiftRightU32(hint, Const(GmemMapLog2)), chunk));
+-            hintFits = context.BitwiseAnd(hintFits, context.ICompareLessUnsigned(addrHigh, Const(1 << (GmemHintShift - GmemMapLog2))));
++            Operand chunkWord = MapWord(context.BitwiseAnd(chunk, Const(GmemL1Words - 1)), GmemL1Base);
++            chunkWord = context.ConditionalSelect(context.ICompareLessUnsigned(addrHigh, Const(1 << (40 - 32))), chunkWord, Const(0));
+             Operand selected = Local();
+             Operand lblFound = Label();
+-            context.Copy(selected, hintIndex);
+-            context.BranchIfTrue(lblFound, hintFits);
++            context.Copy(selected, chunkWord);
++            context.BranchIfFalse(lblFound, context.ICompareNotEqual(context.ShiftRightU32(chunkWord, Const(31)), Const(0)));
+ 
+-            // The last entry whose start is at or below the address (entry 0 starts at 0, so there always is one).
+-            Operand index = Const(0);
+-
+-            for (int step = 1 << (GmemMapLog2 - 1); step != 0; step >>= 1)
+-            {
+-                Operand candidate = context.IAdd(index, Const(step));
+-                Operand entry = context.IMultiply(candidate, Const(GmemMapEntryWords));
+-                Operand startLow = MapWord(entry, 0);
+-                Operand startHigh = MapWord(entry, 1);
+-
+-                Operand atOrBelow = context.BitwiseOr(
+-                    context.ICompareLessUnsigned(startHigh, addrHigh),
+-                    context.BitwiseAnd(context.ICompareEqual(startHigh, addrHigh), context.ICompareLessOrEqualUnsigned(startLow, addrLow)));
+-
+-                index = context.ConditionalSelect(atOrBelow, candidate, index);
+-            }
+-
+-            context.Copy(selected, index);
++            Operand page = context.BitwiseAnd(context.ShiftRightU32(addrLow, Const(12)), Const(GmemL2Words - 1));
++            Operand pageTable = context.IMultiply(context.BitwiseAnd(chunkWord, Const(0x7fffffff)), Const(GmemL2Words));
++            context.Copy(selected, MapWord(context.IAdd(pageTable, page), GmemL2Base));
+             context.MarkLabel(lblFound);
+             Operand found = context.IMultiply(selected, Const(GmemMapEntryWords));
+             Operand endLow = MapWord(found, 2);

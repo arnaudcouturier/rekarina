@@ -1,0 +1,182 @@
+"""Package the OoT (Switch 2) build into a folder to play from: Rekarina.exe and what it reads beside itself.
+
+The folder holds the exe and its DLLs, the shader translator, the prepared shader and pipeline files, the ExeFS the
+exe loads (the uncompressed one, tools/nso_plain.py), the Nintendo extension shared fonts of each prompt style
+(tools/make_ext_font.py), the RomFS overlays (tools/make_oot_prompts.py: stand-ins for the dump's damaged textures, Xbox prompts) and a rekarina.ini that names the player's
+.nup as the RomFS (runtime/main.c portable_paths: TOTK_ROMFS) with prompts = xbox and the frame limit at the monitor's
+rate (runtime/frame_rate.c, at most 240). The RomFS stays in the .nup. Saves go to <folder>/profile. An existing
+rekarina.ini is kept (the player's settings; a totk.ini of an earlier package becomes it), as are profile and the shader cache's new entries. A new rekarina.ini also
+gets the --set lines: the setup's first graphics settings for the machine's graphics card (installer/components.py
+preset).
+
+The folder contains game code and data derived from the player's game: for their own machines only.
+
+    .venv/Scripts/python tools/package_oot.py --nup <container> [--build build/oot] [--exefs ../build/oot/exefs-plain]
+                                              [--out ../OoT] [--prompts xbox] [--lang ru]
+                                              [--set key=value ...] [--preset-note TEXT]
+"""
+import argparse
+import gzip
+import os
+import re
+import shutil
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+# nvngx_dlss.dll and AMD's FSR libraries (the loader with its two effect libraries, or the single amd_fidelityfx_vk.dll
+# of an older SDK) are loaded at run time for DLSS and FSR, when they are beside the exe
+# ... and Streamline's for DLSS Frame Generation, with our library between the game and Streamline (runtime/dlssg, built
+# against the Streamline SDK): totk_dlssg.dll in the build folder, rekarina_dlssg.dll in the package (RENAMED).
+# NVIDIA's and AMD's are copied when the build folder has them (a developer's own copies, the setup's --dlls); the
+# setup itself downloads them straight into the game folder (installer/components.py), no release carries them.
+DLLS = ('SDL3.dll', 'libopus-0.dll', 'libiconv-2.dll', 'nvngx_dlss.dll', 'amd_fidelityfx_vk.dll', 'totk_dlssg.dll',
+        'rekarina_dlssg.dll',
+        'amd_fidelityfx_loader_vk.dll', 'amd_fidelityfx_upscaler_vk.dll', 'amd_fidelityfx_framegeneration_vk.dll',
+        'sl.interposer.dll', 'sl.common.dll', 'sl.dlss_g.dll', 'sl.reflex.dll', 'sl.pcl.dll', 'nvngx_dlssg.dll', 'NvLowLatencyVk.dll')
+SEED_KEYS = ROOT / 'tools' / 'data' / 'pipeline-keys-oot.bin.gz'   # tools/make_seed_keys.py writes it
+RENAMED = {'totk_dlssg.dll': 'rekarina_dlssg.dll'}   # build name -> the name in the package
+OLD_NAMES = ('totk_xlate.exe', 'totk_xlate.id', 'totk_dlssg.dll')
+STATE = ('pipeline-cache.bin', 'pipeline-keys.bin', 'shader-answers.bin', 'shader-programs.bin', 'shader-prepared.bin',
+         'shader-prepare-skip.txt')   # the last: variants the driver does not finish building (runtime/vk_pipeline.c)
+FOLDERS = ('romfs-patches', 'romfs-patches-xbox', 'romfs-patches-xbox-label', 'romfs-patches-playstation',
+           'romfs-patches-playstation-label', 'romfs-patches-rekarina', 'romfs-patches-rekarina-label',
+           'shared-fonts-switch', 'shared-fonts-xbox',
+           'shared-fonts-xbox-label')
+
+
+def copy(src, dst):
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(src, dst)
+
+
+def copy_tree(src, dst):
+    n = 0
+    if Path(src).resolve() == Path(dst).resolve():   # in place already: the installer extracts the ExeFS into the folder
+        return sum(len(files) for _, _, files in os.walk(src))
+    for dirpath, _, files in os.walk(src):
+        rel = Path(dirpath).relative_to(src)
+        (dst / rel).mkdir(parents=True, exist_ok=True)
+        for f in files:
+            if not f.endswith('.tmp'):
+                shutil.copy2(Path(dirpath) / f, dst / rel / f)
+                n += 1
+    return n
+
+
+def graphics_text(settings, note):
+    """The [graphics] section of a new rekarina.ini: the first settings the setup chose for the graphics card."""
+    if not settings:
+        return ''
+    lines = ['', '[graphics]',
+             '# First settings for this machine' + (f' ({note})' if note else '') + '. The setup wrote them once, with this',
+             '# new file, and never changes them again: set them here or in the settings menu of the game.',
+             '# dlaa = 1 switches the temporal upscaler on (taa: dlss or fsr3; dlss: dlaa, quality, balanced, performance);',
+             '# framegen: off, fsr3 or dlss (needs dlaa = 1); tex_quality: auto, full, half, quarter.']
+    return '\n'.join(lines + [f'{k} = {v}' for k, v in settings]) + '\n'
+
+
+def ini_text(nup, prompts, lang, settings=(), note=''):
+    return f"""# rekarina.ini: the settings of Rekarina. The settings menu of the game (F1) writes this file too. A TOTK_*
+# environment variable named after a key overrides its line.
+
+[paths]
+# The game: the .nup container of the player's dump (read in place).
+romfs = {nup.as_posix()}
+
+[display]
+# Borderless fullscreen on the window's monitor (F11 switches it while the game runs and remembers the choice).
+fullscreen = 1
+
+[frame rate]
+# 30, 40, 45, 60, 90, 120, 144, any whole rate from 30 to 240, or display.
+fps_limit = display
+# Real-time frame step: game speed follows the clock down to 30 fps (steps of at most 1/30 s, as the console's own
+# 30 fps mode); below 30 fps the game slows down.
+realtime = 1
+
+[performance]
+# ASTC textures re-encoded to BC on the GPU: a quarter of the VRAM of RGBA8 (the house went from 11.3 GB, over
+# the budget, to 8 GB, and from 17 to 48-50 fps after the camera turn).
+astc_bc = 1
+
+[input]
+# Button prompts: nintendo (the game's own), xbox, playstation or rekarina (Rekarina's own outlined set, Xbox names).
+prompts = {prompts}
+
+[language]
+# The game's language as a Switch language code (ja, en-US, en-GB, fr, de, it, es, nl, pt, ru, ko, zh-Hans, ...); unset
+# follows the Windows user locale. The game has Russian text; its voice acting has no Russian track.
+lang = {lang}
+""" + graphics_text(settings, note)
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap.add_argument('--nup', type=Path, required=True, help="the player's .nup")
+    ap.add_argument('--build', type=Path, default=ROOT / 'build' / 'oot')
+    ap.add_argument('--exefs', type=Path, default=ROOT.parent / 'build' / 'oot' / 'exefs-plain')
+    ap.add_argument('--xlate', type=Path, default=ROOT / 'build' / 'xlate' / 'totk_xlate.exe')
+    ap.add_argument('--out', type=Path, default=ROOT.parent / 'OoT')
+    ap.add_argument('--prompts', default='xbox', choices=('xbox', 'nintendo', 'playstation', 'rekarina'))
+    ap.add_argument('--lang', default='ru', help='the game language for the new rekarina.ini (Switch code)')
+    ap.add_argument('--set', action='append', default=[], metavar='KEY=VALUE',
+                    help='a line for the [graphics] section of a new rekarina.ini (a key of runtime/cfg.c, lower case)')
+    ap.add_argument('--preset-note', default='', help='what the --set lines were chosen for, for the comment above them')
+    a = ap.parse_args()
+    settings = []
+    for item in a.set:
+        m = re.fullmatch(r'([a-z][a-z0-9_]*)=([A-Za-z0-9_.:-]+)', item)
+        if not m:
+            sys.exit(f'package_oot: --set {item}: not key=value')
+        settings.append(m.groups())
+    build, out = a.build.resolve(), a.out.resolve()
+    need = [build / 'totk.exe', a.xlate, a.exefs / 'main', a.exefs / 'main.npdm', a.nup] + [build / d for d in FOLDERS]
+    missing = [str(p) for p in need if not p.exists()]
+    if missing:
+        sys.exit('package_oot: missing: ' + ', '.join(missing))
+    if out == build:
+        sys.exit('package_oot: --out must not be the build dir')
+
+    out.mkdir(parents=True, exist_ok=True)
+    copy(build / 'totk.exe', out / 'Rekarina.exe')
+    for d in DLLS:
+        if (build / d).exists():
+            copy(build / d, out / RENAMED.get(d, d))
+    copy(a.xlate, out / 'rekarina_xlate.exe')
+    if a.xlate.with_suffix('.id').exists():   # the translator identity is this file's content: the shader cache stays valid
+        copy(a.xlate.with_suffix('.id'), out / 'rekarina_xlate.id')
+    for old in OLD_NAMES:   # what a package made before the files were renamed left in the folder
+        if (out / old).is_file():
+            (out / old).unlink()
+    for f in STATE:
+        if (build / f).exists():
+            copy(build / f, out / f)
+    # The pipelines the release's makers met in play (runtime/vk_pipeline.c keys_seed): hashes and render state only.
+    # The game builds them at its start, so a first run does not build each at its first draw.
+    if SEED_KEYS.is_file():
+        (out / 'pipeline-keys-seed.bin').write_bytes(gzip.decompress(SEED_KEYS.read_bytes()))
+    n = 0
+    for d in FOLDERS:
+        n += copy_tree(build / d, out / d)
+    n += copy_tree(a.exefs, out / 'exefs')
+    if (build / 'nv-cache').is_dir():   # the driver's pipelines of the shader preparation (runtime/vk_device.c)
+        n += copy_tree(build / 'nv-cache', out / 'nv-cache')
+    if (build / 'shader-cache').is_dir():
+        n += copy_tree(build / 'shader-cache', out / 'shader-cache')
+    (out / 'profile').mkdir(exist_ok=True)
+    ini, old_ini = out / 'rekarina.ini', out / 'totk.ini'
+    if not ini.exists() and old_ini.exists():   # the player's settings from before the file was renamed
+        old_ini.replace(ini)
+        print(f'package_oot: {old_ini.name} renamed to {ini.name}')
+    if ini.exists():
+        print(f'package_oot: kept {ini}')
+    else:
+        note = re.sub(r'[^\x20-\x7e]', '?', a.preset_note)   # one comment line, whatever the card calls itself
+        ini.write_bytes(ini_text(a.nup.resolve(), a.prompts, a.lang, settings, note).encode('utf-8'))
+    size = sum(f.stat().st_size for f in out.rglob('*') if f.is_file())
+    print(f'package_oot: {out}: Rekarina.exe and {n} files in folders, {size / 2**30:.2f} GiB')
+
+
+if __name__ == '__main__':
+    main()

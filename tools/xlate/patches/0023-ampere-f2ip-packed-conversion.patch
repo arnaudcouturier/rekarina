@@ -1,0 +1,63 @@
+TOTK: F2IP.U8.F32 (Ampere 0x243, the register form): two floats converted to saturated unsigned bytes and packed as PTX's
+cvt.pack (d = c[15:0] << 16 | u8(a) << 8 | u8(b)), rounding to nearest even or towards zero (78..80). OoT's
+8 foliage and 2 agl compute shaders stopped at it (upper word 0x000004ff: round to nearest). zortos293/Lichii 35c043b3
+(GPL-3.0, read for behaviour only, nothing copied) lowers the truncating form 0x0000c4ff with a = RZ to the same byte; the
+order of a and b is cvt.pack's and F2FP.PACK_AB's and is not checked on hardware.
+
+--- a/src/Ryujinx.Graphics.Shader/Instructions/InstEmitAmpereAlu.cs
++++ b/src/Ryujinx.Graphics.Shader/Instructions/InstEmitAmpereAlu.cs
+@@ -35,6 +35,7 @@ namespace Ryujinx.Graphics.Shader.Instructions
+             alu(0x107, InstName.F2f, AFrnd);
+             alu(0x104, InstName.F2f, AF2f);
+             alu(0x03e, InstName.F2f, AF2fp);
++            alu(0x043, InstName.F2i, AF2ip);
+             alu(0x030, InstName.Hadd2, AHadd2);
+             alu(0x032, InstName.Hmul2, AHmul2);
+             alu(0x031, InstName.Hfma2, AHfma2);
+@@ -417,6 +418,46 @@ namespace Ryujinx.Graphics.Shader.Instructions
+             EmitF2F(context, (DstFmt)srcSize, (DstFmt)dstSize, IntegerRound.Pass, src, x.Rd, s.Abs, s.Neg, false);
+         }
+ 
++        // TOTK: F2IP.U8.F32 Rd, a, b, c (0x243): two floats converted to unsigned bytes with saturation and packed as cvt.pack does in PTX
++        // (d = c[15:0] << 16 | u8(a) << 8 | u8(b)), a NaN as 0. Rounding 78..80 as F2I's: 0 to nearest even, 3 towards zero. Only the forms
++        // seen are taken: OoT's foliage and agl compute shaders (8692b34b521225be and nine more) have the register form with bit 74
++        // set and round to nearest (upper word 0x000004ff); zortos293/Lichii's notes (35c043b3, read for behaviour) give the truncating form
++        // 0x0000c4ff with a = RZ the same byte result. The byte order of a and b follows cvt.pack and F2FP.PACK_AB and is not verified on hardware.
++        public static void AF2ip(EmitterContext context)
++        {
++            AmpereOp x = new(context.CurrOp);
++            int rounding = x.Bits(78, 80);
++
++            if (x.Form != 1 || x.Bits(72, 78) != 0x04 || (rounding != 0 && rounding != 3) || x.Bits(80, 91) != 0 || AUniform(context))
++            {
++                throw AFail(context, $"F2IP form {x.Form} mode {x.Bits(72, 91):x}");
++            }
++
++            Operand Byte(int reg)
++            {
++                if (reg >= RegisterConsts.RegisterZeroIndex)
++                {
++                    return Const(0);
++                }
++
++                Operand v = Register(reg, RegisterType.Gpr);
++                v = rounding == 0 ? context.FPRound(v) : context.FPTruncate(v);
++                v = context.FPMinimum(context.FPMaximum(v, ConstF(0f)), ConstF(255f));
++                v = context.ConditionalSelect(context.IsNan(Register(reg, RegisterType.Gpr)), ConstF(0f), v);
++
++                return context.FP32ConvertToU32(v);
++            }
++
++            Operand res = context.BitwiseOr(context.ShiftLeft(Byte(x.Ra), Const(8)), Byte(x.Rb));
++
++            if (x.Rc < RegisterConsts.RegisterZeroIndex)
++            {
++                res = context.BitwiseOr(res, context.ShiftLeft(Register(x.Rc, RegisterType.Gpr), Const(16)));
++            }
++
++            ASet(context, x, res);
++        }
++
+         // F2FP.F16.F32.PACK_AB Rd, a, b: a to the high half, b to the low one.
+         // .MERGE_C (78): a is not read; b to the low half, the low half of c to the high one. The compiler builds a half pair in two steps, high component first: Pokemon Pokopia's 22,886
+         // shaders have F2FP.MERGE_C Rd, RZ, c[3][word + 1], RZ then F2FP.MERGE_C Rd, RZ, c[3][word], Rd, with RZ in a every time (Mesa's NAK documents the same behaviour for OpF2FP)

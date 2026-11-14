@@ -1,0 +1,318 @@
+TOTK: Ampere jobs keep a memory load in place when a store may come between it and its use. The AST optimizer
+(StructuredIr/AstOptimizer.cs Optimize, as in Ryujinx) moves an expression with one use to that use, a load too, and so
+past later stores to the same memory; the runtime asks for that optimizer ("debug": false), seedds/nxnative's build does
+not (its translations run in DebugMode by default). OoT's NDVE network shaders stage their weights through one
+shared buffer, block after block (STS.128, then LDSM, as one warp, with no barrier): every LDSM load moved after the last
+store, every HMMA group used the last block's weights, and the title movie and the 3D frame came out as noise. With
+StructuredProgramContext.OrderedMemoryLoads (set with the Ampere flag) an expression that reads shared, local, storage or
+global memory, outputs or storage images moves only when no store, atomic, barrier, call, fragment interlock or vertex
+emission that may write that memory lies between it and its use (AstOptimizer.MutableReads, WritesMemory, UseFollows).
+Shared and local arrays are told apart by id; storage and global memory count as one (two storage slots can be one
+buffer, as in that network). Maxwell translations are unchanged.
+
+--- a/src/Ryujinx.Graphics.Shader/StructuredIr/AstOptimizer.cs
++++ b/src/Ryujinx.Graphics.Shader/StructuredIr/AstOptimizer.cs
+@@ -33,7 +33,16 @@ namespace Ryujinx.Graphics.Shader.StructuredIr
+                         // into temporaries); folding an expression into a call argument breaks GenerateCall.
+                         bool usedByCall = propVar.Uses.Any(u => u is AstOperation op && op.Inst == Instruction.Call);
+ 
+-                        if (propVar.Defs.Count == 1 && isWorthPropagating && !usedByCall)
++                        // TOTK (Ampere jobs): an expression that reads memory the shader or its workgroup writes (shared, local,
++                        // storage and global memory, outputs, storage images) moves to its use only when nothing that may write
++                        // that memory, or orders it, lies in between (UseFollows). Moved past a later store to the same memory,
++                        // the load read what that store wrote: OoT's network shaders stage their weight blocks
++                        // through one shared buffer (STS.128, then LDSM, once per block, the warp in step), every LDSM read the
++                        // last block, and the title movie and the 3D frame came out as green and white noise.
++                        List<(MemoryClass Class, int Id)> reads = context.OrderedMemoryLoads && isWorthPropagating ? MutableReads(assignment.Source) : null;
++                        bool movesLoad = reads != null && reads.Count != 0 && (propVar.Uses.Count != 1 || !UseFollows(Next(assignment), propVar, reads));
++
++                        if (propVar.Defs.Count == 1 && isWorthPropagating && !usedByCall && !movesLoad)
+                         {
+                             PropagateExpression(propVar, assignment.Source);
+                         }
+@@ -76,6 +85,247 @@ namespace Ryujinx.Graphics.Shader.StructuredIr
+             return false;
+         }
+ 
++        // TOTK: memory an Ampere shader's loads may not be moved across a write of (AstOptimizer.Optimize); shared and local memory
++        // arrays are told apart by their id, storage and global memory are one (two bindings may be the same buffer, as the
++        // network's input and output are in some passes), outputs and storage images are one each
++        private enum MemoryClass
++        {
++            Shared,
++            Local,
++            Global,
++            Output,
++            Image,
++        }
++
++        private static MemoryClass? ClassOf(StorageKind kind)
++        {
++            return kind switch
++            {
++                StorageKind.SharedMemory or StorageKind.SharedMemory8 or StorageKind.SharedMemory16 => MemoryClass.Shared,
++                StorageKind.LocalMemory => MemoryClass.Local,
++                StorageKind.StorageBuffer or StorageKind.GlobalMemory or StorageKind.GlobalMemoryS8 or StorageKind.GlobalMemoryS16 or
++                StorageKind.GlobalMemoryU8 or StorageKind.GlobalMemoryU16 => MemoryClass.Global,
++                StorageKind.Output or StorageKind.OutputPerPatch => MemoryClass.Output,
++                _ => null,
++            };
++        }
++
++        // The memory an operation names: its class and, for shared and local memory, the array's id (-1 when not constant)
++        private static (MemoryClass Class, int Id)? MemoryOf(AstOperation op)
++        {
++            if ((op.Inst & Instruction.Mask) is Instruction.ImageLoad or Instruction.ImageStore or Instruction.ImageAtomic)
++            {
++                return (MemoryClass.Image, -1);
++            }
++
++            if (ClassOf(op.StorageKind) is not MemoryClass c)
++            {
++                return null;
++            }
++
++            int id = c is MemoryClass.Shared or MemoryClass.Local && op.SourcesCount != 0 && op.GetSource(0) is AstOperand { Type: OperandType.Constant } o ? o.Value : -1;
++
++            return (c, id);
++        }
++
++        // TOTK: the memory the expression reads that can change while the shader runs (not constant buffers or inputs)
++        private static List<(MemoryClass Class, int Id)> MutableReads(IAstNode node, List<(MemoryClass Class, int Id)> reads = null)
++        {
++            reads ??= new List<(MemoryClass Class, int Id)>();
++
++            if (node is AstOperation op)
++            {
++                Instruction inst = op.Inst & Instruction.Mask;
++
++                if ((inst is Instruction.Load or Instruction.ImageLoad) && MemoryOf(op) is { } m)
++                {
++                    reads.Add(m);
++                }
++
++                for (int i = 0; i < op.SourcesCount; i++)
++                {
++                    MutableReads(op.GetSource(i), reads);
++                }
++            }
++
++            return reads;
++        }
++
++        // TOTK: whether a node may write memory one of the reads names, or orders it (barriers, fragment interlock), in its
++        // expressions or in the blocks inside it; a call may write any of it
++        private static bool WritesMemory(IAstNode node, List<(MemoryClass Class, int Id)> reads)
++        {
++            switch (node)
++            {
++                case AstAssignment assignment:
++                    return WritesMemory(assignment.Source, reads);
++                case AstBlock block:
++                    if (block.Condition != null && WritesMemory(block.Condition, reads))
++                    {
++                        return true;
++                    }
++
++                    foreach (IAstNode child in block)
++                    {
++                        if (WritesMemory(child, reads))
++                        {
++                            return true;
++                        }
++                    }
++
++                    return false;
++                case AstOperation op:
++                    Instruction inst = op.Inst & Instruction.Mask;
++
++                    switch (inst)
++                    {
++                        case Instruction.Call:
++                            return true;
++                        case Instruction.Barrier:
++                        case Instruction.GroupMemoryBarrier:
++                        case Instruction.MemoryBarrier:
++                        case Instruction.SubgroupBarrier:
++                        case Instruction.FSIBegin:
++                        case Instruction.FSIEnd:
++                            if (reads.Any(r => r.Class != MemoryClass.Local))
++                            {
++                                return true;
++                            }
++
++                            break;
++                        case Instruction.EmitVertex:
++                        case Instruction.EndPrimitive:
++                            if (reads.Any(r => r.Class == MemoryClass.Output))
++                            {
++                                return true;
++                            }
++
++                            break;
++                        case Instruction.Store:
++                        case Instruction.ImageStore:
++                        case Instruction.ImageAtomic:
++                        case Instruction.AtomicAdd:
++                        case Instruction.AtomicAnd:
++                        case Instruction.AtomicCompareAndSwap:
++                        case Instruction.AtomicMaxS32:
++                        case Instruction.AtomicMaxU32:
++                        case Instruction.AtomicMinS32:
++                        case Instruction.AtomicMinU32:
++                        case Instruction.AtomicOr:
++                        case Instruction.AtomicSwap:
++                        case Instruction.AtomicXor:
++                            if (MemoryOf(op) is not { } w ||
++                                reads.Any(r => r.Class == w.Class && (r.Id < 0 || w.Id < 0 || r.Id == w.Id)))
++                            {
++                                return true;
++                            }
++
++                            break;
++                    }
++
++                    for (int i = 0; i < op.SourcesCount; i++)
++                    {
++                        if (WritesMemory(op.GetSource(i), reads))
++                        {
++                            return true;
++                        }
++                    }
++
++                    return false;
++                default:
++                    return false;
++            }
++        }
++
++        // TOTK: whether the operand appears in the node, its expressions or the blocks inside it
++        private static bool Contains(IAstNode node, AstOperand operand)
++        {
++            switch (node)
++            {
++                case AstOperand o:
++                    return o == operand;
++                case AstAssignment assignment:
++                    return Contains(assignment.Source, operand) || Contains(assignment.Destination, operand);
++                case AstBlock block:
++                    if (block.Condition != null && Contains(block.Condition, operand))
++                    {
++                        return true;
++                    }
++
++                    foreach (IAstNode child in block)
++                    {
++                        if (Contains(child, operand))
++                        {
++                            return true;
++                        }
++                    }
++
++                    return false;
++                case AstOperation op:
++                    for (int i = 0; i < op.SourcesCount; i++)
++                    {
++                        if (Contains(op.GetSource(i), operand))
++                        {
++                            return true;
++                        }
++                    }
++
++                    return false;
++                default:
++                    return false;
++            }
++        }
++
++        // TOTK: from the node on through its later siblings, whether the use of the operand comes before anything that may write
++        // the memory the moved expression reads: in a statement (which reads its sources before it stores), in the condition of
++        // an if or else-if (tested before its body), or further inside an if, else or else-if body by the same rule. A use
++        // inside a loop follows only when the loop writes none of it (the moved load runs on every iteration).
++        private static bool UseFollows(IAstNode node, AstOperand operand, List<(MemoryClass Class, int Id)> reads)
++        {
++            for (; node != null; node = Next(node))
++            {
++                if (node is AstBlock block)
++                {
++                    bool inCondition = block.Condition != null && Contains(block.Condition, operand);
++
++                    if (block.Type is AstBlockType.DoWhile or AstBlockType.While)
++                    {
++                        if (inCondition || Contains(block, operand))
++                        {
++                            return !WritesMemory(block, reads);
++                        }
++                    }
++                    else if (inCondition)
++                    {
++                        return block.Type is AstBlockType.If or AstBlockType.ElseIf;
++                    }
++                    else if (Contains(block, operand))
++                    {
++                        return UseFollows(block.First, operand, reads);
++                    }
++
++                    if (WritesMemory(block, reads))
++                    {
++                        return false;
++                    }
++
++                    continue;
++                }
++
++                if (Contains(node, operand))
++                {
++                    return true;
++                }
++
++                if (WritesMemory(node, reads))
++                {
++                    return false;
++                }
++            }
++
++            return false;
++        }
++
+         private static bool IsWorthPropagating(IAstNode source)
+         {
+             if (source is not AstOperation srcOp)
+--- a/src/Ryujinx.Graphics.Shader/StructuredIr/StructuredProgram.cs
++++ b/src/Ryujinx.Graphics.Shader/StructuredIr/StructuredProgram.cs
+@@ -21,7 +21,8 @@ namespace Ryujinx.Graphics.Shader.StructuredIr
+             bool debugMode,
+             bool noElseForGotoInto = false)
+         {
+-            StructuredProgramContext context = new(attributeUsage, definitions, resourceManager, debugMode);
++            // TOTK: noElseForGotoInto is set for Ampere code, which also keeps its memory loads ordered (AstOptimizer)
++            StructuredProgramContext context = new(attributeUsage, definitions, resourceManager, debugMode, orderedMemoryLoads: noElseForGotoInto);
+ 
+             for (int funcIndex = 0; funcIndex < functions.Count; funcIndex++)
+             {
+--- a/src/Ryujinx.Graphics.Shader/StructuredIr/StructuredProgramContext.cs
++++ b/src/Ryujinx.Graphics.Shader/StructuredIr/StructuredProgramContext.cs
+@@ -32,17 +32,22 @@ namespace Ryujinx.Graphics.Shader.StructuredIr
+         public ResourceManager ResourceManager { get; }
+         public bool DebugMode { get; }
+ 
++        // TOTK: Ampere jobs keep a load of writable memory in place when a store could come between it and its use (AstOptimizer)
++        public bool OrderedMemoryLoads { get; }
++
+         public StructuredProgramContext(
+             AttributeUsage attributeUsage,
+             ShaderDefinitions definitions,
+             ResourceManager resourceManager,
+-            bool debugMode)
++            bool debugMode,
++            bool orderedMemoryLoads = false)
+         {
+             Info = new StructuredProgramInfo();
+ 
+             Definitions = definitions;
+             ResourceManager = resourceManager;
+             DebugMode = debugMode;
++            OrderedMemoryLoads = orderedMemoryLoads;
+ 
+             if (definitions.GpPassthrough)
+             {

@@ -1,0 +1,51 @@
+TOTK: a mesh primitive's index vector stored whole by one thread where the host asks for it (the job's "mesh":
+{"whole_indices": 1}, MeshStage.WholeIndices). The entry point let thread n store index byte n, so a triangle's three
+components came from three threads. Without the field every translation is as before.
+
+--- a/src/Ryujinx.Graphics.Shader/MeshStage.cs
++++ b/src/Ryujinx.Graphics.Shader/MeshStage.cs
+@@ -43,6 +43,13 @@
+         public int Debug { get; init; }
+ 
+         /// <summary>
++        /// A primitive's index vector is stored whole, by the thread whose number is the primitive's. Otherwise thread n stores index
++        /// byte n, so the three components of a triangle's vector come from three threads, which a compiler that stores a component
++        /// by rewriting the vector loses.
++        /// </summary>
++        public bool WholeIndices { get; init; }
++
++        /// <summary>
+         /// A mesh shader's per-primitive components (the second SPH's OMAP), 4 n + c for generic attribute n's; they follow the vertex components
+         /// in each attribute block.
+         /// </summary>
+--- a/src/Ryujinx.Graphics.Shader/CodeGen/Spirv/MeshStageWrapper.cs
++++ b/src/Ryujinx.Graphics.Shader/CodeGen/Spirv/MeshStageWrapper.cs
+@@ -306,6 +306,28 @@
+ 
+                 SpvInstruction outU32 = context.TypePointer(StorageClass.Output, u32);
+ 
++                if (mesh.WholeIndices && primitiveVertices > 1)
++                {
++                    SpvInstruction indexVector = context.TypeVector(u32, primitiveVertices);
++                    SpvInstruction outVector = context.TypePointer(StorageClass.Output, indexVector);
++
++                    Loop(count, n =>
++                    {
++                        SpvInstruction[] v = new SpvInstruction[primitiveVertices];
++
++                        for (int k = 0; k < primitiveVertices; k++)
++                        {
++                            SpvInstruction at = context.IAdd(u32, context.IMul(u32, n, C(primitiveVertices)), C(primitives + 4 + k));
++                            SpvInstruction word = context.Load(u32, Shared(context.ShiftRightLogical(u32, at, C(2))));
++                            SpvInstruction shift = context.IMul(u32, context.BitwiseAnd(u32, at, C(3)), C(8));
++
++                            v[k] = fixedTriangle ? C(k) : context.BitwiseAnd(u32, context.ShiftRightLogical(u32, word, shift), C(0xff));
++                        }
++
++                        context.Store(context.AccessChain(outVector, indices, n), context.CompositeConstruct(indexVector, v));
++                    });
++                }
++                else
+                 Loop(context.IMul(u32, count, C(primitiveVertices)), n =>
+                 {
+                     SpvInstruction at = context.IAdd(u32, n, C(primitives + 4));

@@ -1,0 +1,86 @@
+TOTK: mesh debug 4 to 10 (experiments, see experiments/README.md): 4 and 5 only a draw's first two workgroups emit primitives (4 the kernel's, 5 one fixed triangle without the kernel); 6 a task shader launches nothing, 7 its kernel does not run either, 8 it launches at most four mesh workgroups a task workgroup, 9 it is nothing but a launch of zero, 10 as 7 without the payload copy.
+
+--- a/src/Ryujinx.Graphics.Shader/CodeGen/Spirv/MeshStageWrapper.cs
++++ b/src/Ryujinx.Graphics.Shader/CodeGen/Spirv/MeshStageWrapper.cs
+@@ -199,8 +199,14 @@
+             int words = mesh.Size / 4;
+             int input = mesh.Offsets[1] / 4, output = mesh.Offsets[2] / 4, primitives = mesh.Offsets[3];
+ 
+-            Loop(C(words), i => context.Store(Shared(i), C(0)));
+-            Barrier();
++            // debug 9: a task shader that only launches nothing; 10: it zeroes its memory and waits at the barriers as well
++            bool bareTask = mesh.IsTask && mesh.Debug == 9;
++
++            if (!bareTask)
++            {
++                Loop(C(words), i => context.Store(Shared(i), C(0)));
++                Barrier();
++            }
+ 
+             if (!mesh.IsTask && mesh.HasTask)
+             {
+@@ -208,31 +214,58 @@
+                 Barrier();
+             }
+ 
+-            if (mesh.IsTask || mesh.Debug != 3)
++            if (mesh.IsTask ? (mesh.Debug != 7 && mesh.Debug != 9 && mesh.Debug != 10) : (mesh.Debug != 3 && mesh.Debug != 5))
+             {
+                 context.FunctionCall(voidType, body);
+             }
+ 
+-            Barrier();
++            if (!bareTask)
++            {
++                Barrier();
++            }
+ 
+             if (mesh.IsTask)
+             {
+-                Loop(C(mesh.PayloadWords), i => context.Store(context.AccessChain(payloadPtr, payload, i), context.Load(u32, Shared(context.IAdd(u32, i, C(output))))));
+-                Barrier();
++                if (mesh.Debug != 9 && mesh.Debug != 10)
++                {
++                    Loop(C(mesh.PayloadWords), i => context.Store(context.AccessChain(payloadPtr, payload, i), context.Load(u32, Shared(context.IAdd(u32, i, C(output))))));
++                }
++
++                if (!bareTask)
++                {
++                    Barrier();
++                }
+ 
+                 SpvInstruction launch = context.GlslUMin(u32, context.Load(u32, Shared(C(output + 1))), C(MaxTaskLaunch));
++
++                // debug 6: the task's kernel runs and launches nothing; 7: it does not run either; 8: at most four mesh workgroups a task workgroup
++                if (mesh.Debug == 6 || mesh.Debug == 7 || mesh.Debug == 9 || mesh.Debug == 10)
++                {
++                    launch = C(0);
++                }
++                else if (mesh.Debug == 8)
++                {
++                    launch = context.GlslUMin(u32, launch, C(4));
++                }
+                 context.EmitMeshTasksEXT(launch, C(1), C(1), payload);
+             }
+             else
+             {
+                 SpvInstruction count = context.GlslUMin(u32, context.ShiftRightLogical(u32, context.Load(u32, Shared(C(primitives / 4))), C(24)), C(mesh.MaxPrimitives));
+ 
+-                if (mesh.Debug != 0)
++                if (mesh.Debug == 4 || mesh.Debug == 5)
++                {
++                    // only the draw's first two workgroups emit anything: 4 what the kernel made, 5 one fixed triangle
++                    SpvInstruction group = context.CompositeExtract(u32, context.Load(context.TypeVector(u32, 3), FindInput(context, IoVariable.CtaId)), 0);
++
++                    count = context.Select(u32, context.ULessThan(boolType, group, C(2)), mesh.Debug == 5 ? C(1) : count, C(0));
++                }
++                else if (mesh.Debug >= 1 && mesh.Debug <= 3)
+                 {
+                     count = C(mesh.Debug == 1 ? mesh.MaxPrimitives : 1);
+                 }
+ 
+-                bool fixedTriangle = mesh.Debug >= 2 && primitiveVertices == 3;
++                bool fixedTriangle = (mesh.Debug == 2 || mesh.Debug == 3 || mesh.Debug == 5) && primitiveVertices == 3;
+ 
+                 context.SetMeshOutputsEXT(C(mesh.MaxVertices), count);
+ 

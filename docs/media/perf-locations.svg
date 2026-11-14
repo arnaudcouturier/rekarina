@@ -1,0 +1,61 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 474" width="1200" height="474" font-family="Segoe UI, Roboto, Helvetica, Arial, sans-serif" role="img" aria-label="Frame rate by location">
+<rect width="1200" height="474" fill="#2a1d12"/>
+<text x="300" y="36" fill="#f6efd6" font-size="22" font-weight="600">Frames per second, 2560x1440</text>
+<text x="300" y="60" fill="#d9cfae" font-size="15">mean of one minute; the tick marks the slowest 1 % of frames · Rekarina 1.0.0</text>
+<line x1="300.0" y1="76" x2="300.0" y2="434" stroke="#5c4a2e" stroke-width="1" opacity="0.55"/>
+<text x="300.0" y="456" fill="#d9cfae" font-size="13" text-anchor="middle">0</text>
+<line x1="375.0" y1="76" x2="375.0" y2="434" stroke="#5c4a2e" stroke-width="1" opacity="0.55"/>
+<text x="375.0" y="456" fill="#d9cfae" font-size="13" text-anchor="middle">20</text>
+<line x1="450.0" y1="76" x2="450.0" y2="434" stroke="#5c4a2e" stroke-width="1" opacity="0.55"/>
+<text x="450.0" y="456" fill="#d9cfae" font-size="13" text-anchor="middle">40</text>
+<line x1="525.0" y1="76" x2="525.0" y2="434" stroke="#5c4a2e" stroke-width="2" opacity="1"/>
+<text x="525.0" y="456" fill="#d9cfae" font-size="13" text-anchor="middle">60</text>
+<line x1="600.0" y1="76" x2="600.0" y2="434" stroke="#5c4a2e" stroke-width="1" opacity="0.55"/>
+<text x="600.0" y="456" fill="#d9cfae" font-size="13" text-anchor="middle">80</text>
+<line x1="675.0" y1="76" x2="675.0" y2="434" stroke="#5c4a2e" stroke-width="1" opacity="0.55"/>
+<text x="675.0" y="456" fill="#d9cfae" font-size="13" text-anchor="middle">100</text>
+<line x1="750.0" y1="76" x2="750.0" y2="434" stroke="#5c4a2e" stroke-width="1" opacity="0.55"/>
+<text x="750.0" y="456" fill="#d9cfae" font-size="13" text-anchor="middle">120</text>
+<line x1="825.0" y1="76" x2="825.0" y2="434" stroke="#5c4a2e" stroke-width="1" opacity="0.55"/>
+<text x="825.0" y="456" fill="#d9cfae" font-size="13" text-anchor="middle">140</text>
+<line x1="900.0" y1="76" x2="900.0" y2="434" stroke="#5c4a2e" stroke-width="1" opacity="0.55"/>
+<text x="900.0" y="456" fill="#d9cfae" font-size="13" text-anchor="middle">160</text>
+<line x1="975.0" y1="76" x2="975.0" y2="434" stroke="#5c4a2e" stroke-width="1" opacity="0.55"/>
+<text x="975.0" y="456" fill="#d9cfae" font-size="13" text-anchor="middle">180</text>
+<line x1="1050.0" y1="76" x2="1050.0" y2="434" stroke="#5c4a2e" stroke-width="1" opacity="0.55"/>
+<text x="1050.0" y="456" fill="#d9cfae" font-size="13" text-anchor="middle">200</text>
+<text x="531.0" y="72" fill="#d9cfae" font-size="13">60: the console</text>
+<text x="282" y="131.0" fill="#f6efd6" font-size="20" font-weight="600" text-anchor="end">Forest</text>
+<rect x="300" y="86" width="750" height="34" fill="#1e1a12"/>
+<rect x="300" y="86" width="370.5" height="34" fill="#d9951f"/>
+<rect x="536.6" y="83" width="3" height="40" fill="#2a1d12"/>
+<text x="312" y="109.1" fill="#2a1d12" font-size="15" font-weight="600">Native</text>
+<text x="680.5" y="109.8" fill="#f6efd6" font-size="18" font-weight="600">99</text>
+<rect x="300" y="128" width="750" height="34" fill="#1e1a12"/>
+<rect x="300" y="128" width="597.0" height="34" fill="#f6efd6"/>
+<rect x="733.5" y="125" width="3" height="40" fill="#2a1d12"/>
+<text x="312" y="151.1" fill="#2a1d12" font-size="15" font-weight="600">DLSS Quality + frame generation</text>
+<text x="907.0" y="151.8" fill="#f6efd6" font-size="18" font-weight="600">159 (80 rendered)</text>
+<text x="282" y="237.0" fill="#f6efd6" font-size="20" font-weight="600" text-anchor="end">Open field</text>
+<rect x="300" y="192" width="750" height="34" fill="#1e1a12"/>
+<rect x="300" y="192" width="379.9" height="34" fill="#d9951f"/>
+<rect x="552.8" y="189" width="3" height="40" fill="#2a1d12"/>
+<text x="312" y="215.1" fill="#2a1d12" font-size="15" font-weight="600">Native</text>
+<text x="689.9" y="215.8" fill="#f6efd6" font-size="18" font-weight="600">101</text>
+<rect x="300" y="234" width="750" height="34" fill="#1e1a12"/>
+<rect x="300" y="234" width="592.5" height="34" fill="#f6efd6"/>
+<rect x="698.2" y="231" width="3" height="40" fill="#2a1d12"/>
+<text x="312" y="257.1" fill="#2a1d12" font-size="15" font-weight="600">DLSS Quality + frame generation</text>
+<text x="902.5" y="257.8" fill="#f6efd6" font-size="18" font-weight="600">158 (79 rendered)</text>
+<text x="282" y="343.0" fill="#f6efd6" font-size="20" font-weight="600" text-anchor="end">Market</text>
+<rect x="300" y="298" width="750" height="34" fill="#1e1a12"/>
+<rect x="300" y="298" width="415.5" height="34" fill="#d9951f"/>
+<rect x="544.5" y="295" width="3" height="40" fill="#2a1d12"/>
+<text x="312" y="321.1" fill="#2a1d12" font-size="15" font-weight="600">Native</text>
+<text x="725.5" y="321.8" fill="#f6efd6" font-size="18" font-weight="600">111</text>
+<rect x="300" y="340" width="750" height="34" fill="#1e1a12"/>
+<rect x="300" y="340" width="618.8" height="34" fill="#f6efd6"/>
+<rect x="660.0" y="337" width="3" height="40" fill="#2a1d12"/>
+<text x="312" y="363.1" fill="#2a1d12" font-size="15" font-weight="600">DLSS Quality + frame generation</text>
+<text x="928.8" y="363.8" fill="#f6efd6" font-size="18" font-weight="600">165 (82 rendered)</text>
+</svg>

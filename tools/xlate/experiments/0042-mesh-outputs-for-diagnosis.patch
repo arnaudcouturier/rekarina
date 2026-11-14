@@ -1,0 +1,80 @@
+TOTK: a mesh shader's outputs replaced for diagnosis (the job's "mesh": {"debug": n}, MeshStage.Debug; the runtime's
+TOTK_MESH_DEBUG): 1 the most primitives whatever the count byte says, 2 one fixed triangle a workgroup, 3 the same
+without calling the kernel. Splits "the device draws nothing from mesh shaders" into the draw, the entry point and the
+kernel. Without the field every translation is as before.
+
+--- a/src/Ryujinx.Graphics.Shader/MeshStage.cs
++++ b/src/Ryujinx.Graphics.Shader/MeshStage.cs
+@@ -37,6 +37,12 @@
+         public int PrimitiveVertices { get; init; } = 3;
+ 
+         /// <summary>
++        /// For diagnosis, a mesh shader's outputs replaced by the entry point: 1 the most primitives whatever the count byte says, 2 one
++        /// fixed triangle a workgroup (the kernel still runs), 3 as 2 without calling the kernel. 0: none.
++        /// </summary>
++        public int Debug { get; init; }
++
++        /// <summary>
+         /// A mesh shader's per-primitive components (the second SPH's OMAP), 4 n + c for generic attribute n's; they follow the vertex components
+         /// in each attribute block.
+         /// </summary>
+--- a/src/Ryujinx.Graphics.Shader/CodeGen/Spirv/MeshStageWrapper.cs
++++ b/src/Ryujinx.Graphics.Shader/CodeGen/Spirv/MeshStageWrapper.cs
+@@ -208,7 +208,11 @@
+                 Barrier();
+             }
+ 
+-            context.FunctionCall(voidType, body);
++            if (mesh.IsTask || mesh.Debug != 3)
++            {
++                context.FunctionCall(voidType, body);
++            }
++
+             Barrier();
+ 
+             if (mesh.IsTask)
+@@ -223,6 +227,13 @@
+             {
+                 SpvInstruction count = context.GlslUMin(u32, context.ShiftRightLogical(u32, context.Load(u32, Shared(C(primitives / 4))), C(24)), C(mesh.MaxPrimitives));
+ 
++                if (mesh.Debug != 0)
++                {
++                    count = C(mesh.Debug == 1 ? mesh.MaxPrimitives : 1);
++                }
++
++                bool fixedTriangle = mesh.Debug >= 2 && primitiveVertices == 3;
++
+                 context.SetMeshOutputsEXT(C(mesh.MaxVertices), count);
+ 
+                 int stride = Math.Max(mesh.VertexComponents.Length + mesh.PrimitiveComponents.Length, 1) * MeshStage.Block;
+@@ -265,7 +276,17 @@
+ 
+                     if (components.TryGetValue(-1, out int[] position))
+                     {
+-                        context.Store(context.AccessChain(outVec4, perVertex, n, context.Constant(context.TypeS32(), 0)), Vector(block, position));
++                        SpvInstruction where = Vector(block, position);
++
++                        if (fixedTriangle)
++                        {
++                            SpvInstruction K(float x, float y) => context.ConstantComposite(vec4, context.Constant(f32, x), context.Constant(f32, y), context.Constant(f32, 0.5f), context.Constant(f32, 1f));
++
++                            where = context.Select(vec4, context.IEqual(boolType, n, C(0)), K(-0.6f, -0.6f),
++                                context.Select(vec4, context.IEqual(boolType, n, C(1)), K(0.6f, -0.6f), K(0f, 0.6f)));
++                        }
++
++                        context.Store(context.AccessChain(outVec4, perVertex, n, context.Constant(context.TypeS32(), 0)), where);
+                     }
+ 
+                     if (hasPointSize)
+@@ -292,6 +313,11 @@
+                     SpvInstruction shift = context.IMul(u32, context.BitwiseAnd(u32, at, C(3)), C(8));
+                     SpvInstruction index = context.BitwiseAnd(u32, context.ShiftRightLogical(u32, word, shift), C(0xff));
+ 
++                    if (fixedTriangle)
++                    {
++                        index = n;
++                    }
++
+                     context.Store(primitiveVertices == 1
+                         ? context.AccessChain(outU32, indices, n)
+                         : context.AccessChain(outU32, indices, context.UDiv(u32, n, C(primitiveVertices)), context.UMod(u32, n, C(primitiveVertices))), index);

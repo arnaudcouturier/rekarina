@@ -1,0 +1,147 @@
+"""Prepare every OoT shader once, before play: the Switch 2 counterpart of tools/prepare_shaders.py.
+
+A shader the replay meets for the first time is translated and its pipeline built while the game waits: the first rock
+The hero picks up stopped the game for 2.8 s. This tool reads the shaders straight from the player's NUP (tools/oot_romfs.py:
+the Shader, Layout2Shader, Effect and UI archives and the agl packages) and the game's modules, writes their default
+variants next to the build's totk.exe in the record layouts of runtime/gfx_shader.c, and runs `totk.exe
+--prepare-shaders`, which translates them all and builds their stage libraries and compute pipelines once, so that the
+shader cache and the driver's own disk cache hold them. Game-derived output stays in the build directory (ignored).
+
+    .venv/Scripts/python tools/oot_prepare_shaders.py build/oot [--nup <container>] [--exefs ../build/oot/exefs-plain] [--no-run]
+"""
+import argparse
+import os
+import shutil
+import struct
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import oot_romfs                                         # noqa: E402
+import shader_census as census                           # noqa: E402
+import prepare_shaders as prep                           # noqa: E402
+
+ROOTS = ('Shader/', 'Layout2Shader/', 'Effect/', 'UI/', 'agl/', 'Lib/', 'System/', 'Foliage/', 'Pack/')
+
+
+def inventory(fs, exefs):
+    shaders, rejected = {}, [0]
+
+    def add(origin, name, found):
+        for key, stage, control, code in found:
+            shaders.setdefault(key, dict(stage=stage, control=control, code=code, source=name, origin=origin))
+
+    def visit(name, data, depth=0):
+        if data[:4] == b'BAHS':
+            return add('sharcb', name, census.sharcb_shaders(data, rejected))
+        if data[:4] == b'NDSR':
+            return add('ndsr', name, census.ndsr_shaders(data))
+        if data[:4] == b'SARC':
+            if depth <= 4:
+                for member, raw in census.sarc(data).items():
+                    visit(name + '/' + member, fs.unzs(raw) if raw[:4] == census.ZSTD else raw, depth + 1)
+            return
+        pos = 0
+        while (pos := data.find(b'BNSH\0\0\0\0', pos)) >= 0:
+            size = struct.unpack_from('<I', census.checked(data, pos + 28, 4))[0]
+            add('bnsh', name, census.bnsh_shaders(census.checked(data, pos, size)))
+            pos += max(size, 8)
+
+    names = sorted(n for n in fs.index if n.startswith(ROOTS) or n.endswith(('.bfsha.zs', '.bfsha', '.pck', '.bnsh')))
+    read = 0
+    for name in names:
+        raw = fs.read_raw(name)
+        read += 1
+        if raw[:4] not in (census.ZSTD, b'SARC', b'FSHA', b'BNSH', b'BAHS', b'NDSR') and b'BNSH\0\0\0\0' not in raw:
+            continue
+        try:
+            visit(name, fs.unzs(raw) if raw[:4] == census.ZSTD else raw)
+        except (ValueError, KeyError, struct.error) as e:
+            print(f'{name}: skipped ({e})', flush=True)
+    for module in sorted(exefs.iterdir()):
+        if module.name in ('main', 'sdk', 'subsdk0', 'rtld'):
+            visit('module:' + module.name, census.nso_image(module))
+    print(f'{read} files read, {len(shaders)} shaders, {rejected[0]} records rejected', flush=True)
+    return shaders
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument('build', type=Path)
+    ap.add_argument('--nup', default=oot_romfs.NUP)
+    ap.add_argument('--exefs', type=Path, default=Path('../build/oot/exefs-plain'))
+    ap.add_argument('--no-run', action='store_true')
+    ap.add_argument('--exe-name', default='totk.exe',
+                    help='the file name the game will be started under: the preparation runs a copy of totk.exe of that name')
+    a = ap.parse_args()
+    t0 = time.monotonic()
+    shaders = inventory(oot_romfs.RomFS(a.nup), a.exefs)
+    progs, recs, seen, skipped, stages = {}, [], set(), 0, {}
+    for key in sorted(shaders):
+        s = shaders[key]
+        stage = prep.STAGES.get(s['stage'])
+        if stage is None:
+            skipped += 1
+            continue
+        stages[s['stage']] = stages.get(s['stage'], 0) + 1
+        control, code = bytearray(s['control'][:prep.CONTROL]), s['code']
+        # The file holds offsets and sizes of its own sections in these words (0x30, 0xd4-0xdf); in the program the game hands
+        # over they are zero, and the cache hashes the section, so with them hardly any key matched what play asks for.
+        control[0x30:0x34] = bytes(4)
+        control[0xd4:0xe0] = bytes(12)
+        control = bytes(control)
+        # As the replay hands a program to the cache (runtime/nvn_ctl.h nvn_ctl_code_len): the code area runs to control +0x44,
+        # which is the instructions' end at +0x38 rounded up to 0x100. A shorter length gave other keys than play asks for
+        # and failed req_init's check for 5,691 of the 19,774 programs. The padding of the area is zeros.
+        c1_off, length = struct.unpack_from('<II', control, 0x40)
+        code = code[:length].ljust(length, bytes(1))
+        c1 = code[c1_off:length]
+        if key not in progs:
+            h = prep.code_hash(stage, control, code, length, c1)
+            progs[key] = (h, struct.pack('<III', stage, length, len(c1)) + h + control + code[:length] + c1)
+        h = progs[key][0]
+        # No texture answers: the first translation names the real types (runtime/gfx_shader_guess.c), which the 0x80
+        # flag asks the runtime to apply.
+        packed = prep.answers({}, stage, control)
+        if (h, packed) in seen:
+            continue
+        seen.add((h, packed))
+        recs.append(struct.pack('<I', stage) + h + bytes(32) + packed + bytes([2 | 0x80]))
+    out = a.build.resolve()
+    with open(out / 'seed-programs.bin', 'wb') as f:
+        f.write(b'TOTKSPRG' + struct.pack('<II', 1, 0))
+        for _, body in progs.values():
+            f.write(body)
+    with open(out / 'seed-answers.bin', 'wb') as f:
+        f.write(b'TOTKSANS' + struct.pack('<II', 1, prep.ANS_REC))
+        for rec in recs:
+            f.write(rec)
+    print(f'{len(recs)} variants of {len(progs)} shaders {stages}, {skipped} of other stages, {time.monotonic() - t0:.1f} s',
+          flush=True)
+    if a.no_run:
+        return 0
+    # NVIDIA's driver keeps its disk cache in a file named after the executable's file name (the same name in another
+    # folder finds it, another name in the same folder does not): prepared as totk.exe and played as Rekarina.exe, none
+    # of the 2.4 GiB of prepared pipelines was found, and the first minutes of play built them again while the game
+    # waited (frames of 36 s and 32 s in the first run of a fresh install, 2026-11-11). So the preparation runs under
+    # the name the game is started with.
+    exe, made = out / a.exe_name, False
+    if not exe.is_file():
+        try:
+            os.link(out / 'totk.exe', exe)
+        except OSError:
+            shutil.copy2(out / 'totk.exe', exe)
+        made = True
+    try:
+        r = subprocess.run([str(exe), '--prepare-shaders'], cwd=str(out))
+    finally:
+        if made:
+            exe.unlink(missing_ok=True)
+    print(f'--prepare-shaders: rc={r.returncode}; total {time.monotonic() - t0:.1f} s', flush=True)
+    return r.returncode
+
+
+if __name__ == '__main__':
+    sys.exit(main())

@@ -1,0 +1,47 @@
+TOTK: the memory pool table path of patch 0017 / 0020 needs the host to bind the table and its write log (storage
+buffers with constant buffer slot 0xff, docs/oot-xlate.md). IGpuAccessor.QueryGlobalMemoryMap (Program.cs job
+"gmem_map") turns it on; without it a global memory access traced to no storage buffer is dropped as in Ryujinx (a load
+reads 0), so no translation needs PhysicalStorageBufferAddresses unless the host asked for it.
+
+--- a/src/Ryujinx.Graphics.Shader/IGpuAccessor.cs
++++ b/src/Ryujinx.Graphics.Shader/IGpuAccessor.cs
+@@ -222,6 +222,11 @@ namespace Ryujinx.Graphics.Shader
+         // TOTK: true when function-local variables start at 0 (CodeGen/Spirv/Declarations.cs DeclareLocals).
+         bool QueryZeroLocals() => false;
+ 
++        // TOTK: true when the host binds the memory pool table and write log of GlobalToStorage.TryGenerateRawStorageOp (storage
++        // buffers with constant buffer slot GlobalToStorage.GmemMapCbSlot): a global memory access traced to no storage buffer
++        // then goes through a physical pointer instead of being dropped.
++        bool QueryGlobalMemoryMap() => false;
++
+         void ReportMotionPrevious(int location, int banks)
+         {
+         }
+--- a/src/Ryujinx.Graphics.Shader/Translation/Optimizations/GlobalToStorage.cs
++++ b/src/Ryujinx.Graphics.Shader/Translation/Optimizations/GlobalToStorage.cs
+@@ -653,9 +653,15 @@ namespace Ryujinx.Graphics.Shader.Translation.Optimizations
+ 
+             targetCbs.Sort();
+ 
++            // TOTK: the memory pool table path below needs the host to bind the table (IGpuAccessor.QueryGlobalMemoryMap); without it
++            // an access traced to no storage buffer is dropped as in Ryujinx (a load reads 0).
++            bool memoryMap = gpuAccessor.QueryGlobalMemoryMap();
++
+             if (targetCbs.Count == 0)
+             {
+-                gpuAccessor.Log($"Global memory operation \"{operation.Inst}\" traced to no storage buffer: it goes through the memory pool table.");
++                gpuAccessor.Log(memoryMap
++                    ? $"Global memory operation \"{operation.Inst}\" traced to no storage buffer: it goes through the memory pool table."
++                    : $"Failed to find storage buffer for global memory operation \"{operation.Inst}\".");
+             }
+ 
+             if (gtsContext.TryGetFunctionId(operation, isMultiTarget: true, targetCbs, out functionId))
+@@ -663,7 +669,7 @@ namespace Ryujinx.Graphics.Shader.Translation.Optimizations
+                 return true;
+             }
+ 
+-            if (targetCbs.Count == 0)
++            if (targetCbs.Count == 0 && memoryMap)
+             {
+                 return TryGenerateRawStorageOp(gtsContext, resourceManager, gpuAccessor, operation, out functionId);
+             }

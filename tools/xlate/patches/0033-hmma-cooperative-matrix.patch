@@ -1,0 +1,220 @@
+HMMA.16816 with an f16 accumulator on the tensor cores when the host has VK_NV_cooperative_matrix with 16 x 8 x 16 f16
+matrices at subgroup scope (IGpuAccessor.QueryHostSupportsCooperativeMatrix, the job's "coop_matrix"): the helper
+dmsh_hmma16816_f16 keeps its block of shared memory and its stores, and the 64 multiply-adds per lane become one
+cooperative matrix load, multiply-add and store (Instruction.MatrixMultiplyAddShared). OoT's upscaler
+network (agl) runs 176 of them per invocation.
+
+--- a/src/Ryujinx.Graphics.Shader/IntermediateRepresentation/Instruction.cs
++++ b/src/Ryujinx.Graphics.Shader/IntermediateRepresentation/Instruction.cs
+@@ -128,6 +128,9 @@
+         // nxnative: Ampere HMMA.16816 with an f16 accumulator, lowered to a call by TensorPass, and a barrier for the lanes of one subgroup
+         MatrixMultiplyAdd,
+         SubgroupBarrier,
++        // TOTK: D = A * B + C of HMMA.16816 (f16) as cooperative matrices, from and into a subgroup's block of shared memory
++        // (HelperFunctionManager.GenerateHmma16816F16): sources the memory id (constant) and the block's word offset
++        MatrixMultiplyAddShared,
+ 
+         Count,
+ 
+--- a/src/Ryujinx.Graphics.Shader/StructuredIr/InstructionInfo.cs
++++ b/src/Ryujinx.Graphics.Shader/StructuredIr/InstructionInfo.cs
+@@ -133,6 +133,7 @@
+             Add(Instruction.VoteAll,                  AggregateType.Bool,   AggregateType.Bool);
+             Add(Instruction.VoteAllEqual,             AggregateType.Bool,   AggregateType.Bool);
+             Add(Instruction.VoteAny,                  AggregateType.Bool,   AggregateType.Bool);
++            Add(Instruction.MatrixMultiplyAddShared,  AggregateType.Void,   AggregateType.S32,     AggregateType.U32);
+ #pragma warning restore IDE0055
+         }
+ 
+--- a/src/Ryujinx.Graphics.Shader/StructuredIr/AstOptimizer.cs
++++ b/src/Ryujinx.Graphics.Shader/StructuredIr/AstOptimizer.cs
+@@ -221,6 +221,7 @@
+                     switch (inst)
+                     {
+                         case Instruction.Call:
++                        case Instruction.MatrixMultiplyAddShared:   // TOTK: stores D into shared memory
+                             return true;
+                         case Instruction.Barrier:
+                         case Instruction.GroupMemoryBarrier:
+--- a/src/Ryujinx.Graphics.Shader/CodeGen/Spirv/CodeGenContext.cs
++++ b/src/Ryujinx.Graphics.Shader/CodeGen/Spirv/CodeGenContext.cs
+@@ -31,7 +31,8 @@
+         public Dictionary<int, Instruction> ConstantBuffers { get; } = new();
+         public Dictionary<int, Instruction> StorageBuffers { get; } = new();
+         public Dictionary<int, Instruction> StorageBuffersF32 { get; } = new();   // TOTK: float aliases for OpAtomicFAddEXT (Instructions.StorageBufferF32)
+-        public bool UsesFloatAtomicAdd { get; set; }                              // TOTK: its capability and extension are declared
++        public bool UsesFloatAtomicAdd { get; set; }
++        public bool UsesCooperativeMatrix { get; set; }   // TOTK: its capabilities and extension are declared (MatrixMultiplyAddShared)                              // TOTK: its capability and extension are declared
+ 
+         public Dictionary<int, Instruction> LocalMemories { get; } = new();
+         public Dictionary<int, Instruction> SharedMemories { get; } = new();
+--- a/src/Ryujinx.Graphics.Shader/CodeGen/Spirv/Instructions.cs
++++ b/src/Ryujinx.Graphics.Shader/CodeGen/Spirv/Instructions.cs
+@@ -43,6 +43,7 @@
+             Add(Instruction.Ballot,                   GenerateBallot);
+             Add(Instruction.Barrier,                  GenerateBarrier);
+             Add(Instruction.SubgroupBarrier,          GenerateSubgroupBarrier);
++            Add(Instruction.MatrixMultiplyAddShared,  GenerateMatrixMultiplyAddShared);
+             Add(Instruction.BitCount,                 GenerateBitCount);
+             Add(Instruction.BitfieldExtractS32,       GenerateBitfieldExtractS32);
+             Add(Instruction.BitfieldExtractU32,       GenerateBitfieldExtractU32);
+@@ -311,6 +312,46 @@
+ 
+             return OperationResult.Invalid;
+         }
++
++        // TOTK: HMMA.16816 with an f16 accumulator on the tensor cores (VK_NV_cooperative_matrix, 16 x 8 x 16 f16 at subgroup
++        // scope): the subgroup's 256-word block holds A row-major (words 0..127, 8 a row), B transposed (128..191: column n,
++        // 8 words of k, so B column-major) and C row-major (192..255, 4 a row); D is stored over C. The words are read as
++        // packed halves: strides count words.
++        private static OperationResult GenerateMatrixMultiplyAddShared(CodeGenContext context, AstOperation operation)
++        {
++            if (!context.UsesCooperativeMatrix)
++            {
++                context.UsesCooperativeMatrix = true;
++                context.AddCapability(Capability.CooperativeMatrixNV);
++                context.AddCapability(Capability.Float16);
++                context.AddExtension("SPV_NV_cooperative_matrix");
++            }
++
++            int id = ((AstOperand)operation.GetSource(0)).Value;
++            SpvInstruction shared = context.SharedMemories[id];
++            SpvInstruction u32 = context.TypeU32();
++            SpvInstruction block = context.Get(AggregateType.U32, operation.GetSource(1));
++            SpvInstruction C(int v) => context.Constant(u32, v);
++            SpvInstruction f16 = context.TypeFloat(16);
++            SpvInstruction scope = C((int)Scope.Subgroup);
++            SpvInstruction matA = context.TypeCooperativeMatrixNV(f16, scope, C(16), C(16));
++            SpvInstruction matB = context.TypeCooperativeMatrixNV(f16, scope, C(16), C(8));
++            SpvInstruction matC = context.TypeCooperativeMatrixNV(f16, scope, C(16), C(8));
++            SpvInstruction boolType = context.TypeBool();
++            SpvInstruction rowMajor = context.ConstantFalse(boolType);
++            SpvInstruction colMajor = context.ConstantTrue(boolType);
++            SpvInstruction ptrType = context.TypePointer(StorageClass.Workgroup, u32);
++            SpvInstruction pa = context.AccessChain(ptrType, shared, block);
++            SpvInstruction pb = context.AccessChain(ptrType, shared, context.IAdd(u32, block, C(128)));
++            SpvInstruction pc = context.AccessChain(ptrType, shared, context.IAdd(u32, block, C(192)));
++            SpvInstruction a = context.CooperativeMatrixLoadNV(matA, pa, C(8), rowMajor);
++            SpvInstruction b = context.CooperativeMatrixLoadNV(matB, pb, C(8), colMajor);
++            SpvInstruction c = context.CooperativeMatrixLoadNV(matC, pc, C(4), rowMajor);
++            SpvInstruction d = context.CooperativeMatrixMulAddNV(matC, a, b, c);
++            context.CooperativeMatrixStoreNV(pc, d, C(4), rowMajor);
++
++            return OperationResult.Invalid;
++        }
+ 
+         // nxnative: the lanes of one subgroup (Metal: simdgroup_barrier), with their workgroup memory accesses ordered
+         private static OperationResult GenerateSubgroupBarrier(CodeGenContext context, AstOperation operation)
+--- a/src/Ryujinx.Graphics.Shader/IGpuAccessor.cs
++++ b/src/Ryujinx.Graphics.Shader/IGpuAccessor.cs
+@@ -235,6 +235,10 @@
+         // (VK_EXT_shader_atomic_float shaderBufferFloat32AtomicAdd): RED / ATOMG .ADD.F32 become OpAtomicFAddEXT, not a compare-and-swap loop.
+         bool QueryHostSupportsFloatAtomicAdd() => false;
+ 
++        // TOTK: true when the host runs 16 x 8 x 16 f16 cooperative matrices at subgroup scope (VK_NV_cooperative_matrix):
++        // HMMA.16816 with an f16 accumulator then uses the tensor cores (HelperFunctionManager.GenerateHmma16816F16).
++        bool QueryHostSupportsCooperativeMatrix() => false;
++
+         // TOTK: true when the host binds the memory pool table and write log of GlobalToStorage.TryGenerateRawStorageOp (storage
+         // buffers with constant buffer slot GlobalToStorage.GmemMapCbSlot): a global memory access traced to no storage buffer
+         // then goes through a physical pointer instead of being dropped.
+--- a/src/Ryujinx.Graphics.Shader/Translation/HelperFunctionManager.cs
++++ b/src/Ryujinx.Graphics.Shader/Translation/HelperFunctionManager.cs
+@@ -11,11 +11,14 @@
+         private readonly Dictionary<int, int> _functionIds;
+         private readonly ShaderStage _stage;
+ 
+-        public HelperFunctionManager(List<Function> functionList, ShaderStage stage)
++        private readonly bool _coopMatrix;   // TOTK: IGpuAccessor.QueryHostSupportsCooperativeMatrix
++
++        public HelperFunctionManager(List<Function> functionList, ShaderStage stage, bool coopMatrix = false)
+         {
+             _functionList = functionList;
+             _functionIds = new Dictionary<int, int>();
+             _stage = stage;
++            _coopMatrix = coopMatrix;
+         }
+ 
+         public int AddFunction(Function function)
+@@ -169,7 +172,7 @@
+             return new Function(ControlFlowGraph.Create(context.GetOperations()).Blocks, "ConvertFloatToDouble", false, 1, 2);
+         }
+ 
+-        private static Function GenerateFunction(HelperFunctionName functionName, int id)
++        private Function GenerateFunction(HelperFunctionName functionName, int id)
+         {
+             return functionName switch
+             {
+@@ -177,7 +180,7 @@
+                 HelperFunctionName.SharedAtomicMinS32 => GenerateSharedAtomicSigned(id, isMin: true),
+                 HelperFunctionName.SharedStore8 => GenerateSharedStore8(id),
+                 HelperFunctionName.SharedStore16 => GenerateSharedStore16(id),
+-                HelperFunctionName.Hmma16816F16 => GenerateHmma16816F16(id),
++                HelperFunctionName.Hmma16816F16 => GenerateHmma16816F16(id, _coopMatrix),
+                 _ => throw new ArgumentException($"Invalid function name {functionName}"),
+             };
+         }
+@@ -207,7 +210,7 @@
+         // The block holds A row-major (words 0..127, 8 a row), B transposed (128..191: row n, 8 words of k) and C / D row-major (192..255, 4 a row), so every lane stores its
+         // packed words as they are. This body computes D from the block lane by lane; the shader build replaces it in the Metal source (dmsh_build.py, HMMA_MSL) with
+         // simdgroup_matrix loads, multiply-accumulates and a store into the same block, which needs no other change: the name, the arguments and the block are the contract
+-        private static Function GenerateHmma16816F16(int id)
++        private static Function GenerateHmma16816F16(int id, bool coopMatrix)
+         {
+             EmitterContext context = new();
+ 
+@@ -233,6 +236,23 @@
+ 
+             context.SubgroupBarrier();
+ 
++            // TOTK: with host cooperative matrices the tensor cores compute D from the block and store it over C (Spirv
++            // Instructions.GenerateMatrixMultiplyAddShared); each lane reads its two words back
++            if (coopMatrix)
++            {
++                context.Add(Instruction.MatrixMultiplyAddShared, null, Const(id), bse);
++                context.SubgroupBarrier();
++
++                Operand dLow = context.Load(StorageKind.SharedMemory, id, Ct(g));
++                Operand dHigh = context.Load(StorageKind.SharedMemory, id, Ct(g8));
++
++                context.SubgroupBarrier();   // the next HMMA of this subgroup overwrites the block
++                context.Copy(Argument(10), dHigh);
++                context.Return(dLow);
++
++                return new Function(ControlFlowGraph.Create(context.GetOperations()).Blocks, "dmsh_hmma16816_f16", true, 10, 1);
++            }
++
+             Operand[] d = new Operand[2];
+ 
+             for (int q = 0; q < 2; q++)
+--- a/src/Ryujinx.Graphics.Shader/Translation/TranslatorContext.cs
++++ b/src/Ryujinx.Graphics.Shader/Translation/TranslatorContext.cs
+@@ -263,7 +263,7 @@
+                 funcs.Add(null);
+             }
+ 
+-            HelperFunctionManager hfm = new(funcs, Definitions.Stage);
++            HelperFunctionManager hfm = new(funcs, Definitions.Stage, GpuAccessor.QueryHostSupportsCooperativeMatrix());
+ 
+             for (int i = 0; i < functions.Length; i++)
+             {
+--- a/src/Spv.Generator/Autogenerated/CoreGrammar.cs
++++ b/src/Spv.Generator/Autogenerated/CoreGrammar.cs
+@@ -4925,13 +4925,15 @@
+ 
+         public Instruction TypeCooperativeMatrixNV(Instruction componentType, Instruction execution, Instruction rows, Instruction columns)
+         {
+-            Instruction result = NewInstruction(Op.OpTypeCooperativeMatrixNV, GetNewId());
++            // TOTK: a type goes with the other type declarations, once per distinct operands (the grammar generator put it
++            // into the function being defined, which made invalid modules)
++            Instruction result = NewInstruction(Op.OpTypeCooperativeMatrixNV);
+ 
+             result.AddOperand(componentType);
+             result.AddOperand(execution);
+             result.AddOperand(rows);
+             result.AddOperand(columns);
+-            AddToFunctionDefinitions(result);
++            AddTypeDeclaration(result, false);
+ 
+             return result;
+         }

@@ -1,0 +1,76 @@
+TOTK: an Ampere formatted surface load or store (SULD.P, SUST.P) of an image the host says is viewed with an integer format
+(IGpuAccessor.QueryAnsweredImageFormat, Program.cs: the job's "img" fmt) declares the image with that format, so the registers
+are read and written as raw bits, as the hardware does through such a view. Ryujinx leaves a formatted access's image
+without a format when the host loads formatted images, which makes it float: OoT's forest cutscene writes
+shared-exponent colour words through an NVN R32UI view of an R11G11B10F texture (a335c1db6270c355), and as floats they were
+converted into red, clamped and NaN values. Without an answer, or with a float one, nothing changes; Maxwell jobs are
+unchanged.
+
+--- a/src/Ryujinx.Graphics.Shader/IGpuAccessor.cs
++++ b/src/Ryujinx.Graphics.Shader/IGpuAccessor.cs
+@@ -516,6 +516,18 @@ namespace Ryujinx.Graphics.Shader
+             return TextureFormat.R8G8B8A8Unorm;
+         }
+ 
++        /// <summary>
++        /// TOTK: the format the host says an image is viewed with, or Unknown when it did not say. An Ampere formatted surface
++        /// access to an image viewed with an integer format declares the image with that format (InstEmitSurface.AnsweredIntegerFormat).
++        /// </summary>
++        /// <param name="handle">Texture handle</param>
++        /// <param name="cbufSlot">Constant buffer slot for the texture handle</param>
++        /// <returns>The image's view format, or Unknown</returns>
++        TextureFormat QueryAnsweredImageFormat(int handle, int cbufSlot = -1)
++        {
++            return TextureFormat.Unknown;
++        }
++
+         /// <summary>
+         /// Queries transform feedback enable state.
+         /// </summary>
+--- a/src/Ryujinx.Graphics.Shader/Instructions/InstEmitSurface.cs
++++ b/src/Ryujinx.Graphics.Shader/Instructions/InstEmitSurface.cs
+@@ -427,6 +427,11 @@ namespace Ryujinx.Graphics.Shader.Instructions
+ 
+                 TextureFormat format = isBindless ? TextureFormat.Unknown : ShaderProperties.GetTextureFormat(context.TranslatorContext.GpuAccessor, handle);
+ 
++                if (!isBindless)
++                {
++                    format = AnsweredIntegerFormat(context, handle, cbufSlot, format);
++                }
++
+                 SetBindingPair setAndBinding = isBindless ? default : context.ResourceManager.GetTextureOrImageBinding(
+                     Instruction.ImageLoad,
+                     type,
+@@ -617,6 +622,23 @@ namespace Ryujinx.Graphics.Shader.Instructions
+             context.ImageAtomic(type, format, flags, setAndBinding, sources);
+         }
+ 
++        // TOTK: an Ampere formatted surface load or store (SULD.P, SUST.P) of an image the host says is viewed with an integer format
++        // (IGpuAccessor.QueryAnsweredImageFormat) declares the image with that format, so the registers are read and written as raw bits
++        // as the hardware does through such a view. Without it the image is declared without a format, float, and the bits were
++        // converted: OoT's forest cutscene writes shared-exponent colour words through an NVN R32UI view of an R11G11B10F
++        // texture (a335c1db6270c355), and they came out as red, clamped and NaN
++        private static TextureFormat AnsweredIntegerFormat(EmitterContext context, int handle, int cbufSlot, TextureFormat format)
++        {
++            if (format != TextureFormat.Unknown || !context.TranslatorContext.Options.Flags.HasFlag(TranslationFlags.Ampere))
++            {
++                return format;
++            }
++
++            TextureFormat answered = context.TranslatorContext.GpuAccessor.QueryAnsweredImageFormat(handle, cbufSlot);
++
++            return answered != TextureFormat.Unknown && answered.GetComponentType() != AggregateType.FP32 ? answered : format;
++        }
++
+         private static void EmitSust(
+             EmitterContext context,
+             CacheOpSt cacheOp,
+@@ -701,7 +723,7 @@ namespace Ryujinx.Graphics.Shader.Instructions
+ 
+                 if (!isBindless)
+                 {
+-                    format = ShaderProperties.GetTextureFormat(context.TranslatorContext.GpuAccessor, imm);
++                    format = AnsweredIntegerFormat(context, imm, cbufSlot, ShaderProperties.GetTextureFormat(context.TranslatorContext.GpuAccessor, imm));
+                 }
+             }
+             else

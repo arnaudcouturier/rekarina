@@ -1,0 +1,632 @@
+TOTK: NVN2 task and mesh shaders as VK_EXT_mesh_shader stages (docs/oot-xlate.md). The Ampere code is translated as a compute
+kernel with seedds/nxnative's stage memory lowering (patch 0019: ISBERD, AST 0x927; here also ISBERD mode 0xb8, a read of the
+task's own output payload); IGpuAccessor.QueryMeshStage (MeshStage) describes the stage, and CodeGen/Spirv/MeshStageWrapper.cs
+writes a TaskEXT / MeshEXT entry point around the kernel as nxnative's dm/gfx/tools/dmsh_meshstage.py (MIT) writes the Metal
+object and mesh functions: the stage memory zeroed, the payload copied in, the workgroup number from c[0] + 0x9F0 (the
+runtime's VK_C0_MESH_FIRST) plus WorkgroupId, the kernel called, then the task payload and EmitMeshTasksEXT, or
+SetMeshOutputsEXT, the positions, generic and per-primitive attributes and the triangle indices. Such a module is SPIR-V
+1.4: its entry point lists every global, and its storage buffers are Block in StorageBuffer (Spv.Generator gains the
+SPV_EXT_mesh_shader enumerants and instructions, values from the SPIR-V registry). Every other translation is unchanged.
+
+--- a/src/Ryujinx.Graphics.Shader/CodeGen/Spirv/CodeGenContext.cs
++++ b/src/Ryujinx.Graphics.Shader/CodeGen/Spirv/CodeGenContext.cs
+@@ -16,6 +16,8 @@ namespace Ryujinx.Graphics.Shader.CodeGen.Spirv
+         private const uint SpirvVersionMinor = 3;
+         private const uint SpirvVersionRevision = 0;
+         private const uint SpirvVersionPacked = (SpirvVersionMajor << 16) | (SpirvVersionMinor << 8) | SpirvVersionRevision;
++        // TOTK: a task or mesh shader (MeshStageWrapper) is SPIR-V 1.4, which SPV_EXT_mesh_shader needs
++        private const uint SpirvVersionMeshPacked = (1u << 16) | (4u << 8);
+ 
+         public StructuredProgramInfo Info { get; }
+ 
+@@ -81,6 +83,9 @@ namespace Ryujinx.Graphics.Shader.CodeGen.Spirv
+         public SpirvDelegates Delegates { get; }
+ 
+         public bool IsMainFunction { get; private set; }
++
++        // TOTK: storage buffers in the StorageBuffer storage class (SPIR-V 1.4 has no BufferBlock): task and mesh shaders (MeshStageWrapper)
++        public bool StorageBufferClass => Properties.MeshStage != null;
+         public bool MayHaveReturned { get; set; }
+         public bool WasNonUniformAccessDeclared { get; set; }
+ 
+@@ -88,7 +93,7 @@ namespace Ryujinx.Graphics.Shader.CodeGen.Spirv
+             StructuredProgramInfo info,
+             CodeGenParameters parameters,
+             GeneratorPool<Instruction> instPool,
+-            GeneratorPool<LiteralInteger> integerPool) : base(SpirvVersionPacked, instPool, integerPool)
++            GeneratorPool<LiteralInteger> integerPool) : base(parameters.Properties.MeshStage != null ? SpirvVersionMeshPacked : SpirvVersionPacked, instPool, integerPool)
+         {
+             WasNonUniformAccessDeclared = false;
+ 
+--- a/src/Ryujinx.Graphics.Shader/CodeGen/Spirv/Declarations.cs
++++ b/src/Ryujinx.Graphics.Shader/CodeGen/Spirv/Declarations.cs
+@@ -133,7 +133,8 @@ namespace Ryujinx.Graphics.Shader.CodeGen.Spirv
+ 
+                 if (decoratedTypes.Add(structType))
+                 {
+-                    context.Decorate(structType, isBuffer ? Decoration.BufferBlock : Decoration.Block);
++                    // TOTK: SPIR-V 1.4 (a task or mesh shader, MeshStageWrapper) has no BufferBlock: a storage buffer is a Block in StorageBuffer
++                    context.Decorate(structType, isBuffer && !context.StorageBufferClass ? Decoration.BufferBlock : Decoration.Block);
+ 
+                     for (int fieldIndex = 0; fieldIndex < structFieldOffsets.Length; fieldIndex++)
+                     {
+@@ -141,8 +142,9 @@ namespace Ryujinx.Graphics.Shader.CodeGen.Spirv
+                     }
+                 }
+ 
+-                SpvInstruction pointerType = context.TypePointer(StorageClass.Uniform, structType);
+-                SpvInstruction variable = context.Variable(pointerType, StorageClass.Uniform);
++                StorageClass bufferClass = isBuffer && context.StorageBufferClass ? StorageClass.StorageBuffer : StorageClass.Uniform;
++                SpvInstruction pointerType = context.TypePointer(bufferClass, structType);
++                SpvInstruction variable = context.Variable(pointerType, bufferClass);
+ 
+                 context.Name(variable, buffer.Name);
+                 context.Decorate(variable, Decoration.DescriptorSet, (LiteralInteger)setIndex);
+--- a/src/Ryujinx.Graphics.Shader/CodeGen/Spirv/Instructions.cs
++++ b/src/Ryujinx.Graphics.Shader/CodeGen/Spirv/Instructions.cs
+@@ -2009,7 +2009,7 @@ namespace Ryujinx.Graphics.Shader.CodeGen.Spirv
+                         : context.Properties.StorageBuffers[bindingIndex.Value];
+                     StructureField field = buffer.Type.Fields[fieldIndex.Value];
+ 
+-                    storageClass = StorageClass.Uniform;
++                    storageClass = storageKind == StorageKind.StorageBuffer && context.StorageBufferClass ? StorageClass.StorageBuffer : StorageClass.Uniform;
+                     varType = field.Type & AggregateType.ElementTypeMask;
+                     baseObj = storageKind == StorageKind.ConstantBuffer
+                         ? context.ConstantBuffers[bindingIndex.Value]
+--- /dev/null
++++ b/src/Ryujinx.Graphics.Shader/CodeGen/Spirv/MeshStageWrapper.cs
+@@ -0,0 +1,299 @@
++using Ryujinx.Graphics.Shader.IntermediateRepresentation;
++using Ryujinx.Graphics.Shader.StructuredIr;
++using System;
++using System.Collections.Generic;
++using System.Linq;
++using static Spv.Specification;
++
++namespace Ryujinx.Graphics.Shader.CodeGen.Spirv
++{
++    using SpvInstruction = Spv.Generator.Instruction;
++    using SpvLiteralInteger = Spv.Generator.LiteralInteger;
++    using SpvModule = Spv.Generator.Module;
++
++    // TOTK: the VK_EXT_mesh_shader entry point of an NVN2 task or mesh shader (MeshStage). The Ampere code is translated as a compute
++    // kernel whose stage memory is its shared memory (seedds/nxnative's lowering); its main function becomes a plain function this entry
++    // point calls, as nxnative's dm/gfx/tools/dmsh_meshstage.py to_stage (MIT) calls it from a Metal object or mesh function:
++    //   1. the stage memory starts at zero; under a task, the payload is copied to the input (the kernel's own prologue, Translator
++    //      EmitMeshStagePrologue, then puts the workgroup number in);
++    //   2. the kernel runs; an early EXIT returns here;
++    //   3. a task copies its output payload to the TaskPayloadWorkgroupEXT block and launches output word 1 mesh workgroups; a mesh shader
++    //      sets its outputs: max_vertices vertices, the primitive count byte (primitive bytes + 3) primitives, each vertex's attribute
++    //      words from its block of 32 (a word per component, the SPH's OMAP order; a component the shader does not have reads 0, w 1)
++    //      and three index bytes per triangle from the primitive bytes + 4.
++    // The module is SPIR-V 1.4 (SPV_EXT_mesh_shader needs it), so the entry point lists every global variable.
++    static class MeshStageWrapper
++    {
++        // At most this many mesh workgroups from one task workgroup (Vulkan's maxMeshWorkGroupCount[0] is at least 65535)
++        private const int MaxTaskLaunch = 65535;
++
++        public static void Generate(CodeGenContext context, SpvInstruction body, MeshStage mesh)
++        {
++            SpvInstruction u32 = context.TypeU32();
++            SpvInstruction f32 = context.TypeFP32();
++            SpvInstruction vec4 = context.TypeVector(f32, 4);
++            SpvInstruction boolType = context.TypeBool();
++            SpvInstruction voidType = context.TypeVoid();
++            SpvInstruction sharedPtr = context.TypePointer(StorageClass.Workgroup, u32);
++
++            if (!context.SharedMemories.TryGetValue(mesh.SharedMemoryId, out SpvInstruction shared))
++            {
++                throw new InvalidOperationException("task or mesh shader without its stage memory");
++            }
++
++            SpvInstruction C(int v) => context.Constant(u32, v);
++
++            // The payload a task writes and its mesh shaders read
++            SpvInstruction payload = null;
++            SpvInstruction payloadPtr = context.TypePointer(SpvModule.StorageClassTaskPayloadWorkgroupEXT, u32);
++
++            if (mesh.IsTask || mesh.HasTask)
++            {
++                SpvInstruction payloadType = context.TypeArray(u32, C(Math.Max(1, mesh.PayloadWords)));
++                payload = context.Variable(context.TypePointer(SpvModule.StorageClassTaskPayloadWorkgroupEXT, payloadType), SpvModule.StorageClassTaskPayloadWorkgroupEXT);
++                context.AddGlobalVariable(payload);
++                context.Name(payload, "payload");
++            }
++
++            // A mesh shader's outputs: the vertices' positions (in a per-vertex block), their generic attributes (Location n, as a vertex
++            // shader's outputs) and the triangles' indices
++            SpvInstruction perVertex = null, indices = null;
++            List<(int Location, SpvInstruction Variable)> attributes = new(), primitiveAttributes = new();
++            Dictionary<int, int[]> components = new(), primitiveComponents = new();
++
++            if (!mesh.IsTask)
++            {
++                SpvInstruction perVertexType = context.TypeStruct(true, vec4);
++                context.Decorate(perVertexType, Decoration.Block);
++                context.MemberDecorate(perVertexType, 0, Decoration.BuiltIn, (SpvLiteralInteger)BuiltIn.Position);
++                SpvInstruction perVertexArray = context.TypeArray(perVertexType, C(mesh.MaxVertices));
++                perVertex = context.Variable(context.TypePointer(StorageClass.Output, perVertexArray), StorageClass.Output);
++                context.AddGlobalVariable(perVertex);
++                context.Name(perVertex, "mesh_vertices");
++
++                SpvInstruction indexArray = context.TypeArray(context.TypeVector(u32, 3), C(mesh.MaxPrimitives));
++                indices = context.Variable(context.TypePointer(StorageClass.Output, indexArray), StorageClass.Output);
++                context.Decorate(indices, Decoration.BuiltIn, (SpvLiteralInteger)SpvModule.BuiltInPrimitiveTriangleIndicesEXT);
++                context.AddGlobalVariable(indices);
++                context.Name(indices, "mesh_indices");
++
++                // component index in the attribute area of attribute a (-1: the position), x..w
++                for (int i = 0; i < mesh.VertexComponents.Length; i++)
++                {
++                    int c = mesh.VertexComponents[i];
++                    int attr = c < 0 ? -1 : c >> 2;
++                    int comp = c < 0 ? -1 - c : c & 3;
++
++                    if (!components.TryGetValue(attr, out int[] slots))
++                    {
++                        components[attr] = slots = [-1, -1, -1, -1];
++                    }
++
++                    slots[comp] = i;
++                }
++
++                foreach (int attr in components.Keys.Where(a => a >= 0).OrderBy(a => a))
++                {
++                    SpvInstruction array = context.TypeArray(vec4, C(mesh.MaxVertices));
++                    SpvInstruction variable = context.Variable(context.TypePointer(StorageClass.Output, array), StorageClass.Output);
++                    context.Decorate(variable, Decoration.Location, (SpvLiteralInteger)attr);
++                    context.AddGlobalVariable(variable);
++                    context.Name(variable, $"mesh_attr{attr}");
++                    attributes.Add((attr, variable));
++                }
++
++                // per-primitive attributes: their components follow the vertex components in each block (Location n, PerPrimitiveEXT; the
++                // fragment shader's inputs there must carry PerPrimitiveEXT too)
++                for (int i = 0; i < mesh.PrimitiveComponents.Length; i++)
++                {
++                    int c = mesh.PrimitiveComponents[i];
++
++                    if (!primitiveComponents.TryGetValue(c >> 2, out int[] slots))
++                    {
++                        primitiveComponents[c >> 2] = slots = [-1, -1, -1, -1];
++                    }
++
++                    slots[c & 3] = mesh.VertexComponents.Length + i;
++                }
++
++                foreach (int attr in primitiveComponents.Keys.OrderBy(a => a))
++                {
++                    SpvInstruction array = context.TypeArray(vec4, C(mesh.MaxPrimitives));
++                    SpvInstruction variable = context.Variable(context.TypePointer(StorageClass.Output, array), StorageClass.Output);
++                    context.Decorate(variable, Decoration.Location, (SpvLiteralInteger)attr);
++                    context.Decorate(variable, Decoration.PerPrimitiveNV);   // PerPrimitiveEXT, the same value
++                    context.AddGlobalVariable(variable);
++                    context.Name(variable, $"mesh_prim_attr{attr}");
++                    primitiveAttributes.Add((attr, variable));
++                }
++            }
++
++            SpvInstruction lidVariable = FindInput(context, IoVariable.ThreadId);
++
++            SpvInstruction functionType = context.TypeFunction(voidType, false);
++            SpvInstruction entry = context.Function(voidType, FunctionControlMask.MaskNone, functionType);
++            context.AddFunction(entry);
++            context.AddLabel(context.Label());
++
++            SpvInstruction counter = context.Variable(context.TypePointer(StorageClass.Function, u32), StorageClass.Function);
++            context.AddLocalVariable(counter);
++
++            SpvInstruction lid = context.CompositeExtract(u32, context.Load(context.TypeVector(u32, 3), lidVariable), 0);
++
++            SpvInstruction Shared(SpvInstruction wordIndex) => context.AccessChain(sharedPtr, shared, wordIndex);
++
++            void Barrier()
++            {
++                context.ControlBarrier(
++                    context.Constant(u32, Scope.Workgroup),
++                    context.Constant(u32, Scope.Workgroup),
++                    context.Constant(u32, MemorySemanticsMask.WorkgroupMemory | MemorySemanticsMask.AcquireRelease));
++            }
++
++            // for (i = lid; i < end; i += threads) body(i)
++            void Loop(SpvInstruction end, Action<SpvInstruction> loopBody)
++            {
++                context.Store(counter, lid);
++
++                SpvInstruction header = context.Label();
++                SpvInstruction check = context.Label();
++                SpvInstruction bodyLabel = context.Label();
++                SpvInstruction next = context.Label();
++                SpvInstruction merge = context.Label();
++
++                context.Branch(header);
++                context.AddLabel(header);
++                context.LoopMerge(merge, next, LoopControlMask.MaskNone);
++                context.Branch(check);
++                context.AddLabel(check);
++                SpvInstruction i = context.Load(u32, counter);
++                context.BranchConditional(context.ULessThan(boolType, i, end), bodyLabel, merge);
++                context.AddLabel(bodyLabel);
++                loopBody(context.Load(u32, counter));
++                context.Branch(next);
++                context.AddLabel(next);
++                context.Store(counter, context.IAdd(u32, context.Load(u32, counter), C(mesh.Threads)));
++                context.Branch(header);
++                context.AddLabel(merge);
++            }
++
++            int words = mesh.Size / 4;
++            int input = mesh.Offsets[1] / 4, output = mesh.Offsets[2] / 4, primitives = mesh.Offsets[3];
++
++            Loop(C(words), i => context.Store(Shared(i), C(0)));
++            Barrier();
++
++            if (!mesh.IsTask && mesh.HasTask)
++            {
++                Loop(C(mesh.PayloadWords), i => context.Store(Shared(context.IAdd(u32, i, C(input))), context.Load(u32, context.AccessChain(payloadPtr, payload, i))));
++                Barrier();
++            }
++
++            context.FunctionCall(voidType, body);
++            Barrier();
++
++            if (mesh.IsTask)
++            {
++                Loop(C(mesh.PayloadWords), i => context.Store(context.AccessChain(payloadPtr, payload, i), context.Load(u32, Shared(context.IAdd(u32, i, C(output))))));
++                Barrier();
++
++                SpvInstruction launch = context.GlslUMin(u32, context.Load(u32, Shared(C(output + 1))), C(MaxTaskLaunch));
++                context.EmitMeshTasksEXT(launch, C(1), C(1), payload);
++            }
++            else
++            {
++                SpvInstruction count = context.GlslUMin(u32, context.ShiftRightLogical(u32, context.Load(u32, Shared(C(primitives / 4))), C(24)), C(mesh.MaxPrimitives));
++
++                context.SetMeshOutputsEXT(C(mesh.MaxVertices), count);
++
++                int stride = Math.Max(mesh.VertexComponents.Length + mesh.PrimitiveComponents.Length, 1) * MeshStage.Block;
++                SpvInstruction outVec4 = context.TypePointer(StorageClass.Output, vec4);
++
++                SpvInstruction Block(SpvInstruction n) => context.IAdd(u32, C(output), context.IAdd(u32,
++                    context.IMul(u32, context.UDiv(u32, n, C(MeshStage.Block)), C(stride)),
++                    context.UMod(u32, n, C(MeshStage.Block))));
++
++                SpvInstruction Vector(SpvInstruction block, int[] slots)
++                {
++                    SpvInstruction[] v = new SpvInstruction[4];
++
++                    for (int k = 0; k < 4; k++)
++                    {
++                        v[k] = slots[k] < 0
++                            ? context.Constant(f32, k == 3 ? 1f : 0f)
++                            : context.Bitcast(f32, context.Load(u32, Shared(context.IAdd(u32, block, C(slots[k] * MeshStage.Block)))));
++                    }
++
++                    return context.CompositeConstruct(vec4, v);
++                }
++
++                if (primitiveAttributes.Count != 0)
++                {
++                    Loop(count, n =>
++                    {
++                        SpvInstruction block = Block(n);
++
++                        foreach ((int attr, SpvInstruction variable) in primitiveAttributes)
++                        {
++                            context.Store(context.AccessChain(outVec4, variable, n), Vector(block, primitiveComponents[attr]));
++                        }
++                    });
++                }
++
++                Loop(C(mesh.MaxVertices), n =>
++                {
++                    SpvInstruction block = Block(n);
++
++                    if (components.TryGetValue(-1, out int[] position))
++                    {
++                        context.Store(context.AccessChain(outVec4, perVertex, n, context.Constant(context.TypeS32(), 0)), Vector(block, position));
++                    }
++
++                    foreach ((int attr, SpvInstruction variable) in attributes)
++                    {
++                        context.Store(context.AccessChain(outVec4, variable, n), Vector(block, components[attr]));
++                    }
++                });
++
++                SpvInstruction outU32 = context.TypePointer(StorageClass.Output, u32);
++
++                Loop(context.IMul(u32, count, C(3)), n =>
++                {
++                    SpvInstruction at = context.IAdd(u32, n, C(primitives + 4));
++                    SpvInstruction word = context.Load(u32, Shared(context.ShiftRightLogical(u32, at, C(2))));
++                    SpvInstruction shift = context.IMul(u32, context.BitwiseAnd(u32, at, C(3)), C(8));
++                    SpvInstruction index = context.BitwiseAnd(u32, context.ShiftRightLogical(u32, word, shift), C(0xff));
++
++                    context.Store(context.AccessChain(outU32, indices, context.UDiv(u32, n, C(3)), context.UMod(u32, n, C(3))), index);
++                });
++
++                context.Return();
++            }
++
++            context.FunctionEnd();
++
++            context.AddEntryPoint(mesh.IsTask ? SpvModule.ExecutionModelTaskEXT : SpvModule.ExecutionModelMeshEXT, entry, "main", context.GlobalVariables.ToArray());
++            context.AddExecutionMode(entry, ExecutionMode.LocalSize, (SpvLiteralInteger)mesh.Threads, (SpvLiteralInteger)1, (SpvLiteralInteger)1);
++
++            if (!mesh.IsTask)
++            {
++                context.AddExecutionMode(entry, ExecutionMode.OutputVertices, (SpvLiteralInteger)mesh.MaxVertices);
++                context.AddExecutionMode(entry, SpvModule.ExecutionModeOutputPrimitivesEXT, (SpvLiteralInteger)mesh.MaxPrimitives);
++                context.AddExecutionMode(entry, SpvModule.ExecutionModeOutputTrianglesEXT);
++            }
++        }
++
++        private static SpvInstruction FindInput(CodeGenContext context, IoVariable ioVariable)
++        {
++            foreach ((IoDefinition definition, SpvInstruction variable) in context.Inputs)
++            {
++                if (definition.IoVariable == ioVariable)
++                {
++                    return variable;
++                }
++            }
++
++            throw new InvalidOperationException($"task or mesh shader without the {ioVariable} input");
++        }
++    }
++}
+--- a/src/Ryujinx.Graphics.Shader/CodeGen/Spirv/SpirvGenerator.cs
++++ b/src/Ryujinx.Graphics.Shader/CodeGen/Spirv/SpirvGenerator.cs
+@@ -13,6 +13,7 @@ namespace Ryujinx.Graphics.Shader.CodeGen.Spirv
+     using SpvInstructionPool = Spv.Generator.GeneratorPool<Spv.Generator.Instruction>;
+     using SpvLiteralInteger = Spv.Generator.LiteralInteger;
+     using SpvLiteralIntegerPool = Spv.Generator.GeneratorPool<Spv.Generator.LiteralInteger>;
++    using SpvModule = Spv.Generator.Module;
+ 
+     static class SpirvGenerator
+     {
+@@ -45,6 +46,13 @@ namespace Ryujinx.Graphics.Shader.CodeGen.Spirv
+ 
+             context.AddCapability(Capability.Shader);
+ 
++            // TOTK: an NVN2 task or mesh shader gets a VK_EXT_mesh_shader entry point around its kernel (MeshStageWrapper)
++            if (context.Properties.MeshStage != null)
++            {
++                context.AddCapability(SpvModule.CapabilityMeshShadingEXT);
++                context.AddExtension("SPV_EXT_mesh_shader");
++            }
++
+             // nxnative: raw global memory goes through physical storage buffer pointers (ShaderProperties.UsesPhysicalPointers), which take 64-bit physical addressing
+             if (context.Properties.UsesPhysicalPointers)
+             {
+@@ -164,6 +172,11 @@ namespace Ryujinx.Graphics.Shader.CodeGen.Spirv
+                 Generate(context, info, funcIndex);
+             }
+ 
++            if (context.Properties.MeshStage != null)
++            {
++                MeshStageWrapper.Generate(context, context.GetFunction(0).Item2, context.Properties.MeshStage);
++            }
++
+             byte[] result = context.Generate();
+ 
+             lock (_poolLock)
+@@ -200,7 +213,7 @@ namespace Ryujinx.Graphics.Shader.CodeGen.Spirv
+ 
+             context.FunctionEnd();
+ 
+-            if (funcIndex == 0)
++            if (funcIndex == 0 && context.Properties.MeshStage == null)
+             {
+                 context.AddEntryPoint(context.Definitions.Stage.Convert(), spvFunc, "main", context.GetMainInterface());
+ 
+--- a/src/Ryujinx.Graphics.Shader/IGpuAccessor.cs
++++ b/src/Ryujinx.Graphics.Shader/IGpuAccessor.cs
+@@ -49,6 +49,15 @@ namespace Ryujinx.Graphics.Shader
+             return null;
+         }
+ 
++        /// <summary>
++        /// TOTK: an NVN2 task or mesh shader translated to a VK_EXT_mesh_shader stage (MeshStage); null for other shaders. Its stage memory
++        /// offsets are QueryAmpereStageMemory's, and its size the compute shared memory size.
++        /// </summary>
++        MeshStage QueryMeshStage()
++        {
++            return null;
++        }
++
+         /// <summary>
+         /// Gets a span of the specified memory location, containing shader code.
+         /// </summary>
+--- a/src/Ryujinx.Graphics.Shader/Instructions/InstEmitAmpereMem.cs
++++ b/src/Ryujinx.Graphics.Shader/Instructions/InstEmitAmpereMem.cs
+@@ -134,12 +134,14 @@ namespace Ryujinx.Graphics.Shader.Instructions
+                 // A task or mesh shader's stage input (QueryAmpereStageMemory). Mode 0x78: its workgroup's number; 0x38: a word of the payload its task wrote, [Ra + offset]
+                 int mode = x.Bits(72, 80);
+ 
+-                if (mode != 0x78 && mode != 0x38)
++                // TOTK: mode 0xb8 reads back a word of the task's own output payload, the area AST 0x927 mode 0xb8 writes (stage[2]): OoT of
++                // Time's task shader 5d3a096025e375a1 writes its workgroup number to payload +0x10 and reads it back from there
++                if (mode != 0x78 && mode != 0x38 && mode != 0xb8)
+                 {
+                     throw AFail(context, $"ISBERD mode {mode:x2} in a task or mesh shader");
+                 }
+ 
+-                Operand addr = mode == 0x78 ? Const(stage[0]) : context.IAdd(AGpr(x.Ra), Const(stage[1] + (int)x.SignedField(40, 64)));
++                Operand addr = mode == 0x78 ? Const(stage[0]) : context.IAdd(AGpr(x.Ra), Const((mode == 0xb8 ? stage[2] : stage[1]) + (int)x.SignedField(40, 64)));
+                 EmitLoad(context, StorageKind.SharedMemory, LsSize2.B32, addr, x.Rd, 0);
+                 return;
+             }
+--- /dev/null
++++ b/src/Ryujinx.Graphics.Shader/MeshStage.cs
+@@ -0,0 +1,54 @@
++namespace Ryujinx.Graphics.Shader
++{
++    /// <summary>
++    /// TOTK: an NVN2 (Switch 2) task or mesh shader, translated to a VK_EXT_mesh_shader stage. The Ampere code runs as a compute
++    /// kernel whose stage memory is its shared memory (seedds/nxnative's lowering: InstEmitAmpereMem.AIsberd, AStageOut); the
++    /// SPIR-V entry point around it (CodeGen/Spirv/MeshStageWrapper.cs) fills the stage inputs and hands the outputs to Vulkan, as
++    /// nxnative's dm/gfx/tools/dmsh_meshstage.py does for Metal (MIT).
++    /// </summary>
++    public sealed class MeshStage
++    {
++        /// <summary>True for a task shader, false for a mesh shader.</summary>
++        public bool IsTask { get; init; }
++
++        /// <summary>A mesh shader launched by a task shader: its input is the task's payload.</summary>
++        public bool HasTask { get; init; }
++
++        /// <summary>Threads of a workgroup (control +0x58).</summary>
++        public int Threads { get; init; }
++
++        /// <summary>The payload's 32-bit words (control +0x5a, bytes, rounded up).</summary>
++        public int PayloadWords { get; init; }
++
++        /// <summary>A mesh shader's most vertices and primitives (control +0x60, +0x62).</summary>
++        public int MaxVertices { get; init; }
++        public int MaxPrimitives { get; init; }
++
++        /// <summary>
++        /// The components of the attribute area, in its order (the SPH's OMAP): -1 - c for the position's component c,
++        /// 4 n + c for generic attribute n's.
++        /// </summary>
++        public int[] VertexComponents { get; init; }
++
++        /// <summary>
++        /// A mesh shader's per-primitive components (the second SPH's OMAP), 4 n + c for generic attribute n's; they follow the vertex components
++        /// in each attribute block.
++        /// </summary>
++        public int[] PrimitiveComponents { get; init; } = System.Array.Empty<int>();
++
++        /// <summary>Byte offsets in the stage memory: the workgroup's number, the input, the outputs, the primitive bytes.</summary>
++        public int[] Offsets { get; init; }
++
++        /// <summary>The stage memory's bytes.</summary>
++        public int Size { get; init; }
++
++        /// <summary>The constant buffer 0 byte offset where the host puts the draw's first workgroup.</summary>
++        public int FirstWorkgroupOffset { get; init; }
++
++        /// <summary>Set by the translator: the shared memory that holds the stage memory.</summary>
++        public int SharedMemoryId { get; set; } = -1;
++
++        /// <summary>Vertices and primitives of an attribute block.</summary>
++        public const int Block = 32;
++    }
++}
+--- a/src/Ryujinx.Graphics.Shader/StructuredIr/ShaderProperties.cs
++++ b/src/Ryujinx.Graphics.Shader/StructuredIr/ShaderProperties.cs
+@@ -22,6 +22,9 @@ namespace Ryujinx.Graphics.Shader.StructuredIr
+         // nxnative: a global memory access traced to no storage buffer goes through a physical storage buffer pointer (GlobalToStorage.TryGenerateRawStorageOp)
+         public bool UsesPhysicalPointers { get; set; }
+ 
++        // TOTK: an NVN2 task or mesh shader, generated as a VK_EXT_mesh_shader stage (CodeGen/Spirv/MeshStageWrapper.cs)
++        public MeshStage MeshStage { get; set; }
++
+         public ShaderProperties()
+         {
+             _constantBuffers = new Dictionary<int, BufferDefinition>();
+--- a/src/Ryujinx.Graphics.Shader/Translation/Translator.cs
++++ b/src/Ryujinx.Graphics.Shader/Translation/Translator.cs
+@@ -173,6 +173,11 @@ namespace Ryujinx.Graphics.Shader.Translation
+                     initializationOperations = context.OperationsCount;
+                 }
+ 
++                if (ampere && index == 0 && translatorContext.GpuAccessor.QueryMeshStage() is MeshStage mesh)
++                {
++                    EmitMeshStagePrologue(context, resourceManager, mesh);
++                }
++
+                 DecodedFunction function = program.GetFunctionById(index);
+ 
+                 foreach (Block block in function.Blocks)
+@@ -197,6 +202,39 @@ namespace Ryujinx.Graphics.Shader.Translation
+             return functions;
+         }
+ 
++        // TOTK: a task or mesh shader's workgroup number in its stage memory, before its code runs (the entry point around the kernel has zeroed the
++        // stage memory and, under a task, copied the payload in: CodeGen/Spirv/MeshStageWrapper.cs). As nxnative's dm/gfx/tools/dmsh_meshstage.py
++        // to_stage (MIT): a task's, or a mesh shader's without a task, is the draw's first workgroup (c[0] + FirstWorkgroupOffset, which the host
++        // fills) plus its own; a mesh shader under a task has its own number among the task's launches, also as the payload's word 0.
++        private static void EmitMeshStagePrologue(EmitterContext context, ResourceManager resourceManager, MeshStage mesh)
++        {
++            mesh.SharedMemoryId = resourceManager.SharedMemoryId;
++            resourceManager.Properties.MeshStage = mesh;
++
++            if (mesh.SharedMemoryId < 0)
++            {
++                throw new InvalidOperationException("task or mesh shader without its stage memory");
++            }
++
++            Operand lid = context.Load(StorageKind.Input, IoVariable.ThreadId, null, Const(0));
++            Operand group = context.Load(StorageKind.Input, IoVariable.CtaId, null, Const(0));
++            Operand lblSkip = Label();
++
++            context.BranchIfFalse(lblSkip, context.ICompareEqual(lid, Const(0)));
++
++            Operand number = mesh.HasTask ? group : context.IAdd(Cbuf(0, mesh.FirstWorkgroupOffset >> 2), group);
++
++            context.Store(StorageKind.SharedMemory, mesh.SharedMemoryId, Const(mesh.Offsets[0] >> 2), number);
++
++            if (mesh.HasTask)
++            {
++                context.Store(StorageKind.SharedMemory, mesh.SharedMemoryId, Const(mesh.Offsets[1] >> 2), group);
++            }
++
++            context.MarkLabel(lblSkip);
++            context.Barrier();
++        }
++
+         private static void EmitOutputsInitialization(EmitterContext context, AttributeUsage attributeUsage, IGpuAccessor gpuAccessor, ShaderStage stage)
+         {
+             // Compute has no output attributes, so we
+--- /dev/null
++++ b/src/Spv.Generator/MeshShading.cs
+@@ -0,0 +1,47 @@
++using System.Collections.Generic;
++using static Spv.Specification;
++
++namespace Spv.Generator
++{
++    // TOTK: the SPV_EXT_mesh_shader pieces the generated grammar (2021) does not have, for NVN2 task and mesh shaders
++    // (Ryujinx.Graphics.Shader CodeGen/Spirv/MeshStage.cs). Values from the SPIR-V registry's unified1 spirv.core.grammar.json.
++    public partial class Module
++    {
++        public const ExecutionModel ExecutionModelTaskEXT = (ExecutionModel)5364;
++        public const ExecutionModel ExecutionModelMeshEXT = (ExecutionModel)5365;
++        public const Capability CapabilityMeshShadingEXT = (Capability)5283;
++        public const StorageClass StorageClassTaskPayloadWorkgroupEXT = (StorageClass)5402;
++        public const BuiltIn BuiltInPrimitiveTriangleIndicesEXT = (BuiltIn)5296;
++        public const ExecutionMode ExecutionModeOutputPrimitivesEXT = (ExecutionMode)5270;
++        public const ExecutionMode ExecutionModeOutputTrianglesEXT = (ExecutionMode)5298;
++        private const Op OpEmitMeshTasksEXT = (Op)5294;
++        private const Op OpSetMeshOutputsEXT = (Op)5295;
++
++        // Every global variable declared so far: a SPIR-V 1.4 entry point lists all the global variables it uses.
++        public IReadOnlyList<Instruction> GlobalVariables => _globals;
++
++        public Instruction EmitMeshTasksEXT(Instruction groupCountX, Instruction groupCountY, Instruction groupCountZ, Instruction payload)
++        {
++            Instruction result = NewInstruction(OpEmitMeshTasksEXT);
++
++            result.AddOperand(groupCountX);
++            result.AddOperand(groupCountY);
++            result.AddOperand(groupCountZ);
++            result.AddOperand(payload);
++            AddToFunctionDefinitions(result);
++
++            return result;
++        }
++
++        public Instruction SetMeshOutputsEXT(Instruction vertexCount, Instruction primitiveCount)
++        {
++            Instruction result = NewInstruction(OpSetMeshOutputsEXT);
++
++            result.AddOperand(vertexCount);
++            result.AddOperand(primitiveCount);
++            AddToFunctionDefinitions(result);
++
++            return result;
++        }
++    }
++}
