@@ -1,7 +1,7 @@
-// HDR output (TOTK_HDR=1): an HDR10 swapchain (Rec. 2020 primaries, PQ) and a game picture with highlights above the
-// SDR white. Settings: TOTK_HDR (read at start), TOTK_HDR_PEAK_NITS (the display's peak), TOTK_HDR_GAME_NITS (the
-// picture's white, "paper white") and TOTK_HDR_UI_NITS (the HUD's and this menu's white), the three read when the
-// settings change. With TOTK_HDR=0 nothing here runs and the present is what it was.
+// HDR output (REKARINA_HDR=1): an HDR10 swapchain (Rec. 2020 primaries, PQ) and a game picture with highlights above the
+// SDR white. Settings: REKARINA_HDR (read at start), REKARINA_HDR_PEAK_NITS (the display's peak), REKARINA_HDR_GAME_NITS (the
+// picture's white, "paper white") and REKARINA_HDR_UI_NITS (the HUD's and this menu's white), the three read when the
+// settings change. With REKARINA_HDR=0 nothing here runs and the present is what it was.
 //
 // The game's picture (docs/architecture.md, "HDR"). The game tonemaps its scene into an r11g11b10f target, upscales it
 // and draws the HUD into a second one (float, nothing in these passes clamps), and one last draw copies that into the
@@ -43,7 +43,7 @@
 static int g_wanted = -1;
 
 int vk_hdr_wanted(void) {
-    if (g_wanted < 0) g_wanted = cfg_bool("TOTK_HDR");
+    if (g_wanted < 0) g_wanted = cfg_bool("REKARINA_HDR");
     return g_wanted;
 }
 
@@ -60,10 +60,10 @@ static Nits nits(void) {
         plat_mutex_lock(&N.lock);
         if (N.seen != v) {
             Nits *n = &N.snap[!N.cur];
-            n->peak = fmaxf((float)cfg_double("TOTK_HDR_PEAK_NITS"), 80.0f);
-            n->game = fmaxf((float)cfg_double("TOTK_HDR_GAME_NITS"), 80.0f);
-            n->ui = fmaxf((float)cfg_double("TOTK_HDR_UI_NITS"), 80.0f);
-            n->hue = fminf(fmaxf((float)cfg_double("TOTK_HDR_HUE"), 0.0f), 100.0f) / 100.0f;
+            n->peak = fmaxf((float)cfg_double("REKARINA_HDR_PEAK_NITS"), 80.0f);
+            n->game = fmaxf((float)cfg_double("REKARINA_HDR_GAME_NITS"), 80.0f);
+            n->ui = fmaxf((float)cfg_double("REKARINA_HDR_UI_NITS"), 80.0f);
+            n->hue = fminf(fmaxf((float)cfg_double("REKARINA_HDR_HUE"), 0.0f), 100.0f) / 100.0f;
             __atomic_store_n(&N.cur, !N.cur, __ATOMIC_RELEASE);
             __atomic_store_n(&N.seen, v, __ATOMIC_RELEASE);
         }
@@ -240,7 +240,7 @@ void vk_hdr_shader_swap(uint32_t **spirv, uint64_t *words) {
 
 // ---- 2. the picture the window texture is copied from
 
-int vk_hdr_track;                 // vk_exec_draw.c calls vk_hdr_draw: set at the first present with TOTK_HDR=1
+int vk_hdr_track;                 // vk_exec_draw.c calls vk_hdr_draw: set at the first present with REKARINA_HDR=1
 static volatile int32_t g_active;   // the swapchain is HDR10 (gfx_present.c vk_hdr_set_active)
 static PlatMutex rec_lock = PLAT_MUTEX_INIT;
 static struct { VkImage win, src; VkFormat fmt; } recs[4];   // per presented window image: what the last draw copied
@@ -308,7 +308,7 @@ void vk_hdr_image_gone(VkImage image) {   // a texture image went away: forget i
 
 // ---- swapchain
 
-// With TOTK_HDR=1, the HDR10 format among the surface's (10-bit UNORM, ST 2084): 1 with *out set, else 0 and the
+// With REKARINA_HDR=1, the HDR10 format among the surface's (10-bit UNORM, ST 2084): 1 with *out set, else 0 and the
 // reason logged once.
 int vk_hdr_surface_format(const VkSurfaceFormatKHR *f, uint32_t n, VkSurfaceFormatKHR *out) {
     if (!vk_hdr_wanted()) return 0;

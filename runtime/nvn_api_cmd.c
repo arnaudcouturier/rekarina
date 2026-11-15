@@ -252,7 +252,7 @@ static void copy_view(view_t *dst, uint8_t *has, const NVNtextureView *v) {
 //   the thread that replays them and keeps the pins it is given.
 // MacNativeGames hit the same growth (3.16 million copies, 405 MB after 27 minutes) and marks pins by walking every live
 // recording each window (hle_nvn.c pin_scan); counting at copy and release walks each copy's ops once more, when it is
-// freed. TOTK_PIN_SWEEP=0 keeps every copy.
+// freed. REKARINA_PIN_SWEEP=0 keeps every copy.
 typedef struct {
     tex_t t;              // first: ops hold pins as tex_t pointers
     uint64_t last_use;    // nsubmits at the last tex_pin or the last drop of refs
@@ -370,9 +370,9 @@ void nvn_pins_sweep(uint64_t now, const tex_t *const *keep, int nkeep) {
     if (now < NVN_PIN_AGE) return;
     static int on = -1;
     if (on < 0) {
-        const char *s = cfg_get("TOTK_PIN_SWEEP");
+        const char *s = cfg_get("REKARINA_PIN_SWEEP");
         on = !(s && !strcmp(s, "0"));
-        if (!on) rt_log("nvn: TOTK_PIN_SWEEP=0: texture pin copies are kept for the run (the heap grows in long sessions)");
+        if (!on) rt_log("nvn: REKARINA_PIN_SWEEP=0: texture pin copies are kept for the run (the heap grows in long sessions)");
     }
     if (!on) return;
     static uint64_t logged;
@@ -738,12 +738,12 @@ NVN_API(nvnCommandBufferUpdateUniformBuffer) {
 // ---------- CommandBuffer: render state, payloads of nvn_obj.h
 // void nvnCommandBufferSetRenderTargets(NVNcommandBuffer *cmd, int n, const NVNtexture *const *colors,
 // const NVNtextureView *const *color_views, const NVNtexture *depth, const NVNtextureView *depth_view)
-// DEBUG-BIGLOG: TOTK_BIGLOG=1: API calls that name a texture 8192 or more wide (OoT's 12288x12288 static shadow map)
+// DEBUG-BIGLOG: REKARINA_BIGLOG=1: API calls that name a texture 8192 or more wide (OoT's 12288x12288 static shadow map)
 static void big_api(const char *what, const tex_t *t, const Cpu *c, long a, long b) {
     static int on = -1, n;
-    if (on < 0) on = cfg_get("TOTK_BIGLOG") != NULL;
+    if (on < 0) on = cfg_get("REKARINA_BIGLOG") != NULL;
     if (!on || !t || t->d.width < 8192 || n >= 200) return;
-    if (!n && cfg_get("TOTK_BIGLOG_ARM_API")) {   // arm the frame dump (TOTK_DUMP=t<never>) at the first such call
+    if (!n && cfg_get("REKARINA_BIGLOG_ARM_API")) {   // arm the frame dump (REKARINA_DUMP=t<never>) at the first such call
         void vk_dump_arm_soon(void);
         vk_dump_arm_soon();
     }
@@ -1074,11 +1074,11 @@ NVN_API(nvnCommandBufferDrawElementsIndirect) {
 }
 // void nvnCommandBufferDispatchCompute(NVNcommandBuffer *cmd, int x, int y, int z): caller = the game's return address
 NVN_API(nvnCommandBufferDispatchCompute) {
-    {   // DEBUG-DISPLR: TOTK_DISPLR=<x>: the guest call chain (frame pointers) of dispatches of that width, each new chain once
+    {   // DEBUG-DISPLR: REKARINA_DISPLR=<x>: the guest call chain (frame pointers) of dispatches of that width, each new chain once
         static int want = -2;
         static uint64_t seen[32];
         static int ns;
-        if (want == -2) { const char *e = cfg_get("TOTK_DISPLR"); want = e && *e ? atoi(e) : -1; }
+        if (want == -2) { const char *e = cfg_get("REKARINA_DISPLR"); want = e && *e ? atoi(e) : -1; }
         if (want >= 0 && (int)arg_x(c, 1) == want && ns < 32) {
             uint64_t ch[10], h = 0, fp = c->x[29];
             int k = 0;
@@ -1175,7 +1175,7 @@ NVN_API(nvnCommandBufferCopyTextureToTexture) {
     big_api("copy-t2t-src", o->src, c, o->sr.xoffset, o->sr.yoffset);   // DEBUG-BIGLOG
     {   // DEBUG-LUMLOG: the game code that copies OoT's 1x1 RGBA32F luminance targets (guest return address)
         static int on = -1, n;
-        if (on < 0) on = cfg_get("TOTK_LUMLOG") != NULL;
+        if (on < 0) on = cfg_get("REKARINA_LUMLOG") != NULL;
         if (on && o->dst && o->dst->d.format == 0x2e && o->dst->d.width == 1 && o->dst->d.height == 1 && n == 0) {
             void vk_dump_arm_soon(void);
             vk_dump_arm_soon();

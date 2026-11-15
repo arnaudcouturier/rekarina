@@ -49,7 +49,7 @@ static void buffer_init(VkCtx *c) {
 }
 
 void vk_crumbs_init(VkCtx *c) {
-    // DEBUG-NOCRUMBS: TOTK_CRUMBS=0: no breadcrumbs at all (what the per-part crumbs cost the GPU)
+    // DEBUG-NOCRUMBS: REKARINA_CRUMBS=0: no breadcrumbs at all (what the per-part crumbs cost the GPU)
     if (c->has_buffer_marker && rt_knob("CRUMBS", "1")) buffer_init(c);
     pass_marks_init(c);
 }
@@ -134,38 +134,38 @@ void vk_crumbs_report(void) {
 static VkPassMark ring[VK_PASS_MARKS];
 static uint32_t seq;                        // marks made; only the replay thread writes it
 
-// TOTK_PASS_CRUMBS: unset, buffer marks where VK_AMD_buffer_marker exists; 1, also NVIDIA checkpoints; 0, neither.
+// REKARINA_PASS_CRUMBS: unset, buffer marks where VK_AMD_buffer_marker exists; 1, also NVIDIA checkpoints; 0, neither.
 int vk_pass_marks_want_nv(void) {
-    const char *e = cfg_get("TOTK_PASS_CRUMBS");
+    const char *e = cfg_get("REKARINA_PASS_CRUMBS");
     return e && *e && strcmp(e, "0") != 0;
 }
 
 static void pass_marks_init(VkCtx *c) {
-    const char *e = cfg_get("TOTK_PASS_CRUMBS");
+    const char *e = cfg_get("REKARINA_PASS_CRUMBS");
     int off = e && !strcmp(e, "0");
 #ifdef GAME_OOT
-    // OoT: off unless asked for (TOTK_PASS_CRUMBS=1, or =amd for the buffer marks alone). A frame of forest
+    // OoT: off unless asked for (REKARINA_PASS_CRUMBS=1, or =amd for the buffer marks alone). A frame of forest
     // village has ~295 passes and dispatches, each marked at its start and at its end, and a mark at the end of the
     // pipe makes the GPU finish what is in flight before it goes on: with the marks the native 2560x1440 scene took
     // 13.5 ms of GPU time a frame, without them 12.2 (68 against 75 fps, standing camera, RTX 5070).
-    if ((!e || !*e) && !cfg_get("TOTK_GPU_PASSTIME")) off = 1;   // the pass timing needs the marks
+    if ((!e || !*e) && !cfg_get("REKARINA_GPU_PASSTIME")) off = 1;   // the pass timing needs the marks
 #endif
     set_checkpoint = c->has_nv_checkpoints
                          ? (PFN_vkCmdSetCheckpointNV)vkGetDeviceProcAddr(c->device, "vkCmdSetCheckpointNV") : NULL;
     pm_amd = !off && write_marker && words;
     vk_pass_marks_on = pm_amd || set_checkpoint;
     if (vk_pass_marks_on)
-        rt_log("vk: pass marks on (%s%s%s; TOTK_PASS_CRUMBS=0 turns them off%s)", pm_amd ? "VK_AMD_buffer_marker" : "",
+        rt_log("vk: pass marks on (%s%s%s; REKARINA_PASS_CRUMBS=0 turns them off%s)", pm_amd ? "VK_AMD_buffer_marker" : "",
                pm_amd && set_checkpoint ? " and " : "", set_checkpoint ? "VK_NV_device_diagnostic_checkpoints" : "",
                set_checkpoint ? "" : ", =1 adds NVIDIA checkpoints where the driver has them");
     else
-        rt_log("vk: pass marks off (%s)", off ? "TOTK_PASS_CRUMBS=0"
-                                              : "no VK_AMD_buffer_marker; TOTK_PASS_CRUMBS=1 asks for NVIDIA checkpoints");
+        rt_log("vk: pass marks off (%s)", off ? "REKARINA_PASS_CRUMBS=0"
+                                              : "no VK_AMD_buffer_marker; REKARINA_PASS_CRUMBS=1 asks for NVIDIA checkpoints");
 }
 
 static void describe_mark(uint32_t id, char *o, size_t size);
 
-// ---- GPU time per pass (TOTK_GPU_PASSTIME=<frame>): every pass and dispatch mark of frames <frame> and <frame> + 1
+// ---- GPU time per pass (REKARINA_GPU_PASSTIME=<frame>): every pass and dispatch mark of frames <frame> and <frame> + 1
 // also writes a timestamp at its start (top of pipe) and end (bottom of pipe); at frame <frame> + 8 the times are read
 // and the 40 longest logged with what each mark was. A diagnostic: it adds two timestamp writes per pass.
 #define PT_N 4096                            // marks profiled at most (two queries each)
@@ -211,7 +211,7 @@ static void pt_report(void) {
     rt_log("GPU_PASSTIME shape: span %.2f ms, gaps between marks %.2f ms; marks under 20 us %u (%.2f ms), 20-100 us %u "
            "(%.2f ms), 0.1-0.5 ms %u (%.2f ms), over 0.5 ms %u (%.2f ms)", first && last > first ? (last - first) * per : 0.0,
            gaps, bucket_n[0], bucket_ms[0], bucket_n[1], bucket_ms[1], bucket_n[2], bucket_ms[2], bucket_n[3], bucket_ms[3]);
-    if (getenv("TOTK_GPU_PASSTIME_ALL"))   // DEBUG: every mark of the two frames in record order
+    if (cfg_env("REKARINA_GPU_PASSTIME_ALL"))   // DEBUG: every mark of the two frames in record order
         for (uint32_t i = 0; i < k; i++) {
             char d[256];
             describe_mark(t[i].id, d, sizeof d);
@@ -238,11 +238,11 @@ static void pt_cmd(VkCommandBuffer cb, uint32_t id, int end) {
     // The real command: this runs where the recorder (vk_rec.c) plays its packets into cb, and vk_rec.h routes
     // vkCmdWriteTimestamp to a new packet (written into the stream being played, it broke it: unknown packet).
 #undef vkCmdWriteTimestamp
-    static int drained = -1;   // DEBUG-PTDRAIN: TOTK_PASSTIME_DRAINED=1: a mark starts once the work before it is done
-    if (drained < 0) drained = cfg_get("TOTK_PASSTIME_DRAINED") != NULL;
-    {   // DEBUG-PTBAR: TOTK_PASSTIME_BARRIER=1: a full barrier before each stamp of a dispatch or copy mark, so a mark's time is its own work
+    static int drained = -1;   // DEBUG-PTDRAIN: REKARINA_PASSTIME_DRAINED=1: a mark starts once the work before it is done
+    if (drained < 0) drained = cfg_get("REKARINA_PASSTIME_DRAINED") != NULL;
+    {   // DEBUG-PTBAR: REKARINA_PASSTIME_BARRIER=1: a full barrier before each stamp of a dispatch or copy mark, so a mark's time is its own work
         static int bar = -1;
-        if (bar < 0) bar = getenv("TOTK_PASSTIME_BARRIER") != NULL;
+        if (bar < 0) bar = cfg_env("REKARINA_PASSTIME_BARRIER") != NULL;
         const VkPassMark *pm = bar ? vk_pass_mark_record(id) : NULL;
         if (pm && pm->kind == VK_MARK_DISPATCH) {
 #undef vkCmdPipelineBarrier2
@@ -261,7 +261,7 @@ static void pt_cmd(VkCommandBuffer cb, uint32_t id, int end) {
 static void pt_mark(uint32_t id) {
     if (PT.state < 0) return;
     if (!PT.state) {
-        const char *e = cfg_get("TOTK_GPU_PASSTIME");
+        const char *e = cfg_get("REKARINA_GPU_PASSTIME");
         PT.state = -1;
         if (!e || !*e) return;
         PT.frame = strtoull(e, NULL, 0);
@@ -318,14 +318,14 @@ static unsigned long long shader_id(const GfxShader *s) {
     const uint8_t *iid = gfx_shader_input_id(s);
     unsigned long long v = 0;
     for (int i = 0; i < 8; i++) v = v << 8 | iid[i];
-    {   // DEBUG-SHDUMP: TOTK_SHDUMP_ID=<hex>,<hex>...: this shader's SPIR-V goes to TOTK_SHDUMP_DIR/<id>.spv once
-        const char *e = getenv("TOTK_SHDUMP_ID");
+    {   // DEBUG-SHDUMP: REKARINA_SHDUMP_ID=<hex>,<hex>...: this shader's SPIR-V goes to REKARINA_SHDUMP_DIR/<id>.spv once
+        const char *e = cfg_env("REKARINA_SHDUMP_ID");
         char hex[17]; snprintf(hex, sizeof hex, "%016llx", v);
         static unsigned long long done[64]; static int nd; int seen = 0;
         for (int i = 0; i < nd; i++) seen |= done[i] == v;
         if (e && strstr(e, hex) && !seen && nd < 64) {
             uint64_t words = 0; const uint32_t *w = gfx_shader_spirv(s, &words); char path[600];
-            snprintf(path, sizeof path, "%s/%s.spv", getenv("TOTK_SHDUMP_DIR") ? getenv("TOTK_SHDUMP_DIR") : ".", hex);
+            snprintf(path, sizeof path, "%s/%s.spv", cfg_env("REKARINA_SHDUMP_DIR") ? cfg_env("REKARINA_SHDUMP_DIR") : ".", hex);
             FILE *f = fopen(path, "wb"); if (f && w) fwrite(w, 4, (size_t)words, f); if (f) fclose(f);
             done[nd++] = v;
         }

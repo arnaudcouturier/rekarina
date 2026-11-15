@@ -32,7 +32,7 @@ static VKAPI_ATTR VkBool32 VKAPI_CALL debug_cb(VkDebugUtilsMessageSeverityFlagBi
     return VK_FALSE;
 }
 
-// ---- address bindings (VK_EXT_device_address_binding_report; TOTK_VK_ADDR_REPORT=0 turns it off)
+// ---- address bindings (VK_EXT_device_address_binding_report; REKARINA_VK_ADDR_REPORT=0 turns it off)
 // A device fault gives the GPU address of the bad access and nothing else. Pool buffers are known by their device
 // address (vk_memory.c vk_mem_fault_report); images and the runtime's other buffers are not, and the faults of Castle
 // Town Market all read "an address in no pool buffer" (2026-11-12). With this extension the driver reports every image
@@ -51,7 +51,7 @@ static VkDebugUtilsMessengerEXT ab_messenger;
 
 static int addr_report_wanted(void) {
     if (ab_want < 0) {
-        const char *e = cfg_get("TOTK_VK_ADDR_REPORT");
+        const char *e = cfg_get("REKARINA_VK_ADDR_REPORT");
         ab_want = !(e && *e == '0');
     }
     return ab_want;
@@ -111,9 +111,9 @@ static void addr_fault_report(uint64_t addr, uint64_t precision) {
         if (e->type == VK_OBJECT_TYPE_IMAGE && nwho < 3 && (!nwho || who[nwho - 1] != e->handle)) who[nwho++] = e->handle;
     }
     plat_mutex_unlock(&ab_lock);
-    // DEBUG-WHONAMES: TOTK_FAULT_WHO=1: what still names an image that lay at the address (the tables take their
+    // DEBUG-WHONAMES: REKARINA_FAULT_WHO=1: what still names an image that lay at the address (the tables take their
     // locks, which a thread stopped by the lost device may hold: off by default so the report always ends)
-    const char *fw = getenv("TOTK_FAULT_WHO");
+    const char *fw = cfg_env("REKARINA_FAULT_WHO");
     for (int i = 0; fw && *fw == '1' && i < nwho; i++) {
         void vk_texture_who_names(uint64_t image);
         void vk_tpool_who_names(uint64_t image);
@@ -172,11 +172,11 @@ static void mesa_cache_beside_exe(void) {
 // NVIDIA's driver keeps its compiled pipelines in one per-user folder, capped at about 1 GB and shared by every Vulkan and
 // OpenGL program. Once that is full nothing more is stored: the 42,177 shaders tools/oot_prepare_shaders.py builds never
 // reached it, and pipelines met in play compiled from nothing on every run, for seconds at a time (a 4.9 s frame after
-// picking up a rock). Each of these is left alone when the user has set it. TOTK_NV_CACHE=0 keeps the driver's own folder.
+// picking up a rock). Each of these is left alone when the user has set it. REKARINA_NV_CACHE=0 keeps the driver's own folder.
 // main calls this first: the window system loads the driver before the instance exists, and the driver reads these once.
 void vk_nvidia_cache_beside_exe(void) {
     char dir[PLAT_PATH_MAX * 2], tmp[32];
-    if (plat_getenv("TOTK_NV_CACHE", tmp, sizeof tmp) && tmp[0] == '0') return;
+    if (plat_getenv("REKARINA_NV_CACHE", tmp, sizeof tmp) && tmp[0] == '0') return;
     if (!plat_getenv("__GL_SHADER_DISK_CACHE_PATH", dir, sizeof dir)) {
         int len = plat_exe_path(dir, sizeof dir - 16);
         char *cut = len ? plat_last_sep(dir) : NULL;
@@ -196,9 +196,9 @@ static int create_instance(void) {
     const char *ext[12];
     uint32_t n_ext = (uint32_t)gfx_window_vk_extensions(ext, 7);
     const char *layers[] = {"VK_LAYER_KHRONOS_validation"};
-    int validate = cfg_bool("TOTK_VK_VALIDATION");
+    int validate = cfg_bool("REKARINA_VK_VALIDATION");
     if (validate && !layer_present(layers[0])) {
-        rt_log("vk: TOTK_VK_VALIDATION set but %s is not installed; continuing without", layers[0]);
+        rt_log("vk: REKARINA_VK_VALIDATION set but %s is not installed; continuing without", layers[0]);
         validate = 0;
     }
     int utils = instance_ext_present(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
@@ -273,18 +273,19 @@ static int name_has(const char *s, const char *sub) {
     return 0;
 }
 
-// First discrete GPU with Vulkan 1.3, the required extensions and a graphics+present queue; TOTK_GPU_INDEX (index) or
-// TOTK_GPU_NAME (case-insensitive part of the name) overrides.
+// First discrete GPU with Vulkan 1.3, the required extensions and a graphics+present queue; REKARINA_GPU_INDEX (index) or
+// REKARINA_GPU_NAME (case-insensitive part of the name) overrides.
 static int pick_device(void) {
     uint32_t n = 0;
     vk_dlssg_enumerate(g_vk.instance, &n, NULL);
     if (!n) { rt_log("vk: no Vulkan device"); return 0; }
     VkPhysicalDevice *pd = calloc(n, sizeof *pd);
     vk_dlssg_enumerate(g_vk.instance, &n, pd);
-    const char *e = cfg_get("TOTK_GPU_INDEX");   // no fixed default: the best device when unset
+    const char *e = cfg_get("REKARINA_GPU_INDEX");   // no fixed default: the best device when unset
     int want = e && *e ? atoi(e) : -1;
-    const char *name = cfg_get("TOTK_GPU_NAME");
+    const char *name = cfg_get("REKARINA_GPU_NAME");
     int best = -1, best_score = -1;
+again:
     for (uint32_t i = 0; i < n; i++) {
         VkPhysicalDeviceProperties p;
         vkGetPhysicalDeviceProperties(pd[i], &p);
@@ -306,9 +307,17 @@ static int pick_device(void) {
                   : p.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU ? 2 : 1;
         if (score > best_score) { best_score = score; best = (int)i; }
     }
+    if (best < 0 && (want >= 0 || (name && *name))) {
+        // The saved choice names no usable device now (a card gone, another order after a driver update, a device the
+        // menu lists but the game cannot use): the automatic choice rather than a game that does not start
+        if (want >= 0) rt_log("vk: REKARINA_GPU_INDEX=%d is not usable (see above): the best device instead", want);
+        else rt_log("vk: no usable gpu matches REKARINA_GPU_NAME=%s (see above): the best device instead", name);
+        want = -1, name = NULL;
+        goto again;
+    }
     if (best < 0) {
-        if (want >= 0) rt_log("vk: TOTK_GPU_INDEX=%d is not usable (see above)", want);
-        else if (name && *name) rt_log("vk: no usable gpu matches TOTK_GPU_NAME=%s (see above)", name);
+        if (want >= 0) rt_log("vk: REKARINA_GPU_INDEX=%d is not usable (see above)", want);
+        else if (name && *name) rt_log("vk: no usable gpu matches REKARINA_GPU_NAME=%s (see above)", name);
         else rt_log("vk: no device with Vulkan 1.3 and the required extensions (see above)");
         free(pd);
         return 0;
@@ -383,7 +392,7 @@ static int guard_wait(uint64_t fence) {
 
 static uint64_t result_frame(void) { return __atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED); }
 
-// TOTK_SECTIONS: VMA's vkAllocateMemory goes through this (thread, size, time); off, VMA calls the driver directly.
+// REKARINA_SECTIONS: VMA's vkAllocateMemory goes through this (thread, size, time); off, VMA calls the driver directly.
 static VKAPI_ATTR VkResult VKAPI_CALL timed_alloc(VkDevice d, const VkMemoryAllocateInfo *i, const VkAllocationCallbacks *a,
                                                   VkDeviceMemory *m) {
     uint64_t t0 = sec_clock();
@@ -478,7 +487,7 @@ static int create_device(void) {
     }
     // GPU breadcrumbs for a lost device (vk_crumbs.c): AMD's drivers and RADV report it.
     if (has_ext(ep, ne, VK_AMD_BUFFER_MARKER_EXTENSION_NAME)) { g_vk.has_buffer_marker = 1; ext[n_ext++] = VK_AMD_BUFFER_MARKER_EXTENSION_NAME; }
-    // Pass marks on NVIDIA (vk_crumbs.c): checkpoints only with TOTK_PASS_CRUMBS=1, since NVIDIA documents a cost for
+    // Pass marks on NVIDIA (vk_crumbs.c): checkpoints only with REKARINA_PASS_CRUMBS=1, since NVIDIA documents a cost for
     // the extension. NVIDIA's drivers report it, AMD's do not.
     if (vk_pass_marks_want_nv() && has_ext(ep, ne, VK_NV_DEVICE_DIAGNOSTIC_CHECKPOINTS_EXTENSION_NAME)) {
         g_vk.has_nv_checkpoints = 1;
@@ -487,7 +496,7 @@ static int create_device(void) {
 #ifdef GAME_NS2
     // Cooperative matrices (gfx_shader_coop_matrix): HMMA.16816 with an f16 accumulator, the matrix multiply of the game's
     // upscaler network, runs on the tensor cores (translator patch 0033) when the device has 16 x 8 x 16 f16 matrices at
-    // subgroup scope and 16-bit floats in shaders. TOTK_COOP_MATRIX=0: the shared-memory emulation as before.
+    // subgroup scope and 16-bit floats in shaders. REKARINA_COOP_MATRIX=0: the shared-memory emulation as before.
     int coop_ok = 0;
     if (has_ext(ep, ne, VK_NV_COOPERATIVE_MATRIX_EXTENSION_NAME) && rt_knob("COOP_MATRIX", "1")) {
         PFN_vkGetPhysicalDeviceCooperativeMatrixPropertiesNV q = (PFN_vkGetPhysicalDeviceCooperativeMatrixPropertiesNV)
@@ -509,8 +518,8 @@ static int create_device(void) {
         }
     }
 #endif
-    // DEBUG-PIPESTATS: TOTK_PIPESTATS=1: the driver's statistics of each pipeline (vk_pipeline.c pipestats_log)
-    if (cfg_get("TOTK_PIPESTATS") && has_ext(ep, ne, VK_KHR_PIPELINE_EXECUTABLE_PROPERTIES_EXTENSION_NAME)) {
+    // DEBUG-PIPESTATS: REKARINA_PIPESTATS=1: the driver's statistics of each pipeline (vk_pipeline.c pipestats_log)
+    if (cfg_get("REKARINA_PIPESTATS") && has_ext(ep, ne, VK_KHR_PIPELINE_EXECUTABLE_PROPERTIES_EXTENSION_NAME)) {
         ext[n_ext++] = VK_KHR_PIPELINE_EXECUTABLE_PROPERTIES_EXTENSION_NAME;
         CHAIN(pep, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PIPELINE_EXECUTABLE_PROPERTIES_FEATURES_KHR);
     }
@@ -567,11 +576,11 @@ static int create_device(void) {
     g_vk.has_buffer_device_address = c->f12.bufferDeviceAddress;
     g_vk.has_astc_ldr = h->textureCompressionASTC_LDR;
     {
-        const char *e = cfg_get("TOTK_FEEDBACK");
+        const char *e = cfg_get("REKARINA_FEEDBACK");
         int layout_ok = has_fbl && has_lr && c->fbl.attachmentFeedbackLoopLayout && c->lr.dynamicRenderingLocalRead;
         int want_layout = !(e && !strcmp(e, "restart"));
 #ifdef GAME_OOT
-        // OoT on a card that is not AMD's: the restart, unless TOTK_FEEDBACK=layout asks for the layout.
+        // OoT on a card that is not AMD's: the restart, unless REKARINA_FEEDBACK=layout asks for the layout.
         // The layout mode gives every attachable image the feedback usage at its creation, and with that usage an
         // RTX 5070 took 12.2 ms of GPU time for a frame of forest village at 2560x1440 against 9.0 without (75 against
         // 90 fps, standing camera); the game has two feedback draws a frame, so the restarts cost nothing to speak of.
@@ -581,7 +590,7 @@ static int create_device(void) {
         g_vk.feedback = e && !strcmp(e, "0") ? VK_FEEDBACK_OFF : layout_ok && want_layout ? VK_FEEDBACK_LAYOUT : VK_FEEDBACK_RESTART;
         rt_log("vk: feedback loops: %s (attachmentFeedbackLoopLayout %d, dynamicRenderingLocalRead %d)",
                g_vk.feedback == VK_FEEDBACK_LAYOUT ? "feedback layout + by-region barrier"
-               : g_vk.feedback == VK_FEEDBACK_RESTART ? "pass restart + full barrier" : "off (TOTK_FEEDBACK=0)",
+               : g_vk.feedback == VK_FEEDBACK_RESTART ? "pass restart + full barrier" : "off (REKARINA_FEEDBACK=0)",
                has_fbl && c->fbl.attachmentFeedbackLoopLayout, has_lr && c->lr.dynamicRenderingLocalRead);
     }
 
@@ -630,30 +639,30 @@ static int create_device(void) {
     gfx_shader_float_atomics = g_vk.has_atomic_float && rt_knob("FLOAT_ATOMICS", "1");
     gfx_shader_coop_matrix = coop_ok && c->cm.cooperativeMatrix && c->f12.shaderFloat16;
     rt_log("vk: HMMA.16816 %s", gfx_shader_coop_matrix ? "on cooperative matrices (VK_NV_cooperative_matrix)" : "emulated in shared memory");
-    {   // TOTK_MESH_INDICES=auto|whole|split: how a mesh shader's entry point stores a primitive's indices (translator
+    {   // REKARINA_MESH_INDICES=auto|whole|split: how a mesh shader's entry point stores a primitive's indices (translator
         // patch 0041). Split (a thread per index byte) is what NVIDIA has run since the first mesh draw and stays there;
         // AMD's Windows driver for RDNA 1 and 2 loses split stores (no mesh draw showed anything), so every other
         // device gets whole vectors, which no driver has a reason to lose.
-        const char *mi = cfg_get("TOTK_MESH_INDICES");
+        const char *mi = cfg_get("REKARINA_MESH_INDICES");
         gfx_shader_mesh_whole = mi && !strcmp(mi, "whole") ? 1 : mi && !strcmp(mi, "split") ? 0 : g_vk.props.vendorID != 0x10de;
-        rt_log("vk: mesh shaders store a primitive's indices %s (TOTK_MESH_INDICES)",
+        rt_log("vk: mesh shaders store a primitive's indices %s (REKARINA_MESH_INDICES)",
                gfx_shader_mesh_whole ? "whole, one thread a primitive" : "split, one thread an index");
     }
     rt_log("vk: float atomic add %s", gfx_shader_float_atomics ? "native (VK_EXT_shader_atomic_float)" : "as compare-and-swap loops");
     rt_log("vk: NVN2 global memory pool table %s", gfx_shader_gmem ? "on (bufferDeviceAddress)" : "off: no bufferDeviceAddress");
 #endif
     vk_caps_init(&g_vk);
-    mem_result_set_wait(guard_wait, kern_guest_thread);   // TOTK_RESULT_GUARD (memory.c)
-    mem_result_setup(vk_sync_fence_done, result_frame);   // TOTK_RESULT_WATCH (memory.c)
+    mem_result_set_wait(guard_wait, kern_guest_thread);   // REKARINA_RESULT_GUARD (memory.c)
+    mem_result_setup(vk_sync_fence_done, result_frame);   // REKARINA_RESULT_WATCH (memory.c)
 
     sec_init();
     static VmaVulkanFunctions vma_fn;
-    vma_fn.vkAllocateMemory = sec_on ? timed_alloc : NULL;   // TOTK_SECTIONS: VMA's vkAllocateMemory is timed
-    // Blocks of 64 MiB (TOTK_VMA_BLOCK_MB; the allocator's own default is 256): a block goes back to the system only
+    vma_fn.vkAllocateMemory = sec_on ? timed_alloc : NULL;   // REKARINA_SECTIONS: VMA's vkAllocateMemory is timed
+    // Blocks of 64 MiB (REKARINA_VMA_BLOCK_MB; the allocator's own default is 256): a block goes back to the system only
     // when nothing is left in it, and the textures of a map the player left (vk_texture.c evict_cold) were made
     // together, so they empty small blocks whole where they left a quarter-gigabyte block a tenth full: after four
     // map changes the blocks held 1.9 GiB with no allocation in it, counted against the video memory budget.
-    const char *bm = cfg_get("TOTK_VMA_BLOCK_MB");
+    const char *bm = cfg_get("REKARINA_VMA_BLOCK_MB");
     int block_mb = bm && atoi(bm) >= 16 ? atoi(bm) : 64;
     VmaAllocatorCreateInfo ai = {.physicalDevice = g_vk.phys, .device = g_vk.device, .instance = g_vk.instance,
                                  .vulkanApiVersion = VK_API_VERSION_1_3,
@@ -663,9 +672,9 @@ static int create_device(void) {
                                  .pDeviceMemoryCallbacks = vk_headroom_callbacks(),
                                  .pVulkanFunctions = sec_on ? &vma_fn : NULL};
     if ((r = vmaCreateAllocator(&ai, &g_vk.vma)) != VK_SUCCESS) { rt_log("vk: vmaCreateAllocator failed (%d)", (int)r); return 0; }
-    {   // DEBUG-VRAMHOG: TOTK_VRAM_HOG_MB=<n> takes that much device memory away for the life of the process, to see
+    {   // DEBUG-VRAMHOG: REKARINA_VRAM_HOG_MB=<n> takes that much device memory away for the life of the process, to see
         // the port on a card with less VRAM (dedicated 256 MiB buffers, never used)
-        const char *e = cfg_get("TOTK_VRAM_HOG_MB");
+        const char *e = cfg_get("REKARINA_VRAM_HOG_MB");
         int mb = e ? atoi(e) : 0, got = 0;
         for (int i = 0; i < mb / 256; i++) {
             VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = 256ull << 20,

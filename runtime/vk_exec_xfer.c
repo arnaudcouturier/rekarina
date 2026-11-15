@@ -111,7 +111,7 @@ static int evp_pending(volatile uint32_t *v) {
     return n > 0;
 }
 
-// DEBUG-EVLAG: TOTK_EVENT_LAG=<k>: a GPU signal reaches the event word only k presents after the frame it was
+// DEBUG-EVLAG: REKARINA_EVENT_LAG=<k>: a GPU signal reaches the event word only k presents after the frame it was
 // recorded in (the console's GPU a frame behind its CPU), in order
 typedef struct EvLag { struct EvLag *next; void *ev; uint64_t frame; } EvLag;
 static EvLag *evl_head, *evl_tail;
@@ -133,7 +133,7 @@ void vk_event_lag_tick(uint64_t frames) {
 static void event_cb(void *arg);
 static void event_apply(void *arg) {
     EventWrite *e = arg;
-    mem_result_release((uint64_t)(uintptr_t)e->val, sizeof *e->val);   // TOTK_RESULT_WATCH: the page opens for the write
+    mem_result_release((uint64_t)(uintptr_t)e->val, sizeof *e->val);   // REKARINA_RESULT_WATCH: the page opens for the write
     if (e->mode == NVN_EVENT_SIGNAL_MODE_ADD) __atomic_fetch_add(e->val, e->value, __ATOMIC_RELEASE);
     else __atomic_store_n(e->val, e->value, __ATOMIC_RELEASE);
     evp_add(e->val, -1);
@@ -162,7 +162,7 @@ static void event_cb(void *arg) {   // completion thread
 // light numbers belong, NaN in the skin shaders and a white frame with frames in flight, docs/oot-notes.md). A word a
 // GPU signal earlier in the queue will set needs no wait, nor does a word the CPU has never signalled (the game's
 // per-frame words that GPU work of another of its queues sets: one queue here, in submission order). A wait that runs
-// out (TOTK_EVENT_WAIT_MS, default 100: a hitch of the signalling thread) is logged; after three in a row that word is
+// out (REKARINA_EVENT_WAIT_MS, default 100: a hitch of the signalling thread) is logged; after three in a row that word is
 // not waited for again, as its signal may come from the thread that is replaying.
 // Returns 1 when it waited, so that the caller takes the copies again for the rest of the submission.
 static int ev_met_v(volatile uint32_t *val, uint32_t mode, uint32_t value) {
@@ -208,7 +208,7 @@ static struct { uint64_t waits, met, met_late, pre, gpu, ns, max_ns, timeouts, s
 // turning, tiles of the screen lost their lights for one to four frames, and the sun patches on the ground with them
 // (the player's "shadows drawn again" and flickering grass in the forest, 5 to 12 times in 30 s of turning,
 // 2026-11-14). vk_exec_copies_ns is when the copies the commands read now were begun (vk_exec.c: the submission's
-// start, or the last wait that took them again). TOTK_EVENT_LATE_MET=0: as before.
+// start, or the last wait that took them again). REKARINA_EVENT_LATE_MET=0: as before.
 uint64_t vk_exec_copies_ns;
 static struct { volatile uint32_t *val; int fails; } ev_skip[16];   // words whose waits ran out three times in a row
 static int ev_nskip;
@@ -235,7 +235,7 @@ static int ev_wait(volatile uint32_t *val, uint32_t mode, uint32_t value, int si
     if (dt > evw.max_ns) evw.max_ns = dt;
     return 1;
 }
-// A deferred wait (TOTK_EVENT_DEFER=1, off by default). On the console the GPU stops at the command and the submitting thread
+// A deferred wait (REKARINA_EVENT_DEFER=1, off by default). On the console the GPU stops at the command and the submitting thread
 // goes on; here the replay runs on that thread, and stopping it there cost ~2.5 ms in nearly half the frames of the
 // forest porch (OoT's signal comes from another thread while the game thread records the rest). Instead
 // the replay records past the wait: the commands after it get a new uniform arena at once (vk_usnap_resnap), and the
@@ -260,7 +260,7 @@ static int wait_event_(VkExec *ex, const p_wait_event *p) {
     (void)ex;
     if (on < 0) {
         on = rt_knob("EVENT_WAIT", "1");
-        const char *e = cfg_get("TOTK_EVENT_WAIT_MS");
+        const char *e = cfg_get("REKARINA_EVENT_WAIT_MS");
         ev_limit_ns = (uint64_t)(e && atoi(e) > 0 ? atoi(e) : 100) * 1000000ull;
         ev_defer = rt_knob("EVENT_DEFER", "0");
     }
@@ -268,7 +268,7 @@ static int wait_event_(VkExec *ex, const p_wait_event *p) {
     {   // DEBUG-EVLOG2
         static int lon = -1;
         static uint64_t lf0 = 900;
-        if (lon < 0) { const char *e = cfg_get("TOTK_EVLOG2"); lon = e != NULL; if (e && atoll(e) > 1) lf0 = (uint64_t)atoll(e); }
+        if (lon < 0) { const char *e = cfg_get("REKARINA_EVLOG2"); lon = e != NULL; if (e && atoll(e) > 1) lf0 = (uint64_t)atoll(e); }
         uint64_t f = __atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED);
         if (lon && f >= lf0 && f <= lf0 + 5)
             rt_log("EVLOG2 wait word %p mode %u value %u fence %llu frame %llu now %u pending %d cpu %d rec %llu pass %u",
@@ -336,7 +336,7 @@ static int wait_event_(VkExec *ex, const p_wait_event *p) {
 // vk_exec_copies_ns), and taking them again then is too late the other way: the game is writing the next frame's
 // blocks by that time (2026-11-14: objects black or missing for up to 19 frames). The replay of the commands before
 // the wait no longer overlaps the thread that signals: in the frames where that thread is late, the submission
-// starts later by as much. TOTK_EVENT_PREWAIT=0: off. Returns the number of waits waited for.
+// starts later by as much. REKARINA_EVENT_PREWAIT=0: off. Returns the number of waits waited for.
 static int prewait_ops(const op_hdr *h, int depth) {
     int waited = 0;
     for (;;) {
@@ -369,7 +369,7 @@ int vk_exec_prewait(const uint64_t *handles, int n) {
     if (on < 0) on = rt_knob("EVENT_PREWAIT", "1") && rt_knob("EVENT_WAIT", "1");
     if (!on) return 0;
     if (!ev_limit_ns) {
-        const char *e = cfg_get("TOTK_EVENT_WAIT_MS");
+        const char *e = cfg_get("REKARINA_EVENT_WAIT_MS");
         ev_limit_ns = (uint64_t)(e && atoi(e) > 0 ? atoi(e) : 100) * 1000000ull;
     }
     int waited = 0;
@@ -398,7 +398,7 @@ void vk_exec_wait_resolve(void) {
 
 // NVNcounterData = {counter, timestamp}; timestamps in nvn_counter_ticks's unit (nvn_api.h: Tegra 19.2 MHz ticks, the
 // base of GetSystemTick; GAME_NS2: the GPU's 614.4 MHz ticks).
-// DEBUG-RPLAG: TOTK_REPORT_LAG=<k>: counter reports reach guest memory k presents after their completion, in order
+// DEBUG-RPLAG: REKARINA_REPORT_LAG=<k>: counter reports reach guest memory k presents after their completion, in order
 typedef struct RpLag { struct RpLag *next; uint64_t addr, due, rec[2]; } RpLag;
 static RpLag *rpl_head, *rpl_tail;
 static PlatMutex rpl_lock = PLAT_MUTEX_INIT;
@@ -418,7 +418,7 @@ void vk_report_lag_tick(uint64_t frames) {
 }
 static void write_counter(uint64_t addr, uint64_t counter) {
     uint64_t rec[2] = {counter, nvn_counter_ticks(kern_now_ns())};   // nvn_api.h: the unit per console
-    if (rp_lag < 0) { const char *l = cfg_get("TOTK_REPORT_LAG"); rp_lag = l ? atoi(l) : 0; }
+    if (rp_lag < 0) { const char *l = cfg_get("REKARINA_REPORT_LAG"); rp_lag = l ? atoi(l) : 0; }
     if (rp_lag > 0) {
         RpLag *l = malloc(sizeof *l);
         if (l) {
@@ -432,7 +432,7 @@ static void write_counter(uint64_t addr, uint64_t counter) {
             return;
         }
     }
-    mem_result_release(addr, sizeof rec);   // TOTK_RESULT_WATCH
+    mem_result_release(addr, sizeof rec);   // REKARINA_RESULT_WATCH
     memcpy((void *)(uintptr_t)addr, rec, sizeof rec);
 }
 
@@ -451,7 +451,7 @@ static volatile uint64_t report_written;
 // 15-30 real fps and the game ran in slow motion. Each timestamp report now writes a Vulkan timestamp query
 // (bottom of pipe) and its callback converts the GPU tick to the host clock with a calibrated (GPU tick, host time)
 // pair (VK_KHR/EXT_calibrated_timestamps, refreshed every 250 ms), then to the console's unit (nvn_counter_ticks).
-// Without calibration, an unavailable query or a full ring, the callback time stays. TOTK_GPU_TIMESTAMPS=0 turns it off.
+// Without calibration, an unavailable query or a full ring, the callback time stays. REKARINA_GPU_TIMESTAMPS=0 turns it off.
 #ifdef GAME_NS2
 #define TSQ_N 4096
 static VkQueryPool tsq_pool;
@@ -538,7 +538,7 @@ static void counter_cb(void *arg) {
 #endif
     if (ns) {
         uint64_t rec[2] = {0, nvn_counter_ticks(ns)};
-        mem_result_release(w->addr, sizeof rec);   // TOTK_RESULT_WATCH
+        mem_result_release(w->addr, sizeof rec);   // REKARINA_RESULT_WATCH
         memcpy((void *)(uintptr_t)w->addr, rec, sizeof rec);
     } else {
         write_counter(w->addr, 0);
@@ -557,7 +557,7 @@ static void counter_cb(void *arg) {
 // whose value is in guest memory (report_written), since the ring is in record order.
 #define PENDING 16384
 static struct { uint64_t addr, fence, seq; int unknown; uint32_t pred_off; uint8_t pred, why; } pending[PENDING];
-// pending[].why (TOTK_TRACE=perf): why a samples-passed report has no GPU predicate: 1 not exact (no reset since
+// pending[].why (REKARINA_TRACE=perf): why a samples-passed report has no GPU predicate: 1 not exact (no reset since
 // the last report), 2 a lost draw, 3 several queries, 4 no predicate buffer
 
 
@@ -770,13 +770,13 @@ void vk_exec_oq_draw_lost(VkExec *ex) {
     if (oq_counting) oq_lost = 1;   // as a full ring: the segment's count is at least 1 and not exact
 }
 
-// DEBUG-OQLOG: TOTK_OQLOG=<frame>: for three frames from <frame>, every samples-passed reset and report, every render
+// DEBUG-OQLOG: REKARINA_OQLOG=<frame>: for three frames from <frame>, every samples-passed reset and report, every render
 // condition with how it was decided, and every draw a condition skipped while samples were counted.
 int vk_oqlog_on(void) {
     static int on = -1;
-    static uint64_t from, n = 3;   // TOTK_OQLOG=<frame>[:<frames>]
+    static uint64_t from, n = 3;   // REKARINA_OQLOG=<frame>[:<frames>]
     if (on < 0) {
-        const char *e = cfg_get("TOTK_OQLOG");
+        const char *e = cfg_get("REKARINA_OQLOG");
         on = e && *e;
         char *end = NULL;
         from = on ? strtoull(e, &end, 0) : 0;
@@ -822,13 +822,13 @@ static uint8_t oq_read[OQ_N];      // completion thread: slots read and not yet 
 static uint32_t oq_nread;
 static uint32_t oq_queued;         // replay: segments queued since the last flush callback
 
-// DEBUG-OQSTAT (TOTK_OQSTAT=1): per submission, how many samples-passed reports came out zero and how many queries
+// DEBUG-OQSTAT (REKARINA_OQSTAT=1): per submission, how many samples-passed reports came out zero and how many queries
 // did, with the frame counter: a frame in which objects lose their shading for want of a count shows as a jump.
 static int oqstat_on = -1;
 static uint32_t oqstat_rep, oqstat_rep0, oqstat_q, oqstat_q0, oqstat_na;
 
 static void oq_flush(void) {
-    if (oqstat_on < 0) oqstat_on = cfg_get("TOTK_OQSTAT") != NULL;
+    if (oqstat_on < 0) oqstat_on = cfg_get("REKARINA_OQSTAT") != NULL;
     if (oqstat_on && oqstat_rep) {
         rt_log("OQSTAT frame %llu reports %u zero %u queries %u zero %u unavailable %u",
                (unsigned long long)__atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED), oqstat_rep, oqstat_rep0, oqstat_q,
@@ -885,9 +885,9 @@ static void oq_seg_done(const OqSegment *s) {
         oq_count += sum;
         if (s->lost && !oq_count) oq_count = 1;
         if (oqstat_on > 0 && s->addr) oqstat_rep++, oqstat_rep0 += !oq_count;
-        {   // DEBUG: TOTK_OQ_FORCE=<n>: the game reads at least n samples for every report (its CPU culling sees all visible)
+        {   // DEBUG: REKARINA_OQ_FORCE=<n>: the game reads at least n samples for every report (its CPU culling sees all visible)
             static long force = -1;
-            if (force < 0) { const char *e = getenv("TOTK_OQ_FORCE"); force = e && *e ? atol(e) : 0; }
+            if (force < 0) { const char *e = cfg_env("REKARINA_OQ_FORCE"); force = e && *e ? atol(e) : 0; }
             if (s->addr) write_counter(s->addr, force && oq_count < (uint64_t)force ? (uint64_t)force : oq_count);
         }
         if (s->seq) __atomic_store_n(&report_written, s->seq, __ATOMIC_RELEASE);
@@ -977,22 +977,22 @@ static void oq_report(VkExec *ex, uint64_t addr, uint64_t seq) {
     if (!oq_keep) oq_counting = 0;
 }
 
-// TOTK_RESULT_WATCH_NOREPORTS and TOTK_DEPTH_PROBE, read once: getenv walks the whole environment, and these were
+// REKARINA_RESULT_WATCH_NOREPORTS and REKARINA_DEPTH_PROBE, read once: getenv walks the whole environment, and these were
 // asked per counter report and per depth copy, ~20 % of the replay thread on the forest porch.
 static int rw_noreports(void) {
     static int v = -1;
-    if (v < 0) v = getenv("TOTK_RESULT_WATCH_NOREPORTS") != NULL;
+    if (v < 0) v = cfg_env("REKARINA_RESULT_WATCH_NOREPORTS") != NULL;
     return v;
 }
 static int depth_probe(void) {
     static int v = -1;
-    if (v < 0) v = getenv("TOTK_DEPTH_PROBE") != NULL;
+    if (v < 0) v = cfg_env("REKARINA_DEPTH_PROBE") != NULL;
     return v;
 }
 
 static void signal_event(VkExec *ex, const p_signal_event *p) {
-    if (!rw_noreports()) mem_result_watch((uint64_t)(uintptr_t)p->val, sizeof *p->val, ex->fence);   // TOTK_RESULT_WATCH
-    if (ev_lag < 0) { const char *l = cfg_get("TOTK_EVENT_LAG"); ev_lag = l ? atoi(l) : 0; }
+    if (!rw_noreports()) mem_result_watch((uint64_t)(uintptr_t)p->val, sizeof *p->val, ex->fence);   // REKARINA_RESULT_WATCH
+    if (ev_lag < 0) { const char *l = cfg_get("REKARINA_EVENT_LAG"); ev_lag = l ? atoi(l) : 0; }
     EventLagged *ex_ = malloc(sizeof *ex_);
     if (!ex_) rt_fatal("vk: out of memory");
     ex_->frame = __atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED) + 1;
@@ -1004,10 +1004,10 @@ static void signal_event(VkExec *ex, const p_signal_event *p) {
         rsig[ri].v = p->mode == NVN_EVENT_SIGNAL_MODE_ADD ? rsig[ri].v + p->value : p->value;
         rsig[ri].cp = vk_exec_ac_value;   // recorded by a compute rest (async compute), else 0
     }
-    {   // DEBUG-EVLOG2: TOTK_EVLOG2=1: GPU signals and waits of event words, frames 900-905
+    {   // DEBUG-EVLOG2: REKARINA_EVLOG2=1: GPU signals and waits of event words, frames 900-905
         static int on = -1;
         static uint64_t f0 = 900;
-        if (on < 0) { const char *e = cfg_get("TOTK_EVLOG2"); on = e != NULL; if (e && atoll(e) > 1) f0 = (uint64_t)atoll(e); }
+        if (on < 0) { const char *e = cfg_get("REKARINA_EVLOG2"); on = e != NULL; if (e && atoll(e) > 1) f0 = (uint64_t)atoll(e); }
         uint64_t f = __atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED);
         if (on && f >= f0 && f <= f0 + 5)
             rt_log("EVLOG2 gpu signal word %p mode %u value %u fence %llu frame %llu now %u rec %llu pass %u", (void *)p->val,
@@ -1029,7 +1029,7 @@ static void signal_event(VkExec *ex, const p_signal_event *p) {
 // the pass that holds the query ends: vk_exec_oq_after_pass), and the draws, dispatches and attachment clears under
 // the condition run inside VK_EXT_conditional_rendering on that word (inverted for mode 0). Only an exact count
 // qualifies: a report right after a reset whose segment holds one query (or none: a known 0), compared with a zero
-// word the CPU can read; any other condition stays on the CPU. TOTK_GPU_COND=0 turns it off.
+// word the CPU can read; any other condition stays on the CPU. REKARINA_GPU_COND=0 turns it off.
 #define PRED_N 65536u
 static VkBuffer pred_buf;
 static VmaAllocation pred_alloc;
@@ -1047,7 +1047,7 @@ static int pred_ready(void) {
     VkCtx *c = vk_ctx();
     if (!c->has_conditional_rendering || !rt_knob("GPU_COND", "1")) {
         rt_log("vk: samples-passed conditions on the CPU only (%s)",
-               c->has_conditional_rendering ? "TOTK_GPU_COND=0" : "no VK_EXT_conditional_rendering");
+               c->has_conditional_rendering ? "REKARINA_GPU_COND=0" : "no VK_EXT_conditional_rendering");
         return 0;
     }
     p_cond_begin = (PFN_vkCmdBeginConditionalRenderingEXT)vkGetDeviceProcAddr(c->device, "vkCmdBeginConditionalRenderingEXT");
@@ -1091,7 +1091,7 @@ static void pred_note(VkExec *ex, unsigned k, int exact) {
         // A segment without queries is a known 0: the game drew nothing between the reset and the report (an object it
         // culled itself), and the lit draws conditioned on it are skipped. Rendering them all cost the forest two
         // thirds of its frame rate (41.5 -> 14.6 fps). A draw the replay skipped (vk_exec_oq_draw_lost) makes the
-        // segment not exact instead, so it never ends here. TOTK_PRED_ZERO=0 renders them (comparisons).
+        // segment not exact instead, so it never ends here. REKARINA_PRED_ZERO=0 renders them (comparisons).
         static int zero = -1;
         if (zero < 0) zero = rt_knob("PRED_ZERO", "1");
         if (zero) pending[k].pred = PRED_ZERO;
@@ -1124,7 +1124,7 @@ static void report_counter(VkExec *ex, const p_report_counter *p) {
     int samples = p->type == NVN_COUNTER_TYPE_SAMPLES_PASSED && oq_ready();
     {   // DEBUG-DRAWDBG
         int vk_dump_active_dbg(void);
-        if (vk_dump_armed && getenv("TOTK_DRAWDBG") && vk_dump_active_dbg()) {
+        if (vk_dump_armed && cfg_env("REKARINA_DRAWDBG") && vk_dump_active_dbg()) {
             dbg_oq_lines = 1;
             rt_log("DRAWDBG REPORT type %u addr %#llx samples %d fence %llu depth %#llx keep %d counting %d", p->type,
                    (unsigned long long)p->addr, samples, (unsigned long long)ex->fence,
@@ -1138,7 +1138,7 @@ static void report_counter(VkExec *ex, const p_report_counter *p) {
     VkMemSpan m;
     if (!vk_mem_resolve(p->addr, sizeof(NVNcounterData), &m))
         rt_fatal("vk: counter report at %#llx is in no memory pool", (unsigned long long)p->addr);
-    if (!rw_noreports()) mem_result_watch(p->addr, sizeof(NVNcounterData), ex->fence);   // TOTK_RESULT_WATCH
+    if (!rw_noreports()) mem_result_watch(p->addr, sizeof(NVNcounterData), ex->fence);   // REKARINA_RESULT_WATCH
     vk_mem_count(m.cls, VK_MUSE_GPU_WRITE, sizeof(NVNcounterData));
     uint64_t seq = ++report_seq;
     int exact = oq_since_reset;   // the count is the segment's sum
@@ -1227,7 +1227,7 @@ static void pl_snapshot(VkExec *ex) {
 static int cond_enabled_(VkExec *ex, const p_render_cond *c, const char **why);
 static uint64_t unk_why[8];     // unknown conditions: report why (pending[].why 0-4), 5 y pending, 6 y not a zero word, 7 no index
 static uint64_t mem_class[5];   // memory conditions: y zero & x pending, y zero & x done, y nonzero & x pending,
-                                // y nonzero & x done, y pending (TOTK_TRACE=perf)
+                                // y nonzero & x done, y pending (REKARINA_TRACE=perf)
 static int cond_enabled(VkExec *ex, const p_render_cond *c) {
     const char *why = "mem";
     int r = cond_enabled_(ex, c, &why);
@@ -1272,15 +1272,15 @@ static int cond_enabled(VkExec *ex, const p_render_cond *c) {
     return r;
 }
 static int cond_enabled_(VkExec *ex, const p_render_cond *c, const char **why) {
-    {   // DEBUG: TOTK_COND=always renders whatever the condition says
+    {   // DEBUG: REKARINA_COND=always renders whatever the condition says
         static int always = -1;
-        if (always < 0) { const char *e = getenv("TOTK_COND"); always = e && !strcmp(e, "always"); }
+        if (always < 0) { const char *e = cfg_env("REKARINA_COND"); always = e && !strcmp(e, "always"); }
         if (always) return 1;
     }
-    // DEBUG: TOTK_COND_ALT=1: on odd frames the conditions decided on the CPU as false (known-zero segments and words
+    // DEBUG: REKARINA_COND_ALT=1: on odd frames the conditions decided on the CPU as false (known-zero segments and words
     // read from memory) render, for side-by-side shots of consecutive frames
     static int alt = -1;
-    if (alt < 0) alt = getenv("TOTK_COND_ALT") != NULL;
+    if (alt < 0) alt = cfg_env("REKARINA_COND_ALT") != NULL;
     int alt_now = alt && (__atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED) & 1);
     uint64_t x, y;
     int ix;
@@ -1289,13 +1289,13 @@ static int cond_enabled_(VkExec *ex, const p_render_cond *c, const char **why) {
     ex->gpu_cond = 0;
     if (rx == 2 && ry == 1 && !y && ix >= 0) {   // the count against zero: on the GPU, or known zero
         if (pending[ix].pred == PRED_ZERO) return *why = "zero", alt_now ? 1 : c->mode == 0;
-        if (pending[ix].pred == PRED_ZERO + 1) *why = "zero";   // DEBUG-OQLOG: rendered (TOTK_PRED_ZERO=0)
-        static int pred_alt = -1;   // DEBUG: TOTK_PRED_ALT=1: on odd frames GPU predicates render (side-by-side shots)
-        if (pred_alt < 0) pred_alt = getenv("TOTK_PRED_ALT") != NULL;
+        if (pending[ix].pred == PRED_ZERO + 1) *why = "zero";   // DEBUG-OQLOG: rendered (REKARINA_PRED_ZERO=0)
+        static int pred_alt = -1;   // DEBUG: REKARINA_PRED_ALT=1: on odd frames GPU predicates render (side-by-side shots)
+        if (pred_alt < 0) pred_alt = cfg_env("REKARINA_PRED_ALT") != NULL;
         if (pending[ix].pred == PRED_READY && pred_alt && (__atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED) & 1))
             return *why = "gpu-alt", 1;
-        static int pred_always = -1;   // DEBUG: TOTK_PRED_ALWAYS=1: what a GPU predicate would decide is rendered
-        if (pred_always < 0) pred_always = getenv("TOTK_PRED_ALWAYS") != NULL;
+        static int pred_always = -1;   // DEBUG: REKARINA_PRED_ALWAYS=1: what a GPU predicate would decide is rendered
+        if (pred_always < 0) pred_always = cfg_env("REKARINA_PRED_ALWAYS") != NULL;
         if (pending[ix].pred == PRED_READY && pred_always) return *why = "gpu-always", 1;
         if (pending[ix].pred == PRED_READY) {
             ex->gpu_cond = 1, ex->gpu_cond_off = pending[ix].pred_off, ex->gpu_cond_buf = VK_NULL_HANDLE;
@@ -1312,11 +1312,11 @@ static int cond_enabled_(VkExec *ex, const p_render_cond *c, const char **why) {
     }
 #ifdef GAME_NS2
     // Words in memory, not reports of the replay: the game also conditions on counts that GPU copies and shaders write.
-    // Read on the CPU at record time they were often not written yet (the GPU a frame behind, TOTK_PRESENT_SYNC=n:
+    // Read on the CPU at record time they were often not written yet (the GPU a frame behind, REKARINA_PRESENT_SYNC=n:
     // passes skipped and white frames, 50-60 in 2,500 frames). Against a zero word, as the console's GPU does it: the
-    // conditional rendering reads x where the GPU reads that memory, in GPU order (TOTK_MEM_COND=0: the CPU decides).
+    // conditional rendering reads x where the GPU reads that memory, in GPU order (REKARINA_MEM_COND=0: the CPU decides).
     if (rx == 1 && ry == 1) {
-        // TOTK_MEM_COND: 0 (default) the CPU decides from memory; 2 a condition against a zero word the GPU has not
+        // REKARINA_MEM_COND: 0 (default) the CPU decides from memory; 2 a condition against a zero word the GPU has not
         // been told to write runs on the GPU on x (its real value in GPU order). Never "render" an unwritten word: a
         // condition rendered by default draws what was meant for nothing visible and the scene goes white.
         static int mem_cond = -1;
@@ -1349,7 +1349,7 @@ static int cond_enabled_(VkExec *ex, const p_render_cond *c, const char **why) {
     {   // DEBUG-SKIPLOG: conditions decided from memory
         static int on = -1;
         static unsigned long long lo, hi;
-        if (on < 0) { const char *e = getenv("TOTK_SKIPLOG"); on = e && sscanf(e, "%llu-%llu", &lo, &hi) == 2; }
+        if (on < 0) { const char *e = cfg_env("REKARINA_SKIPLOG"); on = e && sscanf(e, "%llu-%llu", &lo, &hi) == 2; }
         unsigned long long f = __atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED);
         if (on && f >= lo && f <= hi)
             rt_log("SKIPLOG memcond frame %llu addr %#llx mode %d x %llu y %llu -> %d", f, (unsigned long long)c->addr, c->mode,
@@ -1474,7 +1474,7 @@ static void copy_buffer_image(VkExec *ex, const p_copy_b2t *p, int to_image) {
     Sub s;
     if (!sub_resolve(p->tex, &p->view, p->has_view, &p->r, 1, &s)) return;
     if (s.img->scale > 1) {   // the buffer holds the game's texel count, the image more
-        warn_once(W_REGION, "buffer copy of a shadow map enlarged by TOTK_SHADOW_SCALE: skipped");
+        warn_once(W_REGION, "buffer copy of a shadow map enlarged by REKARINA_SHADOW_SCALE: skipped");
         return;
     }
     uint64_t size;

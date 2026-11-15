@@ -1,6 +1,6 @@
 // The Win32 back end of the keyboard and the mouse (input_wsys.h; input.c merges them with the gamepad): Win32 virtual
-// keys to the key ids of input_map.h, the mouse camera's raw motion (raw input, WM_INPUT) and the cursor capture.
-// Keys and their map: docs/controls.md.
+// keys to the key ids of input_map.h, the mouse camera's motion (raw input, WM_INPUT; or the hidden cursor's motion with
+// REKARINA_MOUSE_RAW=0) and the cursor capture. Keys and their map: docs/controls.md.
 #include <windows.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -85,7 +85,26 @@ uint32_t input_key_char(int key) {
 static volatile LONG mouse_dx, mouse_dy;   // raw counts since the last frame sample
 static volatile LONG mouse_travel;          // raw counts moved in total, captured or not (ikb_mouse_travel)
 static volatile LONG cur_captured;         // cursor hidden and confined to the client area
+static volatile LONG cur_centred;          // cursor mode: cursor_take put the cursor in the middle since the capture began
 static volatile LONG cur_active;           // WM_ACTIVATEAPP: the window's application is active
+
+// REKARINA_MOUSE_RAW (default 1, live). 1: the camera takes the raw counts of WM_INPUT, which the Windows pointer speed and
+// "Enhance pointer precision" (its acceleration) never touch. 0: it takes how far the hidden cursor moved, both of them
+// applied, for a player who wants the desktop's feel (on a touchpad, say). WM_INPUT asks on every message, so the parsed
+// value is kept until cfg_version changes; two threads that parse at once store the same value, and one that stored an
+// older version number parses again at its next call.
+static volatile LONG raw_mode = -1;
+static volatile LONG raw_seen;
+static int mouse_raw(void) {
+    unsigned v = cfg_version();
+    LONG r = raw_mode;
+    if (r < 0 || (unsigned)raw_seen != v) {
+        r = cfg_bool("REKARINA_MOUSE_RAW") != 0;
+        InterlockedExchange(&raw_seen, (LONG)v);
+        InterlockedExchange(&raw_mode, r);
+    }
+    return (int)r;
+}
 // Bits: CUR_REL, Esc or activation by a click on the title bar or border: until a client click; CUR_ESC, set with CUR_REL
 // by Esc (not when it was already set): closing the menu gives the capture back. One word, changed by one CAS.
 enum { CUR_REL = 1, CUR_ESC = 2 };
@@ -108,6 +127,8 @@ static void cursor_update(HWND h) {
                GetForegroundWindow() == h && !IsIconic(h);
     RECT r;
     POINT tl = {0, 0};
+    // The client area may have moved or changed size: cursor_take measures its first motion from the new middle.
+    InterlockedExchange(&cur_centred, 0);
     if (want && GetClientRect(h, &r) && ClientToScreen(h, &tl)) {
         RECT clip = {tl.x, tl.y, tl.x + r.right, tl.y + r.bottom};
         ClipCursor(&clip);
@@ -142,7 +163,7 @@ int input_window_msg(HWND h, UINT m, WPARAM w, LPARAM l, LRESULT *res) {
             ri.header.dwType == RIM_TYPEMOUSE && !(ri.data.mouse.usFlags & MOUSE_MOVE_ABSOLUTE)) {
             LONG x = ri.data.mouse.lLastX, y = ri.data.mouse.lLastY;
             InterlockedAdd(&mouse_travel, (x < 0 ? -x : x) + (y < 0 ? -y : y));
-            if (cur_captured) {
+            if (cur_captured && mouse_raw()) {
                 InterlockedAdd(&mouse_dx, x);
                 InterlockedAdd(&mouse_dy, y);
             }
@@ -229,9 +250,29 @@ void ikb_pointer_set(float nx, float ny) {
 
 uint32_t ikb_mouse_travel(void) { return (uint32_t)mouse_travel; }
 
+// Cursor mode (REKARINA_MOUSE_RAW=0): adds how far the hidden cursor moved from the middle of the client area, the pointer
+// speed and acceleration included, and puts it back there, so the edge of the clip rectangle never stops it. The first
+// call after a capture or a change of the window only centres it. Only while captured: a released cursor is the player's.
+// Under cur_lock, so cursor_update and another sampling thread cannot come between the read and the move.
+static void cursor_take(int32_t *dx, int32_t *dy) {
+    AcquireSRWLockExclusive(&cur_lock);
+    HWND h = gfx_window_handle();
+    RECT r;
+    POINT c = {0, 0}, p;
+    if (cur_captured && h && GetClientRect(h, &r) && ClientToScreen(h, &c) && GetCursorPos(&p)) {
+        c.x += r.right / 2, c.y += r.bottom / 2;
+        if (cur_centred) *dx += p.x - c.x, *dy += p.y - c.y;
+        if (p.x != c.x || p.y != c.y) SetCursorPos(c.x, c.y);
+        InterlockedExchange(&cur_centred, 1);
+    }
+    ReleaseSRWLockExclusive(&cur_lock);
+}
+
 void ikb_mouse_take(int32_t *dx, int32_t *dy) {
     *dx = InterlockedExchange(&mouse_dx, 0);
     *dy = InterlockedExchange(&mouse_dy, 0);
+    if (mouse_raw()) InterlockedExchange(&cur_centred, 0);   // the cursor drifted meanwhile: centre it first next time
+    else cursor_take(dx, dy);
 }
 
 void ikb_cursor_update(void) { cursor_update(gfx_window_handle()); }

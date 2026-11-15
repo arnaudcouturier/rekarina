@@ -1,7 +1,11 @@
-// totk.ini: file-backed defaults for the TOTK_* environment variables (docs/controls.md, totk.ini.example).
+// rekarina.ini: file-backed defaults for the REKARINA_* environment variables (docs/controls.md, rekarina.ini.example).
 // Format: "key = value" lines, '#' or ';' at the start of a line begins a comment, [sections] only group. A key is a
-// variable name without "TOTK_" (an optional TOTK_ prefix is accepted), case-insensitive. A value is the rest of the
+// variable name without "REKARINA_" (an optional REKARINA_ prefix is accepted), case-insensitive. A value is the rest of the
 // line, trimmed, optionally in double quotes; an empty value counts as unset. The environment wins over the file.
+//
+// The prefix was TOTK_ until 2026-11-15 (the runtime came from the TotK recompiler). The old one still works everywhere:
+// a name with either prefix is the same setting (code generated before the rename asks for TOTK_ names), the
+// environment is read as REKARINA_<key>, then TOTK_<key>, and an ini line may carry either prefix.
 //
 // Live settings: cfg_set changes a value in memory (readers see the new pointer; the old string is kept, so a pointer
 // cfg_get handed out stays valid) and cfg_save writes only the changed keys back, keeping the rest of the file.
@@ -10,13 +14,16 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 
 #include "cfg.h"
 #include "host.h"
 #include "platform/platform.h"
 
-#define PREFIX "TOTK_"
-#define PREFIX_LEN 5
+#define PREFIX "REKARINA_"
+#define PREFIX_LEN 9
+#define OLD_PREFIX "TOTK_"
+#define OLD_PREFIX_LEN 5
 #define CFG_MAX_KEYS 512
 
 typedef struct { char *key, *value; int dirty, removed; } CfgEntry;   // key upper-case, without the prefix; value NULL after cfg_reset
@@ -41,10 +48,10 @@ static const char *const known[] = {
     "DESC_TEMPLATE", "DEVICE_PROFILE", "DISCORD_APP_ID", "DISCORD_IMAGE", "DISCORD_RPC", "DLAA", "DLAA_JITTER", "DLAA_MV", "DLAA_MASKDEBUG", "DLAA_MVDEBUG", "DLAA_OBJMV", "DLAA_PJITTER", "DLAA_PJ_YS", "DLAA_SURVEY", "DLAA_TIMES", "DLSS", "DLSS_CHAR_MASK", "DLSS_PRESET", "DLSS_REACTIVE", "DUMP", "DUMP_BUF", "DUMP_DIR",
     "DUMP_LOG", "EXEFS", "FEEDBACK", "FIX_C0", "FIX_ZERO", "FLIGHT", "FLIGHT_AT", "FLIGHT_DIR", "FLIGHT_FRAMES",
     "FLIGHT_SPIKE_MS", "FLIGHT_THUMBS", "FLUSH_SPAN", "FLUSH_UPLOAD", "TEX_EVICT", "FOLIAGE_SHADOW_CULL", "FOLIAGE_SHADOW_VRS", "FOV", "FOV_PATCH", "FPS60", "FPS_LIMIT", "FREEZE_IDLE", "FREEZE_WHOLE", "FREE_CORES",
-    "FULLSCREEN", "FXAA", "GPL", "GPL_DRAW_BUILD", "GPU", "GPU_INDEX", "GPU_NAME", "HDR", "HDR_GAME_NITS", "HDR_HUE",
+    "FAST_TEXT", "FULLSCREEN", "FXAA", "GPL", "GPL_DRAW_BUILD", "GPU", "GPU_INDEX", "GPU_NAME", "HDR", "HDR_GAME_NITS", "HDR_HUE",
     "HDR_PEAK_NITS", "HDR_UI_NITS", "HIGHFPS_FIX", "INPUT", "INPUT_RECORD", "INPUT_SCRIPT", "LANG", "LIB_PREBUILD",
     "LIB_PREBUILD_KEEP", "LIB_PREBUILD_THREADS", "LOCALE", "LOD_GUARD", "LSTICK_DEADZONE", "MEMORY", "MENU_LANG", "MENU_TEST", "MESH_ASYNC",
-    "MENU_CURSOR", "MENU_CURSOR_LOG", "MENU_TEST_DIR", "MENU_TEST_SET", "MINIMAL_LAYOUT", "MIRROR_GAP", "MODS_DIR", "MODS_DISABLED", "MODS_ORDER", "MODS_REBUILD", "MOTION", "MOUSE_MODE", "MOUSE_DIRECT_PATCH", "MOUSE_SENS", "MOVIE_HOST", "MOVIE_PACE",
+    "MENU_CURSOR", "MENU_CURSOR_LOG", "MENU_TEST_DIR", "MENU_TEST_SET", "MINIMAL_LAYOUT", "MIRROR_GAP", "MODS_DIR", "MODS_DISABLED", "MODS_ORDER", "MODS_REBUILD", "MOTION", "MOUSE_MODE", "MOUSE_DIRECT_PATCH", "MOUSE_SENS", "MOUSE_SENS_Y", "MOUSE_INVERT_Y", "MOUSE_RAW", "MOVIE_HOST", "MOVIE_PACE",
     "MVOBJ_ALL", "MVOBJ_BANKS", "MVOBJ_EQUAL", "MVOBJ_EXACT", "MVOBJ_EXEC", "MVOBJ_NOC4", "MVOBJ_ONLY", "MVOBJ_TIMES", "MVPREV_CHECK", "MVPREV_GROW", "MVPREV_SKIP", "MVPREV_TRUST", "MV_CHECK",
     "MV_SURVEY",
     "ONE_PER_CORE", "OPERATION_MODE", "OUTPUT_RES", "PAD_LAYOUT", "PASS_CRUMBS", "PATCH_OUTPUT", "PATCH_SCENE", "PCSS", "PCSS_K", "PERF_OVERLAY", "PERF_SLOW_MS", "PIPELINE_CACHE", "PIPE_MEMO", "PIPE_PREBUILD", "PIPE_SKIP", "PIPE_SYNC", "PIPE_WAIT",
@@ -57,13 +64,13 @@ static const char *const known[] = {
     "SHOTS_FULL", "SPEED_PROBE", "SPIN", "SPIN_HANDOFF_US", "SPLIT_DRAWS", "SPLIT_IN_PASS", "SPLIT_US", "STICK_DEADZONE", "STICK_SENS",
     "SWKBD_ANSWER",
     "FSR_VERSION", "CS_KEEP", "MESH_INDICES", "MESH_TASK", "VRAM_BUDGET_MB", "VMA_DUMP", "SNAP_RING_MB", "TEX_EVICT_CLASS", "TPOOL_HIDE", "POOLTAB", "VMA_BLOCK_MB", "TEX_SUBALLOC_KB",
-    "SWKBD_TEST", "TEST_PAD", "UPDATE_CHECK", "TEST_PREPARE_SHADERS", "FIXED_SCENE", "FRAMEGEN", "REFLEX", "GAME_ASPECT", "GAME_RES", "SCENE_SCALE", "SHADOW_COMPARE", "TAA", "TEX_ALIAS", "TEX_MEMO", "TEX_SAME_REG", "DLAA_WARM", "DLAA_SHARPEN", "TPOOL_PUMP_MS", "MOVIE_FPS", "TEX_VRAM_PRESSURE", "TIMER_1MS", "PROCESS_PRIORITY", "RENDER_CORE", "GPU_LOAD_ZERO", "GPU_PASSTIME", "OQLOG", "PRED_ZERO", "RES_GUARD", "TPOOL", "TPOOL_MS", "TRACE", "TXD_TRANSPOSE", "UBO_SNAPSHOT", "UPSCALER", "VK_DYN_A2C", "VK_DYN_VERTEX", "VK_NO_FLOAT64",
+    "SWKBD_TEST", "TEST_PAD", "UPDATE_CHECK", "TEST_PREPARE_SHADERS", "FIXED_SCENE", "FRAMEGEN", "REFLEX", "GAME_ASPECT", "GAME_RES", "SCENE_SCALE", "SHADOW_COMPARE", "TAA", "TEX_ALIAS", "TEX_MEMO", "TEX_QUALITY", "TEX_SAME_REG", "DLAA_WARM", "DLAA_SHARPEN", "TPOOL_PUMP_MS", "MOVIE_FPS", "TEX_VRAM_PRESSURE", "TIMER_1MS", "PROCESS_PRIORITY", "RENDER_CORE", "GPU_LOAD_ZERO", "GPU_PASSTIME", "OQLOG", "PRED_ZERO", "RES_GUARD", "TPOOL", "TPOOL_MS", "TRACE", "TXD_TRANSPOSE", "UBO_SNAPSHOT", "UPSCALER", "VK_DYN_A2C", "VK_DYN_VERTEX", "VK_NO_FLOAT64",
     "VK_PRESENT", "VK_RECORDER", "VK_SSBO_ALIGN", "VK_SUBGROUP", "VK_SUBGROUP_PIN", "VK_VALIDATION", "VOLUME", "VRAM_HEADROOM", "VS_OUTS",
     "WALK_KEY", "WALK_SCALE", "WB_EXACT", "WB_FENCE_LIMIT", "WB_MERGE", "WINDOW_SIZE", "XLATE", "XLATE_ID", "XLATE_KEEP", "XLATE_PROCS",
     "ZSTD_CHECK", "ZSTD_NATIVE",
 };
 
-// The totk.ini section a key cfg_set may write goes to when the file lacks it (totk.ini.example's sections).
+// The rekarina.ini section a key cfg_set may write goes to when the file lacks it (rekarina.ini.example's sections).
 static const struct { const char *key, *section; } sections[] = {
     {"FPS_LIMIT", "frame rate"}, {"FPS60", "frame rate"},
     {"REALTIME", "frame rate"}, {"CLOTH_REALTIME", "frame rate"}, {"HIGHFPS_FIX", "frame rate"},
@@ -75,17 +82,19 @@ static const struct { const char *key, *section; } sections[] = {
     {"COLOR_GAMMA", "display"}, {"HDR", "display"}, {"HDR_PEAK_NITS", "display"}, {"HDR_GAME_NITS", "display"},
     {"HDR_UI_NITS", "display"}, {"HDR_HUE", "display"}, {"SHADOW_RES", "display"},
     {"DLAA", "display"}, {"DLSS", "display"}, {"DLSS_PRESET", "display"}, {"FSR_VERSION", "display"}, {"DLSS_CHAR_MASK", "display"}, {"FXAA", "display"},
+    {"TAA", "display"}, {"FRAMEGEN", "display"}, {"REFLEX", "display"}, {"GAME_ASPECT", "display"}, {"GAME_RES", "display"},
     {"DEVICE_PROFILE", "display"}, {"ASSUME_FOCUS", "display"},
     {"UPDATE_CHECK", "updates"}, {"DISCORD_RPC", "discord"}, {"DISCORD_APP_ID", "discord"}, {"DISCORD_IMAGE", "discord"},
     {"SHADOW_SCALE", "display"}, {"SHADOW_RANGE", "display"}, {"CONTACT_SHADOWS", "display"},
     {"PCSS", "display"},
     {"MODS_DIR", "mods"}, {"MODS_ORDER", "mods"}, {"MODS_DISABLED", "mods"}, {"MODS_REBUILD", "mods"},
-    {"MENU_LANG", "language"}, {"LANG", "language"}, {"OPERATION_MODE", "language"},
+    {"MENU_LANG", "language"}, {"LANG", "language"}, {"FAST_TEXT", "language"}, {"OPERATION_MODE", "language"},
     {"VOLUME", "audio"}, {"AUDIO_CHANNELS", "audio"},
     {"MOTION", "input"}, {"RUMBLE_STRENGTH", "input"}, {"RUMBLE_CURVE", "input"}, {"RUMBLE_TRIGGERS", "input"},
     {"PAD_LAYOUT", "input"}, {"PROMPTS", "input"}, {"STICK_DEADZONE", "input"}, {"LSTICK_DEADZONE", "input"}, {"RSTICK_DEADZONE", "input"},
     {"STICK_SENS", "input"},
-    {"MENU_CURSOR", "input"}, {"MOUSE_MODE", "input"}, {"MOUSE_SENS", "input"}, {"WALK_KEY", "input"}, {"WALK_SCALE", "input"}, {"INPUT_RECORD", "input"},
+    {"MENU_CURSOR", "input"}, {"MOUSE_MODE", "input"}, {"MOUSE_SENS", "input"}, {"MOUSE_SENS_Y", "input"},
+    {"MOUSE_INVERT_Y", "input"}, {"MOUSE_RAW", "input"}, {"WALK_KEY", "input"}, {"WALK_SCALE", "input"}, {"INPUT_RECORD", "input"},
     {"BIND_A", "input"}, {"BIND_B", "input"}, {"BIND_X", "input"}, {"BIND_Y", "input"}, {"BIND_LCLICK", "input"},
     {"BIND_RCLICK", "input"}, {"BIND_L", "input"}, {"BIND_R", "input"}, {"BIND_ZL", "input"}, {"BIND_ZR", "input"},
     {"BIND_PLUS", "input"}, {"BIND_MINUS", "input"}, {"BIND_LEFT", "input"}, {"BIND_UP", "input"},
@@ -95,6 +104,7 @@ static const struct { const char *key, *section; } sections[] = {
     {"ASYNC_PREEMPT", "performance"}, {"REPLAY_ASYNC", "performance"}, {"FREE_CORES", "performance"},
     {"TIMER_1MS", "performance"}, {"PROCESS_PRIORITY", "performance"}, {"PIPE_WAIT", "performance"}, {"PIPE_SKIP", "performance"},
     {"LIB_PREBUILD", "performance"}, {"LIB_PREBUILD_THREADS", "performance"}, {"PIPE_PREBUILD", "performance"},
+    {"ZSTD_NATIVE", "performance"}, {"ZSTD_CHECK", "performance"},
     {"PREWARM_XLATE", "performance"}, {"GPL", "performance"}, {"ASTC", "performance"}, {"MEMORY", "performance"},
     {"TEX_ALIAS", "performance"}, {"TEX_VRAM_PRESSURE", "performance"}, {"TEX_QUALITY", "performance"}, {"ASTC_BC", "performance"}, {"TEX_CACHE", "performance"}, {"TEX_CACHE_MB", "performance"}, {"LOD_GUARD", "performance"}, {"FIX_C0", "performance"}, {"FIX_ZERO", "performance"},
     {"BIND_SKIP", "performance"}, {"SHADER_MEMO", "performance"}, {"PIPE_MEMO", "performance"}, {"TEX_MEMO", "performance"}, {"DESC_TEMPLATE", "performance"},
@@ -134,7 +144,7 @@ static const CfgMeta metas[] = {
     // HDR output (vk_hdr.c): on at start (the tonemap shader is swapped as shaders load); the nits apply at once
     {"HDR", "0", "0|1", RESTART}, {"HDR_PEAK_NITS", "1000", "400..10000", LIVE}, {"HDR_GAME_NITS", "203", "80..500", LIVE},
     {"HDR_UI_NITS", "203", "80..500", LIVE}, {"HDR_HUE", "80", "0..100", LIVE},
-    {"DEVICE_PROFILE", "auto", "auto|desktop|deck", RESTART},
+    {"DEVICE_PROFILE", "auto", "auto|desktop|deck|handheld", RESTART},
     {"SHADOW_RES", "game", "game|256|512|768|1024|1536|2048", RESTART},
     {"SHADOW_SCALE", "1", "1..4", RESTART},
     {"SHADOW_RANGE", "100", "50..400", RESTART}, {"CONTACT_SHADOWS", "0", "0..100", RESTART},
@@ -150,6 +160,7 @@ static const CfgMeta metas[] = {
     {"HIGHFPS_FIX", "1", "0|1", RESTART},
     {"LANG", "", "ja|en-US|fr|de|it|es|zh-CN|ko|nl|pt|ru|zh-TW|en-GB|fr-CA|es-419|zh-Hans|zh-Hant|pt-BR", RESTART},
     {"OPERATION_MODE", "docked", "docked|handheld", RESTART},
+    {"FAST_TEXT", "0", "0|1", RESTART},   // OoT: romfs-patches-fasttext at start (romfs.c)
     {"ASSUME_FOCUS", "1", "0|1", LIVE},   // read on every focus change (ov_system.c)
     // Sound, Controls, Menu
     {"VOLUME", "100", "0..100", LIVE}, {"AUDIO_CHANNELS", "stereo", "auto|stereo|5.1", RESTART},
@@ -157,11 +168,18 @@ static const CfgMeta metas[] = {
     {"RUMBLE_TRIGGERS", "0", "0|1", LIVE}, {"PAD_LAYOUT", "auto", "auto|nintendo|xbox", LIVE},
     // read at start; the menu says when a change waits for a restart (ui/menu.cpp prompts_note) and where the sets
     // change in the running game (romfs_prompts_live)
+#ifdef GAME_OOT   // OoT: auto, the set of the device the player used last (input.c input_prompts_wanted), switched live
+    {"PROMPTS", "auto", "auto|nintendo|xbox|pc|playstation|rekarina", LIVE},
+#else
     {"PROMPTS", "nintendo", "nintendo|xbox|pc|playstation|rekarina", LIVE},
+#endif
     {"STICK_DEADZONE", "8", "0..50", LIVE}, {"STICK_SENS", "1", "0.1..3", RESTART},
     {"LSTICK_DEADZONE", "", "0..50", LIVE}, {"RSTICK_DEADZONE", "", "0..50", LIVE},
     {"MOUSE_MODE", "direct", "stick|direct", LIVE},
     {"MOUSE_SENS", "1", "0..10", LIVE}, {"MENU_CURSOR", "1", "0|1", LIVE},
+    // the mouse camera's vertical counts: times MOUSE_SENS_Y, turned over by MOUSE_INVERT_Y (input.c mouse_take_camera);
+    // MOUSE_RAW 0 takes the cursor's motion in place of raw input (input_win.c mouse_raw)
+    {"MOUSE_SENS_Y", "1", "0.1..3", LIVE}, {"MOUSE_INVERT_Y", "0", "0|1", LIVE}, {"MOUSE_RAW", "1", "0|1", LIVE},
     {"WALK_KEY", "none", NULL, LIVE}, {"WALK_SCALE", "0.51", "0.2..0.9", LIVE},
     // the order of the menu's own list (ui/menu.cpp tab_menu langs[], after "Automatic")
     {"MENU_LANG", "", "en|de|es|fr|it|nl|pt|pt-BR|ru|ja|ko|zh-Hans|zh-Hant", LIVE},
@@ -199,7 +217,7 @@ static const CfgMeta metas[] = {
     {"ZSTD_NATIVE", "1", "0|1", RESTART}, {"ZSTD_CHECK", "0", "0|1", RESTART},
     // render fixes
     {"LOD_GUARD", "1", "0|1", RESTART}, {"FIX_C0", "1", "0|1", RESTART}, {"FIX_ZERO", "1", "0|1", RESTART},
-    {"TAA", "dlss", "dlss|fsr3", RESTART}, {"GAME_ASPECT", "16:9", "16:9|window|21:9|32:9", RESTART}, {"GAME_RES", "1440", "1080|1440|1800|2160|2880|window", RESTART}, {"FRAMEGEN", "off", "off|fsr3|dlss", RESTART}, {"REFLEX", "1", "0|1|2", RESTART}, {"BIND_SKIP", "1", "0|1", RESTART}, {"SHADER_MEMO", "1", "0|1", RESTART}, {"PIPE_MEMO", "1", "0|1", RESTART}, {"TEX_MEMO", "1", "0|1", RESTART},
+    {"TAA", "dlss", "dlss|fsr3|fsr1", RESTART}, {"GAME_ASPECT", "16:9", "16:9|window|21:9|32:9", RESTART}, {"GAME_RES", "1440", "1080|1440|1800|2160|2880|window", RESTART}, {"FRAMEGEN", "off", "off|fsr3|dlss", RESTART}, {"REFLEX", "1", "0|1|2", RESTART}, {"BIND_SKIP", "1", "0|1", RESTART}, {"SHADER_MEMO", "1", "0|1", RESTART}, {"PIPE_MEMO", "1", "0|1", RESTART}, {"TEX_MEMO", "1", "0|1", RESTART},
     {"DESC_TEMPLATE", "1", "0|1", RESTART},
     {"PUSH_SKIP", "1", "0|1", RESTART}, {"SPLIT_DRAWS", "16", "0..1000", RESTART}, {"REPLAY_THREADS", "0", "0..12", RESTART},
     {"SPLIT_US", "150", "0..20000", RESTART}, {"SPLIT_IN_PASS", "60", "0..5000", RESTART},
@@ -231,10 +249,33 @@ static char *trim(char *s) {
     return s;
 }
 
+// The key of a setting's name (either prefix), or NULL for a name that is no setting's.
+static const char *key_of(const char *name) {
+    if (!strncasecmp(name, PREFIX, PREFIX_LEN)) return name + PREFIX_LEN;
+    if (!strncasecmp(name, OLD_PREFIX, OLD_PREFIX_LEN)) return name + OLD_PREFIX_LEN;
+    return NULL;
+}
+
+// The environment's value for a key: REKARINA_<key>, else TOTK_<key>.
+static const char *env_of(const char *key) {
+    char var[128];
+    snprintf(var, sizeof var, PREFIX "%s", key);
+    const char *e = getenv(var);
+    if (e) return e;
+    snprintf(var, sizeof var, OLD_PREFIX "%s", key);
+    return getenv(var);
+}
+
+const char *cfg_env(const char *name) {
+    const char *k = key_of(name);
+    return k ? env_of(k) : getenv(name);
+}
+
 // The upper-case key without the prefix, in place.
 static char *norm_key(char *key) {
     for (char *p = key; *p; p++) *p = (char)toupper((unsigned char)*p);
-    return strncmp(key, PREFIX, PREFIX_LEN) ? key : key + PREFIX_LEN;
+    const char *k = key_of(key);
+    return k ? (char *)k : key;
 }
 
 static void add(char *key, char *value, int line) {
@@ -299,20 +340,39 @@ int cfg_load(const char *path) {
     return 1;
 }
 
-// ---- device profiles: defaults for a known machine, below the environment and totk.ini and above the table, so any
-// key the player sets wins and resetting a key in the menu returns to the profile's value. TOTK_DEVICE_PROFILE = auto
-// (default: the Steam Deck when the firmware says so), desktop (none) or deck.
+// ---- device profiles: defaults for a known machine, below the environment and rekarina.ini and above the table, so any
+// key the player sets wins and resetting a key in the menu returns to the profile's value. REKARINA_DEVICE_PROFILE = auto
+// (default: the Steam Deck or a Windows handheld when the firmware says so), desktop (none), deck or handheld.
 //
 // The Steam Deck (LCD Jupiter, OLED Galileo; 1280x800, 16:10, 4 Zen 2 cores, RDNA 2 with 8 CUs sharing 16 GB): the game
 // at the screen's 1280x800 with its own 5/6 scene (the aspect patch gives the camera its 16:10, resolution.c, and the
 // romfs-patches-1280x800 overlay the HUD's);
 // fullscreen and vsync, as gamescope composes Game Mode; 40 fps, which divides 40 Hz (and 120 Hz on the OLED).
+// OoT: the game's own handheld mode (the console's screen: a 1920x1080 picture, ~30 % less GPU time than docked on an
+// RTX 5070 standing in the village, 2026-11-15) and quarter textures (the 16 GB are the GPU's memory too; the free-memory
+// counter "auto" uses is not there under Proton).
 // Starting points to replace with measured ones (docs/tester-guide.md, Steam Deck).
-static const struct { const char *key, *value; } DECK[] = {
+typedef struct { const char *key, *value; } ProfileKey;
+static const ProfileKey DECK[] = {
     {"FULLSCREEN", "1"}, {"WINDOW_SIZE", "1280x800"}, {"OUTPUT_RES", "1280x800"}, {"RENDER_SCALE", "game"},
     {"VK_PRESENT", "fifo"}, {"FPS_LIMIT", "40"},
+#ifdef GAME_OOT
+    {"OPERATION_MODE", "handheld"}, {"TEX_QUALITY", "quarter"},
+#endif
+    {NULL, NULL},
 };
-static int profile = -1;   // 0 none, 1 Steam Deck
+// Windows handhelds (ROG Ally and Ally X, ROG Xbox Ally, Legion Go, MSI Claw: 1920x1080 or more, an integrated GPU
+// sharing 16 to 32 GB): fullscreen at the screen's size, the game's handheld mode, 60 fps. Texture quality stays auto
+// (Windows reports the free video memory there).
+static const ProfileKey HANDHELD[] = {
+    {"FULLSCREEN", "1"}, {"FPS_LIMIT", "60"},
+#ifdef GAME_OOT
+    {"OPERATION_MODE", "handheld"},
+#endif
+    {NULL, NULL},
+};
+static int profile = -1;   // 0 none, 1 Steam Deck, 2 Windows handheld
+static const ProfileKey *const PROFILE_KEYS[3] = {NULL, DECK, HANDHELD};
 
 static int read_line(const char *path, char *out, size_t n) {
     FILE *f = fopen(path, "r");
@@ -323,14 +383,28 @@ static int read_line(const char *path, char *out, size_t n) {
     return ok;
 }
 
-// The Steam Deck: Valve's board, product Jupiter or Galileo (/sys/class/dmi/id); SteamDeck=1, which Steam sets on it.
+// The Steam Deck: Valve's board, product Jupiter or Galileo (/sys/class/dmi/id, or the BIOS key Wine fills from it
+// and Windows on a Deck has); SteamDeck=1, which Steam sets on it.
 static int on_steam_deck(void) {
     const char *env = getenv("SteamDeck");
     if (env && !strcmp(env, "1")) return 1;
     char vendor[64], product[64];
+    if (plat_machine_name(product, sizeof product) && (!strcmp(product, "Jupiter") || !strcmp(product, "Galileo")))
+        return 1;
     return read_line("/sys/class/dmi/id/board_vendor", vendor, sizeof vendor) && !strcmp(vendor, "Valve") &&
            read_line("/sys/class/dmi/id/product_name", product, sizeof product) &&
            (!strcmp(product, "Jupiter") || !strcmp(product, "Galileo"));
+}
+
+// A Windows handheld by the firmware's product name: ROG Ally (RC71L), Ally X (RC72LA), ROG Xbox Ally (RC73), Legion
+// Go (83E1, 83L3, 83N0, 83N1), MSI Claw.
+static int on_windows_handheld(void) {
+    char p[128];
+    if (!plat_machine_name(p, sizeof p)) return 0;
+    static const char *const names[] = {"ROG Ally", "RC71L", "RC72LA", "RC73", "Legion Go", "83E1", "83L3", "83N0", "83N1", "Claw"};
+    for (size_t i = 0; i < sizeof names / sizeof *names; i++)
+        if (strstr(p, names[i])) return 1;
+    return 0;
 }
 
 static const char *raw_get(const char *name);
@@ -340,42 +414,50 @@ static int profile_of(void) {
     if (p >= 0) return p;
     const char *set = raw_get(PREFIX "DEVICE_PROFILE");
     if (set && !strcmp(set, "deck")) p = 1;
+    else if (set && !strcmp(set, "handheld")) p = 2;
     else if (set && *set && strcmp(set, "auto")) p = 0;
-    else p = on_steam_deck();
+    else p = on_steam_deck() ? 1 : on_windows_handheld() ? 2 : 0;
     __atomic_store_n(&profile, p, __ATOMIC_RELEASE);
     return p;
 }
 
-const char *cfg_device_profile(void) { return profile_of() ? "deck" : "desktop"; }
+const char *cfg_device_profile(void) {
+    int p = profile_of();
+    return p == 1 ? "deck" : p == 2 ? "handheld" : "desktop";
+}
 
 static const char *raw_get(const char *name) {
-    const char *e = getenv(name);
-    if (e || strncmp(name, PREFIX, PREFIX_LEN)) return e;
+    const char *key = key_of(name);
+    if (!key) return getenv(name);
+    const char *e = env_of(key);
+    if (e) return e;
     int n = __atomic_load_n(&n_entries, __ATOMIC_ACQUIRE);
     for (int i = 0; i < n; i++)
-        if (!strcasecmp(entries[i].key, name + PREFIX_LEN)) return __atomic_load_n(&entries[i].value, __ATOMIC_ACQUIRE);
+        if (!strcasecmp(entries[i].key, key)) return __atomic_load_n(&entries[i].value, __ATOMIC_ACQUIRE);
     return NULL;
 }
 
 const char *cfg_get(const char *name) {
-    const char *v = raw_get(name);
-    if (v || strncmp(name, PREFIX, PREFIX_LEN) || !profile_of()) return v;
-    for (size_t i = 0; i < sizeof DECK / sizeof *DECK; i++)
-        if (!strcasecmp(DECK[i].key, name + PREFIX_LEN)) return DECK[i].value;
+    const char *v = raw_get(name), *key = key_of(name);
+    int p = v || !key ? 0 : profile_of();
+    if (!p) return v;
+    for (const ProfileKey *k = PROFILE_KEYS[p]; k->key; k++)
+        if (!strcasecmp(k->key, key)) return k->value;
     return NULL;
 }
 
-// Whether name's value comes from the player (the environment or totk.ini), not a profile or the table.
+// Whether name's value comes from the player (the environment or rekarina.ini), not a profile or the table.
 int cfg_is_set(const char *name) { return raw_get(name) != NULL; }
 
 unsigned cfg_version(void) { return __atomic_load_n(&version, __ATOMIC_ACQUIRE); }
 
-int cfg_from_env(const char *name) { return getenv(name) != NULL; }
+int cfg_from_env(const char *name) { return cfg_env(name) != NULL; }
 
 void cfg_set(const char *name, const char *value) {
-    if (strncmp(name, PREFIX, PREFIX_LEN) || !value) return;
+    const char *k = key_of(name);
+    if (!k || !value) return;
     char key[64];
-    snprintf(key, sizeof key, "%s", name + PREFIX_LEN);
+    snprintf(key, sizeof key, "%s", k);
     for (char *p = key; *p; p++) *p = (char)toupper((unsigned char)*p);
     plat_mutex_lock(&set_lock);
     int i = 0, n = n_entries;
@@ -398,11 +480,10 @@ int cfg_reset(const char *const *keys, int n) {
     int done = 0;
     plat_mutex_lock(&set_lock);
     for (int k = 0; k < n; k++) {
-        char key[64], var[80];
+        char key[64];
         snprintf(key, sizeof key, "%s", keys[k]);
         const char *name = norm_key(key);
-        snprintf(var, sizeof var, PREFIX "%s", name);
-        if (getenv(var)) continue;   // the environment wins; the file line stays
+        if (env_of(name)) continue;   // the environment wins; the file line stays
         int i = 0;
         while (i < n_entries && strcmp(entries[i].key, name)) i++;
         if (i == n_entries) {   // no value in memory ("key =" in the file): the line still has to go
@@ -432,9 +513,7 @@ void cfg_each_active(void (*cb)(const char *key, const char *value, int from_env
         if (v) cb(entries[i].key, v, 0, ctx);
     }
     for (size_t i = 0; i < sizeof known / sizeof *known; i++) {
-        char var[80];
-        snprintf(var, sizeof var, PREFIX "%s", known[i]);
-        const char *e = getenv(var);
+        const char *e = env_of(known[i]);
         if (e) cb(known[i], e, 1, ctx);
     }
 }
@@ -737,16 +816,15 @@ static void load_ini(void) {
         return;
     }
     rt_log("cfg: read %s: %d keys", ini_path, n_entries);
-    for (int i = 0; i < n_entries; i++) {
-        char var[128];
-        snprintf(var, sizeof var, PREFIX "%s", entries[i].key);
-        if (getenv(var)) rt_log("cfg: %s is set in the environment and overrides " RT_INI_FILE, var);
-    }
+    for (int i = 0; i < n_entries; i++)
+        if (env_of(entries[i].key))
+            rt_log("cfg: " PREFIX "%s (or " OLD_PREFIX "%s) is set in the environment and overrides " RT_INI_FILE,
+                   entries[i].key, entries[i].key);
 }
 
 void cfg_init(void) {
     load_ini();
     if (profile_of())
-        rt_log("cfg: device profile Steam Deck: defaults for the keys " RT_INI_FILE " does not set (TOTK_DEVICE_PROFILE=desktop "
-               "turns it off)");
+        rt_log("cfg: device profile %s: defaults for the keys " RT_INI_FILE " does not set (REKARINA_DEVICE_PROFILE=desktop "
+               "turns it off)", profile_of() == 1 ? "Steam Deck" : "Windows handheld");
 }

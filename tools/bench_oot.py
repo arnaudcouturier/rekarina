@@ -7,11 +7,11 @@ The plan names the places and the modes; saves are the player's own and are not 
     {"resolution": "2560x1440",
      "locations": [{"name": "Forest", "profile": "<a copy of a profile folder>", "script": "<input script>"},
                    {"name": "Market", "profile": "...", "script": "...", "warp": "market"}],
-     "modes": [{"name": "Native", "env": {"TOTK_DLAA": "0", "TOTK_TAA": "off", "TOTK_FRAMEGEN": "off"}},
+     "modes": [{"name": "Native", "env": {"REKARINA_DLAA": "0", "REKARINA_TAA": "off", "REKARINA_FRAMEGEN": "off"}},
                {"name": "DLSS + frame generation", "generated": true,
-                "env": {"TOTK_DLAA": "1", "TOTK_DLSS": "quality", "TOTK_TAA": "dlss", "TOTK_FRAMEGEN": "dlss"}}]}
+                "env": {"REKARINA_DLAA": "1", "REKARINA_DLSS": "quality", "REKARINA_TAA": "dlss", "REKARINA_FRAMEGEN": "dlss"}}]}
 
-A location with "warp" is reached from its save by a map change 25 s into the run (TOTK_WARP_AT, runtime/oot_warp.c:
+A location with "warp" is reached from its save by a map change 25 s into the run (REKARINA_WARP_AT, runtime/oot_warp.c:
 forest, field, market, village), so one save serves several places.
 
 Each run starts the game in its own folder on a fresh copy of the profile (the player's save is never opened), with
@@ -72,11 +72,11 @@ def run(game, exe, location, mode, resolution, keep_log):
         profile = Path(tmp) / 'profile'
         shutil.copytree(location['profile'], profile)
         env = dict(os.environ)
-        env.update({'TOTK_PROFILE_DIR': str(profile), 'TOTK_INPUT_SCRIPT': location['script'], 'TOTK_FPS_LIMIT': '240',
-                    'TOTK_REALTIME': '1', 'TOTK_PERF_OVERLAY': 'off', 'TOTK_FULLSCREEN': '1', 'TOTK_AUDIO': 'none',
-                    'TOTK_OUTPUT_RES': resolution, 'TOTK_WINDOW_SIZE': resolution, 'TOTK_UPDATE_CHECK': '0'})
+        env.update({'REKARINA_PROFILE_DIR': str(profile), 'REKARINA_INPUT_SCRIPT': location['script'], 'REKARINA_FPS_LIMIT': '240',
+                    'REKARINA_REALTIME': '1', 'REKARINA_PERF_OVERLAY': 'off', 'REKARINA_FULLSCREEN': '1', 'REKARINA_AUDIO': 'none',
+                    'REKARINA_OUTPUT_RES': resolution, 'REKARINA_WINDOW_SIZE': resolution, 'REKARINA_UPDATE_CHECK': '0'})
         if location.get('warp'):
-            env['TOTK_WARP_AT'] = f'25:{location["warp"]}'
+            env['REKARINA_WARP_AT'] = f'25:{location["warp"]}'
         env.update(mode.get('env', {}))
         log = Path(tmp) / 'run.log'
         with open(log, 'wb') as f:

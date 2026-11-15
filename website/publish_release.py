@@ -40,6 +40,10 @@ SRC = SITE.parent
 BUCKET = 'rekarina-releases'
 DOWNLOADS = 'https://dl.rekarina.dev/releases'
 HOME = 'https://rekarina.dev/'
+# The site's protection refuses urllib's own User-Agent with 403 (as it would any script that does not say what it is),
+# which read as "not there" and hid both the read-back and the check for a published version; the launcher sends its
+# own (installer/net.py user_agent).
+AGENT = {'User-Agent': 'Rekarina-Publish'}
 WRANGLER = ['npx', '--yes', 'wrangler@4']
 TYPES = {'.exe': 'application/vnd.microsoft.portable-executable', '.zip': 'application/zip', '.sig': 'text/plain',
          '': 'text/plain'}
@@ -99,7 +103,7 @@ def check(dist):
 def head(url):
     """The size the address answers with, or None when it is not there."""
     try:
-        with urllib.request.urlopen(urllib.request.Request(url, method='HEAD'), timeout=30) as r:
+        with urllib.request.urlopen(urllib.request.Request(url, method='HEAD', headers=AGENT), timeout=30) as r:
             return int(r.headers.get('Content-Length') or 0)
     except urllib.error.HTTPError as e:
         e.close()
@@ -118,19 +122,29 @@ def wrangler(*args):
         fail(f'wrangler {" ".join(args[:3])} ... failed ({r.returncode})')
 
 
+def hosted_sums(version):
+    """The SHA256SUMS the download host has for version."""
+    url = f'{DOWNLOADS}/{version}/SHA256SUMS'
+    with urllib.request.urlopen(urllib.request.Request(url, headers=AGENT), timeout=30) as r:
+        return r.read()
+
+
+def read_back(dist, version, names):
+    for name in names:
+        size, there = (dist / name).stat().st_size, head(f'{DOWNLOADS}/{version}/{name}')
+        if there != size:
+            fail(f'{DOWNLOADS}/{version}/{name} answers {there} bytes, the file has {size}')
+    if hosted_sums(version) != (dist / 'SHA256SUMS').read_bytes():
+        fail('the SHA256SUMS on the download host is not the one in the folder')
+
+
 def upload(dist, version, names):
     for name in names:
         suffix = Path(name).suffix if '.' in name else ''
         wrangler('r2', 'object', 'put', f'{BUCKET}/releases/{version}/{name}', '--file', str(dist / name), '--remote',
                  '--content-type', TYPES.get(suffix, 'application/octet-stream'),
                  '--cache-control', 'public, max-age=31536000, immutable')
-    for name in names:
-        size, there = (dist / name).stat().st_size, head(f'{DOWNLOADS}/{version}/{name}')
-        if there != size:
-            fail(f'{DOWNLOADS}/{version}/{name} answers {there} bytes, the file has {size}')
-    with urllib.request.urlopen(f'{DOWNLOADS}/{version}/SHA256SUMS', timeout=30) as r:
-        if r.read() != (dist / 'SHA256SUMS').read_bytes():
-            fail('the SHA256SUMS on the download host is not the one in the folder')
+    read_back(dist, version, names)
 
 
 def between(text, mark, new):
@@ -186,9 +200,14 @@ def main():
                   f'{DOWNLOADS}/{version}/{name}')
         print(f'  would write public/releases/latest.json, the /download redirect and the page for {version}')
         return
-    if head(f'{DOWNLOADS}/{version}/SHA256SUMS') is not None and not a.force:
+    if head(f'{DOWNLOADS}/{version}/SHA256SUMS') is None or a.force:
+        upload(a.dist, version, names)
+    elif hosted_sums(version) == (a.dist / 'SHA256SUMS').read_bytes():
+        # the same signed release is up already (a run stopped after the upload): its files are checked, not sent again
+        print(f'publish_release: {version} is on the download host with these very files: the upload is skipped')
+        read_back(a.dist, version, names)
+    else:
         fail(f'{version} is already on the download host; a published version is not replaced (--force does it)')
-    upload(a.dist, version, names)
     write_site(a.dist, version, sums, record)
     print('publish_release: the files are up and the site folder names them')
     if a.deploy:

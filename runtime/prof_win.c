@@ -1,20 +1,20 @@
-// Sampling profiler (TOTK_PROFILE=<path>) and per-frame timing (TOTK_TRACE=perf). tools/prof_report.py reads the profile.
+// Sampling profiler (REKARINA_PROFILE=<path>) and per-frame timing (REKARINA_TRACE=perf). tools/prof_report.py reads the profile.
 // A host thread wakes every 1 ms and, for every other thread, suspends it, reads Rip and resumes it. The sampler never
 // allocates or takes a lock between SuspendThread and ResumeThread and never runs guest code. The profile is text:
 //   totk-prof 1 / base <hex> / period_us / samples N / thread <tid> <samples> <in-exe samples> / module <base> <size> <path> /
-//   rip <hex> <count> (the top PROF_TOP Rips) / stack <count> <rip> <caller> ... (TOTK_PROFILE_RENDER or
-//   TOTK_PROFILE_CHAINS only, the top PROF_STACKS call chains)
-// With TOTK_PROFILE_RENDER (the render thread) or TOTK_PROFILE_CHAINS=1 (every thread, chains of all threads summed: for
+//   rip <hex> <count> (the top PROF_TOP Rips) / stack <count> <rip> <caller> ... (REKARINA_PROFILE_RENDER or
+//   REKARINA_PROFILE_CHAINS only, the top PROF_STACKS call chains)
+// With REKARINA_PROFILE_RENDER (the render thread) or REKARINA_PROFILE_CHAINS=1 (every thread, chains of all threads summed: for
 // short frame ranges, as each sample copies a stack) the sampler also copies up to STK_COPY bytes of the suspended
 // thread's stack and, after
 // ResumeThread, unwinds the copy with the .pdata tables (RtlVirtualUnwind), so it takes no lock while the thread is
 // suspended. The unwind stops at the first frame outside the copy; deeper callers are cut.
-// TOTK_PROFILE_SLOW=<ms> keeps every thread's chains of the last half second in a ring (a thread outside the exe, mostly
+// REKARINA_PROFILE_SLOW=<ms> keeps every thread's chains of the last half second in a ring (a thread outside the exe, mostly
 // waiting, copies 8 KiB of stack, one in it STK_COPY; a thread that ran no cycle since its previous sample is not
 // suspended and repeats its previous chain; a sample that took over 2 ms to stop its thread, which happens while the
 // thread is in a long kernel call, is written as `tstall <tid> <ms into the window> <ms stopping> <rip>...` with the
 // chain where the thread stopped) and, after a present at least <ms> after the previous one, writes
-// that interval's samples (plus the 20 ms before) to <TOTK_PROFILE>.f<frame>: the profile format, one `stack 1` line per
+// that interval's samples (plus the 20 ms before) to <REKARINA_PROFILE>.f<frame>: the profile format, one `stack 1` line per
 // sample, and `tstack <tid> <ms into the window> <rip>...` lines that keep the thread and the time. At most 64 dumps.
 #include <windows.h>
 #include <psapi.h>
@@ -44,7 +44,7 @@
 
 typedef struct { uint64_t rip, n; } RipCount;
 #define PROF_DEPTH 24             // frames kept per call chain, the sampled Rip first
-// cycles, depth, last: TOTK_PROFILE_SLOW only, the thread's cycle count and chain at its previous sample
+// cycles, depth, last: REKARINA_PROFILE_SLOW only, the thread's cycle count and chain at its previous sample
 typedef struct { DWORD tid; HANDLE h; uint64_t n, in_exe, cycles; uint32_t depth; uint64_t last[PROF_DEPTH]; int guest; } ThreadSlot;
 
 static RipCount table[PROF_SLOTS];
@@ -59,10 +59,10 @@ static const char *out_path;
 static HANDLE sampler;
 static volatile LONG stop, written;
 static uintptr_t exe_lo, exe_hi;
-static int only_render;             // TOTK_PROFILE_RENDER=1: sample the render thread only
-static int only_main;               // TOTK_PROFILE_MAIN=1: sample the guest main thread only
-static int only_guest;              // DEBUG-PROFGUEST: TOTK_PROFILE_GUEST=1: sample the guest threads only
-static int only_par;                // DEBUG-PROFPAR: TOTK_PROFILE_PAR=1: sample the chunk threads of vk_exec.c only
+static int only_render;             // REKARINA_PROFILE_RENDER=1: sample the render thread only
+static int only_main;               // REKARINA_PROFILE_MAIN=1: sample the guest main thread only
+static int only_guest;              // DEBUG-PROFGUEST: REKARINA_PROFILE_GUEST=1: sample the guest threads only
+static int only_par;                // DEBUG-PROFPAR: REKARINA_PROFILE_PAR=1: sample the chunk threads of vk_exec.c only
 volatile uint32_t prof_par_tid[16];  // their thread ids (vk_exec.c par_thread)
 static int is_par(uint32_t tid) {
     for (int i = 0; i < 16; i++)
@@ -70,14 +70,14 @@ static int is_par(uint32_t tid) {
     return 0;
 }
 int kern_tid_is_guest(uint32_t tid);
-static int chains;                  // call chains are kept: TOTK_PROFILE_RENDER or TOTK_PROFILE_CHAINS
+static int chains;                  // call chains are kept: REKARINA_PROFILE_RENDER or REKARINA_PROFILE_CHAINS
 static volatile uint64_t cur_frame; // last presented frame
-static volatile LONG hang_now;      // TOTK_PROFILE_HANG (hang_main): the hang is being sampled
+static volatile LONG hang_now;      // REKARINA_PROFILE_HANG (hang_main): the hang is being sampled
 static int hang_s;
-static uint64_t frame_lo, frame_hi; // TOTK_PROFILE_FRAMES=<lo>-<hi>: sample only while presents lo..hi-1 are pending
-static int64_t world_lo, world_hi;  // TOTK_PROFILE_FRAMES=w<lo>-<hi>: only while the world clock is in [lo, hi) s (us)
+static uint64_t frame_lo, frame_hi; // REKARINA_PROFILE_FRAMES=<lo>-<hi>: sample only while presents lo..hi-1 are pending
+static int64_t world_lo, world_hi;  // REKARINA_PROFILE_FRAMES=w<lo>-<hi>: only while the world clock is in [lo, hi) s (us)
 
-#define SLOW_RING (1u << 15)        // TOTK_PROFILE_SLOW: about 0.5 s of samples of every thread
+#define SLOW_RING (1u << 15)        // REKARINA_PROFILE_SLOW: about 0.5 s of samples of every thread
 #define SLOW_DUMPS 64
 typedef struct { uint64_t t; DWORD tid; uint32_t depth; uint64_t rip[PROF_DEPTH]; } Sample;
 static Sample ring[SLOW_RING];
@@ -85,11 +85,11 @@ static uint64_t ring_n;
 #define STALL_RING 1024
 static Sample stalls[STALL_RING];   // t: when the stop began; rip[PROF_DEPTH - 1] holds the stop's ns
 static uint64_t stall_n;
-static uint64_t slow_ns;            // TOTK_PROFILE_SLOW in ns, 0 off
+static uint64_t slow_ns;            // REKARINA_PROFILE_SLOW in ns, 0 off
 static volatile LONG64 dump_lo, dump_hi, dump_frame;   // the render thread asks for a window, the sampler writes it
 
 #define TRIP_SLOTS (1u << 18)
-static struct { uint64_t rip, n; uint32_t tid; } *trips;   // DEBUG-PROFGUEST: Rips per thread (TOTK_PROFILE_GUEST)
+static struct { uint64_t rip, n; uint32_t tid; } *trips;   // DEBUG-PROFGUEST: Rips per thread (REKARINA_PROFILE_GUEST)
 static void count_trip(uint32_t tid, uint64_t rip) {
     if (!trips && !(trips = calloc(TRIP_SLOTS, sizeof *trips))) return;
     uint32_t i = (uint32_t)(((rip ^ (uint64_t)tid << 44) * 0x9E3779B97F4A7C15ull) >> 46);
@@ -253,12 +253,12 @@ static DWORD WINAPI sampler_main(void *arg) {
         if (tick % 64 == 0) refresh_threads(self);
         if (dump_hi) slow_dump();
         if (frame_hi && (cur_frame < frame_lo || cur_frame >= frame_hi)) continue;
-        if (hang_s && !hang_now) continue;   // TOTK_PROFILE_HANG: only the hang is sampled
-        {   // DEBUG-SLOWSUB: TOTK_PROFILE_SLOWSUB=<ms>: samples only while a submission has been recording for that long
+        if (hang_s && !hang_now) continue;   // REKARINA_PROFILE_HANG: only the hang is sampled
+        {   // DEBUG-SLOWSUB: REKARINA_PROFILE_SLOWSUB=<ms>: samples only while a submission has been recording for that long
             extern volatile uint64_t vk_spike_sub_t0;
             extern uint64_t plat_now_ns(void);
             static int64_t lim = -1;
-            if (lim < 0) { const char *e = cfg_get("TOTK_PROFILE_SLOWSUB"); lim = e ? atoll(e) * 1000000ll : 0; }
+            if (lim < 0) { const char *e = cfg_get("REKARINA_PROFILE_SLOWSUB"); lim = e ? atoll(e) * 1000000ll : 0; }
             if (lim) {
                 uint64_t t0 = __atomic_load_n(&vk_spike_sub_t0, __ATOMIC_RELAXED);
                 if (!t0 || plat_now_ns() - t0 < (uint64_t)lim) continue;
@@ -325,7 +325,7 @@ static DWORD WINAPI sampler_main(void *arg) {
     return 0;
 }
 
-// TOTK_PROFILE_HANG=<s> (with TOTK_PROFILE and TOTK_PROFILE_CHAINS=1): nothing is sampled until no frame has been
+// REKARINA_PROFILE_HANG=<s> (with REKARINA_PROFILE and REKARINA_PROFILE_CHAINS=1): nothing is sampled until no frame has been
 // presented for <s> seconds. Then every thread is sampled for 3 s, the profile is written and the process ends: for a
 // game that stopped making frames, the profile's chains say where each thread sits. Without it a hung run only meets
 // its timeout and leaves nothing (quarter texture quality at the Market's entrance, 2026-11-13).
@@ -398,21 +398,21 @@ void prof_sampler_write(void) {
 }
 
 int prof_sampler_start(void) {
-    out_path = cfg_get("TOTK_PROFILE");
+    out_path = cfg_get("REKARINA_PROFILE");
     if (!out_path || !*out_path) {
         out_path = NULL;
         return 0;
     }
-    only_render = cfg_get("TOTK_PROFILE_RENDER") != NULL;
-    only_main = !only_render && cfg_get("TOTK_PROFILE_MAIN") != NULL;
-    only_guest = cfg_get("TOTK_PROFILE_GUEST") != NULL;
-    only_par = cfg_get("TOTK_PROFILE_PAR") != NULL;   // DEBUG-PROFPAR
-    const char *ch = cfg_get("TOTK_PROFILE_CHAINS");
-    const char *sl = cfg_get("TOTK_PROFILE_SLOW");
+    only_render = cfg_get("REKARINA_PROFILE_RENDER") != NULL;
+    only_main = !only_render && cfg_get("REKARINA_PROFILE_MAIN") != NULL;
+    only_guest = cfg_get("REKARINA_PROFILE_GUEST") != NULL;
+    only_par = cfg_get("REKARINA_PROFILE_PAR") != NULL;   // DEBUG-PROFPAR
+    const char *ch = cfg_get("REKARINA_PROFILE_CHAINS");
+    const char *sl = cfg_get("REKARINA_PROFILE_SLOW");
     slow_ns = sl && atoi(sl) > 0 ? (uint64_t)atoi(sl) * 1000000ull : 0;
     chains = only_render || only_main || slow_ns || (ch && *ch && strcmp(ch, "0"));
-    if (ch && !strcmp(ch, "0")) chains = 0;   // DEBUG-FLATONE: TOTK_PROFILE_RENDER=1 TOTK_PROFILE_CHAINS=0: one thread, Rips only
-    const char *fr = cfg_get("TOTK_PROFILE_FRAMES");
+    if (ch && !strcmp(ch, "0")) chains = 0;   // DEBUG-FLATONE: REKARINA_PROFILE_RENDER=1 REKARINA_PROFILE_CHAINS=0: one thread, Rips only
+    const char *fr = cfg_get("REKARINA_PROFILE_FRAMES");
     double wl, wh;
     if (fr && fr[0] == 'w' && sscanf(fr + 1, "%lf-%lf", &wl, &wh) == 2 && wl >= 0 && wl < wh)
         world_lo = (int64_t)(wl * 1e6), world_hi = (int64_t)(wh * 1e6);
@@ -428,26 +428,28 @@ int prof_sampler_start(void) {
         out_path = NULL;
         return 0;
     }
-    const char *hg = getenv("TOTK_PROFILE_HANG");
+    const char *hg = cfg_env("REKARINA_PROFILE_HANG");
     hang_s = hg && atoi(hg) > 0 ? atoi(hg) : 0;
     if (hang_s) CloseHandle(CreateThread(NULL, 0, hang_main, NULL, 0, NULL));
     return 1;
 }
 
-// perf_present, every present: the frame the sampler's TOTK_PROFILE_FRAMES window counts, and a TOTK_PROFILE_SLOW
+// perf_present, every present: the frame the sampler's REKARINA_PROFILE_FRAMES window counts, and a REKARINA_PROFILE_SLOW
 // dump of a present at least slow_ns after the previous one (d 0 on the first present).
 void prof_sampler_frame(uint64_t frame, uint64_t now, uint64_t d) {
     cur_frame = frame;
-    if (slow_ns && d >= slow_ns && !dump_hi && (!frame_hi || (frame >= frame_lo && frame < frame_hi))) {   // TOTK_PROFILE_FRAMES bounds the dumps too
+    if (slow_ns && d >= slow_ns && !dump_hi && (!frame_hi || (frame >= frame_lo && frame < frame_hi))) {   // REKARINA_PROFILE_FRAMES bounds the dumps too
         dump_lo = (LONG64)(now - d - 20000000ull);
         dump_frame = (LONG64)frame;
         InterlockedExchange64(&dump_hi, (LONG64)now);
     }
 }
 
-// ---- DEBUG-HWWATCH: TOTK_HWWATCH=<addr>[,<addr>...] (up to 4, 4 bytes each) and TOTK_HWWATCH_FRAME=<frame>: from that
+// ---- DEBUG-HWWATCH: REKARINA_HWWATCH=<addr>[,<addr>...] (up to 4, 4 bytes each) and REKARINA_HWWATCH_FRAME=<frame>: from that
 // present on, the CPU's debug registers break on writes to those guest addresses in every thread; each hit logs the
-// writing instruction's RVA (the instruction after the store) and the new value, the first 60 hits.
+// writing instruction's RVA (the instruction after the store) and the new value, the first 60 hits. REKARINA_HWWATCH_RW=1
+// breaks on reads too (400 hits, no value: reading it here would trip the watch again); scratch/w/rva2fn.py-style
+// lookups in the link map name the generated function f_<guest address> an RVA falls in.
 static volatile LONG hw_hits;
 static uint64_t hw_addr[4];
 static int hw_n;
@@ -459,10 +461,10 @@ static LONG CALLBACK hw_veh(EXCEPTION_POINTERS *ep) {
     for (int i = 0; i < hw_n; i++)
         if (d6 & (1ull << i)) {
             LONG k = InterlockedIncrement(&hw_hits);
-            if (k <= 60) {
-                float v;
-                memcpy(&v, (const void *)(uintptr_t)hw_addr[i], 4);
-                rt_log("HWWATCH write %#llx = %#x by rva %#llx (rsp %#llx) frame %llu", (unsigned long long)hw_addr[i], *(const unsigned *)(uintptr_t)hw_addr[i],
+            if (k <= (cfg_get("REKARINA_HWWATCH_RW") ? 400 : 60)) {
+                // the value is read only for a write watch: a read here would trip a read watch again
+                unsigned v = cfg_get("REKARINA_HWWATCH_RW") ? 0 : *(const unsigned *)(uintptr_t)hw_addr[i];
+                rt_log("HWWATCH access %#llx = %#x by rva %#llx (rsp %#llx) frame %llu", (unsigned long long)hw_addr[i], v,
                        (unsigned long long)(cx->Rip - exe_lo), (unsigned long long)cx->Rsp,
                        (unsigned long long)cur_frame);
             }
@@ -471,13 +473,40 @@ static LONG CALLBACK hw_veh(EXCEPTION_POINTERS *ep) {
     return EXCEPTION_CONTINUE_EXECUTION;
 }
 static void hw_arm(uint64_t frame);
-// TOTK_FNWATCH=<guest fn>:<offset>: from TOTK_HWWATCH_FRAME on, the first call of that function arms the watch on
+
+// DEBUG-MEMSCAN: every committed read-write page of [lo, hi) searched for the n bytes at pat (4-byte aligned); the
+// first 40 addresses are logged under the label what. For finding where the game keeps a value it was handed.
+uint64_t prof_memscan_hit[40];
+int prof_memscan_hits;
+void prof_memscan(uint64_t lo, uint64_t hi, const void *pat, size_t n, const char *what) {
+    int hits = 0;
+    prof_memscan_hits = 0;
+    uint64_t scanned = 0;
+    for (uint64_t a = lo; a < hi;) {
+        MEMORY_BASIC_INFORMATION mb;
+        if (!VirtualQuery((void *)(uintptr_t)a, &mb, sizeof mb)) break;
+        uint64_t base = (uint64_t)(uintptr_t)mb.BaseAddress, end = base + mb.RegionSize;
+        if (mb.State == MEM_COMMIT && (mb.Protect & (PAGE_READWRITE | PAGE_WRITECOPY)) && !(mb.Protect & PAGE_GUARD)) {
+            const uint8_t *p = (const uint8_t *)(uintptr_t)(base > a ? base : a), *e = (const uint8_t *)(uintptr_t)(end < hi ? end : hi);
+            scanned += (uint64_t)(e - p);
+            for (; p + n <= e; p += 4)
+                if (!memcmp(p, pat, n) && hits++ < 40) {
+                    rt_log("MEMSCAN %s at %#llx", what, (unsigned long long)(uintptr_t)p);
+                    prof_memscan_hit[prof_memscan_hits++] = (uint64_t)(uintptr_t)p;
+                }
+        }
+        if (end <= a) break;
+        a = end;
+    }
+    rt_log("MEMSCAN %s: %d hits in %llu MiB", what, hits, (unsigned long long)(scanned >> 20));
+}
+// REKARINA_FNWATCH=<guest fn>:<offset>: from REKARINA_HWWATCH_FRAME on, the first call of that function arms the watch on
 // x0 + offset (the object it was given); g_fnprof stays on for it (cpu.h FN_ENTER)
 static uint64_t fw_fn = 1, fw_off;
 static volatile LONG fw_armed;
 void prof_fnwatch(uint64_t addr, uint64_t x0) {
     static uint64_t from = ~0ull;
-    if (from == ~0ull) { const char *f = cfg_get("TOTK_HWWATCH_FRAME"); from = f ? strtoull(f, NULL, 0) : 0; }
+    if (from == ~0ull) { const char *f = cfg_get("REKARINA_HWWATCH_FRAME"); from = f ? strtoull(f, NULL, 0) : 0; }
     if (fw_fn != addr || fw_armed || cur_frame < from) return;
     if (InterlockedExchange(&fw_armed, 1)) return;
     hw_addr[0] = x0 + fw_off, hw_n = 1;
@@ -491,7 +520,7 @@ void prof_hwwatch_tick(uint64_t frame) {
     cur_frame = frame;
     if (fw_fn == 1) {
         fw_fn = 0;
-        const char *e = cfg_get("TOTK_FNWATCH");
+        const char *e = cfg_get("REKARINA_FNWATCH");
         if (e) {
             char *x;
             fw_fn = strtoull(e, &x, 0), fw_off = *x == ':' ? strtoull(x + 1, NULL, 0) : 0;
@@ -500,7 +529,7 @@ void prof_hwwatch_tick(uint64_t frame) {
     if (fw_fn && !fw_armed) { extern volatile int g_fnprof; g_fnprof = 1; }
     if (state < 0) {
         state = 0;
-        const char *e = cfg_get("TOTK_HWWATCH"), *f = cfg_get("TOTK_HWWATCH_FRAME");
+        const char *e = cfg_get("REKARINA_HWWATCH"), *f = cfg_get("REKARINA_HWWATCH_FRAME");
         for (const char *p = e; p && *p && hw_n < 4;) {
             char *x;
             hw_addr[hw_n++] = strtoull(p, &x, 0);
@@ -513,6 +542,12 @@ void prof_hwwatch_tick(uint64_t frame) {
     if (state != 1 || frame < at) return;
     state = 2;
     hw_arm(frame);
+}
+// DEBUG-MEMSCAN: watch these (up to 4) addresses at once, as REKARINA_HWWATCH would from its frame on
+void prof_hwwatch_now(const uint64_t *a, int n) {
+    hw_n = 0;
+    for (int i = 0; i < n && i < 4; i++) hw_addr[hw_n++] = a[i];
+    if (hw_n) hw_arm(cur_frame);
 }
 static void hw_arm(uint64_t frame) {
     if (!exe_lo) {
@@ -537,7 +572,8 @@ static void hw_arm(uint64_t frame) {
             for (int i = 0; i < hw_n; i++) {
                 (&cx.Dr0)[i] = hw_addr[i];
                 d7 |= 1ull << (2 * i);                    // local enable
-                d7 |= (0x1ull | (0x3ull << 2)) << (16 + 4 * i);   // RW = 01 (write), LEN = 11 (4 bytes)
+                // RW = 01 (write) or, with REKARINA_HWWATCH_RW=1, 11 (read or write); LEN = 11 (4 bytes)
+                d7 |= ((cfg_get("REKARINA_HWWATCH_RW") ? 0x3ull : 0x1ull) | (0x3ull << 2)) << (16 + 4 * i);
             }
             cx.Dr7 = d7;
             if (SetThreadContext(self ? GetCurrentThread() : h, &cx)) armed++;

@@ -67,7 +67,7 @@ const uint8_t *romfs_prompt_key_masks(int *cell, int *count);
 int romfs_prompt_preview_key(int set, int k);
 int romfs_prompts_off(const char *folder);
 const char *romfs_overlay(size_t k, const char **file, uint64_t *size, int *is_added);   // RomFS path of overlay k
-void fs_trace(const char *what, const char *path);         // TOTK_TRACE=fs: one line per open
+void fs_trace(const char *what, const char *path);         // REKARINA_TRACE=fs: one line per open
 
 // ---- fs_host.c
 void fs_host_set_profile(const char *dir);                 // profile directory; before the first storage mount only

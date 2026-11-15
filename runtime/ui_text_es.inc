@@ -114,8 +114,8 @@
     [UI_MENU_UPSCALE_GROUP] = "Escalado y generación de fotogramas",
     [UI_MENU_FSR_VERSION] = "Versión de FSR",
     [UI_MENU_FSR_VERSION_DESC] = "Qué escalador AMD FSR se usa cuando el escalador temporal es AMD FSR. Automático usa FSR 4.1 (aprendizaje automático) en las tarjetas Radeon que lo admiten y FSR 3.1 en todas las demás. Se aplica al instante.",
-    [UI_MENU_TAA] = "Reescalador temporal",
-    [UI_MENU_TAA_DESC] = "Qué reescalador usa la fila DLSS / DLAA: NVIDIA DLSS (GPU RTX) o AMD FSR (cualquier GPU). Tras reiniciar.",
+    [UI_MENU_TAA] = "Reescalador",
+    [UI_MENU_TAA_DESC] = "Qué reescalador usa la fila DLSS / DLAA: NVIDIA DLSS (GPU RTX), AMD FSR (cualquier GPU, temporal) o AMD FSR 1 (cualquier GPU, espacial: el más ligero, para tarjetas antiguas y portátiles). Tras reiniciar.",
     [UI_MENU_FRAMEGEN] = "Generación de fotogramas",
     [UI_MENU_FRAMEGEN_DESC] = "Un fotograma generado entre cada dos que dibuja el juego, con el HUD al margen: AMD FSR en cualquier GPU, NVIDIA DLSS en las series RTX 40 y 50. Tras reiniciar.",
     [UI_MENU_FRAMEGEN_NEEDS] = "Requiere DLSS / DLAA activado: usa sus vectores de movimiento.",
@@ -230,14 +230,16 @@
                              "el ratón para la cámara. El juego lee sus iconos al iniciar, así que cambian tras "
                              "reiniciar. Forman parte de los archivos del juego, así que un botón que reasignes en "
                              "Controles conserva su icono antiguo en pantalla.",
-    [UI_MENU_PROMPTS_DESC_LIVE] = "Qué botones muestran los iconos del juego: Nintendo (los del propio juego), Xbox, PlayStation, el conjunto de contorno propio de Rekarina o PC: teclado y ratón, con las teclas que hayas asignado. La fila de botones de arriba es el conjunto elegido, tal como lo dibuja el juego. Los botones frontales siguen la disposición de botones de arriba. Se aplica al instante.",
+    [UI_MENU_PROMPTS_DESC_LIVE] = "Qué botones muestran los iconos del juego. Automático sigue el dispositivo en el que pulsaste un botón por última vez: teclado y ratón, o los botones del propio mando (Xbox, PlayStation, Nintendo; un Steam Deck o una portátil con Windows muestra Xbox). O siempre un conjunto: Nintendo (los del propio juego), Xbox, PlayStation, Rekarina (nombres de Xbox con las formas de botón del propio juego) o PC: teclado y ratón, con las teclas que hayas asignado. La fila de botones de arriba es el conjunto tal como lo dibuja el juego. Los botones frontales siguen la disposición de botones de arriba. Se aplica al instante.",
     [UI_MENU_PROMPTS_NINTENDO] = "Nintendo", [UI_MENU_PROMPTS_XBOX] = "Xbox", [UI_MENU_PROMPTS_PC] = "PC", [UI_MENU_PROMPTS_PS] = "PlayStation", [UI_MENU_PROMPTS_RK] = "Rekarina",
+    [UI_MENU_PROMPTS_AUTO] = "Automático",
     [UI_MENU_PROMPTS_MISSING] = "faltan los archivos de iconos: ejecuta de nuevo el instalador",
     [UI_MENU_PROMPTS_FAILED] = "archivos de iconos dañados: ejecuta de nuevo el instalador",
     [UI_MENU_PROMPTS_RESTART] = "los iconos cambian tras reiniciar",
+    [UI_MENU_PROMPTS_LIVE_PARTIAL] = "Cambiado ya. Los botones que el juego ya dibujó y la pista de acción de abajo conservan su aspecto anterior hasta reiniciar el juego.",
     [UI_MENU_PROMPTS_OFF_SHAPE] = "desactivados si la resolución del juego no es 16:9",
     [UI_MENU_PROMPTS_OFF_MODS] = "desactivados: un mod RomFS sustituye sus archivos",
-    [UI_MENU_PROMPTS_OFF_PATCHES] = "desactivados mientras TOTK_ROMFS_PATCHES esté definida",
+    [UI_MENU_PROMPTS_OFF_PATCHES] = "desactivados mientras REKARINA_ROMFS_PATCHES esté definida",
     [UI_MENU_RESTART] = "Reiniciar ahora",
     [UI_MENU_RESTART_DESC] = "Cierra el juego y lo inicia de nuevo con los iconos nuevos. Se pierde el progreso desde tu "
                              "último guardado.",
@@ -250,12 +252,25 @@
     [UI_MENU_STICK_DEADZONE_NOW] = "palanca ahora: %.0f %%",
     [UI_MENU_MOUSE_MODE] = "Cámara con ratón",
     [UI_MENU_MOUSE_MODE_DESC] = "Directo: la cámara gira según lo que se mueve el ratón, como en un juego de PC, sin zona muerta ni curva de palanca (juego 1.4.3; las demás versiones usan la emulación de palanca). Emulación de palanca: el ratón actúa como la palanca derecha.",
+    [UI_MENU_FAST_TEXT] = "Diálogos más rápidos",
+    [UI_MENU_FAST_TEXT_DESC] = "Quita las pausas que los mensajes del juego hacen entre frases, para que el texto avance sin detenerse.",
+    [UI_MENU_MOUSE_MODE_DESC_OOT] = "Directo: la cámara gira exactamente lo que se mueve el ratón, a cualquier velocidad, sin zona muerta, curva ni velocidad máxima del stick. Emulación del stick: el ratón actúa como el stick derecho, con su curva y su velocidad máxima.",
     [UI_MENU_MOUSE_STICK] = "Emulación de palanca",
     [UI_MENU_MOUSE_DIRECT] = "Directo",
     [UI_MENU_MENU_CURSOR] = "Ratón en los menús del juego",
     [UI_MENU_MENU_CURSOR_DESC] = "En los menús propios del juego (título, inventario, tiendas, opciones de diálogo) aparece el puntero: se selecciona el elemento que tiene debajo, el clic izquierdo confirma y el clic derecho vuelve atrás. Solo cuando lo último que se usó fue el ratón o una tecla, así que con un mando los menús no cambian (juego 1.4.3).",
     [UI_MENU_MOUSE_SENS] = "Sensibilidad de cámara (ratón)",
     [UI_MENU_MOUSE_SENS_DESC] = "A qué velocidad gira la cámara el ratón.",
+    [UI_MENU_MOUSE_SENS_Y] = "Velocidad vertical del ratón",
+    [UI_MENU_MOUSE_SENS_Y_DESC] = "A qué velocidad gira la cámara al mover el ratón arriba y abajo, en comparación con "
+                                  "izquierda y derecha: 0.50 es la mitad, 1.00 igual.",
+    [UI_MENU_MOUSE_INVERT_Y] = "Invertir vertical del ratón",
+    [UI_MENU_MOUSE_INVERT_Y_DESC] = "Intercambia arriba y abajo en la cámara del ratón. Solo el ratón: las opciones de "
+                                    "cámara del propio juego siguen aplicándose.",
+    [UI_MENU_MOUSE_RAW] = "Entrada sin procesar del ratón",
+    [UI_MENU_MOUSE_RAW_DESC] = "Activado: la cámara sigue el movimiento del propio ratón, sin la velocidad ni la "
+                               "aceleración del puntero de Windows. Desactivado: sigue al puntero, con ambas, como en el "
+                               "escritorio (con un panel táctil, por ejemplo).",
     [UI_MENU_WALK_KEY] = "Tecla de caminar",
     [UI_MENU_WALK_KEY_DESC] = "Mantenla pulsada para inclinar solo en parte las palancas del teclado, de modo que con el "
                               "teclado se camine en vez de correr. La escala de caminar fija cuánto. No afecta al mando ni al ratón.",

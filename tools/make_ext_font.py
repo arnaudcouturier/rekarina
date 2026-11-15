@@ -164,12 +164,35 @@ def bfttf(ttf, key=0x49621806):
     words = struct.unpack('>%dI' % (len(data) // 4), data)
     return out + struct.pack('>%dI' % len(words), *(w ^ key for w in words))[:len(ttf)]
 
+# Linux has no Arial: the system's bold sans as fontconfig names it, else the places DejaVu, Liberation and Noto take
+# on Debian and Ubuntu, Arch and SteamOS, and Fedora. A collection (.ttc) is passed over: TTFont would need its index.
+LINUX_FONTS = ('/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf', '/usr/share/fonts/TTF/DejaVuSans-Bold.ttf',
+               '/usr/share/fonts/dejavu-sans-fonts/DejaVuSans-Bold.ttf',
+               '/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf',
+               '/usr/share/fonts/liberation/LiberationSans-Bold.ttf', '/usr/share/fonts/noto/NotoSans-Bold.ttf',
+               '/usr/share/fonts/truetype/noto/NotoSans-Bold.ttf')
+
+
+def default_letter_font():
+    import os, subprocess
+    if os.name == 'nt':
+        return 'C:/Windows/Fonts/arialbd.ttf'
+    if sys.platform == 'darwin':
+        return '/System/Library/Fonts/Supplemental/Arial Rounded Bold.ttf'
+    try:
+        r = subprocess.run(['fc-match', '-f', '%{file}', 'sans-serif:bold'], capture_output=True, text=True, timeout=20)
+        if r.returncode == 0 and r.stdout.lower().endswith(('.ttf', '.otf')) and os.path.isfile(r.stdout):
+            return r.stdout
+    except (OSError, subprocess.SubprocessError):
+        pass
+    return next((f for f in LINUX_FONTS if os.path.isfile(f)), LINUX_FONTS[0])
+
+
 if __name__ == '__main__':
     import argparse, os, tempfile
     ap = argparse.ArgumentParser(description='a stand-in for the Nintendo extension shared font (button icons)')
     ap.add_argument('out', help='.ttf, or .bfttf for the BFTTF wrapping')
-    ap.add_argument('letter_font', nargs='?', default='C:/Windows/Fonts/arialbd.ttf' if os.name == 'nt'
-                    else '/System/Library/Fonts/Supplemental/Arial Rounded Bold.ttf')
+    ap.add_argument('letter_font', nargs='?', default=default_letter_font())
     ap.add_argument('--style', choices=('switch', 'xbox-label', 'xbox'), default='switch')
     a = ap.parse_args()
     if a.out.lower().endswith('.bfttf'):

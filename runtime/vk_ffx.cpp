@@ -5,7 +5,7 @@
 //
 // Two forms of the library are taken. SDK 2 (amd_fidelityfx_loader_vk.dll with amd_fidelityfx_upscaler_vk.dll and
 // amd_fidelityfx_framegeneration_vk.dll): FSR Upscaling 4.1 (the machine-learning one) on the Radeon cards it supports,
-// FSR 3.1.6 on every other card, and the player may name the version (TOTK_FSR_VERSION, fsr_version). SDK 1
+// FSR 3.1.6 on every other card, and the player may name the version (REKARINA_FSR_VERSION, fsr_version). SDK 1
 // (amd_fidelityfx_vk.dll alone, an install made before the update): FSR 3.1 only. They differ for this file in the
 // descriptor that names the device (vk_ffx_backend) and in the version descriptors SDK 2 asks for.
 //
@@ -21,6 +21,11 @@
 #include <string.h>
 #include <wchar.h>
 
+#ifndef _WIN32
+// ffx_api.h marks its entry points __declspec(dllexport), a Windows attribute; the declarations are only read here (the
+// library is loaded at run time), so on other hosts the attribute is dropped rather than the header changed
+#define __declspec(x)
+#endif
 #include "third_party/ffx_api/ffx_api.h"
 #include "third_party/ffx_api/ffx_upscale.h"
 #include "third_party/ffx_api/vk/ffx_api_vk.h"
@@ -100,11 +105,11 @@ void versions_query() {
     rt_log("ffx: upscaler versions on this device: %s", line);
 }
 
-// TOTK_FSR_VERSION (applies to the next context; the menu changes it live): auto leaves the choice to the library,
+// REKARINA_FSR_VERSION (applies to the next context; the menu changes it live): auto leaves the choice to the library,
 // which takes FSR 4 where the card runs it; a number takes the first listed version of that generation ("4", "3"), a
 // full name that one ("3.1.6"). 0: no override (auto, SDK 1, or a version the device does not list, said once).
 uint64_t fsr_version() {
-    const char *want = cfg_value("TOTK_FSR_VERSION");
+    const char *want = cfg_value("REKARINA_FSR_VERSION");
     if (!A.v2 || !want || !*want || !strcmp(want, "auto")) return 0;
     versions_query();
     size_t len = strlen(want);
@@ -263,7 +268,7 @@ extern "C" int vk_ffx_upscale(VkCommandBuffer cb, const VkFfxImage *color, const
     d.renderSize = {color->width, color->height};
     d.upscaleSize = {out->width, out->height};
     // The sharpness slider (0-100) drives FSR's own RCAS here, as it does for FSR 1
-    int sharp = cfg_int("TOTK_SHARPNESS");
+    int sharp = cfg_int("REKARINA_SHARPNESS");
     d.enableSharpening = sharp > 0;
     d.sharpness = sharp > 100 ? 1.0f : sharp / 100.0f;
     d.frameTimeDelta = dt_ms;

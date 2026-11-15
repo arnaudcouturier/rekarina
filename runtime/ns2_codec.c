@@ -36,7 +36,7 @@
 // submission-ready SystemEventType lives in its type at +0x100 and is destroyed with the decoder, as in the SDK (kept,
 // it stayed bound and a decoder made again in the same cleared memory got none: nxnative, Donkey Kong Bananza).
 // The sync handles (nn::gs::NativeSyncHandle, 16 bytes) are the host's: magic, decoder serial, buffer, generation.
-// TOTK_AV1_THREADS sets dav1d's thread count (default by the machine, 2 to 6).
+// REKARINA_AV1_THREADS sets dav1d's thread count (default by the machine, 2 to 6).
 #ifdef GAME_NS2
 #include <emmintrin.h>
 #include <errno.h>
@@ -437,10 +437,10 @@ static void free_packet(const uint8_t *buf, void *cookie) {
 }
 
 static int av1_threads(void) {
-    const char *e = cfg_get("TOTK_AV1_THREADS");
+    const char *e = cfg_get("REKARINA_AV1_THREADS");
     int n = e ? atoi(e) : 0;
     if (n > 0) return n > 32 ? 32 : n;
-    uint32_t cpus = plat_cpu_count();
+    uint32_t cpus = plat_cpu_usable();   // the processors the process may use (an affinity mask), as the other pools
     return cpus >= 16 ? 6 : cpus >= 8 ? 4 : 2;
 }
 
@@ -1257,7 +1257,7 @@ HOST_OVERRIDE(N_SPT_REQUEST, spt_request);
 HOST_OVERRIDE(N_SPT_CANCEL, spt_cancel);
 HOST_OVERRIDE(N_SPT_DESTROY, spt_destroy);
 
-// ---- totk.exe --probe-codec FILE.webm: one AV1, VP9 or VP8 WebM through the entries above, in the order OoT's
+// ---- rekarina.exe --probe-codec FILE.webm: one AV1, VP9 or VP8 WebM through the entries above, in the order OoT's
 // movie library calls them (see the top of the file), with a Cpu of its own. The SystemEvents are host
 // stand-ins (a flag per event); the probe plays the library's event thread by polling them.
 //   1. every packet in, every picture out through the registered buffers, the sync point event and TryWaitNativeSync;
@@ -1266,7 +1266,7 @@ HOST_OVERRIDE(N_SPT_DESTROY, spt_destroy);
 //   3. Stop, packets sent without waiting: the submission-ready event goes down, the one past IN_MAX is refused (3603),
 //      Flush empties the queue; an image with no picture reads as black;
 //   4. Finalize: the decoder's event is destroyed, pools and the sync point event finalized.
-// TOTK_PROBE_CODEC_SHOT=<file.png> writes the middle picture (RGBA readback). Exit code 0 when every check passed.
+// REKARINA_PROBE_CODEC_SHOT=<file.png> writes the middle picture (RGBA readback). Exit code 0 when every check passed.
 #define CHECK(cond, ...)                                                                                              \
     do {                                                                                                               \
         if (!(cond)) {                                                                                                 \
@@ -1617,7 +1617,7 @@ int probe_codec(const char *path) {
     double lo = 255, hi = 0;
     int got = 0;
     uint64_t t0 = plat_now_ns();
-    if (p_run(&s, data, &t, 0, t.n, ev, &got, frame, cfg_get("TOTK_PROBE_CODEC_SHOT"), &lo, &hi)) return 1;
+    if (p_run(&s, data, &t, 0, t.n, ev, &got, frame, cfg_get("REKARINA_PROBE_CODEC_SHOT"), &lo, &hi)) return 1;
     double secs = (plat_now_ns() - t0) / 1e9;
     CHECK(got == t.n, "%d pictures out of %d packets", got, t.n);
     Dec *d = dec_of(s.type);

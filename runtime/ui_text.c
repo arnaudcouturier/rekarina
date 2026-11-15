@@ -147,8 +147,8 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_UPSCALE_GROUP] = "Upscaling and frame generation",
     [UI_MENU_FSR_VERSION] = "FSR version",
     [UI_MENU_FSR_VERSION_DESC] = "Which AMD FSR upscaler runs when the temporal upscaler is AMD FSR. Automatic takes FSR 4.1 (machine learning) on the Radeon cards that run it and FSR 3.1 on every other card. Applies at once.",
-    [UI_MENU_TAA] = "Temporal upscaler",
-    [UI_MENU_TAA_DESC] = "Which upscaler the DLSS / DLAA row uses: NVIDIA DLSS (RTX GPUs) or AMD FSR (any GPU). After a restart.",
+    [UI_MENU_TAA] = "Upscaler",
+    [UI_MENU_TAA_DESC] = "Which upscaler the DLSS / DLAA row uses: NVIDIA DLSS (RTX GPUs), AMD FSR (any GPU, temporal) or AMD FSR 1 (any GPU, spatial: the lightest, for older cards and handhelds). After a restart.",
     [UI_MENU_FRAMEGEN] = "Frame generation",
     [UI_MENU_FRAMEGEN_DESC] = "One generated frame between every two the game draws, with the HUD kept out of it: AMD FSR on any GPU, NVIDIA DLSS on RTX 40 and 50 series. After a restart.",
     [UI_MENU_FRAMEGEN_NEEDS] = "Needs DLSS / DLAA on: it uses its motion vectors.",
@@ -263,14 +263,16 @@ static const char *const text_en[UI_TEXT_COUNT] = {
                              "(E, Shift, Space, left click...) and the mouse for the camera. The game reads its prompts "
                              "at start, so they change after a restart. They are part of the game's files, so a button "
                              "you remap in Controls keeps its old prompt on screen.",
-    [UI_MENU_PROMPTS_DESC_LIVE] = "Which buttons the game's prompts show: Nintendo (the game's own), Xbox, PlayStation, Rekarina's own outlined set, or PC: the keyboard and mouse, with the keys you have bound. The row of buttons above is the chosen set as the game draws it. The face buttons follow the button layout above. Applies at once.",
+    [UI_MENU_PROMPTS_DESC_LIVE] = "Which buttons the game's prompts show. Automatic follows the device you pressed a button on last: the keyboard and mouse, or the controller's own buttons (Xbox, PlayStation, Nintendo; a Steam Deck or a Windows handheld shows Xbox). Or always one set: Nintendo (the game's own), Xbox, PlayStation, Rekarina (Xbox names on the game's own button shapes), or PC: the keyboard and mouse, with the keys you have bound. The row of buttons above is the set as the game draws it. The face buttons follow the button layout above. Applies at once.",
     [UI_MENU_PROMPTS_NINTENDO] = "Nintendo", [UI_MENU_PROMPTS_XBOX] = "Xbox", [UI_MENU_PROMPTS_PC] = "PC", [UI_MENU_PROMPTS_PS] = "PlayStation", [UI_MENU_PROMPTS_RK] = "Rekarina",
+    [UI_MENU_PROMPTS_AUTO] = "Automatic",
     [UI_MENU_PROMPTS_MISSING] = "prompt files missing: run the setup again",
     [UI_MENU_PROMPTS_FAILED] = "prompt files damaged: run the setup again",
     [UI_MENU_PROMPTS_RESTART] = "prompts change after restart",
+    [UI_MENU_PROMPTS_LIVE_PARTIAL] = "Changed now. Buttons the game has already drawn, and the action hint at the bottom, keep their old look until the game restarts.",
     [UI_MENU_PROMPTS_OFF_SHAPE] = "off at a game resolution not 16:9",
     [UI_MENU_PROMPTS_OFF_MODS] = "off: a RomFS mod replaces their files",
-    [UI_MENU_PROMPTS_OFF_PATCHES] = "off while TOTK_ROMFS_PATCHES is set",
+    [UI_MENU_PROMPTS_OFF_PATCHES] = "off while REKARINA_ROMFS_PATCHES is set",
     [UI_MENU_RESTART] = "Restart now",
     [UI_MENU_RESTART_DESC] = "Closes the game and starts it again with the new prompts. Progress since your last save "
                              "is lost.",
@@ -283,12 +285,25 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_STICK_DEADZONE_NOW] = "stick now: %.0f %%",
     [UI_MENU_MOUSE_MODE] = "Mouse camera",
     [UI_MENU_MOUSE_MODE_DESC] = "Direct: the camera turns by how far the mouse moves, as in a PC game, with no stick dead zone or curve (game 1.4.3; other versions use stick emulation). Stick emulation: the mouse acts as the right stick.",
+    [UI_MENU_FAST_TEXT] = "Faster dialogue",
+    [UI_MENU_FAST_TEXT_DESC] = "Leaves out the pauses the game's messages hold between phrases, so the text runs on without stopping.",
+    [UI_MENU_MOUSE_MODE_DESC_OOT] = "Direct: the camera turns exactly as far as the mouse moves, at any speed, with no stick dead zone, curve or top speed. Stick emulation: the mouse acts as the right stick, with the stick's curve and top speed.",
     [UI_MENU_MOUSE_STICK] = "Stick emulation",
     [UI_MENU_MOUSE_DIRECT] = "Direct",
     [UI_MENU_MENU_CURSOR] = "Mouse in the game's menus",
     [UI_MENU_MENU_CURSOR_DESC] = "In the game's own menus (title, inventory, shops, dialogue choices) the pointer shows: the item under it is selected, left click confirms, right click goes back. Only after the mouse or a key was used last, so a gamepad sees the menus unchanged (game 1.4.3).",
     [UI_MENU_MOUSE_SENS] = "Mouse camera sensitivity",
     [UI_MENU_MOUSE_SENS_DESC] = "How fast the mouse turns the camera.",
+    [UI_MENU_MOUSE_SENS_Y] = "Mouse vertical speed",
+    [UI_MENU_MOUSE_SENS_Y_DESC] = "How fast moving the mouse up and down turns the camera, compared with left and right: "
+                                  "0.50 is half as fast, 1.00 the same.",
+    [UI_MENU_MOUSE_INVERT_Y] = "Invert mouse vertical",
+    [UI_MENU_MOUSE_INVERT_Y_DESC] = "Swaps up and down for the mouse camera. Only the mouse: the game's own camera options "
+                                    "still apply.",
+    [UI_MENU_MOUSE_RAW] = "Raw mouse input",
+    [UI_MENU_MOUSE_RAW_DESC] = "On: the camera follows the mouse's own movement, without the Windows pointer speed and "
+                               "acceleration. Off: it follows the pointer, with both, as on the desktop (on a touchpad, "
+                               "for instance).",
     [UI_MENU_WALK_KEY] = "Walk key",
     [UI_MENU_WALK_KEY_DESC] = "Hold it to tilt the keyboard's sticks part of the way, so the keyboard walks instead of "
                               "runs. The walk scale sets how far. A controller and the mouse are not affected.",
@@ -644,8 +659,8 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_MENU_UPSCALE_GROUP] = "Апскейлинг и генерация кадров",
     [UI_MENU_FSR_VERSION] = "Версия FSR",
     [UI_MENU_FSR_VERSION_DESC] = "Какой апскейлер AMD FSR работает, когда временной апскейлер — AMD FSR. «Автоматически» берёт FSR 4.1 (нейросетевой) на видеокартах Radeon, которые его поддерживают, и FSR 3.1 на всех остальных. Применяется сразу.",
-    [UI_MENU_TAA] = "Временной апскейлер",
-    [UI_MENU_TAA_DESC] = "Какой апскейлер использует строка DLSS / DLAA: NVIDIA DLSS (видеокарты RTX) или AMD FSR (любые видеокарты). После перезапуска.",
+    [UI_MENU_TAA] = "Апскейлер",
+    [UI_MENU_TAA_DESC] = "Какой апскейлер использует строка DLSS / DLAA: NVIDIA DLSS (видеокарты RTX), AMD FSR (любые видеокарты, временной) или AMD FSR 1 (любые видеокарты, пространственный: самый лёгкий, для старых видеокарт и портативных ПК). После перезапуска.",
     [UI_MENU_FRAMEGEN] = "Генерация кадров",
     [UI_MENU_FRAMEGEN_DESC] = "Один созданный кадр между каждыми двумя кадрами игры, интерфейс в него не попадает: AMD FSR на любых видеокартах, NVIDIA DLSS на RTX 40 и 50. После перезапуска.",
     [UI_MENU_FRAMEGEN_NEEDS] = "Нужно включить DLSS / DLAA: используются его векторы движения.",
@@ -757,14 +772,16 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
                              "(E, Shift, пробел, левый клик...) и мышь для камеры. Игра читает подсказки при запуске, "
                              "так что они меняются после перезапуска. Подсказки записаны в файлах игры, поэтому у "
                              "кнопки, переназначенной на вкладке управления, на экране остаётся прежняя подсказка.",
-    [UI_MENU_PROMPTS_DESC_LIVE] = "Какие кнопки показывают подсказки игры: Nintendo (как в самой игре), Xbox, PlayStation, собственный контурный набор Rekarina или PC — клавиатура и мышь с теми клавишами, которые вы назначили. Ряд кнопок выше — выбранный набор, каким его рисует игра. Буквы основных кнопок следуют раскладке кнопок выше. Применяется сразу.",
+    [UI_MENU_PROMPTS_DESC_LIVE] = "Какие кнопки показывают подсказки игры. Автоматически: устройство, на котором вы последним нажали кнопку, — клавиатура и мышь или кнопки самого контроллера (Xbox, PlayStation, Nintendo; Steam Deck и портативные ПК на Windows показывают Xbox). Или всегда один набор: Nintendo (как в самой игре), Xbox, PlayStation, Rekarina (названия Xbox на кнопках в стиле самой игры) или PC — клавиатура и мышь с теми клавишами, которые вы назначили. Ряд кнопок выше — набор, каким его рисует игра. Буквы основных кнопок следуют раскладке кнопок выше. Применяется сразу.",
     [UI_MENU_PROMPTS_NINTENDO] = "Nintendo", [UI_MENU_PROMPTS_XBOX] = "Xbox", [UI_MENU_PROMPTS_PC] = "PC", [UI_MENU_PROMPTS_PS] = "PlayStation", [UI_MENU_PROMPTS_RK] = "Rekarina",
+    [UI_MENU_PROMPTS_AUTO] = "Автоматически",
     [UI_MENU_PROMPTS_MISSING] = "нет файлов подсказок: запустите установку снова",
     [UI_MENU_PROMPTS_FAILED] = "файлы подсказок повреждены: запустите установку снова",
     [UI_MENU_PROMPTS_RESTART] = "подсказки сменятся после перезапуска",
+    [UI_MENU_PROMPTS_LIVE_PARTIAL] = "Изменено сразу. Кнопки, которые игра уже нарисовала, и подсказка действия внизу останутся прежними до перезапуска игры.",
     [UI_MENU_PROMPTS_OFF_SHAPE] = "выкл. при разрешении игры не 16:9",
     [UI_MENU_PROMPTS_OFF_MODS] = "выкл.: мод RomFS заменяет их файлы",
-    [UI_MENU_PROMPTS_OFF_PATCHES] = "выкл., пока задан TOTK_ROMFS_PATCHES",
+    [UI_MENU_PROMPTS_OFF_PATCHES] = "выкл., пока задан REKARINA_ROMFS_PATCHES",
     [UI_MENU_RESTART] = "Перезапустить сейчас",
     [UI_MENU_RESTART_DESC] = "Закрывает игру и запускает её снова с новыми подсказками. Прогресс после последнего "
                              "сохранения будет потерян.",
@@ -777,12 +794,25 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_MENU_STICK_DEADZONE_NOW] = "стик сейчас: %.0f %%",
     [UI_MENU_MOUSE_MODE] = "Управление мышью",
     [UI_MENU_MOUSE_MODE_DESC] = "Прямое: камера поворачивается на столько, на сколько сдвинута мышь, как в играх для ПК, без мёртвой зоны и кривой стика (версия игры 1.4.3; на других версиях эмуляция стика). Эмуляция стика: мышь работает как правый стик.",
+    [UI_MENU_FAST_TEXT] = "Быстрые диалоги",
+    [UI_MENU_FAST_TEXT_DESC] = "Убирает паузы, которые сообщения игры делают между фразами: текст идёт без остановок.",
+    [UI_MENU_MOUSE_MODE_DESC_OOT] = "Прямое: камера поворачивается ровно на столько, на сколько сдвинута мышь, с любой скоростью, без мёртвой зоны, кривой и предела скорости стика. Эмуляция стика: мышь работает как правый стик, с его кривой и максимальной скоростью.",
     [UI_MENU_MOUSE_STICK] = "Эмуляция стика",
     [UI_MENU_MOUSE_DIRECT] = "Прямое",
     [UI_MENU_MENU_CURSOR] = "Мышь в меню игры",
     [UI_MENU_MENU_CURSOR_DESC] = "В меню самой игры (заставка, инвентарь, магазины, варианты ответа) появляется указатель: пункт под ним выбирается, левый щелчок подтверждает, правый возвращает назад. Только если последними использовались мышь или клавиатура, поэтому с геймпадом меню не меняются (версия игры 1.4.3).",
     [UI_MENU_MOUSE_SENS] = "Чувствительность мыши",
     [UI_MENU_MOUSE_SENS_DESC] = "Как быстро мышь поворачивает камеру.",
+    [UI_MENU_MOUSE_SENS_Y] = "Скорость мыши по вертикали",
+    [UI_MENU_MOUSE_SENS_Y_DESC] = "Как быстро камера поворачивается, когда мышь движется вверх и вниз, по сравнению с "
+                                  "движением влево и вправо: 0.50 — вдвое медленнее, 1.00 — так же.",
+    [UI_MENU_MOUSE_INVERT_Y] = "Инверсия мыши по вертикали",
+    [UI_MENU_MOUSE_INVERT_Y_DESC] = "Меняет местами верх и низ для камеры мыши. Только для мыши: настройки камеры в самой "
+                                    "игре действуют как прежде.",
+    [UI_MENU_MOUSE_RAW] = "Необработанный ввод мыши (raw input)",
+    [UI_MENU_MOUSE_RAW_DESC] = "Вкл.: камера следует движению самой мыши, без скорости указателя и ускорения Windows. "
+                               "Выкл.: камера следует указателю, с тем и другим, как на рабочем столе (например, на "
+                               "тачпаде).",
     [UI_MENU_WALK_KEY] = "Клавиша шага",
     [UI_MENU_WALK_KEY_DESC] = "Удерживайте: стики клавиатуры отклоняются частично, и персонаж идёт, а не бежит. "
                               "Насколько — задаёт сила шага. Контроллер и мышь не затрагиваются.",
@@ -1164,6 +1194,16 @@ static const char *const text_pt_br[UI_TEXT_COUNT] = {
     [UI_MENU_STICK_DEADZONE_NOW] = "analógico agora: %.0f %%",
     [UI_MENU_MOUSE_SENS] = "Sensibilidade da câmera no mouse",
     [UI_MENU_MOUSE_SENS_DESC] = "Quão rápido o mouse gira a câmera.",
+    [UI_MENU_MOUSE_SENS_Y] = "Velocidade vertical do mouse",
+    [UI_MENU_MOUSE_SENS_Y_DESC] = "Quão rápido a câmera gira ao mover o mouse para cima e para baixo, comparado com "
+                                  "esquerda e direita: 0.50 é metade da velocidade, 1.00 é igual.",
+    [UI_MENU_MOUSE_INVERT_Y] = "Inverter vertical do mouse",
+    [UI_MENU_MOUSE_INVERT_Y_DESC] = "Troca cima e baixo na câmera do mouse. Só o mouse: as opções de câmera do próprio "
+                                    "jogo continuam valendo.",
+    [UI_MENU_MOUSE_RAW] = "Entrada bruta do mouse",
+    [UI_MENU_MOUSE_RAW_DESC] = "Ligado: a câmera segue o movimento do próprio mouse, sem a velocidade e a aceleração do "
+                               "ponteiro do Windows. Desligado: segue o ponteiro, com as duas, como na área de trabalho "
+                               "(num touchpad, por exemplo).",
 
     [UI_BINDS_HELP] = "Selecione uma célula e aperte A ou Enter, depois a tecla, o botão do mouse ou o botão do "
                       "controle. Delete ou X limpa a célula. Uma tecla já em uso vem para cá; um botão do controle "
@@ -1271,8 +1311,8 @@ static const char *const text_pt_br[UI_TEXT_COUNT] = {
     [UI_MENU_UPSCALE_GROUP] = "Upscaling e geração de quadros",
     [UI_MENU_FSR_VERSION] = "Versão do FSR",
     [UI_MENU_FSR_VERSION_DESC] = "Qual upscaler AMD FSR roda quando o upscaler temporal é o AMD FSR. Automático usa o FSR 4.1 (aprendizado de máquina) nas placas Radeon que o suportam e o FSR 3.1 em todas as outras. Aplica na hora.",
-    [UI_MENU_TAA] = "Upscaler temporal",
-    [UI_MENU_TAA_DESC] = "Qual upscaler a linha DLSS / DLAA usa: NVIDIA DLSS (placas RTX) ou AMD FSR (qualquer placa). Após reiniciar.",
+    [UI_MENU_TAA] = "Upscaler",
+    [UI_MENU_TAA_DESC] = "Qual upscaler a linha DLSS / DLAA usa: NVIDIA DLSS (placas RTX), AMD FSR (qualquer placa, temporal) ou AMD FSR 1 (qualquer placa, espacial: o mais leve, para placas antigas e portáteis). Após reiniciar.",
     [UI_MENU_FRAMEGEN] = "Geração de quadros",
     [UI_MENU_FRAMEGEN_DESC] = "Um quadro gerado entre cada dois que o jogo desenha, com o HUD fora dele: AMD FSR em qualquer placa, NVIDIA DLSS nas séries RTX 40 e 50. Após reiniciar.",
     [UI_MENU_FRAMEGEN_NEEDS] = "Precisa do DLSS / DLAA ligado: usa os vetores de movimento dele.",
@@ -1447,14 +1487,18 @@ static const char *const text_pt_br[UI_TEXT_COUNT] = {
                              "lê os ícones ao iniciar, então eles mudam depois de reiniciar. Eles fazem parte dos "
                              "arquivos do jogo, então um botão remapeado em Controles continua com o ícone antigo na "
                              "tela.",
-    [UI_MENU_PROMPTS_DESC_LIVE] = "Quais botões os ícones do jogo mostram: Nintendo (os do próprio jogo), Xbox, PlayStation, o conjunto contornado do próprio Rekarina ou PC: teclado e mouse, com as teclas que você atribuiu. A fileira de botões acima é o conjunto escolhido, como o jogo o desenha. Os botões frontais seguem o layout de botões acima. Vale na hora.",
+    [UI_MENU_PROMPTS_DESC_LIVE] = "Quais botões os ícones do jogo mostram. Automático segue o dispositivo em que você apertou um botão por último: teclado e mouse, ou os botões do próprio controle (Xbox, PlayStation, Nintendo; um Steam Deck ou um portátil com Windows mostra Xbox). Ou sempre um conjunto: Nintendo (os do próprio jogo), Xbox, PlayStation, Rekarina (nomes do Xbox nos botões no estilo do jogo) ou PC: teclado e mouse, com as teclas que você atribuiu. A fileira de botões acima é o conjunto, como o jogo o desenha. Os botões frontais seguem o layout de botões acima. Vale na hora.",
     [UI_MENU_PROMPTS_NINTENDO] = "Nintendo",
     [UI_MENU_PROMPTS_XBOX] = "Xbox",
     [UI_MENU_PROMPTS_PC] = "PC",
     [UI_MENU_PROMPTS_PS] = "PlayStation",
     [UI_MENU_PROMPTS_RK] = "Rekarina",
+    [UI_MENU_PROMPTS_AUTO] = "Automático",
     [UI_MENU_MOUSE_MODE] = "Câmera com o mouse",
     [UI_MENU_MOUSE_MODE_DESC] = "Direta: a câmera gira o quanto o mouse se move, como num jogo de PC, sem zona morta nem curva do analógico (jogo 1.4.3; as outras versões usam a emulação do analógico). Emulação do analógico: o mouse age como o analógico direito.",
+    [UI_MENU_FAST_TEXT] = "Diálogos mais rápidos",
+    [UI_MENU_FAST_TEXT_DESC] = "Remove as pausas que as mensagens do jogo fazem entre as frases, para o texto correr sem parar.",
+    [UI_MENU_MOUSE_MODE_DESC_OOT] = "Direto: a câmera gira exatamente o quanto o mouse se move, em qualquer velocidade, sem zona morta, curva ou velocidade máxima do analógico. Emulação de analógico: o mouse age como o analógico direito, com a curva e a velocidade máxima dele.",
     [UI_MENU_MOUSE_STICK] = "Emulação do analógico",
     [UI_MENU_MOUSE_DIRECT] = "Direta",
     [UI_MENU_MENU_CURSOR] = "Mouse nos menus do jogo",
@@ -1462,9 +1506,10 @@ static const char *const text_pt_br[UI_TEXT_COUNT] = {
     [UI_MENU_PROMPTS_MISSING] = "faltam os arquivos dos ícones: execute a instalação de novo",
     [UI_MENU_PROMPTS_FAILED] = "arquivos dos ícones danificados: execute a instalação de novo",
     [UI_MENU_PROMPTS_RESTART] = "os ícones mudam após reiniciar",
+    [UI_MENU_PROMPTS_LIVE_PARTIAL] = "Alterado agora. Os botões que o jogo já desenhou e a dica de ação embaixo mantêm o visual antigo até o jogo reiniciar.",
     [UI_MENU_PROMPTS_OFF_SHAPE] = "desligados numa resolução de jogo que não é 16:9",
     [UI_MENU_PROMPTS_OFF_MODS] = "desligados: um mod de RomFS substitui os arquivos deles",
-    [UI_MENU_PROMPTS_OFF_PATCHES] = "desligados enquanto TOTK_ROMFS_PATCHES está definido",
+    [UI_MENU_PROMPTS_OFF_PATCHES] = "desligados enquanto REKARINA_ROMFS_PATCHES está definido",
     [UI_MENU_RESTART] = "Reiniciar agora",
     [UI_MENU_RESTART_DESC] = "Fecha o jogo e o abre de novo com os novos ícones. O progresso desde o último "
                              "salvamento é perdido.",
@@ -1737,6 +1782,13 @@ static const char *const text_zh_hans[UI_TEXT_COUNT] = {
     [UI_MENU_STICK_DEADZONE_NOW] = "当前摇杆：%.0f %%",
     [UI_MENU_MOUSE_SENS] = "鼠标视角灵敏度",
     [UI_MENU_MOUSE_SENS_DESC] = "鼠标转动视角的速度。",
+    [UI_MENU_MOUSE_SENS_Y] = "鼠标垂直速度",
+    [UI_MENU_MOUSE_SENS_Y_DESC] = "上下移动鼠标时视角转动的速度，与左右相比：0.50 为一半，1.00 相同。",
+    [UI_MENU_MOUSE_INVERT_Y] = "鼠标垂直反转",
+    [UI_MENU_MOUSE_INVERT_Y_DESC] = "交换鼠标视角的上下方向。仅影响鼠标：游戏自身的视角选项仍然有效。",
+    [UI_MENU_MOUSE_RAW] = "鼠标原始输入",
+    [UI_MENU_MOUSE_RAW_DESC] = "开：视角跟随鼠标本身的移动，不受 Windows 指针速度和加速的影响。关：与桌面相同，视角跟随指针，"
+                               "两者都会生效（例如使用触摸板时）。",
 
     [UI_BINDS_HELP] = "选中一个格子后按 A 或 Enter，再按键、鼠标键或手柄按键。"
                       "Delete 或 X 清除格子。已占用的按键会移到这里；"
@@ -1898,8 +1950,8 @@ static const char *const text_zh_hans[UI_TEXT_COUNT] = {
     [UI_MENU_UPSCALE_GROUP] = "超分辨率与帧生成",
     [UI_MENU_FSR_VERSION] = "FSR 版本",
     [UI_MENU_FSR_VERSION_DESC] = "时间性超分辨率为 AMD FSR 时运行哪个 FSR。自动：支持的 Radeon 显卡用 FSR 4.1（机器学习），其他显卡用 FSR 3.1。立即生效。",
-    [UI_MENU_TAA] = "时域超分辨率",
-    [UI_MENU_TAA_DESC] = "DLSS / DLAA 一项使用哪种超分辨率：NVIDIA DLSS（RTX 显卡）或 AMD FSR（任意显卡）。重启后生效。",
+    [UI_MENU_TAA] = "超分辨率",
+    [UI_MENU_TAA_DESC] = "DLSS / DLAA 一项使用哪种超分辨率：NVIDIA DLSS（RTX 显卡）、AMD FSR（任意显卡，时域）或 AMD FSR 1（任意显卡，空间：最轻量，适合旧显卡和掌机）。重启后生效。",
     [UI_MENU_FRAMEGEN] = "帧生成",
     [UI_MENU_FRAMEGEN_DESC] = "在游戏绘制的每两帧之间插入一帧生成帧，HUD 不参与生成：AMD FSR 支持任意显卡，NVIDIA DLSS 支持 RTX 40 和 50 系列。重启后生效。",
     [UI_MENU_FRAMEGEN_NEEDS] = "需要开启 DLSS / DLAA：帧生成使用它的运动矢量。",
@@ -2089,14 +2141,18 @@ static const char *const text_zh_hans[UI_TEXT_COUNT] = {
                              "A、B、X、Y（使用 Nintendo（A 在右）时右侧按键标为 B，因此 A 的提示显示 "
                              "B）。PC：键盘默认布局的按键和鼠标按键（E、Shift、空格、左键……），镜头用鼠标。"
                              "游戏在启动时读取按键提示，因此重启后才会改变。提示属于游戏文件，在“操作”中重新映射的按键在屏幕上仍显示原来的提示。",
-    [UI_MENU_PROMPTS_DESC_LIVE] = "游戏的按键提示显示哪种按键：Nintendo（游戏原有的提示）、Xbox、PlayStation、Rekarina 自己的线框风格，或 PC：键盘和鼠标，显示你所绑定的按键。上方的一排按键就是所选的一套，与游戏中绘制的一致。A、B、X、Y 的标注随上面的按键布局而定。立即生效。",
+    [UI_MENU_PROMPTS_DESC_LIVE] = "游戏的按键提示显示哪种按键。自动：跟随你最后按键的设备——键盘和鼠标，或手柄本身的按键（Xbox、PlayStation、Nintendo；Steam Deck 和 Windows 掌机显示 Xbox）。也可以固定一套：Nintendo（游戏原有的提示）、Xbox、PlayStation、Rekarina（Xbox 按键名，游戏自身的按键样式），或 PC：键盘和鼠标，显示你所绑定的按键。上方的一排按键就是这一套，与游戏中绘制的一致。A、B、X、Y 的标注随上面的按键布局而定。立即生效。",
     [UI_MENU_PROMPTS_NINTENDO] = "Nintendo",
     [UI_MENU_PROMPTS_XBOX] = "Xbox",
     [UI_MENU_PROMPTS_PC] = "PC",
     [UI_MENU_PROMPTS_PS] = "PlayStation",
     [UI_MENU_PROMPTS_RK] = "Rekarina",
+    [UI_MENU_PROMPTS_AUTO] = "自动",
     [UI_MENU_MOUSE_MODE] = "鼠标视角",
     [UI_MENU_MOUSE_MODE_DESC] = "直接：镜头按鼠标移动的距离转动，与电脑游戏相同，没有摇杆死区和响应曲线（游戏 1.4.3；其他版本使用摇杆模拟）。摇杆模拟：鼠标相当于右摇杆。",
+    [UI_MENU_FAST_TEXT] = "更快的对话",
+    [UI_MENU_FAST_TEXT_DESC] = "去掉游戏对话中句子之间的停顿，文字不再中途停下。",
+    [UI_MENU_MOUSE_MODE_DESC_OOT] = "直接：鼠标移动多少，镜头就转动多少，速度不限，没有摇杆的死区、曲线和速度上限。摇杆模拟：鼠标充当右摇杆，带有摇杆的曲线和最高速度。",
     [UI_MENU_MOUSE_STICK] = "摇杆模拟",
     [UI_MENU_MOUSE_DIRECT] = "直接",
     [UI_MENU_MENU_CURSOR] = "在游戏菜单中使用鼠标",
@@ -2104,9 +2160,10 @@ static const char *const text_zh_hans[UI_TEXT_COUNT] = {
     [UI_MENU_PROMPTS_MISSING] = "缺少按键提示文件：请重新运行安装程序",
     [UI_MENU_PROMPTS_FAILED] = "按键提示文件已损坏：请重新运行安装程序",
     [UI_MENU_PROMPTS_RESTART] = "按键提示重启后生效",
+    [UI_MENU_PROMPTS_LIVE_PARTIAL] = "已立即更改。游戏已绘制过的按键和底部的动作提示会保持原样，直到重新启动游戏。",
     [UI_MENU_PROMPTS_OFF_SHAPE] = "游戏分辨率不是 16:9 时关闭",
     [UI_MENU_PROMPTS_OFF_MODS] = "已关闭：RomFS 模组替换了它们的文件",
-    [UI_MENU_PROMPTS_OFF_PATCHES] = "设置了 TOTK_ROMFS_PATCHES 时关闭",
+    [UI_MENU_PROMPTS_OFF_PATCHES] = "设置了 REKARINA_ROMFS_PATCHES 时关闭",
     [UI_MENU_RESTART] = "立即重启",
     [UI_MENU_RESTART_DESC] = "关闭游戏并以新的按键提示重新启动。上次存档之后的进度将会丢失。",
     [UI_MENU_RESTART_CONFIRM] = "现在重启游戏？上次存档之后的进度将会丢失。",
@@ -2277,13 +2334,13 @@ void ui_text_visit(const char *lang, void (*visit)(void *ctx, const char *text),
         if (r->text[id] && *r->text[id]) visit(ctx, r->text[id]);
 }
 
-// The menu language, re-read when cfg_version changes. TOTK_MENU_LANG names a catalog language ("en", "ru", "de",
+// The menu language, re-read when cfg_version changes. REKARINA_MENU_LANG names a catalog language ("en", "ru", "de",
 // "pt-BR", "zh-Hans", ...); unset, it follows the system UI language, through the same code map the game language uses
 // ("zh-CN" -> "zh-Hans"). Windows names a region with it ("ru-RU"), so a tag without menu text tries its language alone
 // ("ru"). A language without a row, or one whose row has no menu text, shows English, so other Windows locales keep
 // the English menu.
 static const char *resolve_menu_lang(void) {
-    const char *v = cfg_value("TOTK_MENU_LANG");
+    const char *v = cfg_value("REKARINA_MENU_LANG");
     const char *sys = plat_ui_language();
     const char *lang = v && *v ? ui_text_lang(v) : sys && *sys ? ui_text_lang(sys) : "en";
     if (ui_text_defined(lang, UI_MENU_TITLE)) return lang;

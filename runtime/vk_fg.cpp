@@ -1,4 +1,4 @@
-// Frame generation with AMD FSR (TOTK_FRAMEGEN = fsr3; applies after a restart): AMD's frame generation swapchain
+// Frame generation with AMD FSR (REKARINA_FRAMEGEN = fsr3; applies after a restart): AMD's frame generation swapchain
 // (its API library, vk_ffx.cpp loads it: with the libraries of FSR SDK 2 the library picks frame generation 4 on the
 // Radeon cards that run it and 3.1 elsewhere) takes the place of gfx_present.c's swapchain. Every frame
 // the game presents, the swapchain presents a generated frame between it and the one before, on its own present
@@ -16,6 +16,11 @@
 #include <string.h>
 #include <wchar.h>
 
+#ifndef _WIN32
+// ffx_api.h marks its entry points __declspec(dllexport), a Windows attribute; the declarations are only read here (the
+// library is loaded at run time), so on other hosts the attribute is dropped rather than the header changed
+#define __declspec(x)
+#endif
 #include "third_party/ffx_api/ffx_api.h"
 #include "third_party/ffx_api/ffx_framegeneration.h"
 #include "third_party/ffx_api/vk/ffx_api_vk.h"
@@ -82,7 +87,7 @@ void fail(const char *what, unsigned r) {
 
 extern "C" int vk_fg_wanted(void) {
     if (F.wanted < 0) {
-        F.wanted = !strcmp(cfg_value("TOTK_FRAMEGEN"), "fsr3");
+        F.wanted = !strcmp(cfg_value("REKARINA_FRAMEGEN"), "fsr3");
         if (F.wanted && !vk_dlaa_wanted()) {
             rt_log("fg: frame generation needs DLSS or FSR 3.1 upscaling (any mode): off");
             F.wanted = 0;

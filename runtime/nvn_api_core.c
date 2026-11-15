@@ -399,7 +399,7 @@ NVN_API(nvnMemoryPoolBuilderSetStorage) {
 NVN_API(nvnMemoryPoolBuilderSetFlags) { ((pool_builder_t *)arg_p(c, 0))->flags = (uint32_t)arg_x(c, 1); }
 // NVNboolean nvnMemoryPoolInitialize(NVNmemoryPool *p, const NVNmemoryPoolBuilder *b)
 // Pool setup imports, mirrors and maps memory in the back end (the driver, VirtualAlloc): up to 20 ms on the game's
-// loader threads, which held a virtual core through it while job workers waited (TOTK_CORE_DIAG). The thread gives
+// loader threads, which held a virtual core through it while job workers waited (REKARINA_CORE_DIAG). The thread gives
 // the core up, as for any blocking host call.
 NVN_API(nvnMemoryPoolInitialize) {
     NVN_BLOCKING();
@@ -605,11 +605,11 @@ NVN_API(nvnQueueFenceSync) {
 }
 // NVNsyncWaitResult nvnSyncWait(const NVNsync *s, uint64_t timeout_ns): a sync never fenced reports a timeout at once;
 // a fenced one is released only after the back end completed that fence value
-static void synclog(const Cpu *c, uint64_t timeout, int result) {   // DEBUG: TOTK_SYNCWLOG=1
+static void synclog(const Cpu *c, uint64_t timeout, int result) {   // DEBUG: REKARINA_SYNCWLOG=1
     static int on = -1;
     static struct { uint64_t lr, n, expired, short_t; } t[64];
     static int nt;
-    if (on < 0) { const char *e = cfg_get("TOTK_SYNCWLOG"); on = e && *e == '1'; }
+    if (on < 0) { const char *e = cfg_get("REKARINA_SYNCWLOG"); on = e && *e == '1'; }
     if (!on) return;
     int i = 0;
     while (i < nt && t[i].lr != c->x[30]) i++;
@@ -625,10 +625,10 @@ NVN_API(nvnSyncWait) {
     const sync_t *s = arg_p(c, 0);
     uint64_t timeout = arg_x(c, 1);
     uint64_t sf = s->fenced ? gfx_sync_fence(s->fence) : 0;   // a held submission it covers is recorded first
-    {   // DEBUG-SYNCREMAP: TOTK_SYNCREMAP=1 logs waits on syncs a held submission moved
+    {   // DEBUG-SYNCREMAP: REKARINA_SYNCREMAP=1 logs waits on syncs a held submission moved
         static int on = -1;
         static uint64_t n;
-        if (on < 0) on = cfg_get("TOTK_SYNCREMAP") != NULL;
+        if (on < 0) on = cfg_get("REKARINA_SYNCREMAP") != NULL;
         if (on && sf != s->fence && (++n <= 20 || !(n % 500)))
             rt_log("SYNCREMAP %llu lr %#llx fence %llu -> %llu, done %llu, timeout %llu", (unsigned long long)n,
                    (unsigned long long)c->x[30], (unsigned long long)s->fence, (unsigned long long)sf,
@@ -686,11 +686,11 @@ NVN_API(nvnEventFinalize) { ((ev_t *)arg_p(c, 0))->magic = 0; }
 // uint32_t nvnEventGetValue(const NVNevent *e)
 NVN_API(nvnEventGetValue) {
     uint32_t v = *((const ev_t *)arg_p(c, 0))->val;
-    {   // DEBUG: TOTK_EVLOG=1: the first reads of each (event, caller), then every 600th
+    {   // DEBUG: REKARINA_EVLOG=1: the first reads of each (event, caller), then every 600th
         static int on = -1;
         static struct { const void *ev; uint64_t lr; uint64_t n; uint32_t last; uint64_t zero; } t[64];
         static int nt;
-        if (on < 0) { const char *e = cfg_get("TOTK_EVLOG"); on = e && *e == '1'; }
+        if (on < 0) { const char *e = cfg_get("REKARINA_EVLOG"); on = e && *e == '1'; }
         if (on) {
             const void *ev = arg_p(c, 0);
             int i = 0;
@@ -834,12 +834,12 @@ NVN_API(nvnQueueFinish) {
 // the replay, and that frame draws other objects' matrices (phantom rocks, flat far field).
 // The guard makes the producer wait, at its commit point, until the newest submit has been replayed and completed.
 // lod_entered / lod_issued count submits that entered QueueSubmitCommands / reached the back end; lod_fence holds
-// the fence of the last LOD_RING. TOTK_LOD_GUARD=0 turns the wait off.
+// the fence of the last LOD_RING. REKARINA_LOD_GUARD=0 turns the wait off.
 #define LOD_RING 64
 static uint64_t lod_entered, lod_issued, lod_fence[LOD_RING];
 
 // void nvnQueueSubmitCommands(NVNqueue *q, int n, const NVNcommandHandle *handles): replayed on this thread with its
-// core given up (section 2.2), or queued for the replay thread (TOTK_REPLAY_ASYNC, vk_backend.c); the newest fence
+// core given up (section 2.2), or queued for the replay thread (REKARINA_REPLAY_ASYNC, vk_backend.c); the newest fence
 // value is what QueueFenceSync records. With the queue the fence covers replay and GPU, so the LOD guard below waits
 // for both.
 NVN_API(nvnQueueSubmitCommands) {
@@ -848,14 +848,14 @@ NVN_API(nvnQueueSubmitCommands) {
     const uint64_t *h = arg_p(c, 2);
     if (n < 0 || (n && !h)) rt_fatal("nvn: QueueSubmitCommands with %d handles at %p", n, (const void *)h);
     NVN_BLOCKING();
-    {   // DEBUG-SUBMITWAIT: TOTK_SUBMIT_WAIT=<k> (0, the default: off): the k-th submission after a present waits for the
-        // GPU work submitted up to that present. An A/B for frames that overlap (TOTK_PRESENT_SYNC=c1): in OoT k = 1
+    {   // DEBUG-SUBMITWAIT: REKARINA_SUBMIT_WAIT=<k> (0, the default: off): the k-th submission after a present waits for the
+        // GPU work submitted up to that present. An A/B for frames that overlap (REKARINA_PRESENT_SYNC=c1): in OoT k = 1
         // and k = 3 (before the compute submission of culling, lights and fog is recorded) take the local light flicker of c1
         // back to the level of c in the flight recorder's thumbnails, k = 4 and k = 6 do not (docs/oot-notes.md, "CPU and GPU
         // overlap"). Off because the player reported part of the textures flickering while watching c1 with k = 3.
         static int k = -1, cnt;
         static uint64_t seen, f0;
-        if (k < 0) { const char *e = cfg_get("TOTK_SUBMIT_WAIT"); k = e ? atoi(e) : 0; }
+        if (k < 0) { const char *e = cfg_get("REKARINA_SUBMIT_WAIT"); k = e ? atoi(e) : 0; }
         if (k) {
             uint64_t fr = __atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED);
             if (fr != seen) seen = fr, cnt = 0, f0 = nvn_fence_last();
@@ -868,7 +868,7 @@ NVN_API(nvnQueueSubmitCommands) {
     {   // DEBUG-EVLOG2: the queue of each submission, frames 900-905
         static int on = -1;
         static uint64_t f0 = 900;
-        if (on < 0) { const char *e = cfg_get("TOTK_EVLOG2"); on = e != NULL; if (e && atoll(e) > 1) f0 = (uint64_t)atoll(e); }
+        if (on < 0) { const char *e = cfg_get("REKARINA_EVLOG2"); on = e != NULL; if (e && atoll(e) > 1) f0 = (uint64_t)atoll(e); }
         uint64_t fr = __atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED);
         if (on && fr >= f0 && fr <= f0 + 5)
             rt_log("EVLOG2 submit queue %p handles %d frame %llu next fence %llu", (void *)q, n, (unsigned long long)fr,
@@ -908,7 +908,7 @@ static void obs_release_read(Cpu *c) {
     if (lr != 0x70008c70c8ull) return;
     static int on = -1;
     if (on < 0) {
-        on = cfg_bool("TOTK_LOD_GUARD");
+        on = cfg_bool("REKARINA_LOD_GUARD");
     }
     if (!on || *(volatile uint8_t *)(uintptr_t)(obj + 0x528) != *(volatile uint8_t *)(uintptr_t)(obj + 0x529)) return;
     uint64_t e = __atomic_load_n(&lod_entered, __ATOMIC_SEQ_CST);

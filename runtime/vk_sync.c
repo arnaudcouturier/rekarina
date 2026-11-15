@@ -53,7 +53,7 @@ static int stop;
 static Pending *queue;            // side effects in the order they were added
 static int qhead, qn, qcap;
 
-// ---- GPU time (TOTK_TRACE=perf): each submission part (vk_sync_split) writes a timestamp when it starts and when it
+// ---- GPU time (REKARINA_TRACE=perf): each submission part (vk_sync_split) writes a timestamp when it starts and when it
 // ends, into a ring of query pairs. The completion thread reads a pair once the part's value is reached and adds the
 // part's interval to the busy time, counting overlap with the previous part once. Off (one log line) when the queue
 // family has no timestamp bits or the period is 0. Upload batches (vk_memory.c) are not timed.
@@ -73,11 +73,11 @@ static uint64_t ts_sub_ns[TS_PAIRS];       // CPU time the part was handed to vk
 static int ts_unsent[4], ts_n_unsent;      // pairs closed and not yet submitted (sub_lock)
 static uint64_t ts_last_end_ns;            // completion thread: ts_last_end on the CPU clock
 static volatile int64_t ts_idle_ns, ts_starved_ns, ts_gaps, ts_max_gap_ns, ts_queued_ns;
-static uint8_t ts_pro[TS_PAIRS];           // TOTK_SECTIONS: the pair is a prologue's (SEC_GPU_PROLOGUE)
+static uint8_t ts_pro[TS_PAIRS];           // REKARINA_SECTIONS: the pair is a prologue's (SEC_GPU_PROLOGUE)
 static int64_t cal_tick, cal_ns, cal_at;   // completion thread: a calibrated (GPU tick, CPU ns) pair and when it was taken
 static PFN_vkGetCalibratedTimestampsKHR cal_fn;
 
-// On the first submission that wants timing (perf_gpu_timing: TOTK_TRACE=perf or the full performance overlay).
+// On the first submission that wants timing (perf_gpu_timing: REKARINA_TRACE=perf or the full performance overlay).
 static void ts_setup(VkCtx *c) {
     ts_state = -1;
     uint32_t nq = 0;
@@ -254,7 +254,7 @@ WEAK int vk_exec_record(VkCommandBuffer cb, const uint64_t *handles, int n, uint
 
 
 
-// ---- Async write-back (TOTK_ASYNC_WB=1, vk_memory.c vk_mem_mirror_end). The merges and copies that take what a
+// ---- Async write-back (REKARINA_ASYNC_WB=1, vk_memory.c vk_mem_mirror_end). The merges and copies that take what a
 // submission's GPU work left in the VRAM mirrors back to guest memory (~3.5 ms a frame of OoT's queue 3)
 // ran on the graphics queue between full barriers, so the next submissions waited for them. Here the big ones are
 // recorded into a command buffer of their own, submitted to a queue of a compute-only family (NVIDIA runs it beside the
@@ -298,7 +298,7 @@ int vk_sync_awb_on(void) {
     if (vkAllocateCommandBuffers(c->device, &ai, cbs) != VK_SUCCESS) return 0;
     for (int i = 0; i < AWB_SLOTS; i++) awb_slot[i].cb = cbs[i], awb_slot[i].fence = 0;
     awb_mode = 1;
-    rt_log("vk: async write-back on: big mirror write-backs run on a compute-family queue (TOTK_ASYNC_WB)");
+    rt_log("vk: async write-back on: big mirror write-backs run on a compute-family queue (REKARINA_ASYNC_WB)");
     return 1;
 }
 
@@ -374,7 +374,7 @@ static uint64_t awb_pending_upto(uint64_t reached) {
     return need;
 }
 
-// ---- Results before the frame's end (TOTK_RESULTS_FENCE)
+// ---- Results before the frame's end (REKARINA_RESULTS_FENCE)
 // The game waits for the previous frame's GPU work before it submits the next (nvnSyncWait on the main submission's
 // sync, and here the present): on the console that costs nothing, the GPU starts when the submit returns. Here the
 // replay records for several milliseconds first, with the GPU half idle, and the frame's heaviest work (lighting, post
@@ -388,7 +388,7 @@ static uint64_t awb_pending_upto(uint64_t reached) {
 // the point (and everything queued by other threads: releases, frees) run at the submission's own value, as before.
 // A submission without a point signals res_sem with its last part.
 static VkSemaphore res_sem;
-static int res_mode = -1;             // TOTK_RESULTS_FENCE, read at start
+static int res_mode = -1;             // REKARINA_RESULTS_FENCE, read at start
 static uint64_t res_issued, res_done; // st_lock: newest value whose results signal was submitted / whose early side effects ran
 static int cur_res_sent, res_point_req;   // sub_lock: the submission being recorded signalled its results / asks to with its next part
 static Pending *lqueue;               // st_lock: side effects that wait for the submission's own value
@@ -409,11 +409,19 @@ int vk_sync_results_on(void) {
         // GPUs) the game, told at the results point that its frame was done, cleared the count records of its indirect
         // mesh draws for the frame after next while the GPU still drew this one: the first view's eleven draws read
         // their counts, every later one read 0, so foliage lost its shadows on any such GPU (the same on an RTX 5070
-        // with TOTK_MEMORY=import; all 41 right with the early results off, 2026-11-12). So early results need
-        // mirrors, unless TOTK_RESULTS_FENCE is set by hand.
-        if (res_mode > 0 && !vk_mirror_on && !cfg_is_set("TOTK_RESULTS_FENCE")) {
+        // with REKARINA_MEMORY=import; all 41 right with the early results off, 2026-11-12). So early results need
+        // mirrors, unless REKARINA_RESULTS_FENCE is set by hand.
+        if (res_mode > 0 && !vk_mirror_on && !cfg_is_set("REKARINA_RESULTS_FENCE")) {
             res_mode = 0;
             rt_log("vk: results before the frame's end: off, the pools are imported and the GPU reads the game's own memory");
+        }
+        // Shadow storage puts the GPU's writes into guest memory at the submission's fence (vk_gpu_written), not at the
+        // results point: told there that its frame was done, the game read its culling and occlusion results before
+        // they arrived (with VRAM mirrors on top the frame's occluder pass was left out and the sun's cascades lost most
+        // of their casters, 2026-11-15).
+        if (res_mode > 0 && vk_mem_shadow_on() && !cfg_is_set("REKARINA_RESULTS_FENCE")) {
+            res_mode = 0;
+            rt_log("vk: results before the frame's end: off, shadow storage copies the GPU's writes back at the fence");
         }
     }
     return res_mode > 0 && res_sem != VK_NULL_HANDLE;
@@ -517,7 +525,7 @@ static void completion_main(void *arg) {
 
 static void pro_setup(VkCtx *c);   // below: the prologue timeline (copy guards)
 
-// ---- Async compute (vk_exec.c "Queues interleaved", TOTK_ASYNC_COMPUTE=1, NVIDIA with a compute-only queue family; off
+// ---- Async compute (vk_exec.c "Queues interleaved", REKARINA_ASYNC_COMPUTE=1, NVIDIA with a compute-only queue family; off
 // by default: on the forest path it was no faster than the interleave on the graphics queue, ~75 against ~76 fps). A held rest of the game's compute queue that holds dispatches only is recorded into a command buffer of
 // the compute-family queue (the one the async write-back would use) instead of the graphics part, so that it runs
 // beside the graphics work, as on the console. Two timeline semaphores order the queues: the graphics part recorded
@@ -553,7 +561,7 @@ int vk_sync_ac_on(void) {
         return 0;
     }
     if (vk_sync_awb_on()) {
-        rt_log("vk: async compute off: the async write-back uses the compute queue (TOTK_ASYNC_WB)");
+        rt_log("vk: async compute off: the async write-back uses the compute queue (REKARINA_ASYNC_WB)");
         return 0;
     }
     VkCommandPoolCreateInfo pi = {.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
@@ -570,7 +578,7 @@ int vk_sync_ac_on(void) {
     if (vkAllocateCommandBuffers(c->device, &ai, cbs) != VK_SUCCESS) return 0;
     for (int i = 0; i < AC_SLOTS; i++) ac_slot[i].cb = cbs[i], ac_slot[i].value = 0;
     ac_mode = 1;
-    rt_log("vk: async compute on: the game's compute queue runs beside its graphics queue (TOTK_ASYNC_COMPUTE)");
+    rt_log("vk: async compute on: the game's compute queue runs beside its graphics queue (REKARINA_ASYNC_COMPUTE)");
     return 1;
 }
 
@@ -639,7 +647,7 @@ void vk_sync_start(void) {
     if (__atomic_load_n(&started, __ATOMIC_ACQUIRE)) return;
     plat_mutex_lock(&start_lock);
     if (!started) {
-        if (!vk_init()) rt_fatal("vk: no usable Vulkan device (see the vk: lines above; TOTK_GPU=null runs without a GPU)");
+        if (!vk_init()) rt_fatal("vk: no usable Vulkan device (see the vk: lines above; REKARINA_GPU=null runs without a GPU)");
         VkCtx *c = vk_ctx();
         pro_setup(c);
         {   // the results timeline
@@ -647,7 +655,7 @@ void vk_sync_start(void) {
                                              .semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE, .initialValue = issued};
             VkSemaphoreCreateInfo rsi = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO, .pNext = &rst};
             if (vkCreateSemaphore(c->device, &rsi, NULL, &res_sem) != VK_SUCCESS) res_sem = VK_NULL_HANDLE;
-            rt_log("vk: results before the frame's end: %s (TOTK_RESULTS_FENCE)", vk_sync_results_on() ? "on" : "off");
+            rt_log("vk: results before the frame's end: %s (REKARINA_RESULTS_FENCE)", vk_sync_results_on() ? "on" : "off");
         }
         if (!ts_state && perf_gpu_timing()) ts_setup(c);
         perf_gpu_stats = gpu_stats;
@@ -669,7 +677,7 @@ void vk_sync_start(void) {
         completion_thread = plat_thread_new(completion_main, c, "vk completion");
         if (!completion_thread) rt_fatal("vk: cannot start the completion thread");
         __atomic_store_n(&started, 1, __ATOMIC_RELEASE);
-        vk_astc_mode();   // decides TOTK_ASTC and builds the ASTC decoder now, not at the first ASTC upload
+        vk_astc_mode();   // decides REKARINA_ASTC and builds the ASTC decoder now, not at the first ASTC upload
     }
     plat_mutex_unlock(&start_lock);
 }
@@ -755,7 +763,7 @@ static VkCommandBuffer prologue(VkCtx *c, uint64_t fence) {
 }
 
 static uint64_t spk_rec, spk_upl, spk_pro, spk_que;   // DEBUG-SPIKE
-// ---- The submitter thread (TOTK_SUBMIT_THREAD, default on for OoT)
+// ---- The submitter thread (REKARINA_SUBMIT_THREAD, default on for OoT)
 // vkQueueSubmit2 of a part costs the calling thread 40-220 us in the driver, and a frame of OoT submits 30-45
 // parts and 7 final batches: ~1.5 ms of the ~14 ms the replay thread needs for a frame in the village, the thread the
 // whole frame waits for. The replay thread now only copies the batch into a queue; this thread makes the call, in queue
@@ -826,7 +834,7 @@ static int sq_enabled(void) {
         if (sq_on && !sq_started) {
             sq_started = 1;
             if (!plat_thread_spawn(sq_main, NULL, "vk submit", 0)) sq_on = 0;
-            else rt_log("vk: the parts of a submission are handed to the driver by a submitter thread (TOTK_SUBMIT_THREAD)");
+            else rt_log("vk: the parts of a submission are handed to the driver by a submitter thread (REKARINA_SUBMIT_THREAD)");
         }
     }
     return sq_on;
@@ -902,7 +910,7 @@ VkCommandBuffer vk_sync_chain(int n, VkCommandBuffer *cbs) {
 
 int vk_sync_chain_pending(void) { return chain_n; }
 
-// How the submissions end is counted (TOTK_TRACE=perf, "last batches of ..."): of 90,112 in a Market run none had an
+// How the submissions end is counted (REKARINA_TRACE=perf, "last batches of ..."): of 90,112 in a Market run none had an
 // empty last batch after parts had gone, 77,220 had nothing recorded at all (an empty batch that only signals the
 // value), none ended with the chunks of a draw stretch (vk_exec.c splits after them).
 static int cur_parts;   // sub_lock: parts of the submission being recorded that were submitted already
@@ -1020,11 +1028,11 @@ uint64_t vk_sync_reserve(void) {
     return v;
 }
 
-// DEBUG-LISTLOG: TOTK_LISTLOG=<guest addr>: a hash of 64 KiB of guest memory there at each submission's start, at its
+// DEBUG-LISTLOG: REKARINA_LISTLOG=<guest addr>: a hash of 64 KiB of guest memory there at each submission's start, at its
 // prologue (the submit-time snapshot) and at the present, with times (when the CPU rewrites OoT's light lists)
 static uint64_t ll_addr = 1, ll_t0;
 uint64_t vk_listlog_addr(void) {
-    if (ll_addr == 1) { const char *e = cfg_get("TOTK_LISTLOG"); ll_addr = e ? strtoull(e, NULL, 0) : 0; ll_t0 = plat_now_ns(); }
+    if (ll_addr == 1) { const char *e = cfg_get("REKARINA_LISTLOG"); ll_addr = e ? strtoull(e, NULL, 0) : 0; ll_t0 = plat_now_ns(); }
     return ll_addr;
 }
 uint64_t vk_listlog_hash(void) {
@@ -1035,23 +1043,23 @@ uint64_t vk_listlog_hash(void) {
     return h;
 }
 double vk_listlog_ms(void) { return (plat_now_ns() - ll_t0) / 1e6; }
-// DEBUG-LISTLOG: TOTK_LISTLOG_GRID=1: c3[148].x and c3[149].x of OoT's two scene uniform blocks (porch), as text
+// DEBUG-LISTLOG: REKARINA_LISTLOG_GRID=1: c3[148].x and c3[149].x of OoT's two scene uniform blocks (porch), as text
 static void ll_grid(char out[64]) {
     static int on = -1;
-    if (on < 0) { const char *e = cfg_get("TOTK_LISTLOG_GRID"); on = e && *e == '1'; }
+    if (on < 0) { const char *e = cfg_get("REKARINA_LISTLOG_GRID"); on = e && *e == '1'; }
     if (!on) { out[0] = 0; return; }
     const int32_t *a = (const int32_t *)(uintptr_t)(0x25e94b000ull + 148 * 16), *b = (const int32_t *)(uintptr_t)(0x25e94e500ull + 148 * 16);
     snprintf(out, 64, " gridA %d/%d gridB %d/%d", a[0], a[4], b[0], b[4]);
 }
 
-// DEBUG-EPOCHEARLY: TOTK_EPOCH_EARLY=1 makes the texture module's per-submission step before the submit lock, as it
+// DEBUG-EPOCHEARLY: REKARINA_EPOCH_EARLY=1 makes the texture module's per-submission step before the submit lock, as it
 // was until 2026-11-14 (vk_backend.c submit_sync; an empty submission then has none): the order behind the device
 // fault after map changes, kept as a switch to show it again.
 int vk_sync_epoch_early(void) {
     static int v = -1;
     if (v < 0) {
         v = rt_knob("EPOCH_EARLY", "0") != 0;
-        if (v) rt_log("vk: the texture epoch moves before the submit lock (TOTK_EPOCH_EARLY=1, a test: the old order)");
+        if (v) rt_log("vk: the texture epoch moves before the submit lock (REKARINA_EPOCH_EARLY=1, a test: the old order)");
     }
     return v;
 }
@@ -1070,7 +1078,7 @@ uint64_t vk_sync_submit(const uint64_t *handles, int n) {
     plat_mutex_lock(&sub_lock);
     uint64_t spk_lock = plat_now_ns() - spk_t0;   // DEBUG-SPIKE
     FT(FT_NOTE, 7, spk_lock, 0);
-    {   // how often a submit call arrives while another thread records (TOTK_TRACE=perf): the case the step below is for
+    {   // how often a submit call arrives while another thread records (REKARINA_TRACE=perf): the case the step below is for
         static uint64_t n_all, n_waited, n_games, n_games_waited;
         n_all++, n_games += n != 0;
         if (spk_lock > 20000) n_waited++, n_games_waited += n != 0;   // 20 us: the lock was held
@@ -1092,7 +1100,7 @@ uint64_t vk_sync_submit(const uint64_t *handles, int n) {
     if (!vk_sync_epoch_early()) vk_texture_new_submit();
     memset(&vk_spike, 0, sizeof vk_spike), spk_rec = spk_upl = spk_pro = spk_que = 0;
     int spk_handles = n;
-    vk_mem_dirty_submit();   // TOTK_TRACE=perf: what a mirror would upload before this submit
+    vk_mem_dirty_submit();   // REKARINA_TRACE=perf: what a mirror would upload before this submit
     uint64_t fence = __atomic_load_n(&issued, __ATOMIC_ACQUIRE) + 1;
     cur_fence = fence;
     cur_res_sent = res_point_req = 0;
@@ -1158,7 +1166,7 @@ uint64_t vk_sync_submit(const uint64_t *handles, int n) {
                             .commandBufferInfoCount = last ? 1u : 0u,
                             .pCommandBufferInfos = cbi + 1, .signalSemaphoreInfoCount = nsig, .pSignalSemaphoreInfos = sigs}};
     __atomic_store_n(&sub_work[fence & 4095], fence << 2 | (uint64_t)(last ? 1 : 0) | (uint64_t)(cur_parts ? 2 : 0), __ATOMIC_RELAXED);
-    {   // TOTK_TRACE=perf: how the submissions end (with the log line of the waits above)
+    {   // REKARINA_TRACE=perf: how the submissions end (with the log line of the waits above)
         static uint64_t n_subs_all, n_empty_after_parts, n_empty_alone;
         n_subs_all++;
         n_empty_after_parts += !last && cur_parts;
@@ -1189,7 +1197,7 @@ uint64_t vk_sync_submit(const uint64_t *handles, int n) {
     static unsigned subs;
     if (++subs % 4096 == 0) rec_stats_log();
     __atomic_store_n(&vk_spike_sub_t0, 0, __ATOMIC_RELAXED);
-    if (__builtin_expect(sec_on, 0)) {   // the submission's partition, and its ops by class when TOTK_SPIKE_MS times them
+    if (__builtin_expect(sec_on, 0)) {   // the submission's partition, and its ops by class when REKARINA_SPIKE_MS times them
         uint64_t tot = plat_now_ns() - spk_t0;
         uint64_t k = spk_lock + vk_spike.ev + vk_spike.usnap + vk_spike.mirb + vk_spike.mire + vk_spike.gmem + vk_spike.tex + spk_rec + spk_upl + spk_pro + spk_que;
         sec_add_ns(SEC_SUB_TOTAL, tot), sec_add_ns(SEC_SUB_LOCK, spk_lock), sec_add_ns(SEC_SUB_EV, vk_spike.ev);
@@ -1212,7 +1220,7 @@ uint64_t vk_sync_submit(const uint64_t *handles, int n) {
     }
     {   // DEBUG-SPIKE
         static int64_t lim = -1;
-        if (lim < 0) { const char *e = cfg_get("TOTK_SPIKE_MS"); lim = e ? atoll(e) * 1000000ll : 0; }
+        if (lim < 0) { const char *e = cfg_get("REKARINA_SPIKE_MS"); lim = e ? atoll(e) * 1000000ll : 0; }
         uint64_t tot = plat_now_ns() - spk_t0;
         if (lim && tot > (uint64_t)lim) {
             uint64_t k = spk_lock + vk_spike.ev + vk_spike.usnap + vk_spike.mirb + vk_spike.mire + vk_spike.gmem + vk_spike.tex + spk_rec + spk_upl + spk_pro + spk_que;

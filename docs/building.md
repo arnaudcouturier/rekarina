@@ -92,7 +92,7 @@ of them.
    add Switch 2 (NVN2, Ampere) shaders ([oot-xlate.md](oot-xlate.md)).
 
 5. Lift the modules to C, write the RomFS overlay (the frame-rate fix), then compile and link
-   `build\<ver>\totk.exe`:
+   `build\<ver>\rekarina.exe`:
 
    ```powershell
    .venv\Scripts\python recomp\gen.py --exefs build\extracted\<ver>\exefs --out generated\<ver> --patches recomp\patches-<ver>.txt
@@ -106,7 +106,7 @@ of them.
    objects before it links: any AVX, BMI or other instruction above x86-64-v2 outside a function listed there as
    dispatched by a runtime CPU check stops the build.
 
-   `gen.py` sizes its emit pool from the CPU count and the free memory; `--jobs N` sets it, and so does the environment variable `TOTK_LIFT_JOBS=N`, which the installer's lift step honours too (it has no `--jobs`). When a worker runs out of memory, the pool restarts with half the workers (`emit: out of memory with N workers, retrying with M`), down to one; only an out-of-memory error with one worker fails the step.
+   `gen.py` sizes its emit pool from the CPU count and the free memory; `--jobs N` sets it, and so does the environment variable `REKARINA_LIFT_JOBS=N`, which the installer's lift step honours too (it has no `--jobs`). When a worker runs out of memory, the pool restarts with half the workers (`emit: out of memory with N workers, retrying with M`), down to one; only an out-of-memory error with one worker fails the step.
 
    Lifting takes about 15 s, a clean compile about 200 s on 24 threads; later builds recompile only what changed.
    A compiler cache in front of clang shortens it further: with `SCCACHE` set to an sccache executable, `build_game.py`
@@ -121,7 +121,7 @@ of them.
    `SDL3.dll`, `libiconv-2.dll` and `libopus-0.dll` next to the exe.
    For Xbox button prompts, run `make_romfs_patches.py` twice more, with `--prompts xbox` and `--prompts xbox-label`:
    they write `build\<ver>\romfs-patches-xbox` and `romfs-patches-xbox-label` ([controls.md](controls.md), "Xbox
-   button prompts"), which `build_game.py` copies next to `totk.exe` like `romfs-patches`. `--prompts pc` writes
+   button prompts"), which `build_game.py` copies next to `rekarina.exe` like `romfs-patches`. `--prompts pc` writes
    `romfs-patches-pc`, the keyboard and mouse prompts ([controls.md](controls.md), "PC button prompts").
 
 6. Prepare the shaders (once per build folder and translator). It needs `refs\MacNativeGames` (`tools\fetch_refs.sh`)
@@ -133,30 +133,30 @@ of them.
 
    Without this step the first launch compiles shaders and pipelines during play and stutters until the caches fill.
    The AMD driver keeps its pipeline cache per exe path and holds a limited amount: preparing another build folder can
-   evict this one's. `totk.exe --warm-shaders` rebuilds it from the shader cache.
+   evict this one's. `rekarina.exe --warm-shaders` rebuilds it from the shader cache.
    When the driver's shader compiler crashes on a variant (NVIDIA 615.78.08 on an RTX 5080 does, issue #30),
    `prepare_shaders.py` runs the driver step again with `--warm-shaders`, up to three times, without the variants the
    driver was building at the crash. `shader-prepare-skip.txt` next to the exe lists them with the GPU and driver
    version; they build at their first draw instead, another driver version builds them again, and so does deleting the
    file.
 
-7. Run. The game keeps running when its window loses the focus (`assume_focus = 1` in `totk.ini`, the default; the
+7. Run. The game keeps running when its window loses the focus (`assume_focus = 1` in `rekarina.ini`, the default; the
    Game tab switches it). With 0 it pauses, as it does on the Switch when Home is pressed.
 
    ```powershell
-   build\<ver>\totk.exe
+   build\<ver>\rekarina.exe
    ```
 
-Settings live in `totk.ini` next to `totk.exe` ([totk.ini.example](../totk.ini.example) lists them); an OoT
+Settings live in `rekarina.ini` next to `rekarina.exe` ([rekarina.ini.example](../rekarina.ini.example) lists them); an OoT
 build reads `rekarina.ini` and writes `logs\rekarina.log`, the names its package has (`runtime/host.h`
-`RT_FILE_STEM`), and renames a `totk.ini` it finds beside it. Saves go to
+`RT_FILE_STEM`), and renames a `rekarina.ini` it finds beside it. Saves go to
 `build\profile` for `v121` and `build\profile-<ver>` for other versions (`build_game.py --profile` changes it).
 
 ### Portable folder
 
 `.venv\Scripts\python tools\package_build.py --version <ver>` writes `build\<ver>-portable`, which runs on another of
 your machines without MSYS2, Python or .NET. `romfs.bin` stays out unless you pass `--with-romfs`; otherwise put it in
-`romfs\` next to the exe or point `TOTK_ROMFS` at its folder. Run `totk.exe --prepare-shaders` once in the copied
+`romfs\` next to the exe or point `REKARINA_ROMFS` at its folder. Run `rekarina.exe --prepare-shaders` once in the copied
 folder. The folder holds code and data derived from your game: for your own machines only.
 
 ### Profile-guided build
@@ -175,7 +175,7 @@ $llvm = "toolchain\llvm-mingw-<date>\llvm-mingw-<date>-ucrt-x86_64"
 .venv\Scripts\python tools\build_game.py --version v143 --out build\v143-pgogen --toolchain $llvm --pgo gen
 ```
 
-Play `build\v143-pgogen\totk.exe` through varied scenes (fights, towns, riding, building, the Depths, menus) for 20-30
+Play `build\v143-pgogen\rekarina.exe` through varied scenes (fights, towns, riding, building, the Depths, menus) for 20-30
 minutes; it is slower than a normal build. It writes `build\v143-pgogen\pgo\*.profraw` every minute and at exit.
 Scripted runs from saves (`tools/run_game.py`) add to the same file. Then:
 
@@ -208,7 +208,7 @@ Requirements:
   version the Windows release pins (3.4.0) into `toolchain/vma/` on first use and checks its hash.
 
 The steps are the Windows ones with POSIX paths: `.venv/bin/python` in place of `.venv\Scripts\python`, and `totk` in
-place of `totk.exe`. `build_game.py` takes clang, lld and Ninja from PATH (or the ones in `<dir>/bin` with
+place of `rekarina.exe`. `build_game.py` takes clang, lld and Ninja from PATH (or the ones in `<dir>/bin` with
 `--toolchain <dir>`) and links against the system libraries, with `libstdc++` static and an `$ORIGIN` rpath;
 `build_hactool.py` builds `hactool` with make. `tools/prepare_shaders.py` reads the shader list from
 `refs/MacNativeGames` at `origin/HEAD`, which must be the pinned commit with its history (the list format changed later).
@@ -222,39 +222,44 @@ re-protecting imported memory invalidates the driver's userptr buffer on every s
 amdgpu), and importing pins the pages, which drops their write protection. Each CPU-visible pool therefore gets a
 host-visible copy (shadow storage, `runtime/vk_memory.c`): the pages the CPU wrote go in before each submit, and the GPU's
 writes come back at its fence. In play that costs about 0.2 ms a frame and doubles the memory of those pools (about
-1.1 GB). `TOTK_SHADOW=1` turns it on under Windows too. The Steam Deck's RADV has `VK_EXT_external_memory_host` as
+1.1 GB). `REKARINA_SHADOW=1` turns it on under Windows too. The Steam Deck's RADV has `VK_EXT_external_memory_host` as
 well: the shadow copies are chosen for the measured cost above, not for a missing extension.
 
 The Deck's GPU (Van Gogh) has no native ASTC, so its textures go through the compute decoder (`runtime/vk_astc.c`,
-`TOTK_ASTC`) as on desktop AMD GPUs without it; frame times measured there include it.
+`REKARINA_ASTC`) as on desktop AMD GPUs without it; frame times measured there include it.
 
-### OoT on Linux and under Proton: where it stands (2026-11-13)
+### OoT on Linux and under Proton: where it stands (2026-11-13, Linux build 2026-11-15)
 
-Nothing of OoT has been run on Linux yet, native or under Proton: there was no such machine at hand. What is known
-from the code and from runs on Windows that use the same paths:
+2026-11-15, in WSL2 Ubuntu 24.04 (its only Vulkan device is llvmpipe): `tools/make_release_linux.py --oot` and
+`tools/make_rekarina_release.py` make the setup folder and `Rekarina-x86_64.AppImage` (213 MiB); the launcher's
+`--selftest` draws all its screens from the AppImage; `python -m installer.oot` builds the game from a dump through every
+step (lift, compile and link against the sniper sysroot, overlays, 55,711 shader variants prepared, package) and
+`Rekarina --warm-shaders` exits 0. The game has not been played on Linux: WSL has no GPU driver of its own. The system
+libraries the SDL3 beside the game needs are in docs/installer.md. Before that build nothing of OoT had run on Linux,
+native or under Proton. What is known from the code and from runs on Windows that use the same paths:
 
-- The Linux build and Wine both use shadow storage for CPU-visible pools (`vk_memory.c`, `TOTK_SHADOW`; under Wine it is
-  chosen by `plat_is_wine`). `TOTK_SHADOW=1` on Windows runs that path: it is the check to make before a Linux test, and
+- The Linux build and Wine both use shadow storage for CPU-visible pools (`vk_memory.c`, `REKARINA_SHADOW`; under Wine it is
+  chosen by `plat_is_wine`). `REKARINA_SHADOW=1` on Windows runs that path: it is the check to make before a Linux test, and
   the first thing to run when a picture differs there.
-- Early results (`TOTK_RESULTS_FENCE`) are taken only with mirrors, so they are off in shadow mode: expect the frame
+- Early results (`REKARINA_RESULTS_FENCE`) are taken only with mirrors, so they are off in shadow mode: expect the frame
   rate of a build without them (about a sixth lower where the GPU decides the frame).
-- The draw-stretch threads (`replay_threads`), the uploads ahead of first use (`TOTK_TEX_PREP=1`, off by default), the images made ahead
+- The draw-stretch threads (`replay_threads`), the uploads ahead of first use (`REKARINA_TEX_PREP=1`, off by default), the images made ahead
   and the texture cache use only `platform.h` (threads, events, files): `tools/check_platform.py` passes for them.
 - `tools/check_platform.py` passes. Four files that load vendor libraries keep Win32 calls inside `#ifdef _WIN32` and
   are on its allowlist with the reason: `vk_dlaa.c` (DLSS; it has a Linux branch that loads `libnvidia-ngx.so.1`),
-  `vk_dlssg.c` (DLSS Frame Generation), `vk_ffx.cpp` and `vk_fg.cpp` (FSR 3.1 and its frame generation). On another
+  `vk_dlssg.c` (DLSS Frame Generation), `vk_ffx.cpp` and `vk_fg.cpp` (FSR 4.1 and 3.1, and FSR frame generation). On another
   host those three report the feature missing. Under Proton they are Windows code and need `nvngx` from the Proton
   prefix; the base mode needs none of them.
 - Mesh shaders are required (`VK_EXT_mesh_shader`): RADV has them from RDNA2 on, which includes the Steam Deck; the
   integrated Radeon of the Windows test machine still draws no mesh foliage (docs/oot-notes.md), so foliage on any AMD
   card is the first thing to look at.
 - `VK_EXT_conditional_rendering` carries the game's occlusion conditions; without it they are decided on the CPU, which
-  has shown white frames (`TOTK_GPU_COND=0`). RADV and NVIDIA have it.
+  has shown white frames (`REKARINA_GPU_COND=0`). RADV and NVIDIA have it.
 - The video memory counter the texture quality rule reads comes from PDH on Windows (`platform/win32.c`); under Wine and
   on Linux the Vulkan memory budget is all there is, so `tex_quality` may have to be set by hand on small cards.
 
 Order for a first Linux or Proton session: the selftest and probes, `--warm-shaders`, the forest standing still with
-`TOTK_FLIGHT=1`, then the Market at a run with a frame-by-frame clip (docs/recomp-playbook.md, section 8).
+`REKARINA_FLIGHT=1`, then the Market at a run with a frame-by-frame clip (docs/recomp-playbook.md, section 8).
 
 ## Checks
 
@@ -262,11 +267,11 @@ Before a commit:
 
 - `python tools/check_content.py --staged`: nothing game-derived is staged. CI runs the same check;
   `git config core.hooksPath .githooks` runs it before each local commit.
-- `build\<ver>\totk.exe --selftest`: layout, dispatch table and host-function registry, without game files.
+- `build\<ver>\rekarina.exe --selftest`: layout, dispatch table and host-function registry, without game files.
 
 A change to the button prompts (`tools/make_romfs_patches.py --prompts`, `tools/button_icons.py`) passes
 `.venv-py314\Scripts\python tests\romfs_prompts_test.py`, which runs the tool on a RomFS it makes itself (no game
-files); a change to the settings passes `totk.exe --probe-cfg`.
+files); a change to the settings passes `rekarina.exe --probe-cfg`.
 
 The lifter (`recomp/`) and the CPU headers (`runtime/cpu.h`, `runtime/simd.h`) are checked against Unicorn. Every lifter
 change passes these, all run with `.venv`:
@@ -284,7 +289,7 @@ change passes these, all run with `.venv`:
 A `--cpu v2` build passes the same differential tests with `--cflags=-march=x86-64-v2`; they compile `runtime/fma.c`
 too, so they check the software fma the v2 build links rather than the C runtime's.
 
-Runtime probes, each a mode of `totk.exe` (the list is at the top of `runtime/main.c`): `--probe-kernel`,
+Runtime probes, each a mode of `rekarina.exe` (the list is at the top of `runtime/main.c`): `--probe-kernel`,
 `--probe-vkexec`, `--probe-nvn-tex` and `--probe-shader` cover most runtime changes. `--probe-shader` and the draw
 part of `--probe-vkexec` translate shaders of the census below: they look for `build/<ver>/shaders/jobs.json` of the
 exe's own version first, then of the other one.

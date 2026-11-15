@@ -3,24 +3,24 @@
 // Read-only game RomFS backed by the player's extracted image.
 //
 // Input: <romfs>/romfs.bin (rt_config()->romfs), whose six IVFC levels and SHA-256 tools/extract.py verified, and
-// romfs-index.bin next to totk.exe (TOTK_ROMFS_INDEX overrides), which tools/romfs_index.py wrote together with
+// romfs-index.bin next to rekarina.exe (REKARINA_ROMFS_INDEX overrides), which tools/romfs_index.py wrote together with
 // romfs_config.h. fs_init checks the index's SHA-256 and layout and the image size. The full 17 GB hash runs only with
-// TOTK_ROMFS_VERIFY=full; a proof file (.romfs-verified-v1 next to the index, or in TOTK_ROMFS_PROOF_DIR) keyed by
-// the file's volume, file id, size and times skips it on later starts, TOTK_ROMFS_VERIFY=force ignores the proof.
+// REKARINA_ROMFS_VERIFY=full; a proof file (.romfs-verified-v1 next to the index, or in REKARINA_ROMFS_PROOF_DIR) keyed by
+// the file's volume, file id, size and times skips it on later starts, REKARINA_ROMFS_VERIFY=force ignores the proof.
 //
 // Reads are positional (platform.h plat_file_pread), so threads read the image in parallel without a file-pointer
-// lock. TOTK_ROMFS_MMAP=1 maps the image instead.
+// lock. REKARINA_ROMFS_MMAP=1 maps the image instead.
 //
 // Overlays: files listed in a directory's manifest.tsv are served in place of the originals. Each line names a RomFS
 // path, the overlay's size and SHA-256 and the original's SHA-256 ("-" adds a file the RomFS lacks; it is numbered
-// after the RomFS's own files, file_count + k in path order). The directories, in this order: TOTK_ROMFS_PATCHES and
-// TOTK_ROMFS_MODS; unset or "0" = none. A missing path, a size or hash mismatch or a changed original stops the start.
+// after the RomFS's own files, file_count + k in path order). The directories, in this order: REKARINA_ROMFS_PATCHES and
+// REKARINA_ROMFS_MODS; unset or "0" = none. A missing path, a size or hash mismatch or a changed original stops the start.
 // An overlay file is opened when the game opens it; its identity (volume, file id, size, last write) is kept from the
 // start check, and an open that finds another file there stops the game.
 //
 // Player mods (mods.c): the files under each enabled mod's RomFS root are overlays too, checked by identity only (no
 // hash, no manifest). A path several overlays give is served by one: a player mod higher in the order beats a lower
-// one, any player mod beats the TOTK_ROMFS_MODS manifest, which beats romfs-patches (overlay_contest). A mod path that
+// one, any player mod beats the REKARINA_ROMFS_MODS manifest, which beats romfs-patches (overlay_contest). A mod path that
 // matches a RomFS path only without case is served under the RomFS spelling.
 //
 // The resource size table: with a player mod enabled, the game's table is rebuilt at start with the tables the mods
@@ -34,6 +34,7 @@
 #include "cfg.h"
 #include "fs.h"
 #include "host.h"
+#include "input.h"
 #include "input_map.h"
 #include "mods.h"
 #include "romfs_config.h"
@@ -54,7 +55,7 @@ typedef struct { uint64_t offset, size; uint32_t name, len; } Entry;
 _Static_assert(sizeof(Entry) == 24, "index entry layout");
 
 typedef struct { uint32_t volume, pad; uint64_t file_id, size, write_time, create_time; } Identity;   // no padding
-// prio: which overlay serves a path two of them give (the higher); romfs-patches 0, the TOTK_ROMFS_MODS manifest 1, a
+// prio: which overlay serves a path two of them give (the higher); romfs-patches 0, the REKARINA_ROMFS_MODS manifest 1, a
 // player mod 2 + its distance from the bottom of the order. mod: its index in mods_at + 1, 0 for any other overlay.
 typedef struct { uint64_t index, size; char *path, *name; Identity id; int prio, mod; } Overlay;
 
@@ -145,9 +146,9 @@ static void sha_range(PlatFile *f, uint64_t offset, uint64_t size, char hex[65],
 typedef struct { char magic[16], sha256[65]; uint8_t pad[7]; Identity id; } RomfsProof;
 
 static void verify_image(const char *dir) {
-    const char *mode = cfg_get("TOTK_ROMFS_VERIFY");
+    const char *mode = cfg_get("REKARINA_ROMFS_VERIFY");
     if (!mode || (strcmp(mode, "full") && strcmp(mode, "force"))) return;
-    const char *pdir = cfg_get("TOTK_ROMFS_PROOF_DIR");
+    const char *pdir = cfg_get("REKARINA_ROMFS_PROOF_DIR");
     if (pdir && *pdir) dir = pdir;
     RomfsProof want = {0}, saved;
     memcpy(want.magic, "TOTKRFS-PROOF-1", 16);
@@ -230,7 +231,7 @@ static uint32_t overlay_slot(uint64_t i) {
 // ---- overlays
 // Loads and checks one overlay folder. A failed check stops the game, except with optional set (the Xbox prompts
 // folder): the folder is dropped, the reason logged, and 0 returned. Returns 1 when the folder is loaded or has no
-// manifest. prio: the Overlay field (0 for the port's own folders, 1 for the TOTK_ROMFS_MODS manifest).
+// manifest. prio: the Overlay field (0 for the port's own folders, 1 for the REKARINA_ROMFS_MODS manifest).
 // The SHA-256 of RomFS file i as the game reads it: its range of the image, or with the RomFS read from a .nup, the
 // inflated bytes of a file the container stores as zstd (romfs_nup.c).
 static void entry_sha(uint64_t i, Entry e, char hex[65]) {
@@ -643,7 +644,7 @@ static Restbl *restbl_unpack(const void *z, size_t n) {
     return t;
 }
 
-// With a player mod (or the TOTK_ROMFS_MODS manifest) serving files: the game's table with every shipped table of this
+// With a player mod (or the REKARINA_ROMFS_MODS manifest) serving files: the game's table with every shipped table of this
 // version merged in (an entry larger than the game's wins), the entries a mod's table for another version gives for
 // that mod's files, and each served mod file's entry raised to what its size needs (restbl_grow for a file the game
 // has, restbl_estimate for an added one). Never lowers the game's entries.
@@ -761,7 +762,7 @@ static void heapdef_overlay(void) {
     if (ok && serve_generated(rel, base, out, out_n, "resolution", "grown heaps", keeps)) res_heapdef_served();
 }
 
-// The player camera's pack with its stick speeds multiplied by TOTK_STICK_SENS (camera_speed.c). The base is an
+// The player camera's pack with its stick speeds multiplied by REKARINA_STICK_SENS (camera_speed.c). The base is an
 // overlay that replaces the pack (a mod's camera stays), else the RomFS original; the dictionary is the RomFS's own.
 #define CAMPACK "Pack/Actor/PlayerCamera.pack.zs"
 static void camera_overlay(void) {
@@ -800,6 +801,7 @@ const char *romfs_prompts(void) { return prompts_loaded; }
 #define LIVE_SETS 8
 static struct {
     int tried, n, applied, want, busy;
+    int asked;         // the set the last change was made for (romfs_prompts_live), -1 none
     uint32_t size;
     char name[LIVE_SETS][32];
     uint8_t *tbl[LIVE_SETS];
@@ -809,7 +811,7 @@ static struct {
     unsigned seen;
     uint64_t retry_at; // plat_now_ns after which a failed change is tried again (the font was not loaded yet); 0 none
     int tries;
-} LV = {.applied = -1, .want = -1};
+} LV = {.applied = -1, .want = -1, .asked = -1};
 
 // The keyboard prompts follow the bindings (prompts-keys.bin, tools/make_oot_prompts.py write_keys): "RKPK", u32
 // version 1, u32 buttons, u32 keys, u32 cell; per button a 16-byte action name, u32 code point and u32 offset of its
@@ -939,6 +941,192 @@ static uint64_t live_find(const uint8_t *pat, uint32_t n) {
     return found;
 }
 
+// ---- The action hint's button images in the running game (prompts-hint.bin, tools/make_oot_prompts.py write_hint)
+// The hint at the bottom of the screen draws its buttons from four images of the common layout archive, which the game
+// loads once: changed in the running game, the font's prompts followed the device and these stayed the start's (a
+// keyboard key round a pad's letter, player report 2026-11-15). Each set's four images, byte for byte as the game holds
+// them, are in prompts-hint.bin; a change of set finds where the shown set's images are in memory and writes the new
+// set's over them, and the textures are uploaded again as for any write the CPU makes to them. All four places are
+// found before any is written: the sets by position trade A with B and X with Y, so a new image can be another
+// letter's old one. The places found are kept and checked before the next change; a place that no longer holds the
+// image shown makes the whole search run again. The textures are mirrored ones (vk_texture.c make_fresh uploads them
+// again, seen 2026-11-15), yet a hint already on screen keeps its look until it changes: the game draws it once. A
+// hint shown after the change has the new images.
+#define HINT_SETS 8
+#define HINT_IMAGES 4
+#define HINT_PLACES 4
+static struct {
+    int tried, n, cur;                               // cur: the set whose images are in memory, -1 unknown
+    uint32_t size;                                   // bytes of one image
+    char name[HINT_SETS][32];
+    uint8_t *img[HINT_SETS];                         // HINT_IMAGES * size bytes per set
+    uint64_t at[HINT_IMAGES][HINT_PLACES];           // where each image of the set shown was found
+    int nat[HINT_IMAGES];
+} HT = {.cur = -1};
+
+static void hint_load(void) {
+    HT.tried = 1;
+    char path[2200];
+    snprintf(path, sizeof path, "%s/prompts-hint.bin", index_dir);
+    FILE *f = fopen(path, "rb");
+    if (!f) return;
+    uint32_t h[5];
+    if (fread(h, 4, 5, f) == 5 && h[0] == 0x48504b52u && h[1] == 1 && h[2] && h[2] <= HINT_SETS && h[3] &&
+        h[3] <= (1u << 20) && h[4] == HINT_IMAGES) {
+        HT.size = h[3];
+        for (uint32_t i = 0; i < h[2]; i++) {
+            HT.img[i] = malloc((size_t)HINT_IMAGES * HT.size);
+            if (!HT.img[i] || fread(HT.name[i], 1, 32, f) != 32 ||
+                fread(HT.img[i], HT.size, HINT_IMAGES, f) != HINT_IMAGES) break;
+            HT.name[i][31] = 0;
+            HT.n = (int)i + 1;
+        }
+    }
+    fclose(f);
+    const char *start = live_name(prompts_loaded);
+    for (int i = 0; i < HT.n; i++)
+        if (!strcmp(HT.name[i], start)) HT.cur = i;
+    if (HT.n) rt_log("RomFS overlay: prompts-hint.bin: the action hint's images of %d sets (%s shown)", HT.n,
+                     HT.cur >= 0 ? HT.name[HT.cur] : "none known");
+}
+
+// A word of the image to look for, at a multiple of 4: one of four different bytes where there is one (a busy block
+// of BC4 indices, rare in memory), else one that is not 0 or all ones (those fill empty blocks).
+static uint32_t hint_key_at(const uint8_t *img, uint32_t size) {
+    uint32_t any = 0, seen = 0;
+    for (uint32_t o = 0; o + 4 <= size; o += 4) {
+        const uint8_t *b = img + o;
+        if (b[0] != b[1] && b[0] != b[2] && b[0] != b[3] && b[1] != b[2] && b[1] != b[3] && b[2] != b[3]) return o;
+        uint32_t w;
+        memcpy(&w, b, 4);
+        if (!seen && w && w != 0xffffffffu) any = o, seen = 1;
+    }
+    return any;
+}
+
+// The images of the set shown and their key words, for hint_scan.
+typedef struct {
+    const uint8_t *img[HINT_IMAGES];
+    uint32_t ko[HINT_IMAGES], key[HINT_IMAGES];
+    uint8_t *buf;
+} HintScan;
+
+// Every place in [lo, hi) where an image of the shown set starts, added to HT.at (up to HINT_PLACES each).
+static void hint_scan(HintScan *S, uint64_t lo, uint64_t hi) {
+    enum { CHUNK = 4 << 20 };
+    uint32_t n = HT.size;
+    for (uint64_t a = lo, end; a < hi; a = end) {
+        int st = plat_mem_state(a, hi, &end);
+        if (end <= a) break;
+        if (st != PLAT_PROT_RW && st != PLAT_PROT_READ) continue;
+        for (uint64_t p = a; p < end; p += CHUNK) {
+            // chunks overlap by an image's length; an image is taken in the chunk where it starts
+            uint64_t len = end - p < CHUNK + n ? end - p : CHUNK + n;
+            if (len < n || !plat_mem_read(p, S->buf, (size_t)len)) continue;
+            for (uint64_t i = 0; i + 4 <= len; i += 4) {
+                uint32_t w;
+                memcpy(&w, S->buf + i, 4);
+                if (w != S->key[0] && w != S->key[1] && w != S->key[2] && w != S->key[3]) continue;
+                for (int k = 0; k < HINT_IMAGES; k++) {
+                    if (w != S->key[k] || i < S->ko[k] || HT.nat[k] >= HINT_PLACES) continue;
+                    uint64_t s = i - S->ko[k];
+                    if (s < CHUNK && s + n <= len && !memcmp(S->buf + s, S->img[k], n)) HT.at[k][HT.nat[k]++] = p + s;
+                }
+            }
+        }
+    }
+}
+
+// Where the shown set's images lie (up to HINT_PLACES each); returns how many of the four were found. The game keeps
+// them in the graphics heap the font table is in (200 MiB apart in a run of 2026-11-15), so the 1 GiB around `near`
+// goes first, and the rest of the address space only when an image is still missing: a pass over all of it took
+// seconds.
+static int hint_find(uint64_t near) {
+    enum { WINDOW = 512u << 20 };
+    HintScan S;
+    uint32_t n = HT.size;
+    for (int k = 0; k < HINT_IMAGES; k++) {
+        S.img[k] = HT.img[HT.cur] + (size_t)k * n;
+        S.ko[k] = hint_key_at(S.img[k], n);
+        memcpy(&S.key[k], S.img[k] + S.ko[k], 4);
+        HT.nat[k] = 0;
+    }
+    S.buf = malloc((4 << 20) + n);
+    if (!S.buf) return 0;
+    uint64_t lo = 0x10000, hi = RT_ADDRESS_LIMIT;
+    if (near) {
+        lo = near > lo + WINDOW ? (near - WINDOW) & ~0xfffull : lo;
+        hi = near + WINDOW < hi ? (near + WINDOW) & ~0xfffull : hi;
+    }
+    hint_scan(&S, lo, hi);
+    int found = 0;
+    for (int k = 0; k < HINT_IMAGES; k++) found += HT.nat[k] > 0;
+    if (found < HINT_IMAGES && (lo > 0x10000 || hi < RT_ADDRESS_LIMIT)) {   // an image straddling lo or hi is missed
+        hint_scan(&S, 0x10000, lo);
+        hint_scan(&S, hi, RT_ADDRESS_LIMIT);
+        found = 0;
+        for (int k = 0; k < HINT_IMAGES; k++) found += HT.nat[k] > 0;
+    }
+    free(S.buf);
+    return found;
+}
+
+// The set `to`'s images (a prompts-live.bin name) where the shown set's are; near: the font table's address, where the
+// search starts. Runs on the prompts' worker thread.
+static void hint_apply(const char *to, uint64_t near) {
+    if (!HT.tried) hint_load();
+    int t = -1;
+    for (int i = 0; i < HT.n; i++)
+        if (!strcmp(HT.name[i], to)) t = i;
+    if (t < 0 || HT.cur < 0 || t == HT.cur) return;
+    uint64_t t0 = plat_now_ns();
+    uint32_t n = HT.size;
+    if (!memcmp(HT.img[t], HT.img[HT.cur], (size_t)HINT_IMAGES * n)) {   // the same pictures: nothing to write
+        HT.cur = t;
+        return;
+    }
+    int ok = 1;   // the kept places still hold the shown images
+    uint8_t *mem = malloc(n);
+    for (int k = 0; k < HINT_IMAGES && ok; k++) {
+        ok = HT.nat[k] > 0;
+        for (int j = 0; j < HT.nat[k] && ok; j++)
+            ok = mem && plat_mem_read(HT.at[k][j], mem, n) && !memcmp(mem, HT.img[HT.cur] + (size_t)k * n, n);
+    }
+    free(mem);
+    int found = ok ? HINT_IMAGES : hint_find(near);
+    if (!found) {
+        rt_log("RomFS overlay: the action hint's images of %s were not found in memory (%.0f ms): they stay until the next start",
+               HT.name[HT.cur], (plat_now_ns() - t0) / 1e6);
+        return;
+    }
+    // mem_thaw makes a region our write tracking froze writable again; a place in memory that is read-only for another
+    // reason (a copy the game mapped read-only) is left as it is and dropped from the kept places, as a write would fault
+    int places = 0, skipped = 0;
+    for (int k = 0; k < HINT_IMAGES; k++) {
+        int kept = 0;
+        for (int j = 0; j < HT.nat[k]; j++) {
+            uint64_t a = HT.at[k][j], end = 0;
+            mem_thaw(a, n);
+            int rw = 1;   // the bounded walk: plat_mem_state would measure the whole run around the place
+            for (uint64_t x = a; rw && x < a + n; x = end)
+                rw = plat_mem_state_walk(x, a + n, &end) == PLAT_PROT_RW && end > x;
+            if (!rw) {
+                skipped++;
+                continue;
+            }
+            memcpy((void *)(uintptr_t)a, HT.img[t] + (size_t)k * n, n);
+            HT.at[k][kept++] = a;
+            places++;
+        }
+        HT.nat[k] = kept;
+    }
+    rt_log("RomFS overlay: the action hint's images changed from %s to %s (%d of %d images found, %d places, %d read-only "
+           "left, first at %#llx, %.0f ms)",
+           HT.name[HT.cur], HT.name[t], found, HINT_IMAGES, places, skipped,
+           (unsigned long long)(HT.nat[0] ? HT.at[0][0] : 0), (plat_now_ns() - t0) / 1e6);
+    HT.cur = t;
+}
+
 static void live_main(void *arg) {
     (void)arg;
     int to = __atomic_load_n(&LV.want, __ATOMIC_ACQUIRE);
@@ -954,9 +1142,10 @@ static void live_main(void *arg) {
         LV.at = at, LV.applied = to, LV.tries = 0, LV.retry_at = 0;
         rt_log("RomFS overlay: button prompts changed to %s in the running game (font table at %#llx, %.0f ms)", LV.name[to],
                (unsigned long long)at, (plat_now_ns() - t0) / 1e6);
+        hint_apply(LV.name[to], at);   // and the action hint's images
     } else {
         // Before the game has loaded its fonts there is nothing to find: a few more tries, some seconds apart, so
-        // keys bound in totk.ini show without a visit to the menu; then not again until the settings change.
+        // keys bound in rekarina.ini show without a visit to the menu; then not again until the settings change.
         LV.seen = cfg_version();
         LV.retry_at = ++LV.tries < 12 ? plat_now_ns() + 5000000000ull : 0;
         rt_log("RomFS overlay: the game's button font was not found in memory (%.0f ms): the %s prompts %s",
@@ -1048,25 +1237,37 @@ int romfs_prompts_shown(const char *folder) {
            (__atomic_load_n(&LV.busy, __ATOMIC_ACQUIRE) && want == __atomic_load_n(&LV.want, __ATOMIC_ACQUIRE));
 }
 
-// Each present: the prompts setting changed? 1 when the sets can change without a restart.
+// Each present: the prompts setting changed, or under prompts = auto the device in use (input_prompts_wanted)? 1 when
+// the sets can change without a restart.
 int romfs_prompts_live(void) {
     if (!LV.tried) live_load();
     if (!LV.n || LV.applied < 0) return 0;
-    {   // DEBUG-PROMPTSAT: TOTK_PROMPTS_AT=<frame>:<value> sets the prompts setting at that present (a test of the switch)
-        static uint64_t frame, at;
-        static char val[32];
+    {   // DEBUG-PROMPTSAT: REKARINA_PROMPTS_AT=<frame>:<value>[,<frame>:<value>...] sets the prompts setting at those
+        // presents (a test of the switch)
+        static uint64_t frame, at[8];
+        static char val[8][32];
         static int on = -1;
-        if (on < 0) { const char *e = cfg_get("TOTK_PROMPTS_AT"); on = e && sscanf(e, "%llu:%31s", (unsigned long long *)&at, val) == 2; }
-        if (on && ++frame == at) cfg_set("TOTK_PROMPTS", val);
+        if (on < 0) {
+            const char *e = cfg_get("REKARINA_PROMPTS_AT");
+            on = 0;
+            for (int k; e && on < 8 && sscanf(e, "%llu:%31[^,]%n", (unsigned long long *)&at[on], val[on], &k) == 2; on++)
+                e = e[k] == ',' ? e + k + 1 : NULL;
+        }
+        frame++;
+        for (int i = 0; i < on; i++)
+            if (frame == at[i]) cfg_set("REKARINA_PROMPTS", val[i]);
     }
     unsigned v = cfg_version();
     if (__atomic_load_n(&LV.busy, __ATOMIC_ACQUIRE)) return 1;
     int again = LV.retry_at && plat_now_ns() >= LV.retry_at;
-    if (v == LV.seen && !again) return 1;
-    if (v != LV.seen) LV.tries = 0;   // the settings changed: a new change, with its own tries
+    // Under auto the set changes without a settings change: the device the player used last chose another
+    // (input.c prompt_dev, which waits until a new device has kept the newest press for 0.4 s).
+    if (v == LV.seen && !again && !input_prompts_auto()) return 1;
+    int want = live_set(live_name(input_prompts_wanted()));
+    if (v == LV.seen && !again && want == LV.asked) return 1;
+    if (v != LV.seen || want != LV.asked) LV.tries = 0;   // the settings or the device changed: a new change, its own tries
     LV.retry_at = 0;
-    const char *layout = cfg_value("TOTK_PAD_LAYOUT");
-    int want = live_set(live_name(input_prompts_folder(input_prompts_pick(cfg_get("TOTK_PROMPTS"), layout), layout)));
+    LV.asked = want;
     uint8_t *next = want >= 0 ? malloc(LV.size) : NULL;
     if (!next) { LV.seen = v; return 1; }
     memcpy(next, LV.tbl[want], LV.size);
@@ -1123,7 +1324,7 @@ static void overlay_drop(size_t a, size_t b) {
 }
 
 static void overlay_init(void) {
-    // TOTK_ROMFS_PATCHES unset: romfs-patches next to romfs-index.bin if it has a manifest (tools/make_romfs_patches.py).
+    // REKARINA_ROMFS_PATCHES unset: romfs-patches next to romfs-index.bin if it has a manifest (tools/make_romfs_patches.py).
     // A game resolution that is not 16:9 takes romfs-patches-<w>x<h> instead when it is there: the same overlay with
     // the UI laid out for that shape (make_romfs_patches.py --aspect), when the game version has the camera aspect patch
     // the layout goes with (res_wants_wide_overlay).
@@ -1131,14 +1332,14 @@ static void overlay_init(void) {
     // patches with Xbox button icons (make_romfs_patches.py --prompts). The game reads the archives once at boot, so
     // the prompts stay until restart even though the layout itself changes live. Each folder replaces romfs-patches as
     // a whole and the setup builds no folder of another shape with Xbox prompts, so a game resolution that is not 16:9
-    // keeps the Switch prompts. So does a RomFS mod (the TOTK_ROMFS_MODS manifest or a player mod) that replaces one of
+    // keeps the Switch prompts. So does a RomFS mod (the REKARINA_ROMFS_MODS manifest or a player mod) that replaces one of
     // the prompts' fonts: romfs-patches loads in their place, so the mod's file is not served beside prompts files made
     // for the game's own. A mod's resource size table is no clash: restbl_overlay merges it with the prompts' one.
     // prompts = pc takes romfs-patches-pc whatever the pad layout, and at a game resolution of another shape
     // romfs-patches-pc-<w>x<h> (make_romfs_patches.py --prompts pc --aspect): it carries that shape's UI layout too, so
     // it replaces romfs-patches-<w>x<h> as romfs-patches-pc replaces romfs-patches.
     char def[2100], path[2100];
-    const char *patches = cfg_get("TOTK_ROMFS_PATCHES"), *mods = cfg_get("TOTK_ROMFS_MODS");
+    const char *patches = cfg_get("REKARINA_ROMFS_PATCHES"), *mods = cfg_get("REKARINA_ROMFS_MODS");
     int wide = 0;
     unsigned out[2];
     res_wanted(out);
@@ -1171,11 +1372,12 @@ static void overlay_init(void) {
         prompts_folders[3 + i].ready =
             snprintf(path, sizeof path, "%s/%s/manifest.tsv", index_dir, name) < (int)sizeof path && plat_file_exists(path);
     }
-    const char *layout = cfg_value("TOTK_PAD_LAYOUT");
-    int pick = input_prompts_pick(cfg_get("TOTK_PROMPTS"), layout), shaped = wide && pick == PROMPTS_PC;
+    // prompts = auto: before input has started this is the Xbox guess (input_prompts_folder); the set of the device the
+    // player uses replaces it in the running game (romfs_prompts_live) where prompts-live.bin is there.
+    prompts_wanted = input_prompts_wanted();
+    int pick = input_prompts_of_folder(prompts_wanted), shaped = wide && pick == PROMPTS_PC;
     const char *style = pick == PROMPTS_PC ? "keyboard and mouse" : pick == PROMPTS_PS ? "PlayStation"
                         : pick == PROMPTS_RK ? "Rekarina" : "Xbox";
-    prompts_wanted = input_prompts_folder(pick, layout);
     prompts_off = !prompts_wanted                         ? ROMFS_PROMPTS_OK
                   : wide && !shaped                       ? ROMFS_PROMPTS_SHAPE
                   : patches && !wide                      ? ROMFS_PROMPTS_PATCHES
@@ -1199,7 +1401,7 @@ static void overlay_init(void) {
                prompts_off == ROMFS_PROMPTS_SHAPE     ? (shaped ? "the game resolution has no romfs-patches-pc-<w>x<h> "
                                                                   "(tools/make_romfs_patches.py --prompts pc --aspect)"
                                                              : "the game resolution takes its own UI layout")
-               : prompts_off == ROMFS_PROMPTS_PATCHES ? "TOTK_ROMFS_PATCHES is set"
+               : prompts_off == ROMFS_PROMPTS_PATCHES ? "REKARINA_ROMFS_PATCHES is set"
                                                       : "their folder has no manifest.tsv (run the setup again)");
     }
     size_t prompts_end = noverlay;
@@ -1209,6 +1411,12 @@ static void overlay_init(void) {
     if (plain_ok) plain[strlen(plain) - strlen("/manifest.tsv")] = 0;
     if (!patches && !prompts_loaded && plain_ok) patches = plain;
     if (patches && *patches && strcmp(patches, "0")) overlay_load(patches, 0, 0);
+#ifdef GAME_OOT
+    if (cfg_bool("REKARINA_FAST_TEXT")) {   // the messages without their pauses (tools/make_oot_prompts.py fast_text)
+        snprintf(path, sizeof path, "%s/romfs-patches-fasttext", index_dir);
+        if (overlay_load(path, 1, 0)) rt_log("RomFS overlay: faster dialogue, the messages without their pauses (%s)", path);
+    }
+#endif
     size_t mods_first = noverlay;
     if (mods && *mods && strcmp(mods, "0")) overlay_load(mods, 0, 1);
     mods_overlay_init();
@@ -1239,9 +1447,9 @@ static void overlay_init(void) {
 }
 
 // ---- start
-// romfs-index.bin next to totk.exe, or TOTK_ROMFS_INDEX.
+// romfs-index.bin next to rekarina.exe, or REKARINA_ROMFS_INDEX.
 static void index_path(char *out, size_t cap) {
-    const char *e = cfg_get("TOTK_ROMFS_INDEX");
+    const char *e = cfg_get("REKARINA_ROMFS_INDEX");
     if (e && *e) {
         need(snprintf(out, cap, "%s", e) < (int)cap, "index path");
         return;
@@ -1262,7 +1470,7 @@ static void load_index(void) {
     else strcpy(index_dir, ".");
     uint64_t sz = 0;
     index_bytes = plat_file_read(path, &sz);
-    if (!index_bytes) rt_fatal("RomFS index %s missing (tools/build_game.py writes it next to totk.exe)", path);
+    if (!index_bytes) rt_fatal("RomFS index %s missing (tools/build_game.py writes it next to rekarina.exe)", path);
     need(sz >= 24 && sz < (128 << 20), "index size");
     index_size = (size_t)sz;
     uint8_t d[32];
@@ -1296,7 +1504,7 @@ static int ends_with_nup(const char *p) {
     return n > 4 && !strcasecmp(p + n - 4, ".nup");
 }
 
-// The RomFS from a .nup file (TOTK_ROMFS / --romfs naming the container itself).
+// The RomFS from a .nup file (REKARINA_ROMFS / --romfs naming the container itself).
 static int init_nup(void) {
     const char *nup = rt_config()->romfs;
     if (!ends_with_nup(nup)) return 0;
@@ -1309,7 +1517,7 @@ static int init_nup(void) {
     else strcpy(index_dir, ".");
     need(snprintf(image_file, sizeof image_file, "%s", nup) < (int)sizeof image_file, "image path");
     image = open_read(image_file);
-    if (!image) rt_fatal("RomFS: the game container %s is missing (TOTK_ROMFS or --romfs names the .nup)", image_file);
+    if (!image) rt_fatal("RomFS: the game container %s is missing (REKARINA_ROMFS or --romfs names the .nup)", image_file);
     index_bytes = nup_index(image, image_file, &index_size, &file_count, &strings_offset, &nup_extra);
     nup_mode = 1;
     overlay_init();
@@ -1329,7 +1537,7 @@ static void init_once(void *param) {
     const char *dir = rt_config()->romfs;
     need(snprintf(image_file, sizeof image_file, "%s/romfs.bin", dir) < (int)sizeof image_file, "image path");
     image = open_read(image_file);
-    if (!image) rt_fatal("RomFS image %s missing; put romfs.bin into the romfs folder next to totk or set TOTK_ROMFS",
+    if (!image) rt_fatal("RomFS image %s missing; put romfs.bin into the romfs folder next to totk or set REKARINA_ROMFS",
                          image_file);
     PlatFileId sz;
     need(plat_file_id(image, &sz), "image size");
@@ -1338,7 +1546,7 @@ static void init_once(void *param) {
                  (unsigned long long)sz.size, (unsigned long long)ROMFS_IMAGE_SIZE);
     rt_log("RomFS image %s: size ok (%llu bytes)", image_file, (unsigned long long)ROMFS_IMAGE_SIZE);
     verify_image(index_dir);
-    const char *mm = cfg_get("TOTK_ROMFS_MMAP");
+    const char *mm = cfg_get("REKARINA_ROMFS_MMAP");
     if (mm && strcmp(mm, "0")) {
         const void *v = plat_file_map(image);
         if (v) {

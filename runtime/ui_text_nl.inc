@@ -113,8 +113,8 @@
     [UI_MENU_UPSCALE_GROUP] = "Upscaling en framegeneratie",
     [UI_MENU_FSR_VERSION] = "FSR-versie",
     [UI_MENU_FSR_VERSION_DESC] = "Welke AMD FSR-upscaler draait als de temporele upscaler AMD FSR is. Automatisch neemt FSR 4.1 (machine learning) op Radeon-kaarten die het ondersteunen en FSR 3.1 op alle andere. Werkt meteen.",
-    [UI_MENU_TAA] = "Temporele upscaler",
-    [UI_MENU_TAA_DESC] = "Welke upscaler de rij DLSS / DLAA gebruikt: NVIDIA DLSS (RTX-GPU's) of AMD FSR (elke GPU). Na een herstart.",
+    [UI_MENU_TAA] = "Upscaler",
+    [UI_MENU_TAA_DESC] = "Welke upscaler de rij DLSS / DLAA gebruikt: NVIDIA DLSS (RTX-GPU's), AMD FSR (elke GPU, temporeel) of AMD FSR 1 (elke GPU, ruimtelijk: de lichtste, voor oudere kaarten en handhelds). Na een herstart.",
     [UI_MENU_FRAMEGEN] = "Framegeneratie",
     [UI_MENU_FRAMEGEN_DESC] = "Eén gegenereerd frame tussen elke twee frames die het spel tekent, zonder de HUD erin: AMD FSR op elke GPU, NVIDIA DLSS op de RTX 40- en 50-serie. Na een herstart.",
     [UI_MENU_FRAMEGEN_NEEDS] = "Vereist DLSS / DLAA: gebruikt de bewegingsvectoren ervan.",
@@ -229,14 +229,16 @@
                              "leest zijn symbolen bij de start, dus ze veranderen na een herstart. Ze horen bij de "
                              "spelbestanden, dus een knop die je in Besturing opnieuw toewijst, houdt zijn oude "
                              "symbool op het scherm.",
-    [UI_MENU_PROMPTS_DESC_LIVE] = "Welke knoppen de knopsymbolen van het spel tonen: Nintendo (die van het spel zelf), Xbox, PlayStation, Rekarina's eigen set met omlijnde knoppen of PC: toetsenbord en muis, met de toetsen die je hebt toegewezen. De rij knoppen hierboven is de gekozen set, zoals het spel die tekent. De actieknoppen volgen de knopindeling hierboven. Werkt meteen.",
+    [UI_MENU_PROMPTS_DESC_LIVE] = "Welke knoppen de knopsymbolen van het spel tonen. Automatisch volgt het apparaat waarop je het laatst iets hebt ingedrukt: toetsenbord en muis, of de knoppen van de controller zelf (Xbox, PlayStation, Nintendo; een Steam Deck of een Windows-handheld toont Xbox). Of altijd één set: Nintendo (die van het spel zelf), Xbox, PlayStation, Rekarina (Xbox-namen op de knopvormen van de game) of PC: toetsenbord en muis, met de toetsen die je hebt toegewezen. De rij knoppen hierboven is de set zoals het spel die tekent. De actieknoppen volgen de knopindeling hierboven. Werkt meteen.",
     [UI_MENU_PROMPTS_NINTENDO] = "Nintendo", [UI_MENU_PROMPTS_XBOX] = "Xbox", [UI_MENU_PROMPTS_PC] = "PC", [UI_MENU_PROMPTS_PS] = "PlayStation", [UI_MENU_PROMPTS_RK] = "Rekarina",
+    [UI_MENU_PROMPTS_AUTO] = "Automatisch",
     [UI_MENU_PROMPTS_MISSING] = "symboolbestanden ontbreken: voer de installatie opnieuw uit",
     [UI_MENU_PROMPTS_FAILED] = "symboolbestanden beschadigd: voer de installatie opnieuw uit",
     [UI_MENU_PROMPTS_RESTART] = "symbolen veranderen na herstart",
+    [UI_MENU_PROMPTS_LIVE_PARTIAL] = "Meteen gewijzigd. Knoppen die de game al heeft getekend en de actiehint onderaan houden hun oude uiterlijk tot de game opnieuw start.",
     [UI_MENU_PROMPTS_OFF_SHAPE] = "uit bij een spelresolutie die niet 16:9 is",
     [UI_MENU_PROMPTS_OFF_MODS] = "uit: een RomFS-mod vervangt hun bestanden",
-    [UI_MENU_PROMPTS_OFF_PATCHES] = "uit zolang TOTK_ROMFS_PATCHES is ingesteld",
+    [UI_MENU_PROMPTS_OFF_PATCHES] = "uit zolang REKARINA_ROMFS_PATCHES is ingesteld",
     [UI_MENU_RESTART] = "Nu herstarten",
     [UI_MENU_RESTART_DESC] = "Sluit het spel en start het opnieuw met de nieuwe symbolen. Voortgang sinds je laatste "
                              "opslag gaat verloren.",
@@ -249,12 +251,25 @@
     [UI_MENU_STICK_DEADZONE_NOW] = "stick nu: %.0f %%",
     [UI_MENU_MOUSE_MODE] = "Muiscamera",
     [UI_MENU_MOUSE_MODE_DESC] = "Direct: de camera draait zo ver als de muis beweegt, zoals in een pc-game, zonder dode zone of curve van de stick (spel 1.4.3; andere versies gebruiken stick-emulatie). Stick-emulatie: de muis werkt als de rechterstick.",
+    [UI_MENU_FAST_TEXT] = "Snellere dialogen",
+    [UI_MENU_FAST_TEXT_DESC] = "Laat de pauzes weg die de berichten van het spel tussen zinnen houden, zodat de tekst zonder stoppen doorloopt.",
+    [UI_MENU_MOUSE_MODE_DESC_OOT] = "Direct: de camera draait precies zo ver als de muis beweegt, op elke snelheid, zonder dode zone, curve of topsnelheid van de stick. Stick-emulatie: de muis werkt als de rechterstick, met diens curve en topsnelheid.",
     [UI_MENU_MOUSE_STICK] = "Stick-emulatie",
     [UI_MENU_MOUSE_DIRECT] = "Direct",
     [UI_MENU_MENU_CURSOR] = "Muis in spelmenu's",
     [UI_MENU_MENU_CURSOR_DESC] = "In de eigen menu's van het spel (titelscherm, inventaris, winkels, dialoogkeuzes) verschijnt de aanwijzer: het item eronder wordt geselecteerd, linksklikken bevestigt, rechtsklikken gaat terug. Alleen als de muis of een toets het laatst is gebruikt, zodat de menu's voor een gamepad niet veranderen (spel 1.4.3).",
     [UI_MENU_MOUSE_SENS] = "Gevoeligheid muiscamera",
     [UI_MENU_MOUSE_SENS_DESC] = "Hoe snel de muis de camera draait.",
+    [UI_MENU_MOUSE_SENS_Y] = "Verticale muissnelheid",
+    [UI_MENU_MOUSE_SENS_Y_DESC] = "Hoe snel de camera draait als de muis omhoog en omlaag beweegt, vergeleken met links en "
+                                  "rechts: 0.50 is half zo snel, 1.00 even snel.",
+    [UI_MENU_MOUSE_INVERT_Y] = "Muis verticaal omkeren",
+    [UI_MENU_MOUSE_INVERT_Y_DESC] = "Verwisselt boven en onder voor de muiscamera. Alleen de muis: de camera-opties van het "
+                                    "spel zelf blijven gelden.",
+    [UI_MENU_MOUSE_RAW] = "Ruwe muisinvoer",
+    [UI_MENU_MOUSE_RAW_DESC] = "Aan: de camera volgt de beweging van de muis zelf, zonder de aanwijzersnelheid en "
+                               "-versnelling van Windows. Uit: hij volgt de aanwijzer, met beide, zoals op het bureaublad "
+                               "(met een touchpad bijvoorbeeld).",
     [UI_MENU_WALK_KEY] = "Looptoets",
     [UI_MENU_WALK_KEY_DESC] = "Houd de toets ingedrukt om de sticks van het toetsenbord maar deels te kantelen, zodat je "
                               "met het toetsenbord loopt in plaats van rent. De loopschaal bepaalt hoe ver. Een "

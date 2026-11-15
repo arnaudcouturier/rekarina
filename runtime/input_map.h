@@ -47,7 +47,7 @@ enum {
     PAD_COUNT
 };
 
-// Gamepad layouts (TOTK_PAD_LAYOUT): which face button is Switch A. Nintendo: by position, east A, south B, west Y,
+// Gamepad layouts (REKARINA_PAD_LAYOUT): which face button is Switch A. Nintendo: by position, east A, south B, west Y,
 // north X. Xbox: south A, east B, west X, north Y, as an Xbox pad labels them (cross A, circle B on a PlayStation pad).
 enum { PAD_LAYOUT_NINTENDO, PAD_LAYOUT_XBOX, PAD_LAYOUT_COUNT };
 
@@ -67,7 +67,7 @@ typedef struct InputMap {
 extern InputMap input_map;
 
 void input_map_reset(void);
-// The script and totk.ini names, any case when parsed; NULL for an id without one. Actions: A B X Y LCLICK RCLICK L R ZL
+// The script and rekarina.ini names, any case when parsed; NULL for an id without one. Actions: A B X Y LCLICK RCLICK L R ZL
 // ZR PLUS MINUS LEFT UP RIGHT DOWN, then LSTICK_LEFT LSTICK_UP LSTICK_RIGHT LSTICK_DOWN and the same for RSTICK (the
 // stick directions the keys drive), then SHAKE. Keys: a-z 0-9 space tab lshift ... (key_names in input_map.c). Pads: south east ...
 const char *input_action_name(int action);
@@ -79,29 +79,40 @@ const char *input_pad_name(int pad);
 // layout; pad:default keeps each layout's own button. Stick directions and SHAKE take keys only. Invalid entries are logged and
 // skipped; when none is valid the action keeps its bindings. 1 when applied.
 int input_map_bind(const char *button, const char *list);
-// Applies the TOTK_BIND_<action> settings (cfg_get) over the defaults: at start, and again when one of them changes.
+// Applies the REKARINA_BIND_<action> settings (cfg_get) over the defaults: at start, and again when one of them changes.
 void input_map_configure(void);
 
-// The layout for a TOTK_PAD_LAYOUT value: "nintendo" or "xbox" (any case); "xbox_prompts", 0.1.9's name for the Nintendo
+// The layout for a REKARINA_PAD_LAYOUT value: "nintendo" or "xbox" (any case); "xbox_prompts", 0.1.9's name for the Nintendo
 // layout with the Xbox prompts, maps the buttons as "nintendo". Anything else ("auto", NULL) picks Nintendo when the
 // pad's east button is labelled A (a Switch Pro Controller, a GuliKit) and Xbox otherwise.
 int input_pad_layout_pick(const char *setting, int east_labelled_a);
 
-// Button prompts (TOTK_PROMPTS): the controller whose buttons the game's prompts show. Nintendo: the game's own. Xbox:
+// Button prompts (REKARINA_PROMPTS): the controller whose buttons the game's prompts show. Nintendo: the game's own. Xbox:
 // LB RB LT RT, Menu, View and a d-pad cross for the other buttons, and the face buttons named by the label of the
 // button the pad layout presses (runtime/romfs.c overlay_init, tools/make_romfs_patches.py --prompts). PC: the key or
 // mouse button the keyboard defaults press each button with, the mouse for the right stick.
-enum { PROMPTS_NINTENDO, PROMPTS_XBOX, PROMPTS_PC, PROMPTS_PS, PROMPTS_RK };   // PS: "playstation" (or "ps"); RK: "rekarina"
-// The prompts for a TOTK_PROMPTS value ("nintendo", "xbox" or "pc", any case). Unset or empty: Xbox while the pad
-// layout setting is "xbox_prompts", else Nintendo.
+// AUTO: "auto", the set of the device the player used last (input.c input_prompts_wanted).
+enum { PROMPTS_NINTENDO, PROMPTS_XBOX, PROMPTS_PC, PROMPTS_PS, PROMPTS_RK, PROMPTS_AUTO };   // PS: "playstation" (or "ps"); RK: "rekarina"
+// The prompts for a REKARINA_PROMPTS value ("nintendo", "xbox", "pc", "auto", ..., any case). Unset or empty: Xbox while
+// the pad layout setting is "xbox_prompts", else Nintendo (input_prompts_wanted puts the settings table's default there).
 int input_prompts_pick(const char *prompts, const char *pad_layout);
-// The folder next to romfs-index.bin that holds those prompts for a TOTK_PAD_LAYOUT value, NULL for the game's own. The
+// The folder next to romfs-index.bin that holds those prompts for a REKARINA_PAD_LAYOUT value, NULL for the game's own. The
 // Nintendo layout plays an Xbox pad by position, so its folder names the face buttons the other way round
 // (romfs-patches-xbox: the right button does A and is labelled B); xbox and auto put every Switch button on the button
 // labelled with its letter (auto picks the layout per pad by its labels), so they share romfs-patches-xbox-label. The PC
 // prompts follow no pad: romfs-patches-pc whatever the layout (romfs.c overlay_init serves romfs-patches-pc-<w>x<h>
-// under that name at a game resolution of another shape).
+// under that name at a game resolution of another shape). PROMPTS_AUTO without a device known (the folders are read at
+// start, before input runs): the Xbox ones, as for a pad without Nintendo labels.
 const char *input_prompts_folder(int prompts, const char *pad_layout);
+// The folder for the device in use (REKARINA_PROMPTS = auto): kind PROMPTS_PC (the keyboard), PROMPTS_XBOX (a pad lettered
+// A at the bottom: Xbox, XInput, the Steam Deck, Windows handhelds, unknown pads), PROMPTS_PS (shapes) or
+// PROMPTS_NINTENDO (A on the right: Switch Pro Controller, Joy-Con), and layout the PAD_LAYOUT_* in effect for that pad.
+// Each face button's prompt names the label of the button that presses it: an Xbox or PlayStation pad by position
+// (Nintendo layout) gets the swapped folder; a Nintendo pad by position gets the game's own (NULL), the console's
+// buttons, and by label (the Xbox layout set by hand, its bottom button labelled B does A) the swapped Xbox letters.
+const char *input_prompts_device_folder(int kind, int layout);
+// The prompts (PROMPTS_*) a folder of input_prompts_folder holds; NULL is the game's own.
+int input_prompts_of_folder(const char *folder);
 // The key (KEY_*) the keyboard prompts show for an action: the first key the settings bind to it, else the default
 // layout's; KEY_NONE for an action without a key.
 int input_prompt_key(int action);
@@ -118,12 +129,17 @@ void input_map_stick(const uint8_t down[KEY_COUNT], int stick, int32_t out[2]);
 // Mouse motion in raw counts over dt_s seconds to right-stick deflection: full deflection at 3000 / sens counts/s.
 // Clamped to the unit circle, up (negative dy) is +y.
 void input_mouse_stick(int32_t dx, int32_t dy, double dt_s, float sens, int32_t out[2]);
+// The same motion as the deflection whose turn, through OoT's own stick curve, equals what the direct mouse turns
+// (deg_per_count * sens a count): the inverse of main+0x37c3b4's curve, a length under 0.005 is none, then
+// ((m - 0.005) / 0.99) squared of a full turn of full_deg_s a second.
+void input_mouse_stick_curved(int32_t dx, int32_t dy, double dt_s, float sens, double deg_per_count, double full_deg_s,
+                              int32_t out[2]);
 // A gamepad stick (x, y in -32768..32767, up is +y) through a round dead zone of `dead` (fraction of full deflection,
 // 0..0.5): inside the circle the stick reads 0, and the rest of the travel is scaled to start at 0 at the edge, so a
 // drifting stick rests at 0 and full deflection still reaches full. The result stays inside the unit square.
 void input_pad_stick(int32_t x, int32_t y, float dead, int32_t out[2]);
 // The dead zone of gamepad stick 0 (left) or 1 (right) for input_pad_stick, as a fraction of full deflection:
-// TOTK_LSTICK_DEADZONE or TOTK_RSTICK_DEADZONE when set, else TOTK_STICK_DEADZONE (both sticks), percent clamped to 0..50.
+// REKARINA_LSTICK_DEADZONE or REKARINA_RSTICK_DEADZONE when set, else REKARINA_STICK_DEADZONE (both sticks), percent clamped to 0..50.
 float input_pad_deadzone(int stick);
 // How far a stick (x, y in -32768..32767) is from the centre, in percent of full deflection (100 at an axis's end; a
 // square gate's corner reads more).

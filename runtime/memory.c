@@ -83,7 +83,7 @@ static int reserve_at(uint64_t at, uint64_t size, int watch) { return plat_mem_r
 enum { FRZ_RUNS = 1, FRZ_WHOLE = 2 };   // frz[]: frozen run by run (it has reserved holes), or as one 2 MiB range
 static volatile uint8_t frz[RT_ADDRESS_LIMIT >> FRZ_SHIFT];
 static uint8_t frz_odd[RT_ADDRESS_LIMIT >> FRZ_SHIFT];    // frz_lock: a page of it may have a protection other than read-write
-static int frz_direct = 1;                                // TOTK_FREEZE_WHOLE=0: every freeze and thaw walks the state
+static int frz_direct = 1;                                // REKARINA_FREEZE_WHOLE=0: every freeze and thaw walks the state
 static uint32_t thaw_ms[RT_ADDRESS_LIMIT >> FRZ_SHIFT];   // frz_lock: GetTickCount of the last thaw request, 0 never
 static volatile int32_t nfrz;
 static PlatMutex frz_lock = PLAT_MUTEX_INIT;
@@ -347,12 +347,12 @@ static void protect(uint64_t a, uint64_t n, int prot, const char *what) {
 // The process is re-run when a region is taken: Windows places DLLs, heaps and thread stacks at random addresses,
 // and a fresh process gets a fresh layout.
 static void reexec_or_fail(const char *what) {
-    const char *e = cfg_get("TOTK_REEXEC");
+    const char *e = cfg_get("REKARINA_REEXEC");
     int n = e ? atoi(e) : 0;
     if (n >= REEXEC_LIMIT) rt_fatal("memory: %s is not free after %d attempts", what, n);
     char buf[16];
     snprintf(buf, sizeof buf, "%d", n + 1);
-    plat_setenv("TOTK_REEXEC", buf);
+    plat_setenv("REKARINA_REEXEC", buf);
     plat_reexec();
 }
 
@@ -378,15 +378,15 @@ void mem_init(void) {
 
     plat_mem_fault_hook(thaw_fault);   // before the crash handler
     {
-        const char *e = cfg_get("TOTK_FREEZE_WHOLE");
+        const char *e = cfg_get("REKARINA_FREEZE_WHOLE");
         frz_direct = !e || *e != '0';
     }
     alias_pages = calloc(ALIAS_PAGES, 1);
     if (!alias_pages) rt_fatal("memory: cannot allocate the alias page map");
     // totk.ini is read here, once the address space is claimed and before the first setting: the pool size below
-    // depends on TOTK_APP_POOL and on the resolution settings (resolution.c decides them once, on this first call).
+    // depends on REKARINA_APP_POOL and on the resolution settings (resolution.c decides them once, on this first call).
     cfg_init();
-    const char *pool = cfg_get("TOTK_APP_POOL");
+    const char *pool = cfg_get("REKARINA_APP_POOL");
     L = (RtGuestLayout){
         .aslr = {low, RT_ADDRESS_LIMIT - low},
         .stack = {low + STACK_OFF, STACK_SIZE},
@@ -396,7 +396,7 @@ void mem_init(void) {
         .hostfn = {RT_HOSTFN_BASE, RT_HOSTFN_SIZE},
         .pool = pool ? strtoull(pool, NULL, 0) : DEFAULT_POOL + res_heap_extra_bytes(),   // resolution.c
     };
-    if (!L.pool) rt_fatal("memory: TOTK_APP_POOL is 0");
+    if (!L.pool) rt_fatal("memory: REKARINA_APP_POOL is 0");
 }
 
 const RtGuestLayout *mem_layout(void) { return &L; }
@@ -455,7 +455,7 @@ static void rw_remove(int k) {   // frz_lock held; keeps the probe chains (backw
 }
 
 int mem_result_watch_on(void) {
-    if (rw_on < 0) { const char *e = cfg_get("TOTK_RESULT_WATCH"); rw_on = e && *e == '1'; }
+    if (rw_on < 0) { const char *e = cfg_get("REKARINA_RESULT_WATCH"); rw_on = e && *e == '1'; }
     return rw_on;
 }
 
@@ -473,12 +473,12 @@ void mem_result_setup(uint64_t (*fence_done)(void), uint64_t (*frame)(void)) {
     if (mem_result_guard_on()) {
         if (!mem_result_watch_on() && !rw_hooked++) plat_mem_access_hook(result_fault);
         rt_log("memory: GPU result guard on: a guest access to a small GPU-written range waits for its submission "
-               "(TOTK_RESULT_GUARD)");
+               "(REKARINA_RESULT_GUARD)");
     }
     if (mem_result_watch_on()) {
         if (!rw_hooked++) plat_mem_access_hook(result_fault);
         rt_log("memory: GPU result watch on: the first guest access to a counter or event before its value is written is "
-               "logged (TOTK_RESULT_WATCH)");
+               "logged (REKARINA_RESULT_WATCH)");
     }
 }
 
@@ -579,9 +579,9 @@ static void lazy_touch_range(uint64_t addr, uint64_t n) {
 static void rw_close(uint64_t addr, uint64_t n, uint64_t fence, int guard);
 void mem_result_watch(uint64_t addr, uint64_t n, uint64_t fence) {
     if (!rw_on || !n || addr >= RT_ADDRESS_LIMIT) return;
-    {   // TOTK_RESULT_WATCH_FROM=<frame>: nothing is watched before that frame (the loads crawl under the watch)
+    {   // REKARINA_RESULT_WATCH_FROM=<frame>: nothing is watched before that frame (the loads crawl under the watch)
         static int64_t from = -1;
-        if (from < 0) { const char *e = cfg_get("TOTK_RESULT_WATCH_FROM"); from = e ? atoll(e) : 0; }
+        if (from < 0) { const char *e = cfg_get("REKARINA_RESULT_WATCH_FROM"); from = e ? atoll(e) : 0; }
         if (rw_frame && rw_frame() < (uint64_t)from) return;
     }
     rw_close(addr, n, fence, 0);
@@ -614,7 +614,7 @@ static void rw_close(uint64_t addr, uint64_t n, uint64_t fence, int guard) {
 }
 
 // DEBUG-TRAP: closes the page of addr now (the result watch's fault hook logs and opens it at the next access), past
-// TOTK_RESULT_WATCH_FROM; for finding who writes a value (TOTK_RESULT_WATCH=1 with a large _FROM keeps the rest quiet).
+// REKARINA_RESULT_WATCH_FROM; for finding who writes a value (REKARINA_RESULT_WATCH=1 with a large _FROM keeps the rest quiet).
 void mem_trap_page(uint64_t addr) {
     if (!rw_on || addr >= RT_ADDRESS_LIMIT) return;
     plat_mutex_lock(&frz_lock);
@@ -631,9 +631,9 @@ void mem_trap_page(uint64_t addr) {
 
 void mem_result_release(uint64_t addr, uint64_t n) {
     if ((rw_on <= 0 && rw_guard <= 0) || !n || addr >= RT_ADDRESS_LIMIT) return;
-    {   // DEBUG-WATCHHOLD: TOTK_RESULT_WATCH_HOLD=1: only an access opens a watched page
+    {   // DEBUG-WATCHHOLD: REKARINA_RESULT_WATCH_HOLD=1: only an access opens a watched page
         static int hold = -1;
-        if (hold < 0) { const char *e = cfg_get("TOTK_RESULT_WATCH_HOLD"); hold = e && *e == '1'; }
+        if (hold < 0) { const char *e = cfg_get("REKARINA_RESULT_WATCH_HOLD"); hold = e && *e == '1'; }
         if (hold) return;
     }
     plat_mutex_lock(&frz_lock);

@@ -1,4 +1,4 @@
-// --probe-cfg: totk.ini parsing, the environment override and a missing file (cfg.c). Needs no game files.
+// --probe-cfg: rekarina.ini parsing, the environment override and a missing file (cfg.c). Needs no game files.
 #include <math.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -29,33 +29,33 @@ int probe_cfg(void) {
         "Realtime=0\r\n"
         "[Display]\r\n"
         "GPU_name = \"My GPU 1\"\r\n"
-        "TOTK_Locale = de-DE\r\n"
+        "REKARINA_Locale = de-DE\r\n"
         "lang =\r\n"
         "trace = a\r\n"
         "trace = b\r\n"
         "no_such_setting = 1\r\n"
         "no equals sign\r\n"
         "last = no newline at the end";
-    plat_setenv("TOTK_LOCALE", NULL);
-    plat_setenv("TOTK_FPS60", NULL);
+    plat_setenv("REKARINA_LOCALE", NULL);
+    plat_setenv("REKARINA_FPS60", NULL);
     CHECK(plat_file_write(path, ini, sizeof ini - 1), "write the probe ini");
     CHECK(cfg_load(path) == 1, "load the probe ini");
-    CHECK(EQ(cfg_get("TOTK_FPS60"), "0"), "value read, whitespace trimmed, lower-case key");
-    CHECK(EQ(cfg_get("TOTK_REALTIME"), "0"), "key without spaces, mixed case");
-    CHECK(EQ(cfg_get("TOTK_GPU_NAME"), "My GPU 1"), "quoted value, section ignored");
-    CHECK(EQ(cfg_get("TOTK_LOCALE"), "de-DE"), "TOTK_ prefix accepted in the file");
-    CHECK(cfg_get("TOTK_LANG") == NULL, "empty value is unset");
-    CHECK(EQ(cfg_get("TOTK_TRACE"), "b"), "later line wins");
-    CHECK(cfg_get("TOTK_CLOTH_REALTIME") == NULL, "absent key is NULL");
-    CHECK(cfg_get("TOTK_comment") == NULL, "comment is not a key");
-    CHECK(EQ(cfg_get("TOTK_NO_SUCH_SETTING"), "1"), "unknown key is still readable");
-    plat_setenv("TOTK_FPS60", "1");
-    CHECK(EQ(cfg_get("TOTK_FPS60"), "1"), "environment overrides the file");
-    plat_setenv("TOTK_FPS60", NULL);
-    CHECK(EQ(cfg_get("TOTK_FPS60"), "0"), "file value returns when the variable is removed");
+    CHECK(EQ(cfg_get("REKARINA_FPS60"), "0"), "value read, whitespace trimmed, lower-case key");
+    CHECK(EQ(cfg_get("REKARINA_REALTIME"), "0"), "key without spaces, mixed case");
+    CHECK(EQ(cfg_get("REKARINA_GPU_NAME"), "My GPU 1"), "quoted value, section ignored");
+    CHECK(EQ(cfg_get("REKARINA_LOCALE"), "de-DE"), "REKARINA_ prefix accepted in the file");
+    CHECK(cfg_get("REKARINA_LANG") == NULL, "empty value is unset");
+    CHECK(EQ(cfg_get("REKARINA_TRACE"), "b"), "later line wins");
+    CHECK(cfg_get("REKARINA_CLOTH_REALTIME") == NULL, "absent key is NULL");
+    CHECK(cfg_get("REKARINA_comment") == NULL, "comment is not a key");
+    CHECK(EQ(cfg_get("REKARINA_NO_SUCH_SETTING"), "1"), "unknown key is still readable");
+    plat_setenv("REKARINA_FPS60", "1");
+    CHECK(EQ(cfg_get("REKARINA_FPS60"), "1"), "environment overrides the file");
+    plat_setenv("REKARINA_FPS60", NULL);
+    CHECK(EQ(cfg_get("REKARINA_FPS60"), "0"), "file value returns when the variable is removed");
     plat_file_delete(path);
     CHECK(cfg_load(path) == 0, "missing file is not an error");
-    CHECK(cfg_get("TOTK_FPS60") == NULL, "missing file leaves no keys");
+    CHECK(cfg_get("REKARINA_FPS60") == NULL, "missing file leaves no keys");
 
     // cfg_set / cfg_save: only changed lines move, comments stay, a missing key goes under its section
     static const char before[] =
@@ -91,18 +91,18 @@ int probe_cfg(void) {
         "\r\n"
         "[audio]\r\n"
         "volume = 40\r\n";
-    plat_setenv("TOTK_MOTION", NULL);
-    plat_setenv("TOTK_VOLUME", NULL);
-    plat_setenv("TOTK_RUMBLE_STRENGTH", NULL);
+    plat_setenv("REKARINA_MOTION", NULL);
+    plat_setenv("REKARINA_VOLUME", NULL);
+    plat_setenv("REKARINA_RUMBLE_STRENGTH", NULL);
     CHECK(plat_file_write(path, before, sizeof before - 1), "write the save ini");
     CHECK(cfg_load(path) == 1, "load the save ini");
     unsigned v0 = cfg_version();
-    cfg_set("TOTK_FPS60", "0");
-    cfg_set("TOTK_MOTION", "0");
-    cfg_set("TOTK_RUMBLE_STRENGTH", "80");
-    cfg_set("TOTK_VOLUME", "40");
+    cfg_set("REKARINA_FPS60", "0");
+    cfg_set("REKARINA_MOTION", "0");
+    cfg_set("REKARINA_RUMBLE_STRENGTH", "80");
+    cfg_set("REKARINA_VOLUME", "40");
     CHECK(cfg_version() == v0 + 4, "cfg_set bumps the version");
-    CHECK(EQ(cfg_get("TOTK_FPS60"), "0") && EQ(cfg_get("TOTK_VOLUME"), "40"), "cfg_set values are read back at once");
+    CHECK(EQ(cfg_get("REKARINA_FPS60"), "0") && EQ(cfg_get("REKARINA_VOLUME"), "40"), "cfg_set values are read back at once");
     CHECK(cfg_save_to(path) == 1, "cfg_save_to writes");
     uint64_t got_n = 0;
     uint8_t *got = plat_file_read(path, &got_n);
@@ -114,16 +114,16 @@ int probe_cfg(void) {
     got = plat_file_read(path, &got_n);
     CHECK(got && got_n == sizeof after - 1 && !memcmp(got, after, got_n), "a save with nothing changed keeps the file");
     free(got);
-    CHECK(cfg_load(path) == 1 && EQ(cfg_get("TOTK_FPS60"), "0") && EQ(cfg_get("TOTK_MOTION"), "0") &&
-          EQ(cfg_get("TOTK_RUMBLE_STRENGTH"), "80") && EQ(cfg_get("TOTK_VOLUME"), "40") &&
-          EQ(cfg_get("TOTK_ROMFS_MODS"), "C:\\mods"), "the saved file reads back");
-    const char *held = cfg_get("TOTK_VOLUME");
-    plat_setenv("TOTK_VOLUME", "70");
-    cfg_set("TOTK_VOLUME", "90");
-    CHECK(cfg_from_env("TOTK_VOLUME") && EQ(cfg_get("TOTK_VOLUME"), "70"), "environment wins over cfg_set");
+    CHECK(cfg_load(path) == 1 && EQ(cfg_get("REKARINA_FPS60"), "0") && EQ(cfg_get("REKARINA_MOTION"), "0") &&
+          EQ(cfg_get("REKARINA_RUMBLE_STRENGTH"), "80") && EQ(cfg_get("REKARINA_VOLUME"), "40") &&
+          EQ(cfg_get("REKARINA_ROMFS_MODS"), "C:\\mods"), "the saved file reads back");
+    const char *held = cfg_get("REKARINA_VOLUME");
+    plat_setenv("REKARINA_VOLUME", "70");
+    cfg_set("REKARINA_VOLUME", "90");
+    CHECK(cfg_from_env("REKARINA_VOLUME") && EQ(cfg_get("REKARINA_VOLUME"), "70"), "environment wins over cfg_set");
     CHECK(EQ(held, "40"), "a pointer cfg_get handed out stays valid after cfg_set");
-    plat_setenv("TOTK_VOLUME", NULL);
-    CHECK(!cfg_from_env("TOTK_VOLUME") && EQ(cfg_get("TOTK_VOLUME"), "90"), "cfg_set value returns without the variable");
+    plat_setenv("REKARINA_VOLUME", NULL);
+    CHECK(!cfg_from_env("REKARINA_VOLUME") && EQ(cfg_get("REKARINA_VOLUME"), "90"), "cfg_set value returns without the variable");
     plat_file_delete(path);
     CHECK(cfg_save_to(path) == 1, "cfg_save_to creates a missing file");
     got = plat_file_read(path, &got_n);
@@ -145,20 +145,20 @@ int probe_cfg(void) {
     CHECK(cfg_meta("BIND_A") == NULL && cfg_meta("FPS_COUNTER") == NULL && cfg_meta("NO_SUCH") == NULL,
           "meta: keys the menu does not show are NULL");
 
-    // cfg_reset: the key's active lines leave totk.ini, the commented example stays
+    // cfg_reset: the key's active lines leave rekarina.ini, the commented example stays
     static const char rbase[] = "[audio]\n# volume = 100\n[input]\nmotion = 0\n";
     static const char *const vol[] = {"VOLUME"};
-    plat_setenv("TOTK_VOLUME", NULL);
+    plat_setenv("REKARINA_VOLUME", NULL);
     CHECK(plat_file_write(path, rbase, sizeof rbase - 1), "write the reset ini");
     CHECK(cfg_load(path) == 1, "load the reset ini");
-    cfg_set("TOTK_VOLUME", "40");
+    cfg_set("REKARINA_VOLUME", "40");
     CHECK(cfg_save_to(path) == 1 && cfg_last_save_ok(), "reset: volume saved");
     got = plat_file_read(path, &got_n);
     CHECK(got && strstr((const char *)got, "\nvolume = 40\n"), "reset: the active line is in the file");
     free(got);
     unsigned v1 = cfg_version();
     CHECK(cfg_reset(vol, 1) == 1, "reset: one key reset");
-    CHECK(cfg_version() > v1 && cfg_get("TOTK_VOLUME") == NULL, "reset: the value is gone in memory, the version moved");
+    CHECK(cfg_version() > v1 && cfg_get("REKARINA_VOLUME") == NULL, "reset: the value is gone in memory, the version moved");
     CHECK(cfg_reset(vol, 1) == 0, "reset: a key already reset counts 0");
     CHECK(cfg_save_to(path) == 1, "reset: save");
     got = plat_file_read(path, &got_n);
@@ -166,31 +166,31 @@ int probe_cfg(void) {
           "reset: no active volume line, the commented example and the other keys stay");
     if (got && (got_n != sizeof rbase - 1 || memcmp(got, rbase, got_n))) fprintf(stderr, "---- saved:\n%s\n----\n", got);
     free(got);
-    cfg_set("TOTK_VOLUME", "55");
-    CHECK(cfg_reset(vol, 1) == 1 && cfg_get("TOTK_VOLUME") == NULL, "reset: a value set after a save resets too");
-    cfg_set("TOTK_VOLUME", "60");
-    CHECK(cfg_save_to(path) == 1 && EQ(cfg_get("TOTK_VOLUME"), "60"), "reset then set before the save: the set wins");
+    cfg_set("REKARINA_VOLUME", "55");
+    CHECK(cfg_reset(vol, 1) == 1 && cfg_get("REKARINA_VOLUME") == NULL, "reset: a value set after a save resets too");
+    cfg_set("REKARINA_VOLUME", "60");
+    CHECK(cfg_save_to(path) == 1 && EQ(cfg_get("REKARINA_VOLUME"), "60"), "reset then set before the save: the set wins");
     got = plat_file_read(path, &got_n);
     CHECK(got && strstr((const char *)got, "\nvolume = 60\n"), "reset then set: the new line is written");
     free(got);
 
     // an active line with an empty value has no entry in memory; Reset still removes it from the file
     static const char rempty[] = "[audio]\n# volume = 100\nvolume =\n[input]\nmotion = 0\n";
-    CHECK(plat_file_write(path, rempty, sizeof rempty - 1) && cfg_load(path) == 1 && cfg_get("TOTK_VOLUME") == NULL,
+    CHECK(plat_file_write(path, rempty, sizeof rempty - 1) && cfg_load(path) == 1 && cfg_get("REKARINA_VOLUME") == NULL,
           "reset: load an ini with an empty value");
     CHECK(cfg_reset(vol, 1) == 0 && cfg_save_to(path) == 1, "reset: an empty-valued key saves");
     got = plat_file_read(path, &got_n);
     CHECK(got && got_n == sizeof rbase - 1 && !memcmp(got, rbase, got_n), "reset: the empty-valued line is gone");
     free(got);
-    cfg_set("TOTK_VOLUME", "60");
+    cfg_set("REKARINA_VOLUME", "60");
     CHECK(cfg_save_to(path) == 1, "reset: volume 60 again for the environment case");
 
     // a key the environment sets is skipped and keeps its file line
-    CHECK(cfg_load(path) == 1 && EQ(cfg_get("TOTK_VOLUME"), "60"), "reset: reload");
-    plat_setenv("TOTK_VOLUME", "70");
+    CHECK(cfg_load(path) == 1 && EQ(cfg_get("REKARINA_VOLUME"), "60"), "reset: reload");
+    plat_setenv("REKARINA_VOLUME", "70");
     CHECK(cfg_reset(vol, 1) == 0, "reset: an environment-set key is skipped");
-    plat_setenv("TOTK_VOLUME", NULL);
-    CHECK(EQ(cfg_get("TOTK_VOLUME"), "60"), "reset: the skipped key keeps its value");
+    plat_setenv("REKARINA_VOLUME", NULL);
+    CHECK(EQ(cfg_get("REKARINA_VOLUME"), "60"), "reset: the skipped key keeps its value");
     CHECK(cfg_save_to(path) == 1, "reset: save after a skip");
     got = plat_file_read(path, &got_n);
     CHECK(got && strstr((const char *)got, "\nvolume = 60\n"), "reset: the skipped key keeps its file line");
@@ -198,16 +198,16 @@ int probe_cfg(void) {
 
     // a failed save: the call fails, cfg_last_save_ok says so, the value stays set and a later save works
     CHECK(cfg_last_save_ok() == 1, "save status: ok after a good save");
-    cfg_set("TOTK_VOLUME", "20");
+    cfg_set("REKARINA_VOLUME", "20");
     char bad[1100];
     snprintf(bad, sizeof bad, "%s", path);
     strcpy(plat_last_sep(bad) + 1, "no-such-dir/cfg-probe.ini");
-    CHECK(cfg_save_to(bad) == 0 && cfg_last_save_ok() == 0 && EQ(cfg_get("TOTK_VOLUME"), "20"),
+    CHECK(cfg_save_to(bad) == 0 && cfg_last_save_ok() == 0 && EQ(cfg_get("REKARINA_VOLUME"), "20"),
           "save status: an unwritable path fails, the value stays");
-    cfg_set("TOTK_VOLUME", "21");
+    cfg_set("REKARINA_VOLUME", "21");
     CHECK(plat_file_write(path, rbase, sizeof rbase - 1), "write the read-only ini");
     CHECK(plat_file_set_readonly(path, 1), "set the file read-only");
-    CHECK(cfg_save_to(path) == 0 && cfg_last_save_ok() == 0 && EQ(cfg_get("TOTK_VOLUME"), "21"),
+    CHECK(cfg_save_to(path) == 0 && cfg_last_save_ok() == 0 && EQ(cfg_get("REKARINA_VOLUME"), "21"),
           "save status: a read-only file fails, cfg_get returns the new value");
     plat_file_set_readonly(path, 0);
     CHECK(cfg_save_to(path) == 1 && cfg_last_save_ok() == 1, "save status: the retry after the failure works");
@@ -221,6 +221,35 @@ int probe_cfg(void) {
     CHECK(rumble_motor(0.25f, 1, 1) > 16000 && rumble_motor(0.25f, 1, 1) < 16800, "rumble: curve 1, strength 100% is linear");
     CHECK(rumble_motor(0.1f, 0.6f, 1.3f) > rumble_motor(0.1f, 1, 1.3f), "rumble: curve lifts weak values");
     CHECK(rumble_motor(0.3f, 0.6f, 1.3f) > rumble_motor(0.3f, 0.6f, 1), "rumble: strength scales");
+    {   // Switch HD rumble data (input.c input_hd_rumble_encode) against the public notes on the format: the neutral value,
+        // the ends of each band's frequency range, rows of the amplitude table (high band 2e, low band 0x40 + e / 2 with
+        // the half step in bit 7 of byte 2) and the safe maximum
+        static const struct { InputVibration v; uint8_t b[4]; const char *what; } t[] = {
+            {{0, 160, 0, 320}, {0x00, 0x01, 0x40, 0x40}, "HD rumble: neutral is 00 01 40 40"},
+            {{1, 160, 1, 320}, {0x00, 0xc9, 0x40, 0x72}, "HD rumble: amplitude 1.0 is the top step, c8 and 72"},
+            {{0, 40.87f, 0, 81.75f}, {0x04, 0x00, 0x01, 0x40}, "HD rumble: 40.87 and 81.75 Hz are the bands' lowest codes"},
+            {{0, 626.28f, 0, 1252.57f}, {0xfc, 0x01, 0x7f, 0x40}, "HD rumble: 626.28 and 1252.57 Hz are the bands' highest codes"},
+            {{0, 5, 0, 5000}, {0xfc, 0x01, 0x01, 0x40}, "HD rumble: a frequency outside a band takes its nearest end"},
+            {{0.117471f, 160, 0.117471f, 320}, {0x00, 0x21, 0x40, 0x48}, "HD rumble: amplitude 0.117471 is step 16"},
+            {{0.112491f, 160, 0.112491f, 320}, {0x00, 0x1f, 0xc0, 0x47}, "HD rumble: amplitude 0.112491 is step 15 (half step)"},
+            {{0.033442f, 160, 0.033442f, 320}, {0x00, 0x11, 0x40, 0x44}, "HD rumble: amplitude 0.033442 is step 8"},
+            {{0.011823f, 160, 0.011823f, 320}, {0x00, 0x05, 0x40, 0x41}, "HD rumble: amplitude 0.011823 is step 2"},
+            {{2, 160, NAN, 320}, {0x00, 0x01, 0x40, 0x72}, "HD rumble: over 1.0 is the top step, NaN is silent"},
+        };
+        for (size_t i = 0; i < sizeof t / sizeof *t; i++) {
+            uint8_t b[4];
+            input_hd_rumble_encode(&t[i].v, b);
+            CHECK(!memcmp(b, t[i].b, 4), t[i].what);
+        }
+        int last = 0, rising = 1;
+        for (int i = 0; i <= 1000; i++) {   // the step never falls as the amplitude grows, and 1.0 is step 100
+            uint8_t b[4];
+            input_hd_rumble_encode(&(InputVibration){0, 160, i / 1000.0f, 320}, b);
+            rising &= b[1] >> 1 >= last;
+            last = b[1] >> 1;
+        }
+        CHECK(rising && last == 100, "HD rumble: the amplitude step rises with the amplitude up to 100");
+    }
     // Keyboard and mouse bindings (input_map.c)
     uint8_t dn[KEY_COUNT] = {0};
     int32_t st[2];
@@ -277,19 +306,19 @@ int probe_cfg(void) {
           "pad stick: a square gate's corner stays on the unit circle");
     input_pad_stick(0, 32767 / 2 + 1, 0.2f, st);
     CHECK(abs(st[1] - 32767 * 3 / 8) <= 3, "pad stick: half deflection past a 20% zone is (0.5 - 0.2) / 0.8 of full");
-    plat_setenv("TOTK_STICK_DEADZONE", "12");
-    plat_setenv("TOTK_LSTICK_DEADZONE", NULL);
-    plat_setenv("TOTK_RSTICK_DEADZONE", NULL);
+    plat_setenv("REKARINA_STICK_DEADZONE", "12");
+    plat_setenv("REKARINA_LSTICK_DEADZONE", NULL);
+    plat_setenv("REKARINA_RSTICK_DEADZONE", NULL);
     CHECK(fabsf(input_pad_deadzone(0) - 0.12f) < 1e-6f && fabsf(input_pad_deadzone(1) - 0.12f) < 1e-6f,
           "pad dead zone: both sticks follow stick_deadzone while lstick/rstick are unset");
-    plat_setenv("TOTK_RSTICK_DEADZONE", "20");
+    plat_setenv("REKARINA_RSTICK_DEADZONE", "20");
     CHECK(fabsf(input_pad_deadzone(0) - 0.12f) < 1e-6f && fabsf(input_pad_deadzone(1) - 0.20f) < 1e-6f,
           "pad dead zone: rstick_deadzone sets the right stick alone");
-    plat_setenv("TOTK_LSTICK_DEADZONE", "80");
+    plat_setenv("REKARINA_LSTICK_DEADZONE", "80");
     CHECK(fabsf(input_pad_deadzone(0) - 0.5f) < 1e-6f, "pad dead zone: clamped to 50%");
-    plat_setenv("TOTK_STICK_DEADZONE", NULL);
-    plat_setenv("TOTK_LSTICK_DEADZONE", NULL);
-    plat_setenv("TOTK_RSTICK_DEADZONE", NULL);
+    plat_setenv("REKARINA_STICK_DEADZONE", NULL);
+    plat_setenv("REKARINA_LSTICK_DEADZONE", NULL);
+    plat_setenv("REKARINA_RSTICK_DEADZONE", NULL);
     CHECK(input_stick_percent(32767, 0) > 99.99 && input_stick_percent(32767, 0) < 100.01 &&
               input_stick_percent(0, 0) == 0 && fabs(input_stick_percent(3000, -4000) - 5000 * 100.0 / 32767) < 1e-9,
           "stick percent: an axis's end is 100%, the centre 0%, round in between");
@@ -320,6 +349,26 @@ int probe_cfg(void) {
               EQ(input_prompts_folder(PROMPTS_XBOX, "auto"), "romfs-patches-xbox-label") &&
               EQ(input_prompts_folder(PROMPTS_XBOX, NULL), "romfs-patches-xbox-label"),
           "prompts: the face buttons by position for the Nintendo layout, by label for xbox and auto");
+    // prompts = auto (input.c input_prompts_wanted): the device's kind and the layout in effect pick the folder
+    CHECK(input_prompts_pick("auto", "xbox") == PROMPTS_AUTO && input_prompts_pick("Auto", NULL) == PROMPTS_AUTO &&
+              EQ(input_prompts_folder(PROMPTS_AUTO, "auto"), "romfs-patches-xbox-label") &&
+              EQ(input_prompts_folder(PROMPTS_AUTO, "nintendo"), "romfs-patches-xbox"),
+          "prompts: auto before any device is known is the Xbox guess for the layout setting");
+    CHECK(EQ(input_prompts_device_folder(PROMPTS_XBOX, PAD_LAYOUT_XBOX), "romfs-patches-xbox-label") &&
+              EQ(input_prompts_device_folder(PROMPTS_XBOX, PAD_LAYOUT_NINTENDO), "romfs-patches-xbox") &&
+              EQ(input_prompts_device_folder(PROMPTS_PS, PAD_LAYOUT_XBOX), "romfs-patches-playstation-label") &&
+              EQ(input_prompts_device_folder(PROMPTS_PS, PAD_LAYOUT_NINTENDO), "romfs-patches-playstation") &&
+              !input_prompts_device_folder(PROMPTS_NINTENDO, PAD_LAYOUT_NINTENDO) &&
+              EQ(input_prompts_device_folder(PROMPTS_NINTENDO, PAD_LAYOUT_XBOX), "romfs-patches-xbox") &&
+              EQ(input_prompts_device_folder(PROMPTS_PC, PAD_LAYOUT_NINTENDO), "romfs-patches-pc") &&
+              EQ(input_prompts_device_folder(PROMPTS_PC, PAD_LAYOUT_XBOX), "romfs-patches-pc"),
+          "prompts: auto names each face button by the label of the pad's button that presses it");
+    CHECK(input_prompts_of_folder(NULL) == PROMPTS_NINTENDO && input_prompts_of_folder("romfs-patches-pc") == PROMPTS_PC &&
+              input_prompts_of_folder("romfs-patches-xbox") == PROMPTS_XBOX &&
+              input_prompts_of_folder("romfs-patches-xbox-label") == PROMPTS_XBOX &&
+              input_prompts_of_folder("romfs-patches-playstation-label") == PROMPTS_PS &&
+              input_prompts_of_folder("romfs-patches-rekarina") == PROMPTS_RK,
+          "prompts: a folder's set");
     // romfs-patches-xbox shows A as B (tests/romfs_prompts_test.py checks the folders' contents). It is right exactly
     // where the layout puts A on the east button, which an Xbox pad labels B.
     input_map_reset();
@@ -401,30 +450,30 @@ int probe_cfg(void) {
     CHECK(!strcmp(line, "none"), "edit: a stick direction without keys is none");
     // defaults live in the CfgMeta table: cfg_value and the typed accessors fall back to it
     cfg_load("cfg-probe-missing.ini");
-    plat_setenv("TOTK_FPS60", NULL);
-    plat_setenv("TOTK_MOUSE_SENS", NULL);
-    plat_setenv("TOTK_FREE_CORES", NULL);
-    CHECK(cfg_bool("TOTK_FPS60") == 1, "default: unset FPS60 is on");
-    CHECK(EQ(cfg_value("TOTK_VK_PRESENT"), "mailbox") && cfg_int("TOTK_SPLIT_DRAWS") == 64, "default: text and integer");
-    plat_setenv("TOTK_MOUSE_SENS", "2.5");
-    CHECK(cfg_double("TOTK_MOUSE_SENS") == 2.5, "double: the environment value");
-    plat_setenv("TOTK_MOUSE_SENS", "fast");
-    CHECK(cfg_double("TOTK_MOUSE_SENS") == 1.0, "double: a value that does not parse gives the default");
-    plat_setenv("TOTK_MOUSE_SENS", NULL);
-    cfg_set("TOTK_MOUSE_SENS", "3");
-    CHECK(cfg_double("TOTK_MOUSE_SENS") == 3.0 && cfg_int("TOTK_MOUSE_SENS") == 3, "a cfg_set value beats the default");
-    CHECK(cfg_bool("TOTK_FREE_CORES") == 0, "free_cores unset: off");
-    plat_setenv("TOTK_FREE_CORES", "0");
-    CHECK(cfg_bool("TOTK_FREE_CORES") == 0, "free_cores 0 gives the same as unset");
-    plat_setenv("TOTK_FREE_CORES", "1");
-    CHECK(cfg_bool("TOTK_FREE_CORES") == 1, "free_cores 1: on");
-    plat_setenv("TOTK_FREE_CORES", NULL);
+    plat_setenv("REKARINA_FPS60", NULL);
+    plat_setenv("REKARINA_MOUSE_SENS", NULL);
+    plat_setenv("REKARINA_FREE_CORES", NULL);
+    CHECK(cfg_bool("REKARINA_FPS60") == 1, "default: unset FPS60 is on");
+    CHECK(EQ(cfg_value("REKARINA_VK_PRESENT"), "mailbox") && cfg_int("REKARINA_SPLIT_DRAWS") == 16, "default: text and integer");
+    plat_setenv("REKARINA_MOUSE_SENS", "2.5");
+    CHECK(cfg_double("REKARINA_MOUSE_SENS") == 2.5, "double: the environment value");
+    plat_setenv("REKARINA_MOUSE_SENS", "fast");
+    CHECK(cfg_double("REKARINA_MOUSE_SENS") == 1.0, "double: a value that does not parse gives the default");
+    plat_setenv("REKARINA_MOUSE_SENS", NULL);
+    cfg_set("REKARINA_MOUSE_SENS", "3");
+    CHECK(cfg_double("REKARINA_MOUSE_SENS") == 3.0 && cfg_int("REKARINA_MOUSE_SENS") == 3, "a cfg_set value beats the default");
+    CHECK(cfg_bool("REKARINA_FREE_CORES") == 0, "free_cores unset: off");
+    plat_setenv("REKARINA_FREE_CORES", "0");
+    CHECK(cfg_bool("REKARINA_FREE_CORES") == 0, "free_cores 0 gives the same as unset");
+    plat_setenv("REKARINA_FREE_CORES", "1");
+    CHECK(cfg_bool("REKARINA_FREE_CORES") == 1, "free_cores 1: on");
+    plat_setenv("REKARINA_FREE_CORES", NULL);
     // 0.1.9's pad_layout = xbox_prompts (cfg.c migrate): read as the Nintendo layout with the Xbox prompts, saved so
-    plat_setenv("TOTK_PAD_LAYOUT", NULL);
-    plat_setenv("TOTK_PROMPTS", NULL);
+    plat_setenv("REKARINA_PAD_LAYOUT", NULL);
+    plat_setenv("REKARINA_PROMPTS", NULL);
     static const char old_layout[] = "[input]\r\npad_layout = xbox_prompts\r\n";
     CHECK(plat_file_write(path, old_layout, sizeof old_layout - 1) && cfg_load(path) == 1 &&
-              EQ(cfg_get("TOTK_PAD_LAYOUT"), "nintendo") && EQ(cfg_get("TOTK_PROMPTS"), "xbox"),
+              EQ(cfg_get("REKARINA_PAD_LAYOUT"), "nintendo") && EQ(cfg_get("REKARINA_PROMPTS"), "xbox"),
           "0.1.9's pad_layout = xbox_prompts reads as nintendo with prompts = xbox");
     CHECK(cfg_save_to(path) == 1, "the read pad layout and prompts save");
     uint64_t saved_n = 0;
@@ -434,7 +483,7 @@ int probe_cfg(void) {
     free(saved);
     static const char old_layout_own[] = "[input]\r\npad_layout = xbox_prompts\r\nprompts = nintendo\r\n";
     CHECK(plat_file_write(path, old_layout_own, sizeof old_layout_own - 1) && cfg_load(path) == 1 &&
-              EQ(cfg_get("TOTK_PAD_LAYOUT"), "nintendo") && EQ(cfg_get("TOTK_PROMPTS"), "nintendo"),
+              EQ(cfg_get("REKARINA_PAD_LAYOUT"), "nintendo") && EQ(cfg_get("REKARINA_PROMPTS"), "nintendo"),
           "a prompts line of the file's own wins over 0.1.9's pad_layout = xbox_prompts");
     plat_file_delete(path);
     cfg_load("cfg-probe-missing.ini");
@@ -444,7 +493,9 @@ int probe_cfg(void) {
         if (!*m->def) continue;
         listed++;
         char name[96];
-        snprintf(name, sizeof name, "TOTK_%s", m->key);
+        snprintf(name, sizeof name, "TOTK_%s", m->key);   // the old prefix is read too (cfg.c env_of)
+        plat_setenv(name, "");
+        snprintf(name, sizeof name, "REKARINA_%s", m->key);
         plat_setenv(name, "");
         CHECK(EQ(cfg_value(name), m->def), "cfg_value returns the table default");
         int ok = 0;

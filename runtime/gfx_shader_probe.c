@@ -50,7 +50,7 @@ static const char *str_field(const char *from, const char *to, const char *name,
 static int hexval(char c) { return c <= '9' ? c - '0' : (c | 32) - 'a' + 10; }
 
 // The shader census the probes translate (tools/shader_census.py --version <ver>): build/<ver>/shaders in the nearest
-// parent of totk.exe that has one with a jobs.json, the running game version's first, then the others' (any census
+// parent of rekarina.exe that has one with a jobs.json, the running game version's first, then the others' (any census
 // serves a probe). 1 with that folder in dir.
 int probe_census_dir(char *dir, size_t n) {
     const char *const versions[3] = {RT_V110 ? "v110" : RT_V143 ? "v143" : "v121",
@@ -160,7 +160,7 @@ int probe_shader(void) {
     char tmp[PLAT_PATH_MAX];
     if (!plat_temp_dir(tmp, sizeof tmp)) strcpy(tmp, ".");
     snprintf(dir, sizeof dir, "%s/totk-shader-probe-%u", tmp, plat_process_id());
-    CHECK(plat_setenv("TOTK_SHADER_CACHE", dir), "cannot set TOTK_SHADER_CACHE");
+    CHECK(plat_setenv("REKARINA_SHADER_CACHE", dir), "cannot set REKARINA_SHADER_CACHE");
 
     // pass 1: translate through the service
     const GfxShader *first[WANT];

@@ -24,7 +24,7 @@
 
 static int direct_mode(void) {
     // cfg_value: unset is the settings table's default (direct), as the menu shows it
-    return !strcmp(cfg_value("TOTK_MOUSE_MODE"), "direct") && rt_patch_enabled(rt_patch_set("mouse_direct"));
+    return !strcmp(cfg_value("REKARINA_MOUSE_MODE"), "direct") && rt_patch_enabled(rt_patch_set("mouse_direct"));
 }
 
 static uint64_t last_update;
@@ -43,6 +43,25 @@ int input_direct_mouse_active(void) {
 }
 
 int input_direct_mouse_enabled(void) { return direct_mode(); }
+
+#ifdef GAME_OOT
+static int oot_stick_mode;   // the OoT hook leaves the mouse to the stick (oot_camera_input)
+#endif
+int input_direct_mouse_stick_curve(double *deg_per_count, double *full_deg_s) {
+#ifdef GAME_OOT
+    uint64_t last = __atomic_load_n(&last_update, __ATOMIC_ACQUIRE);
+    if (direct_mode() && __atomic_load_n(&oot_stick_mode, __ATOMIC_RELAXED) && last && plat_now_ns() - last < 150000000ull) {
+        // 1.78 degrees a frame at full deflection on land at 60 fps, measured with scripted stick steps; the swimming
+        // camera turned 0.61 degrees a frame at 0.61 (0.66 by the same curve). REKARINA_MOUSE_STICK_RATE: degrees a second.
+        static double rate = -1;
+        if (rate < 0) { const char *e = cfg_get("REKARINA_MOUSE_STICK_RATE"); rate = e && *e ? atof(e) : 107.0; }
+        *deg_per_count = 0.08, *full_deg_s = rate;
+        return 1;
+    }
+#endif
+    (void)deg_per_count, (void)full_deg_s;
+    return 0;
+}
 
 void input_direct_mouse_radial(int32_t dx, int32_t dy, float sensitivity, float cursor[2], int32_t out[2]) {
     if (!(sensitivity > 0)) { cursor[0] = cursor[1] = 0; out[0] = out[1] = 0; return; }
@@ -165,7 +184,7 @@ static void camera_input(Cpu *c) {
     if (direct_mode()) {
         int32_t dx, dy;
         input_direct_mouse_sample(!input_direct_mouse_selector_active() && (accept || hand_active(plat_now_ns())), &dx, &dy);
-        float sensitivity = (float)cfg_double("TOTK_MOUSE_SENS");
+        float sensitivity = (float)cfg_double("REKARINA_MOUSE_SENS");
         sensitivity = fminf(10, fmaxf(0, sensitivity));
         // The game multiplies camera input by its 30 Hz frame ratio later. Divide by that exact ratio, rather
         // than wall-clock time: an equal distance of mouse motion then gives equal input at every frame rate.
@@ -330,7 +349,154 @@ static void camera_activity(Cpu *c) {
     c->v[8] = d8;
 }
 
+#ifdef GAME_OOT
+// OoT (recomp/patches-oot-v111.txt, set mouse_direct): the host call at main+0x37c45c, inside the camera's stick update,
+// in place of `str s1, [x20, #0x538]`. x20 is the camera's input object, s1 and s0 its curved stick x and y, w21 the
+// options' camera flags (bit 0 no input, bits 1 and 2 invert x and y), +0x5e0 a lock timer during which the game zeroes
+// the stick. The store is performed, then the mouse's counts turn the camera's own angles at 0.08 degrees a count times
+// the sensitivity (the scale TotK's orbit camera takes): the yaw at +0xdb4 and the pitch at +0xd9c of the camera that
+// +0xa80 points to, both in degrees. The input object keeps copies of them (+0x52c, +0x528) that the game makes each
+// frame: writing those changes nothing. Found 2026-11-15 by searching memory for values that moved with the view's yaw
+// and writing each (docs/oot-notes.md, "The mouse camera"). Every register stays as it was but s0 (below).
+// Should the game update more than one such object a frame, each takes all the motion since it last ran, from one
+// running total, so none misses counts another took; an object not seen for 200 ms starts from the total as it is (no
+// burst when a camera becomes active).
+// A camera whose angle is not where this writes (swimming: the copy and +0xa80's +0xdb4 differ by far more than a frame's
+// turn) does not take the counts at all: the update reports the mouse as not taken (accepts_mouse 0), so the HID update
+// (input.c mouse_camera) turns that camera through the right stick as in the stick mode, and the counts stay for it.
+#define HOST_MOUSE_OOT (RT_PATCH_PAGE + 0xf80)
+#define HOST_MOUSE_OOT_FLAGS (RT_PATCH_PAGE + 0xf70)
+static _Thread_local uint64_t oot_moved;   // the object the mouse turned in this update (oot_camera_flags)
+static int64_t oot_total[2];
+static struct { uint64_t object, when; int64_t seen[2]; float turned[2]; } oot_seen[8];   // turned: last yaw, pitch added
+static void oot_camera_input(Cpu *c) {
+    uint64_t self = c->x[20];
+    oot_moved = 0;
+    uint32_t sx = (uint32_t)c->v[1];
+    memcpy((void *)(uintptr_t)(self + 0x538), &sx, sizeof sx);
+    uint32_t flags = (uint32_t)c->x[21];
+    int accept = !(flags & 1) && !(guest_float(self + 0x5e0) > 0) && !input_direct_mouse_selector_active();
+    uint64_t now = plat_now_ns();
+    // The angle the camera keeps is not this object's +0x52c, a copy the game makes each frame, but +0xdb4 of the camera
+    // its +0xa80 points to. The copy trails the angle by a frame: it lacks the turn this hook added last time, and the
+    // stick's turn of a frame (under 2 degrees at 60 fps). The angle is written only while it is that close to the copy,
+    // so another layout is left alone; a 1-degree test failed every other frame of a steady mouse (the frame's turn was
+    // 1.09 degrees) and those frames' counts were lost: a jerky camera. Tested before the counts are taken, so a camera
+    // that does not fit leaves them to the stick path (above).
+    // Swimming: the view is another camera's and the one at +0xa80 stops (its yaw and pitch stay where they were;
+    // writing them turns nothing). The pitch copy shows it at once: on land it equals the camera's pitch within a
+    // hundredth of a degree, in the water it moved 10 to 15 degrees away in the first frames. So both angles are tested.
+    uint64_t cam = guest_pointer(self + 0xa80);
+    float last_turn = 0, last_pitch = 0;
+    plat_mutex_lock(&sample_lock);
+    for (int i = 0; i < 8; i++)
+        if (oot_seen[i].object == self && now - oot_seen[i].when <= 200000000ull)
+            last_turn = oot_seen[i].turned[0], last_pitch = oot_seen[i].turned[1];
+    plat_mutex_unlock(&sample_lock);
+    int fits = cam && fabsf(remainderf(guest_float(cam + 0xdb4) - guest_float(self + 0x52c), 360.0f)) <= 10.0f + fabsf(last_turn) &&
+               fabsf(guest_float(cam + 0xd9c) - guest_float(self + 0x528)) <= 2.0f + fabsf(last_pitch);
+    {   // DEBUG-MOUSELOG: REKARINA_MOUSELOG=1: one line per camera update (object, camera, the angles and their copies, the fit)
+        static int on = -1;
+        if (on < 0) { const char *e = cfg_get("REKARINA_MOUSELOG"); on = e && *e == '1'; }
+        if (on)
+            rt_log("MOUSELOG t=%.3f self=%llx cam=%llx yaw=%.2f copy=%.2f pitch=%.2f pcopy=%.2f flags=%x lock=%.2f last=%.2f fits=%d",
+                   now / 1e9, (unsigned long long)self, (unsigned long long)cam, cam ? guest_float(cam + 0xdb4) : 0.0f,
+                   guest_float(self + 0x52c), cam ? guest_float(cam + 0xd9c) : 0.0f, guest_float(self + 0x528), flags,
+                   guest_float(self + 0x5e0), last_turn, fits);
+    }
+    // Once the angle is off, the stick keeps the mouse until it has been close for 30 updates in a row: the swimming
+    // view passes near the kept angle at times, and each switch between the two paths was a jerk (player report).
+    static int close_run;
+    if (!fits) close_run = 0, __atomic_store_n(&oot_stick_mode, 1, __ATOMIC_RELAXED);
+    else if (__atomic_load_n(&oot_stick_mode, __ATOMIC_RELAXED) && ++close_run >= 30)
+        __atomic_store_n(&oot_stick_mode, 0, __ATOMIC_RELAXED);
+    fits = fits && !__atomic_load_n(&oot_stick_mode, __ATOMIC_RELAXED);
+    if (direct_mode() && accept) {
+        static int changes;
+        static int was_fit = 1;
+        if (fits != was_fit && changes < 6) {
+            changes++;
+            rt_log(fits ? "mouse: the camera's angle is where it was found again: the mouse turns it directly"
+                        : "mouse: the camera's angle is not where it was found (+0xa80 -> +0xdb4): the mouse turns it as a stick");
+        }
+        was_fit = fits;
+    }
+    accept = accept && fits;
+    __atomic_store_n(&accepts_mouse, accept, __ATOMIC_RELAXED);
+    __atomic_store_n(&last_update, now, __ATOMIC_RELEASE);
+    if (!direct_mode()) return;
+    int32_t dx, dy;
+    input_direct_mouse_sample(accept, &dx, &dy);
+    plat_mutex_lock(&sample_lock);
+    oot_total[0] += dx, oot_total[1] += dy;
+    int slot = 0;
+    for (int i = 0; i < 8; i++) {
+        if (oot_seen[i].object == self) { slot = i; break; }
+        if (oot_seen[i].when < oot_seen[slot].when) slot = i;
+    }
+    if (oot_seen[slot].object != self || now - oot_seen[slot].when > 200000000ull)
+        oot_seen[slot].object = self, oot_seen[slot].seen[0] = oot_total[0], oot_seen[slot].seen[1] = oot_total[1];
+    int64_t mx = oot_total[0] - oot_seen[slot].seen[0], my = oot_total[1] - oot_seen[slot].seen[1];
+    float turned[2] = {oot_seen[slot].turned[0], oot_seen[slot].turned[1]};
+    oot_seen[slot].when = now;
+    plat_mutex_unlock(&sample_lock);
+    float sensitivity = fminf(10, fmaxf(0, (float)cfg_double("REKARINA_MOUSE_SENS")));
+    if (!accept || !(sensitivity > 0) || (!mx && !my)) {
+        if (!accept || !(sensitivity > 0)) {   // motion the camera does not take now is not kept for later
+            plat_mutex_lock(&sample_lock);
+            oot_seen[slot].seen[0] = oot_total[0], oot_seen[slot].seen[1] = oot_total[1];
+            plat_mutex_unlock(&sample_lock);
+        }
+        return;
+    }
+    // Right on the mouse turns the view right: the yaw goes down, as with the stick.
+    // at most 5000 counts at once (400 degrees at sensitivity 1): what a long refusal kept cannot fling the camera
+    mx = mx > 5000 ? 5000 : mx < -5000 ? -5000 : mx;
+    my = my > 5000 ? 5000 : my < -5000 ? -5000 : my;
+    float dyaw = -(float)mx * 0.08f * sensitivity * (flags & 2 ? -1 : 1), dpitch = 0;
+    guest_float_store(cam + 0xdb4, wrap_degrees(guest_float(cam + 0xdb4) + dyaw));
+    // the pitch the camera keeps, +0xd9c (tested with the yaw above): positive looks down, so a mouse moved down (+y)
+    // raises it. The game limits it to its own range; a larger value wraps there, so it is held to +-89 first.
+    if (my) {
+        float was = guest_float(cam + 0xd9c);
+        float now_p = fminf(89, fmaxf(-89, was + (float)my * 0.08f * sensitivity * (flags & 4 ? -1 : 1)));
+        guest_float_store(cam + 0xd9c, now_p);
+        dpitch = now_p - was;
+    }
+    plat_mutex_lock(&sample_lock);
+    oot_seen[slot].seen[0] = oot_total[0], oot_seen[slot].seen[1] = oot_total[1];
+    oot_seen[slot].turned[0] = dyaw, oot_seen[slot].turned[1] = dpitch;
+    plat_mutex_unlock(&sample_lock);
+    // A frame the mouse moves the pitch also hands the camera the smallest vertical stick of the same sign (s0, which
+    // the next instruction stores at +0x53c): without stick input the game eases the pitch back to its rest angle,
+    // about 0.1 degree a frame, and a stick-moved pitch holds. 0.005 turns it by under 0.003 degree a frame.
+    if (my && accept) {
+        float y = my > 0 ? -0.005f : 0.005f;   // the stick's +y looks up
+        uint32_t yb;
+        memcpy(&yb, &y, sizeof yb);
+        c->v[0] = yb;
+    }
+    oot_moved = self;
+    static int logged;
+    if (!logged) logged = 1, rt_log("mouse: the camera's yaw turned by the mouse's counts (raw, no stick curve)");
+}
+
+// The host call at main+0x37c4f4, the update's last store of its flags (`str w8, [x20, #0x530]`): a frame the mouse
+// turned this camera counts as camera input for whatever reads them, as a stick past its threshold does (bits 0 and 3
+// set, bit 4 cleared). The store is performed; registers stay.
+static void oot_camera_flags(Cpu *c) {
+    uint32_t w = (uint32_t)c->x[8];
+    if (oot_moved && oot_moved == c->x[20]) w = (w | 0x9u) & ~0x10u;
+    oot_moved = 0;
+    memcpy((void *)(uintptr_t)(c->x[20] + 0x530), &w, sizeof w);
+}
+#endif
+
 __attribute__((constructor)) static void mouse_direct_register(void) {
+#ifdef GAME_OOT
+    rt_register_host(HOST_MOUSE_OOT, oot_camera_input);
+    rt_register_host(HOST_MOUSE_OOT_FLAGS, oot_camera_flags);
+#endif
     rt_register_host(HOST_MOUSE_DIRECT, camera_input);
     rt_register_host(HOST_MOUSE_ACTIVITY, camera_activity);
     rt_register_host(HOST_MOUSE_ORBIT_BEGIN, orbit_begin);

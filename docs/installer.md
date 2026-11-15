@@ -24,19 +24,19 @@ The install folder (`main.c` `portable_paths()` reads this layout; it stays port
 <install folder>/
   totk.exe, SDL3.dll, libopus-0.dll, totk_xlate.exe
   nvngx_dlss.dll                 NVIDIA DLSS, downloaded by the setup's DLSS step when the player keeps it ticked
-  totk.ini                       language; the other keys as commented defaults (totk.ini.example)
+  totk.ini                       language; the other keys as commented defaults (rekarina.ini.example)
   exefs/, romfs/                 extracted from the player's files
   shared-fonts/                  the Switch system fonts, with Chinese, Korean or Traditional Chinese text
   profile/                       saves
   mods/                          the player's mods, one folder per mod (created by the menu's "Open mods folder")
   logs/                          totk.log of the last run, totk.1.log to totk.4.log of the runs before it
   shader and pipeline caches     prepared by the setup; shader-cache/shader-cache.pack holds the translations
-  totk-install.json              what built this folder: release version, input hashes, finished steps
+  rekarina-install.json              what built this folder: release version, input hashes, finished steps
 ```
 
 ## Updating the port
 
-The player runs a newer installer on the same folder. It reads `totk-install.json`, keeps `romfs/`, `exefs/`,
+The player runs a newer installer on the same folder. It reads `rekarina-install.json`, keeps `romfs/`, `exefs/`,
 `shared-fonts/`, `profile/` and `totk.ini` after checking their hashes, rebuilds `totk.exe` and re-prepares the
 shaders. A newer release that changes nothing game-derived skips the rebuild.
 
@@ -60,7 +60,7 @@ loads the saves 1.4.3 wrote.
    tools refuse costs those cheats or patches, not the install.
 5. **Compile** the generated C, `modules.c`, `romfs.c`, `patches.c` and `ov_zstd.c` (they bake the per-install layout, RomFS
    hashes and the game version's patch page) and link
-   them with the prebuilt runtime library for the host's level (`libtotkrt.a` or `libtotkrt-v2.a`) into `totk.exe`
+   them with the prebuilt runtime library for the host's level (`librekarina.a` or `librekarina-v2.a`) into the build's `rekarina.exe`, which goes into the folder as `totk.exe`
    (`build_game.py --runtime-lib`; about 3 min on 24 cores).
 6. **Prepare** (only when the runtime, the translator or the game version changed, not for a new lift) the RomFS
    patches and the shaders (`tools/make_romfs_patches.py`, `tools/prepare_shaders.py`,
@@ -83,7 +83,7 @@ loads the saves 1.4.3 wrote.
 8. **Clean up** the temp folder, except the generated C and the objects (about 1.3 GB), and write
    `build-cache/rebuild.txt` in the install folder.
 
-A cancelled or failed setup resumes from the last finished step (`totk-install.json`).
+A cancelled or failed setup resumes from the last finished step (`rekarina-install.json`).
 
 ## Rebuilding for the mods
 
@@ -108,7 +108,7 @@ needs the release folder the setup ran from: a moved or deleted release folder m
 python -m installer --base FILE --update FILE --keys FILE --lang CODE --dest DIR [--firmware DIR] [--root DIR] [--temp DIR] [--verify]
 ```
 
-- On a folder with `totk-install.json` only `--dest` is needed; the game files only when the extraction must run again.
+- On a folder with `rekarina-install.json` only `--dest` is needed; the game files only when the extraction must run again.
 - `--firmware DIR` is the folder holding the firmware NCAs: an unpacked firmware, or the emulators' installed
   `Contents/registered` (the parent `Contents` folder works too). It is read only with Chinese, Korean or Traditional
   Chinese text, and only when `shared-fonts/` is not already in the install folder.
@@ -128,7 +128,7 @@ python -m installer --base FILE --update FILE --keys FILE --lang CODE --dest DIR
   window; every sentence is an id in `installer/text/<en|ru|pt-BR|zh-Hans>.json`. A Chinese window still starts with
   English as the game language, because Chinese game text needs the Switch shared fonts, which the setup extracts only
   from a firmware folder. A folder with
-  `totk-install.json` needs only the folder. `--selftest [--shots DIR]` builds every screen in every language and
+  `rekarina-install.json` needs only the folder. `--selftest [--shots DIR]` builds every screen in every language and
   closes itself.
 - `tests/installer_gui_test.py`: event model, form, catalogs, cancel, the self-closing window and one end-to-end run
   of the CLI in `--verify` mode (needs `build/install-test` and `build/extracted/v121`; see its docstring).
@@ -145,13 +145,13 @@ installer/            the installer: steps, CLI, window, en/ru/zh-Hans text cata
 python/               Python 3.14.9 embeddable + numpy, lz4, cryptography, cffi, pycparser (+ tkinter for the window)
 recomp/, tools/       the lifter and the build, extraction and shader scripts the steps run (copied from the repo)
 llvm/                 llvm-mingw, x86_64-only subset (Apache-2.0 with LLVM exception; mingw-w64 parts permissive)
-runtime/              libtotkrt.a, libtotkrt-v2.a and the headers the generated code and modules.c/romfs.c/patches.c
+runtime/              librekarina.a, librekarina-v2.a and the headers the generated code and modules.c/romfs.c/patches.c
                       include
 bin/                  totk_xlate.exe, hactool.exe, SDL3.dll, libopus-0.dll, ninja.exe
 data/                 shader_list.tsv (MacNativeGames, MIT); pgo-<ver>.profdata + .json, the execution profile an
                       update's code and the runtime libraries compile with (building.md, "Profile-guided build")
 THIRD_PARTY_NOTICES.md
-totk.ini.example, VERSION  the default ini; the release string (the repository's VERSION plus the commit)
+rekarina.ini.example, VERSION  the default ini; the release string (the repository's VERSION plus the commit)
 ```
 
 - SDL3 comes from the upstream release, not MSYS2: MSYS2's DLL imports the LGPL libiconv.
@@ -169,26 +169,29 @@ nn::pl shared fonts). The game does not ship them. Without them it exits before 
 - Give the setup the firmware folder (`--firmware DIR`, or the window's firmware field); the Fonts step extracts them to
   `shared-fonts/` in the install folder.
 - Run `python tools/extract_fonts.py --firmware <dir>` with `.venv-py314` and the keys from `config.local.toml`, or
-  point `TOTK_SHARED_FONTS` at a folder that holds the extracted fonts.
+  point `REKARINA_SHARED_FONTS` at a folder that holds the extracted fonts.
 
 ## Linux release
 
 `tools/make_release_linux.py` builds the same setup for Linux and packs it as `TotK-Setup-x86_64.AppImage` (the static
 type-2 runtime: no libfuse2 needed on the host). The player makes it executable and starts it; on a Steam Deck, from
 Desktop Mode. The command-line setup needs the desktop session's display (`DISPLAY` or `WAYLAND_DISPLAY`) because preparing the
-shaders opens a window; the check step fails at once without it. Building the release also needs `make` and `pkg-config`. The bundled Tcl/Tk 9.0.4 is rebuilt with
+shaders opens a window; the check step fails at once without it. Building the release also needs `make`, `pkg-config`
+(without it Tk's configure finds no Xft and the build stops), and for OoT's AV1 movies `meson` and `nasm` (dav1d, built
+static into `runtime/deps`); on Ubuntu `apt install make pkg-config meson nasm`. Run it attached to a terminal: under WSL a
+build left running after its `wsl` command returned failed in `llvm-strip` with "No such file or directory". The bundled Tcl/Tk 9.0.4 is rebuilt with
 Xft against the sniper sysroot so Russian text uses system TrueType fonts. The setup builds the game into the folder they pick, as on Windows, and the game is `totk` there with
 `libSDL3.so.0` beside it. The folder inside the AppImage:
 
 ```
 AppRun                starts python/bin/python3 -m installer.gui (no bytecode written into the read-only mount)
 totk-setup.desktop, totk-setup.png
-installer/, recomp/, tools/, data/, licenses/, THIRD_PARTY_NOTICES.md, totk.ini.example, VERSION   as on Windows
+installer/, recomp/, tools/, data/, licenses/, THIRD_PARTY_NOTICES.md, rekarina.ini.example, VERSION   as on Windows
 python/               python-build-standalone 3.14 (with tkinter) + the installer's packages; a .pth puts the folder,
                       tools/ and recomp/ on sys.path
 llvm/                 LLVM 23 (clang, lld, llvm-ar) and llvm/sysroot: the files of the Steam Runtime 3 "sniper" SDK the
                       game's compile and link read (about 130 files)
-runtime/              libtotkrt.a, libtotkrt-v2.a, headers, the install-side sources, totk.png; deps/ with the Vulkan
+runtime/              librekarina.a, librekarina-v2.a, headers, the install-side sources, totk.png; deps/ with the Vulkan
                       headers, VMA and a static zstd
 bin/                  totk_xlate, hactool, ninja, libSDL3.so.0
 ```
@@ -218,7 +221,7 @@ bin/                  totk_xlate, hactool, ninja, libSDL3.so.0
   ...`), which prints one JSON progress event per line. Tests and CI use the CLI.
 - Paths may hold any Unicode characters (a Cyrillic user name puts the temp and install folders under it). Every exe
   the setup runs or builds reads its arguments and paths as UTF-8 through an `activeCodePage` manifest: hactool
-  (our patch, [building.md](building.md)), totk.exe (`runtime/totk.rc`), ninja (upstream). The Python steps write
+  (our patch, [building.md](building.md)), totk.exe (`runtime/rekarina.rc`), ninja (upstream). The Python steps write
   their files and logs as UTF-8, and `build_game.py` quotes paths with spaces on its Ninja command lines.
 - A game file whose data fails its hash checks or ends early stops the setup with `check.input_damaged`, which names
   the file and asks to copy it again (`extract.DamagedFile`). A failed merge checks the base Program NCA alone to tell
@@ -259,7 +262,7 @@ folder; the steps are those of `installer/oot.py`:
 
 The RomFS is not copied: `rekarina.ini` names the NUP and the game reads it in place, so the dump must stay where it is.
 A second run on the same folder continues or updates it under the rule of `installer/runner.py`; the dump is asked
-for only on the first run. Upscaler libraries (DLSS, FSR 3.1, frame generation) are the player's own: `--dlls` names
+for only on the first run. Upscaler libraries (DLSS, FSR 4.1 and 3.1, frame generation) are the player's own: `--dlls` names
 a folder that holds them and the package step puts them beside the game.
 
 A checkout has no compiler of its own: `--toolchain` (or `REKARINA_TOOLCHAIN`) names a folder with `llvm/` and
@@ -269,11 +272,42 @@ English and Russian with sample events.
 
 The same window is the launcher. It remembers the dump and install folders of the last run (`launcher.json` in the
 user's application data); when the install folder holds `Rekarina.exe` it opens on a home screen with **Play**, the
-Mods page ([mods.md](mods.md), "The launcher's side"), the settings file (`rekarina.ini` in the player's editor), the
-game's folder and the way back to the form for an update. A
+Mods page ([mods.md](mods.md), "The launcher's side"), the Saves page (below), the settings file (`rekarina.ini`
+in the player's editor), the game's folder and the way back to the form for an update. A
 small exe starts it without a console: `installer/launcher/rekarina.c` (icon `installer/launcher/rekarina.rc`), which
 looks for `python\pythonw.exe` beside itself (a release folder) and for `.venv` and `src` otherwise (a checkout, the exe
 lying beside them). The icon is drawn by `tools/make_rekarina_icon.py` and the window takes its colours from it.
+
+### The Saves page: a save from an emulator or another port
+
+A player who played the game elsewhere continues from that save. `installer/saves.py` looks in the places an
+emulator or another port keeps it and the page lists what it finds, newest first, with the slots it holds and when it
+was last written; **Import** copies the chosen one into the game folder, **Choose folder** and **Choose .zip** take a
+save from anywhere else (a save manager's export, a copy from a console; a folder may hold the save some levels
+down). The source is never changed.
+
+- What a save is: a folder with at least one `slot_NN` folder holding `progress.sav` (beside them `account.sav`,
+  `option.sav` and each slot's `caption.sav`). That is checked for everything a place yields, so a place is only a
+  place to look. A save over 64 MiB or 400 files is refused.
+- Places: the other ports' `user/save/<account>/` under their install folder (the default one under the home folder,
+  and any folder a `.json` of their builder's or launcher's settings names); Ryujinx and its forks
+  (`bis/user/save/<number>/0`); the yuzu family (`nand/user/save/0000000000000000/<account>/<title id>`), each under
+  the roaming and local application data on Windows and under the config, data and Flatpak folders on Linux. Seen
+  with a real install on the development machine: the two other ports' layout. The emulator layouts are the ones
+  those emulators document for Switch games; no emulator runs this game yet, so they were tested with made-up
+  folders only.
+- Where it goes: `profile/save/<account>/` of the game folder, the account's name read from `profile/account.uid` as
+  the game prints it (a game folder that never ran gets a new account, as the game makes one at its first start).
+  The save does not name its account inside: one made under another account loads (checked with a save of another
+  port in a new game folder).
+- What it replaces is kept: `profile/save/<account>` and `profile/save-tx` (which may hold a newer commit of the
+  running game, and which the game would otherwise load in the imported save's place) move to
+  `profile/save-before-import/<time>/`. Replacing asks once (Import becomes Replace), and **Restore previous** swaps
+  the newest such folder back, keeping the imported save in its place.
+- A running game holds its save in memory and writes it back: on Windows the import is refused while the game's exe
+  is in use.
+
+`python -m unittest installer.saves_test` runs it on made-up folders.
 
 The setup folder for other machines is made by `tools/make_rekarina_release.py --from <an unpacked TotK-Setup release>
 --out <folder>`: that release's bundled Python 3.14 and llvm-mingw, this tree's runtime sources, tools, lifter and
@@ -282,9 +316,30 @@ installer, the translator, the dependencies' headers and libraries, the executio
 the tools read zstd through the standard library (`tools/py314/zstandard.py` stands in for the zstandard package, also
 for the vendored NUP reader; the prompt overlays come out byte for byte the same). One part is not in the folder: the
 `zbic` package that unpacks the game's main module is GPL software, so the check step downloads its wheel for the
-running Python from the Python Package Index and verifies it against the index's SHA-256 (`installer/oot.py`
-`ensure_zbic`); the first setup on a machine needs the internet for that. The shader
+running Python from the Python Package Index (`win_amd64`, on x86-64 Linux the `manylinux` one) and verifies it against
+the index's SHA-256 (`installer/oot.py` `ensure_zbic`); the first setup on a machine needs the internet for that. The shader
 preparation runs under the game's own file name and the package step warms the prepared shaders in the install folder
 (`Rekarina.exe --warm-shaders`), because NVIDIA's driver names its disk cache after the exe's file name and AMD's keys it
 to the exe's path (docs/oot-notes.md, 2026-11-11 morning). The long shader step reports its count
 (`prebuild preparation progress: N of M variants`) so the window's bar moves through it.
+
+The Linux setup folder comes from the same script with a Linux toolchain folder as `--from`:
+
+```sh
+.venv/bin/python tools/make_release_linux.py --oot --out build/release/Rekarina-toolchain-linux
+.venv/bin/python tools/make_rekarina_release.py --from build/release/Rekarina-toolchain-linux \
+    --out build/release/Rekarina-Setup-linux [--appimage build/release/Rekarina-x86_64.AppImage]
+```
+
+`--oot` builds the "Linux release" folder above without the TotK parts that need the `refs/` checkouts (the shader list
+and its licence) and without the TotK setup's bundle check; the runtime library in it is built from `generated/oot`
+(`tools/make_release.py` `lifted_version`), and its deps carry a static dav1d for the AV1 movies. The Rekarina folder
+takes that folder's `python/`, `llvm/` with `llvm/sysroot`, `bin/` (ninja, the translator as `rekarina_xlate`,
+`libSDL3.so.0`), `runtime/deps` and `licenses/`, adds this tree's runtime, lifter, tools and installer, and starts the
+launcher from `AppRun` (`python3 -m installer.gui_oot`, with `rekarina.desktop` and `rekarina.png`), about 1.6 GiB. On
+Linux the game is `Rekarina` with `libSDL3.so.0` beside it: `installer/oot.py` passes the sysroot to
+`tools/build_game.py` and the library to `tools/package_oot.py --lib`, and copies it beside the build for the shader
+preparation. That SDL3 is the sniper SDK's, which links ALSA, PulseAudio, the X screensaver extension and libdecor
+(`libasound.so.2`, `libpulse.so.0`, `libXss.so.1`, `libdecor-0.so.0`): SteamOS and desktop distributions have them, a
+minimal system (WSL's Ubuntu) does not, and the game then stops at start with exit code 127. An SDL3 of our own that
+loads those at run time would remove the dependency (not done).

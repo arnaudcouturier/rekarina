@@ -47,7 +47,7 @@ static VkExec X;
 static int x_ready;
 static _Thread_local int x_here;   // this thread is inside vk_exec_record (vk_exec_inline_begin)
 
-// ---- TOTK_TRACE=gfx frame counters
+// ---- REKARINA_TRACE=gfx frame counters
 
 VkExecFrame vk_exec_frame;
 static struct { const uint8_t *mem; uint32_t w, h, fmt, n; } fw[64];   // textures written this frame
@@ -84,8 +84,8 @@ typedef struct {
 static struct {
     int threads;                         // -1: not read; 0: off
     int chunks;                          // chunks per stretch at most
-    int min_draws, spin;                 // TOTK_PAR_MIN, TOTK_PAR_SPIN (pauses before a chunk thread sleeps)
-    int per;                             // TOTK_PAR_PER: draws per chunk
+    int min_draws, spin;                 // REKARINA_PAR_MIN, REKARINA_PAR_SPIN (pauses before a chunk thread sleeps)
+    int per;                             // REKARINA_PAR_PER: draws per chunk
     ParJob job[PAR_JOBS];
     volatile int32_t jstate[PAR_JOBS];   // 0 free or being made, 1 to be recorded, 2 taken, 3 recorded
     volatile int32_t njobs;              // chunks handed out since the last join
@@ -103,7 +103,7 @@ static struct {
     ParCond *conds;
     uint32_t cap_slots, cap_conds, nslots, nconds;
     const op_hdr *no_from, *no_until;    // ops looked at already: no stretch begins among them
-    uint64_t stretches, chunks_n, draws, walk_ns, join_ns, joins;   // TOTK_TRACE=perf
+    uint64_t stretches, chunks_n, draws, walk_ns, join_ns, joins;   // REKARINA_TRACE=perf
 } PAR = {.threads = -1};
 _Thread_local int vk_par_worker;
 int vk_par_walk;
@@ -122,7 +122,7 @@ void vk_exec_frame_written(const tex_t *t) {
     fw[nfw++].n = 1;
 }
 
-// DEBUG-PASSLIST: TOTK_PASSLIST=<clears>: the render passes of a frame with that many clears or more, and of the frame
+// DEBUG-PASSLIST: REKARINA_PASSLIST=<clears>: the render passes of a frame with that many clears or more, and of the frame
 // before it, one line each (area, layers, draws, the first colour target and the depth target with their storage
 // address, format and layer), at most four such frames. For the frames in which OoT redraws its shadow
 // layers at once (45 clears against 23).
@@ -132,7 +132,7 @@ static PlRec pl_cur[PL_N], pl_prev[PL_N];
 static int pl_n, pl_prevn, pl_min = -1, pl_logged;
 static uint64_t pl_draws, pl_clears0;
 static void pl_pass(const VkExec *ex) {
-    if (pl_min < 0) { const char *e = cfg_get("TOTK_PASSLIST"); pl_min = e && atoi(e) > 0 ? atoi(e) : 0; }
+    if (pl_min < 0) { const char *e = cfg_get("REKARINA_PASSLIST"); pl_min = e && atoi(e) > 0 ? atoi(e) : 0; }
     if (!pl_min || pl_n == PL_N) return;
     uint64_t d = vk_exec_frame.draws;
     PlRec *r = &pl_cur[pl_n++];
@@ -257,7 +257,7 @@ static int view_format(const tex_t *t, const view_t *v, int blocks, VkFormat *ou
 }
 
 // ---- 3D BC render targets
-// A 3D BC texture has no block views (vk_texture.c create_tex, TOTK_BLOCK_VIEWS_3D): on RDNA2 cards such an image
+// A 3D BC texture has no block views (vk_texture.c create_tex, REKARINA_BLOCK_VIEWS_3D): on RDNA2 cards such an image
 // made BLOCK_TEXEL_VIEW_COMPATIBLE and 2D_ARRAY_COMPATIBLE took GPU writes past the end of its memory (issue #5). Draws
 // into it through an uncompressed view of its blocks (agl's BC4 encoder fills 32x32x32 and 64x64x64 volumes and their
 // levels at the logo) go to a stand-in: a 2D array of the blocks of one level in the view's format, one layer per
@@ -674,14 +674,14 @@ static VkImageMemoryBarrier2 layout_barrier(VkImage img, VkImageAspectFlags aspe
 // vertex, mesh and fragment stages and attachment writes before this pass's fragment stages and attachment loads.
 // Attachment reuse (write after write, a target the last pass sampled) stays ordered. A full barrier before every
 // pass (LAS Recomp's rule) drained the GPU about 265 times a frame in the forest; nxnative measured GPU 25 -> 18 ms
-// on OoT with the game's barriers alone (nvn_mtl.m barrier_game). TOTK_PASS_BARRIER=full: the old rule.
+// on OoT with the game's barriers alone (nvn_mtl.m barrier_game). REKARINA_PASS_BARRIER=full: the old rule.
 static int relaxed_passes(void) {
     static int on = -1;
     if (on < 0) {
-        const char *e = cfg_get("TOTK_PASS_BARRIER");
+        const char *e = cfg_get("REKARINA_PASS_BARRIER");
         on = !(e && !strcmp(e, "full"));
         rt_log("vk: pass after pass: %s", on ? "fragment work waits for the previous pass (game barriers stay full)"
-                                              : "full barrier before every pass (TOTK_PASS_BARRIER=full)");
+                                              : "full barrier before every pass (REKARINA_PASS_BARRIER=full)");
     }
     return on;
 }
@@ -725,10 +725,10 @@ static void barrier_to_(VkExec *ex, const VkImage *want, const VkImageAspectFlag
     for (int i = 0; i < nwant; i++) ex->fbl_img[i] = want[i], ex->fbl_aspect[i] = wasp[i];
     ex->nfbl = nwant;
     if (ex->barrier_at == ex->recorded && !n) return;
-    {   // DEBUG-BARRIER-EXPERIMENT: TOTK_BARRIER_EXPERIMENT=1 keeps only the game's barriers, layout changes and the
+    {   // DEBUG-BARRIER-EXPERIMENT: REKARINA_BARRIER_EXPERIMENT=1 keeps only the game's barriers, layout changes and the
         // end of a submission (a measurement of what the other full barriers cost; the picture may break)
         static int exp = -1;
-        if (exp < 0) { const char *e = cfg_get("TOTK_BARRIER_EXPERIMENT"); exp = e && *e == '1'; }
+        if (exp < 0) { const char *e = cfg_get("REKARINA_BARRIER_EXPERIMENT"); exp = e && *e == '1'; }
         if (exp && !n && !barrier_game_now) { vk_exec_frame.skipped_barriers++; return; }
     }
     if (pass && !n && ex->relaxed_at == ex->recorded) return;   // a game barrier ordered the fragments just now
@@ -752,11 +752,11 @@ static void barrier_to_(VkExec *ex, const VkImage *want, const VkImageAspectFlag
 // invalidations; neither ORDER_PRIMITIVES nor ORDER_INDIRECT_DATA): later fragment work waits for all earlier work,
 // later vertex work may start at once, as on the console. ~65 of the ~117 game barriers of a forest frame (render to
 // a texture, sample it in the next pass's fragment shader). A dispatch, copy or clear after it still records its full
-// barrier; the next pass begin records none. TOTK_GAME_BARRIER=full: every game barrier full.
+// barrier; the next pass begin records none. REKARINA_GAME_BARRIER=full: every game barrier full.
 static void game_barrier(VkExec *ex, int bits) {
     static int relax = -1;
     if (relax < 0) {
-        const char *e = cfg_get("TOTK_GAME_BARRIER");
+        const char *e = cfg_get("REKARINA_GAME_BARRIER");
         relax = !(e && !strcmp(e, "full"));
     }
     if (relax && !(bits & (NVN_BARRIER_ORDER_PRIMITIVES_BIT | NVN_BARRIER_ORDER_INDIRECT_DATA_BIT)) && !ex->nfbl &&
@@ -780,14 +780,14 @@ void vk_exec_barrier(VkExec *ex) { barrier_to(ex, NULL, NULL, 0); }
 // (OP_BARRIER, a full barrier here): the game puts one where a dispatch reads what an earlier one wrote. A dispatch that
 // follows another with nothing recorded in between can then run beside it; the full barrier before every dispatch
 // drained the GPU ~140 times at the start of each forest frame (GPU 20.3 -> 19.7 ms on the porch, the picture
-// unchanged). TOTK_DISPATCH_BARRIER=full: the barrier before every dispatch, as before.
+// unchanged). REKARINA_DISPATCH_BARRIER=full: the barrier before every dispatch, as before.
 static int dispatch_barrier_mode(void) {
     static int m = -1;
     if (m < 0) {
-        const char *e = cfg_get("TOTK_DISPATCH_BARRIER");
+        const char *e = cfg_get("REKARINA_DISPATCH_BARRIER");
         m = !(e && !strcmp(e, "full"));
         rt_log("vk: dispatch after dispatch: %s", m ? "ordered by the game's barriers only"
-                                                    : "full barrier before every dispatch (TOTK_DISPATCH_BARRIER=full)");
+                                                    : "full barrier before every dispatch (REKARINA_DISPATCH_BARRIER=full)");
     }
     return m;
 }
@@ -893,7 +893,7 @@ void vk_exec_pass_end(VkExec *ex) {
     vk_exec_oq_after_pass(ex);   // the predicate words of the samples-passed reports of the pass
 #endif
     if (ex->mark) {
-        // vk_exec_frame_log resets the frame counters at a present (TOTK_TRACE=gfx): then only the draws since it count
+        // vk_exec_frame_log resets the frame counters at a present (REKARINA_TRACE=gfx): then only the draws since it count
         uint64_t d = vk_exec_frame.draws, d0 = ex->mark_draws0;
         ex->mark->draws = (uint32_t)(d >= d0 ? d - d0 : d);
         if (ex->mark->draws) vk_exec_draw_shaders(&ex->mark->last[0], &ex->mark->last[1]);
@@ -913,7 +913,7 @@ void vk_exec_pass_end(VkExec *ex) {
     ex->pass_end_at = ex->recorded == end_at ? end_at : -1;   // nothing recorded after the pass: the next may relax
     {   // DEBUG-BIGLOG: a pass into a depth target 8192 or more wide ended
         static int on = -1, n;
-        if (on < 0) on = cfg_get("TOTK_BIGLOG") != NULL;
+        if (on < 0) on = cfg_get("REKARINA_BIGLOG") != NULL;
         if (on && ex->rt.depth && ex->rt.depth->d.width >= 8192 && n++ < 20)
             rt_log("BIGLOG replay pass end depth %p image %p frame %llu", (const void *)ex->rt.depth->mem, (void *)ex->depth.image,
                    (unsigned long long)__atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED));
@@ -1035,7 +1035,7 @@ static void clear_color(VkExec *ex, const p_clear_color *c) {
         extern int vk_dbg_cond_unknown;
         static int on = -1;
         static unsigned long long lo, hi;
-        if (on < 0) { const char *e = getenv("TOTK_SKIPLOG"); on = e && sscanf(e, "%llu-%llu", &lo, &hi) == 2; }
+        if (on < 0) { const char *e = cfg_env("REKARINA_SKIPLOG"); on = e && sscanf(e, "%llu-%llu", &lo, &hi) == 2; }
         unsigned long long f = __atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED);
         if (on && f >= lo && f <= hi && ex->cond_active)
             rt_log("SKIPLOG clear frame %llu disabled %d unknown %d gpu %d cond %#llx mode %d target %d rgba %g %g %g %g", f,
@@ -1075,7 +1075,7 @@ static void clear_ds(VkExec *ex, const p_clear_ds *c) {
     {   // DEBUG-SKIPLOG
         static int on = -1;
         static unsigned long long lo, hi;
-        if (on < 0) { const char *e = getenv("TOTK_SKIPLOG"); on = e && sscanf(e, "%llu-%llu", &lo, &hi) == 2; }
+        if (on < 0) { const char *e = cfg_env("REKARINA_SKIPLOG"); on = e && sscanf(e, "%llu-%llu", &lo, &hi) == 2; }
         unsigned long long f = __atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED);
         if (on && f >= lo && f <= hi && ex->cond_active)
             rt_log("SKIPLOG clear_ds frame %llu disabled %d gpu %d cond %#llx mode %d depth %#llx d %g mask %d", f, ex->render_disabled,
@@ -1114,7 +1114,7 @@ static void clear_ds(VkExec *ex, const p_clear_ds *c) {
 static void set_rt(VkExec *ex, const p_set_rt *r) {
     {   // DEBUG-BIGLOG: the replay reaching a SetRenderTargets with a depth target 8192 or more wide
         static int on = -1, n;
-        if (on < 0) on = cfg_get("TOTK_BIGLOG") != NULL;
+        if (on < 0) on = cfg_get("REKARINA_BIGLOG") != NULL;
         if (on && r->depth && r->depth->d.width >= 8192 && n++ < 20)
             rt_log("BIGLOG replay set-rt depth %p %ux%u frame %llu same %d", (const void *)r->depth->mem, r->depth->d.width,
                    r->depth->d.height, (unsigned long long)__atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED),
@@ -1128,17 +1128,17 @@ static void set_rt(VkExec *ex, const p_set_rt *r) {
 
 // ---- command buffer parts
 // NVN starts the GPU as soon as commands are submitted; one Vulkan command buffer per submission starts it only after
-// the whole replay. Between passes, once TOTK_SPLIT_DRAWS (16; 0 off) draws and dispatches were recorded since the
+// the whole replay. Between passes, once REKARINA_SPLIT_DRAWS (16; 0 off) draws and dispatches were recorded since the
 // last part, the part goes to the queue (vk_sync_split) and the replay continues in a new command buffer. Only
 // command-buffer state is lost there (bindings and dynamic state: vk_exec_draw_new_cb, ex->dirty); barriers, layouts and
 // queries are not: a barrier's first scope is everything earlier in submission order, image layouts belong to the image,
 // and occlusion queries end with their pass. Fences, completion callbacks and reports stay per submission: only the last
 // part signals the value. nxnative commits every 64 draws between passes; MacNativeGames after 30, then every 40.
-// A part also spans at least TOTK_SPLIT_US (150, measured on the forest porch: 75 to 81 fps against 1000) of replay time: a split costs about 40 us of the render thread
+// A part also spans at least REKARINA_SPLIT_US (150, measured on the forest porch: 75 to 81 fps against 1000) of replay time: a split costs about 40 us of the render thread
 // (vkQueueSubmit2, a command buffer, the mirror prologue), and a fight frame of 2,000 draws made 15 parts on the 7900X;
 // a millisecond of recording is a fraction of a millisecond of GPU work, so the GPU still starts early.
 // Inside a long pass (OoT's forest: one pass of ~1,200 draws, ~5 ms of recording, while the GPU waited
-// with nothing queued) the part also goes to the queue after TOTK_SPLIT_IN_PASS (60; 0 off) draws: the pass ends
+// with nothing queued) the part also goes to the queue after REKARINA_SPLIT_IN_PASS (60; 0 off) draws: the pass ends
 // there (attachments are stored) and begins again in the next part (they are loaded; the replay's passes always load
 // and store), and occlusion queries are cut into segments at the pass end as at any other.
 static int split_in_pass = -1;
@@ -1153,13 +1153,13 @@ static uint64_t n_parts, n_subs;
 // submission, and for the six after it the GPU waits for the replay between parts of a fraction of a millisecond. So
 // once the collected ranges have stopped growing from one part to the next, they go back right there, at the start of
 // a part, where the GPU has time; whatever a later shader writes is collected again and goes back at the end.
-// TOTK_WB_EARLY=0: only at the end, as before.
+// REKARINA_WB_EARLY=0: only at the end, as before.
 static void wb_early(VkExec *ex) {
     static int on = -1;
     static uint64_t last_p, last_m, last_fence, min_bytes;
     if (on < 0) {
         on = rt_knob("WB_EARLY", "1");
-        const char *e = cfg_get("TOTK_WB_EARLY_KB");
+        const char *e = cfg_get("REKARINA_WB_EARLY_KB");
         min_bytes = (uint64_t)(e && atoi(e) > 0 ? atoi(e) : 1024) << 10;
     }
     if (!on || vk_exec_ac_value) return;
@@ -1179,15 +1179,15 @@ static void wb_early(VkExec *ex) {
 
 static void maybe_split(VkExec *ex) {
     if (split_n < 0) {
-        split_n = cfg_int("TOTK_SPLIT_DRAWS");
+        split_n = cfg_int("REKARINA_SPLIT_DRAWS");
         if (split_n < 0) split_n = 0;
-        int us = cfg_int("TOTK_SPLIT_US");
+        int us = cfg_int("REKARINA_SPLIT_US");
         split_ns = us > 0 ? (uint64_t)us * 1000 : 0;
         rt_log("vk: replay command buffer split every %d draws between passes, parts of at least %d us%s", split_n,
                us > 0 ? us : 0, split_n ? "" : " (off)");
     }
     if (split_in_pass < 0) {
-        split_in_pass = cfg_int("TOTK_SPLIT_IN_PASS");
+        split_in_pass = cfg_int("REKARINA_SPLIT_IN_PASS");
         if (split_in_pass < 0) split_in_pass = 200;
     }
     if (!split_n || split_draws < (ex->in_pass ? (split_in_pass ? split_in_pass : INT32_MAX) : split_n)) return;
@@ -1301,7 +1301,7 @@ static int state_op(VkExec *ex, const op_hdr *h) {
     return 1;
 }
 
-// ---- Draw stretches on worker threads (replay_threads in totk.ini: the threads, the replay thread among them; 1: off)
+// ---- Draw stretches on worker threads (replay_threads in rekarina.ini: the threads, the replay thread among them; 1: off)
 // A frame of OoT is one submission of ~30,000 ops, replayed by one thread while the game's other threads
 // already record the next frame (docs/oot-architecture.md). About 1,600 of its 2,150 draws lie in a few long stretches
 // inside one pass: the depth prepass and the lit pass (each object's draw between a samples-passed reset and report,
@@ -1327,11 +1327,11 @@ static int state_op(VkExec *ex, const op_hdr *h) {
 //   they read or needs it unchanged (par_join_op: waits, signals, dispatches, copies, uniform updates).
 // Measured in the forest, 2026-11-12: a stretch of ~1,100 draws took 3.8 ms on the replay thread and takes 0.4 ms of it
 // (the walk); with a wait at each stretch's end, stretches under 100 draws cost more than they saved.
-// Not cut: a stretch of fewer than TOTK_PAR_MIN draws, one whose pass has no attachment, a target in the feedback layout
+// Not cut: a stretch of fewer than REKARINA_PAR_MIN draws, one whose pass has no attachment, a target in the feedback layout
 // or a 3D BC stand-in, indirect mesh draws (their count copies end the pass), a held rest or compute rest being
 // recorded, per-object motion (its lists follow the draws in order), DLSS outside OoT (the viewport jitter and the
 // camera block are noted draw by draw; OoT's DLSS hooks keep no order: vk_dlaa.c vk_dlaa_draw counts under a lock
-// and evaluate waits for the chunks, TOTK_PAR_DLSS=0 keeps them off as before), a frame dump.
+// and evaluate waits for the chunks, REKARINA_PAR_DLSS=0 keeps them off as before), a frame dump.
 static int par_dlss_bars(void) {
 #ifdef GAME_OOT
     static int ok = -1;
@@ -1341,10 +1341,11 @@ static int par_dlss_bars(void) {
     return vk_dlaa_wanted();
 }
 
+int vk_exec_mesh_emulated(void);   // vk_exec_draw.c: mesh draws run emulated, each ending the pass (mesh_emulate)
 static int par_is_draw(uint32_t op) {
     return op == OP_DRAW || op == OP_DRAW_IDX || op == OP_DRAW_IDX_IND
 #ifdef GAME_NS2
-           || op == OP_DRAW_MESH
+           || (op == OP_DRAW_MESH && !vk_exec_mesh_emulated())
 #endif
         ;
 }
@@ -1359,8 +1360,8 @@ static void par_fragment_barrier(VkCommandBuffer cb) {   // as relaxed_pass_barr
         ;
     const VkPipelineStageFlags2 dst = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT |
                                       VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
-    static int full = -1;   // DEBUG-PARBARRIER: TOTK_PAR_BARRIER=full: every stage of a chunk waits for the chunk before
-    if (full < 0) { const char *e = getenv("TOTK_PAR_BARRIER"); full = e && !strcmp(e, "full"); }
+    static int full = -1;   // DEBUG-PARBARRIER: REKARINA_PAR_BARRIER=full: every stage of a chunk waits for the chunk before
+    if (full < 0) { const char *e = cfg_env("REKARINA_PAR_BARRIER"); full = e && !strcmp(e, "full"); }
     if (full) {
         memory_barrier(cb, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_ACCESS_2_MEMORY_WRITE_BIT, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
                        VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT);
@@ -1460,7 +1461,7 @@ static int par_take_run(void) {
 
 static void par_thread(void *arg) {
     int me = (int)(intptr_t)arg;
-    sec_thread_off = 1;   // TOTK_SECTIONS times the replay thread
+    sec_thread_off = 1;   // REKARINA_SECTIONS times the replay thread
     {   // DEBUG-PROFPAR
         extern volatile uint32_t prof_par_tid[16];
         static volatile int32_t n;
@@ -1481,8 +1482,8 @@ static void par_thread(void *arg) {
 
 static int par_on(void) {
     if (PAR.threads >= 0) return PAR.chunks > 0;
-    const char *c = cfg_get("TOTK_PAR_CHUNKS");
-    int n = cfg_int("TOTK_REPLAY_THREADS");
+    const char *c = cfg_get("REKARINA_PAR_CHUNKS");
+    int n = cfg_int("REKARINA_REPLAY_THREADS");
     if (n <= 0) {   // by the processor: the game's own threads record the next frame meanwhile and keep their cores
 #ifdef GAME_OOT
         uint32_t cpus = plat_cpu_weighted();   // a slower core (Intel's efficient cores) counts half
@@ -1494,15 +1495,15 @@ static int par_on(void) {
     if (n > PAR_CHUNKS) n = PAR_CHUNKS;
     if (rt_knob("VK_RECORDER", "0")) n = 1;   // the recorder thread makes the driver calls of one command buffer at a time
     // chunks of one stretch at most: a few more than threads, so a thread that is done finds another
-    // (TOTK_PAR_CHUNKS with one thread: chunks recorded by the replay thread alone, a test of the mechanism)
+    // (REKARINA_PAR_CHUNKS with one thread: chunks recorded by the replay thread alone, a test of the mechanism)
     PAR.chunks = c && *c ? atoi(c) : n > 1 ? n + 4 : 0;
     if (PAR.chunks > PAR_CHUNKS) PAR.chunks = PAR_CHUNKS;
     if (PAR.chunks < 1) PAR.chunks = 0;
     for (int i = 0; i < PAR_CHUNKS; i++) plat_event_init(&PAR.ev[i], 0, 0);
-    const char *mn = cfg_get("TOTK_PAR_MIN"), *sp = cfg_get("TOTK_PAR_SPIN");
+    const char *mn = cfg_get("REKARINA_PAR_MIN"), *sp = cfg_get("REKARINA_PAR_SPIN");
     PAR.min_draws = mn && atoi(mn) > 0 ? atoi(mn) : PAR_MIN;
     PAR.spin = (int)plat_spin_count(sp && *sp ? (uint32_t)atoi(sp) : 3000);   // as long on any processor (platform.h)
-    const char *pe = cfg_get("TOTK_PAR_PER");
+    const char *pe = cfg_get("REKARINA_PAR_PER");
     PAR.per = pe && atoi(pe) > 0 ? atoi(pe) : 64;
     int started = 1;
     for (int i = 1; i < n; i++)
@@ -1586,7 +1587,7 @@ static const op_hdr *par_try(VkExec *ex, const op_hdr *h) {
         }
         if (op == OP_SET_RT || op == OP_END || !vk_exec_op_quiet(op)) break;
 #ifdef GAME_NS2
-        if (op == OP_DRAW_MESH_IND) break;
+        if (op == OP_DRAW_MESH_IND || op == OP_DRAW_MESH) break;   // (a direct one reaches here only emulated)
 #endif
     }
     PAR.no_from = h, PAR.no_until = e;   // whatever comes of it, the draws up to e do not ask again
@@ -1640,7 +1641,7 @@ static const op_hdr *par_try(VkExec *ex, const op_hdr *h) {
     ex->dirty = VK_EXEC_DIRTY_ALL;
     vk_exec_draw_new_cb();
     uint32_t crumb0 = 0;   // DEBUG-PARCRUMB
-    if (par_crumbs < 0) par_crumbs = cfg_get("TOTK_PAR_CRUMBS") != NULL;
+    if (par_crumbs < 0) par_crumbs = cfg_get("REKARINA_PAR_CRUMBS") != NULL;
     if (par_crumbs) {
         uint32_t sn = ++par_serial & 0xffffff;
         if (!sn) sn = ++par_serial & 0xffffff;
@@ -1748,7 +1749,7 @@ static int heldlog_n;
 static const op_hdr *exec_op_(VkExec *ex, const op_hdr *h, int depth, int holdable, int *stop);
 int vk_spike_on = -1;   // DEBUG-SPIKE: time per op kind
 static const op_hdr *exec_op(VkExec *ex, const op_hdr *h, int depth, int holdable, int *stop) {
-    if (vk_spike_on < 0) vk_spike_on = cfg_get("TOTK_SPIKE_MS") != NULL;
+    if (vk_spike_on < 0) vk_spike_on = cfg_get("REKARINA_SPIKE_MS") != NULL;
     if (!vk_spike_on) return exec_op_(ex, h, depth, holdable, stop);
     uint32_t kind = h->op;
     uint64_t a = plat_now_ns();
@@ -1879,13 +1880,13 @@ static void walk(VkExec *ex, const op_hdr *h, int depth) {
 
 // The results point of the frame's main submission (vk_sync.c "Results before the frame's end"): where the scene is
 // drawn and only its scaling, the HUD and the copy to the window remain (vk_dlaa.c calls it at the game's scaling
-// dispatch). Measured in OoT (TOTK_WBWHO): shaders write CPU-visible memory up to the last post-processing
+// dispatch). Measured in OoT (REKARINA_WBWHO): shaders write CPU-visible memory up to the last post-processing
 // dispatches before that point (the exposure's sums, culling records the game reads back, a few status words) and
 // nothing after it, and the game reads those results right after its wait for the frame, so an earlier point (the
 // first lighting pass was tried: 85 fps against 72, and a whole-frame brightness pulse every hundred frames) hands it
 // last frame's values now and then. Here the part before the point goes first, then a part of its own with the
 // write-back collected since the early one and the results signal; the occlusion slots read so far go back with it.
-// TOTK_RESULTS_FENCE=2 (test): the first pass into a scene-sized float target with the scene depth instead.
+// REKARINA_RESULTS_FENCE=2 (test): the first pass into a scene-sized float target with the scene depth instead.
 static int x_res_point;   // this submission has had its results point
 static void part_split(VkExec *ex) {
     ex->cb = vk_sync_split();
@@ -1897,10 +1898,10 @@ static void part_split(VkExec *ex) {
 }
 void vk_exec_results_point(VkExec *ex) {
     if (x_res_point || !x_here || vk_exec_ac_value || !vk_sync_results_on()) return;
-    {   // not while the GPU reads the game's live memory (vk_memory.c vk_mem_host_read_note); TOTK_RESULTS_HOST=1: anyway
+    {   // not while the GPU reads the game's live memory (vk_memory.c vk_mem_host_read_note); REKARINA_RESULTS_HOST=1: anyway
         static int anyway = -1;
         static uint64_t left_out, taken;
-        if (anyway < 0) anyway = cfg_get("TOTK_RESULTS_HOST") != NULL;
+        if (anyway < 0) anyway = cfg_get("REKARINA_RESULTS_HOST") != NULL;
         int host = vk_mem_host_read_recent();
         if (host) left_out++;
         else taken++;
@@ -1925,7 +1926,7 @@ static void results_point(VkExec *ex) {
     // set, and the base picture (no DLSS, so no scaling dispatch to take it at) waited for the whole frame at each present
     // (rt_knob only says on or off: the number is read here)
     if (mode < 0) {
-        const char *e = cfg_get("TOTK_RESULTS_FENCE");
+        const char *e = cfg_get("REKARINA_RESULTS_FENCE");
 #ifdef GAME_OOT
         mode = e && *e ? atoi(e) : 2;
 #else
@@ -1981,7 +1982,7 @@ static int run(VkExec *ex, const uint64_t *handles, int n, int *i, const op_hdr 
 // Vulkan queue, and passed over a wait whose signal a later submission of another queue records: the commands after
 // it read what that queue wrote a frame earlier. OoT submits its compute queue (~400 commands: culling,
 // light lists) before its graphics queue (~22,000); the compute queue waits for the graphics queue's early passes from
-// its 89th command on, and the graphics queue for the compute results from its ~7,800th (TOTK_EVLOG2,
+// its 89th command on, and the graphics queue for the compute results from its ~7,800th (REKARINA_EVLOG2,
 // docs/oot-architecture.md). With the compute work a frame behind, what the camera turned to was culled against the
 // last frame and missed a frame: objects and grass flickered in motion.
 // So a submission that reaches a wait no recorded signal meets yet, for a word GPU work signals (vk_exec_xfer.c
@@ -1991,7 +1992,7 @@ static int run(VkExec *ex, const uint64_t *handles, int n, int *i, const op_hdr 
 // two full barriers, until it ends or reaches the next such wait. A held rest is recorded without holding (as before)
 // when its queue submits again, when it is HELD_AGE submits old, when the CPU waits on a sync fenced after it
 // (gfx_sync_fence) and at nvnQueueFinish. Its recording copies stay meanwhile (vk_backend.c gfx_replayed_submits).
-// Synchronous replay only; TOTK_QUEUE_INTERLEAVE=1 turns it on. Off by default: with it (forest path, 2026-11-08) every
+// Synchronous replay only; REKARINA_QUEUE_INTERLEAVE=1 turns it on. Off by default: with it (forest path, 2026-11-08) every
 // second frame's mesh lists were wrong (buffer A of the game's two per-frame buffers: counts of 4096, 1084, 1600 where
 // the other frames have 244, 54, 208; 15,000 mesh groups instead of 5,000), which flickered foliage and its shadow.
 #define HELD_MAX 4
@@ -2126,8 +2127,8 @@ static void held_resume(VkExec *ex, int k, int force) {
     int sn = x_n, sc = x_cur;
     x_handles = d->handles, x_n = d->n;
     vk_usnap_held_enter(d->usnap);
-    static int64_t hl_frame = -2;   // DEBUG-HELDLOG: TOTK_HELDLOG=<frame> logs the ops of each held rest recorded then
-    if (hl_frame == -2) { const char *e = cfg_get("TOTK_HELDLOG"); hl_frame = e ? atoll(e) : -1; }
+    static int64_t hl_frame = -2;   // DEBUG-HELDLOG: REKARINA_HELDLOG=<frame> logs the ops of each held rest recorded then
+    if (hl_frame == -2) { const char *e = cfg_get("REKARINA_HELDLOG"); hl_frame = e ? atoll(e) : -1; }
     uint64_t hl_f = __atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED);
     int hl = hl_frame >= 0 && hl_f >= (uint64_t)hl_frame && hl_f <= (uint64_t)hl_frame + 1;
     heldlog_n = hl ? 0 : -1, heldlog[0] = 0;
@@ -2227,11 +2228,11 @@ int vk_exec_record(VkCommandBuffer cb, const uint64_t *handles, int n, uint64_t 
     return r;
 }
 
-// DEBUG-RUNLOG: TOTK_RUNLOG=<frame>: for each submission of that frame with 200 draws or more, the runs of draws that no
+// DEBUG-RUNLOG: REKARINA_RUNLOG=<frame>: for each submission of that frame with 200 draws or more, the runs of draws that no
 // other kind of op interrupts (state and bind ops do not), and what interrupts them
 static void runlog(const uint64_t *handles, int n) {
     static int64_t want = -1;
-    if (want < 0) { const char *e = cfg_get("TOTK_RUNLOG"); want = e ? atoll(e) : 0; }
+    if (want < 0) { const char *e = cfg_get("REKARINA_RUNLOG"); want = e ? atoll(e) : 0; }
     if (!want || __atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED) != (uint64_t)want) return;
     uint32_t hist[8] = {0}, dhist[8] = {0}, breaks[64] = {0}, run = 0, draws = 0, ops = 0, runs = 0;
     static const uint32_t edge[8] = {1, 4, 16, 64, 128, 256, 512, 0xffffffffu};
@@ -2277,7 +2278,7 @@ static int exec_record_(VkCommandBuffer cb, const uint64_t *handles, int n, uint
     if (!x_ready) state_reset(ex), vk_dump_init(), x_ready = 1;
     if (interleave < 0) {
         interleave = rt_knob("QUEUE_INTERLEAVE", "1");
-        rt_log("vk: queues interleaved at their event waits: %s (TOTK_QUEUE_INTERLEAVE)", interleave ? "on" : "off");
+        rt_log("vk: queues interleaved at their event waits: %s (REKARINA_QUEUE_INTERLEAVE)", interleave ? "on" : "off");
     }
     const tex_t *keep[9 * (1 + HELD_MAX)];   // the render targets carry over (set_rt compares them by pointer)
     int nkeep = 0;
@@ -2350,7 +2351,7 @@ static int exec_record_(VkCommandBuffer cb, const uint64_t *handles, int n, uint
     {   // DEBUG-EVLOG2: where each submission of the logged frames ends
         static int on = -1;
         static uint64_t f0 = 900;
-        if (on < 0) { const char *e = cfg_get("TOTK_EVLOG2"); on = e != NULL; if (e && atoll(e) > 1) f0 = (uint64_t)atoll(e); }
+        if (on < 0) { const char *e = cfg_get("REKARINA_EVLOG2"); on = e != NULL; if (e && atoll(e) > 1) f0 = (uint64_t)atoll(e); }
         uint64_t f = __atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED);
         if (on && f >= f0 && f <= f0 + 5)
             rt_log("EVLOG2 end fence %llu frame %llu rec %llu pass %u", (unsigned long long)fence, (unsigned long long)f,

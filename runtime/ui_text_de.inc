@@ -113,8 +113,8 @@
     [UI_MENU_UPSCALE_GROUP] = "Upscaling und Frame Generation",
     [UI_MENU_FSR_VERSION] = "FSR-Version",
     [UI_MENU_FSR_VERSION_DESC] = "Welcher AMD-FSR-Upscaler läuft, wenn der zeitliche Upscaler AMD FSR ist. Automatisch nimmt FSR 4.1 (maschinelles Lernen) auf Radeon-Karten, die es unterstützen, und FSR 3.1 auf allen anderen. Wirkt sofort.",
-    [UI_MENU_TAA] = "Temporaler Upscaler",
-    [UI_MENU_TAA_DESC] = "Welchen Upscaler die Zeile DLSS / DLAA verwendet: NVIDIA DLSS (RTX-GPUs) oder AMD FSR (jede GPU). Nach einem Neustart.",
+    [UI_MENU_TAA] = "Upscaler",
+    [UI_MENU_TAA_DESC] = "Welchen Upscaler die Zeile DLSS / DLAA verwendet: NVIDIA DLSS (RTX-GPUs), AMD FSR (jede GPU, temporal) oder AMD FSR 1 (jede GPU, räumlich: der leichteste, für ältere Karten und Handhelds). Nach einem Neustart.",
     [UI_MENU_FRAMEGEN] = "Frame Generation",
     [UI_MENU_FRAMEGEN_DESC] = "Ein erzeugtes Bild zwischen je zwei Bildern, die das Spiel zeichnet; das HUD bleibt davon ausgenommen: AMD FSR auf jeder GPU, NVIDIA DLSS auf den Serien RTX 40 und 50. Nach einem Neustart.",
     [UI_MENU_FRAMEGEN_NEEDS] = "Braucht eingeschaltetes DLSS / DLAA: Es nutzt dessen Bewegungsvektoren.",
@@ -232,14 +232,16 @@
                              "die Maus für die Kamera. Das Spiel liest seine Symbole beim Start, sie ändern sich also "
                              "nach einem Neustart. Sie gehören zu den Spieldateien: Ein Knopf, den du unter Steuerung "
                              "umbelegst, behält auf dem Bildschirm sein altes Symbol.",
-    [UI_MENU_PROMPTS_DESC_LIVE] = "Welche Tasten die Knopfsymbole des Spiels zeigen: Nintendo (die des Spiels), Xbox, PlayStation, Rekarinas eigener Satz mit Umrisslinien oder PC: Tastatur und Maus mit den Tasten, die du belegt hast. Die Tastenreihe oben zeigt den gewählten Satz so, wie das Spiel ihn zeichnet. Die Aktionstasten richten sich nach der Tastenbelegung darüber. Gilt sofort.",
+    [UI_MENU_PROMPTS_DESC_LIVE] = "Welche Tasten die Knopfsymbole des Spiels zeigen. Automatisch folgt dem Gerät, auf dem du zuletzt etwas gedrückt hast: Tastatur und Maus oder die Tasten des Controllers selbst (Xbox, PlayStation, Nintendo; ein Steam Deck oder ein Windows-Handheld zeigt Xbox). Oder immer ein Satz: Nintendo (die des Spiels), Xbox, PlayStation, Rekarina (Xbox-Namen auf den Tastenformen des Spiels) oder PC: Tastatur und Maus mit den Tasten, die du belegt hast. Die Tastenreihe oben zeigt den Satz so, wie das Spiel ihn zeichnet. Die Aktionstasten richten sich nach der Tastenbelegung darüber. Gilt sofort.",
     [UI_MENU_PROMPTS_NINTENDO] = "Nintendo", [UI_MENU_PROMPTS_XBOX] = "Xbox", [UI_MENU_PROMPTS_PC] = "PC", [UI_MENU_PROMPTS_PS] = "PlayStation", [UI_MENU_PROMPTS_RK] = "Rekarina",
+    [UI_MENU_PROMPTS_AUTO] = "Automatisch",
     [UI_MENU_PROMPTS_MISSING] = "Symboldateien fehlen: Setup erneut ausführen",
     [UI_MENU_PROMPTS_FAILED] = "Symboldateien beschädigt: Setup erneut ausführen",
     [UI_MENU_PROMPTS_RESTART] = "Symbole ändern sich nach Neustart",
+    [UI_MENU_PROMPTS_LIVE_PARTIAL] = "Sofort geändert. Tasten, die das Spiel schon gezeichnet hat, und der Aktionshinweis unten behalten ihr altes Aussehen bis zum Neustart.",
     [UI_MENU_PROMPTS_OFF_SHAPE] = "aus bei Spielauflösung ungleich 16:9",
     [UI_MENU_PROMPTS_OFF_MODS] = "aus: eine RomFS-Mod ersetzt ihre Dateien",
-    [UI_MENU_PROMPTS_OFF_PATCHES] = "aus, solange TOTK_ROMFS_PATCHES gesetzt ist",
+    [UI_MENU_PROMPTS_OFF_PATCHES] = "aus, solange REKARINA_ROMFS_PATCHES gesetzt ist",
     [UI_MENU_RESTART] = "Jetzt neu starten",
     [UI_MENU_RESTART_DESC] = "Schließt das Spiel und startet es mit den neuen Symbolen wieder. Der Fortschritt seit "
                              "deinem letzten Speichern geht verloren.",
@@ -252,12 +254,25 @@
     [UI_MENU_STICK_DEADZONE_NOW] = "Stick jetzt: %.0f %%",
     [UI_MENU_MOUSE_MODE] = "Mauskamera",
     [UI_MENU_MOUSE_MODE_DESC] = "Direkt: Die Kamera dreht sich so weit, wie sich die Maus bewegt, wie in einem PC-Spiel, ohne Totzone oder Kurve des Sticks (Spiel 1.4.3; andere Versionen nutzen die Stick-Emulation). Stick-Emulation: Die Maus wirkt als rechter Stick.",
+    [UI_MENU_FAST_TEXT] = "Schnellere Dialoge",
+    [UI_MENU_FAST_TEXT_DESC] = "Lässt die Pausen weg, die die Texte des Spiels zwischen den Sätzen machen, sodass der Text ohne Halt durchläuft.",
+    [UI_MENU_MOUSE_MODE_DESC_OOT] = "Direkt: Die Kamera dreht sich genau so weit, wie die Maus bewegt wird, bei jeder Geschwindigkeit, ohne Totzone, Kurve oder Höchstgeschwindigkeit des Sticks. Stick-Emulation: Die Maus wirkt wie der rechte Stick, mit dessen Kurve und Höchstgeschwindigkeit.",
     [UI_MENU_MOUSE_STICK] = "Stick-Emulation",
     [UI_MENU_MOUSE_DIRECT] = "Direkt",
     [UI_MENU_MENU_CURSOR] = "Maus in den Spielmenüs",
     [UI_MENU_MENU_CURSOR_DESC] = "In den Menüs des Spiels (Titel, Inventar, Läden, Dialogauswahl) erscheint der Mauszeiger: Der Eintrag darunter wird ausgewählt, Linksklick bestätigt, Rechtsklick geht zurück. Nur wenn zuletzt die Maus oder eine Taste benutzt wurde, mit einem Gamepad bleiben die Menüs also unverändert (Spiel 1.4.3).",
     [UI_MENU_MOUSE_SENS] = "Mausempfindlichkeit (Kamera)",
     [UI_MENU_MOUSE_SENS_DESC] = "Wie schnell die Maus die Kamera dreht.",
+    [UI_MENU_MOUSE_SENS_Y] = "Vertikale Mausgeschwindigkeit",
+    [UI_MENU_MOUSE_SENS_Y_DESC] = "Wie schnell sich die Kamera dreht, wenn die Maus nach oben und unten bewegt wird, im "
+                                  "Vergleich zu links und rechts: 0.50 ist halb so schnell, 1.00 gleich schnell.",
+    [UI_MENU_MOUSE_INVERT_Y] = "Maus vertikal umkehren",
+    [UI_MENU_MOUSE_INVERT_Y_DESC] = "Vertauscht oben und unten für die Mauskamera. Nur die Maus: Die Kameraoptionen des "
+                                    "Spiels gelten weiterhin.",
+    [UI_MENU_MOUSE_RAW] = "Rohe Mauseingabe",
+    [UI_MENU_MOUSE_RAW_DESC] = "An: Die Kamera folgt der Bewegung der Maus selbst, ohne Zeigergeschwindigkeit und "
+                               "-beschleunigung von Windows. Aus: Sie folgt dem Mauszeiger, mit beidem, wie auf dem "
+                               "Desktop (etwa mit einem Touchpad).",
     [UI_MENU_WALK_KEY] = "Gehen-Taste",
     [UI_MENU_WALK_KEY_DESC] = "Halte sie, um die Sticks der Tastatur nur teilweise zu neigen, sodass die Tastatur geht "
                               "statt rennt. Die Gehstärke legt fest, wie weit. Controller und Maus sind nicht betroffen.",

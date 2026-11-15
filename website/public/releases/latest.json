@@ -1,0 +1,30 @@
+{
+ "tag_name": "v1.1.0",
+ "name": "Rekarina 1.1.0",
+ "html_url": "https://rekarina.dev/",
+ "body": "Rekarina 1.1.0\n\nNew\n- Saves: the launcher's Saves page brings a save in from another port of the game or from an emulator (Ryujinx and\n  its forks, the yuzu family), or from a folder or .zip you pick. The save it replaces is kept and comes back with\n  one press.\n- Raw mouse camera: the camera turns exactly as far as the mouse moves, with no stick curve or dead zone; swimming\n  turns at the same speed. Mouse sensitivity, a separate vertical speed and an invert switch in the menu.\n- FSR 1 on the 3D scene (the menu's Upscaler row): a smaller scene scaled up, at the same small cost on any GPU. The\n  launcher picks it first on built-in graphics and on 4 GB cards.\n- Trees, bushes and grass on GPUs without mesh shaders, and the short grass on AMD's Windows driver.\n- HD rumble for the console's own controllers (Pro Controller, Joy-Con).\n- Every cutscene can be skipped, the three the console keeps unskippable included.\n- Faster dialogue (Game tab, off by default): the text runs on without the pauses between phrases.\n- Button prompts follow the device you use, as you switch between them: the text prompts at once, the action hint\n  at the bottom of the screen with its next action. The keyboard and mouse set is drawn anew.\n- Handheld PCs: a handheld profile (ROG Ally, Legion Go, MSI Claw) and the game's own handheld mode on a Steam Deck.\n\nFixed\n- The whites of the hero's eyes were cyan (a shader translation error; 393 shaders are translated again once).\n- Dark frames and objects without sunlight for a moment while the camera turned.\n- The mouse camera jerked; under water it changed speed and stuttered.\n- A game folder made by the launcher showed the console's button prompts for the keyboard and could not change\n  prompt sets while the game ran.\n- Where DLSS cannot run, FSR takes its place; a saved GPU that is gone gives the best one instead.\n- Keyboard keys showed around a gamepad's buttons in the action hint.\n- In the settings menu a gamepad's X and Y switched things on their own, and the game could close after the menu was\n  left with Alt+Tab.\n\nKnown issues\n- AMD GPUs have been run on one integrated Radeon only; Intel GPUs, a Steam Deck and a ROG Ally have not been run.\n- There is no Linux release yet.\n",
+ "assets": [
+  {
+   "name": "Rekarina-Setup-1.1.0-windows.zip",
+   "browser_download_url": "https://dl.rekarina.dev/releases/1.1.0/Rekarina-Setup-1.1.0-windows.zip",
+   "size": 152195847,
+   "digest": "sha256:ff1978862f08059a3883234c6b794c1e711c190f982d6242f0114439de236d10"
+  },
+  {
+   "name": "Rekarina.exe",
+   "browser_download_url": "https://dl.rekarina.dev/releases/1.1.0/Rekarina.exe",
+   "size": 152218211,
+   "digest": "sha256:b0b25de794cf0c731c99ee61bd2e5525294f733ceac359bbc3436f91f012dafc"
+  },
+  {
+   "name": "SHA256SUMS",
+   "browser_download_url": "https://dl.rekarina.dev/releases/1.1.0/SHA256SUMS",
+   "size": 178
+  },
+  {
+   "name": "SHA256SUMS.sig",
+   "browser_download_url": "https://dl.rekarina.dev/releases/1.1.0/SHA256SUMS.sig",
+   "size": 129
+  }
+ ]
+}

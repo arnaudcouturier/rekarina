@@ -1,4 +1,4 @@
-# The generated chunks of OoT 1.1.1 that hold the game's hottest functions in play (a sampling profile of every thread in forest village, 2026-11-10): build_game.py compiles them at -O2 (TOTK_HOT_OBJS), the other chunks stay at -O1.
+# The generated chunks of OoT 1.1.1 that hold the game's hottest functions in play (a sampling profile of every thread in forest village, 2026-11-10): build_game.py compiles them at -O2 (REKARINA_HOT_OBJS), the other chunks stay at -O1.
 main_0001.o
 main_0004.o
 main_0005.o

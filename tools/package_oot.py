@@ -1,18 +1,22 @@
-"""Package the OoT (Switch 2) build into a folder to play from: Rekarina.exe and what it reads beside itself.
+"""Package the OoT (Switch 2) build into a folder to play from: Rekarina.exe (Rekarina on Linux) and what it reads beside
+itself.
 
 The folder holds the exe and its DLLs, the shader translator, the prepared shader and pipeline files, the ExeFS the
 exe loads (the uncompressed one, tools/nso_plain.py), the Nintendo extension shared fonts of each prompt style
 (tools/make_ext_font.py), the RomFS overlays (tools/make_oot_prompts.py: stand-ins for the dump's damaged textures, Xbox prompts) and a rekarina.ini that names the player's
-.nup as the RomFS (runtime/main.c portable_paths: TOTK_ROMFS) with prompts = xbox and the frame limit at the monitor's
+.nup as the RomFS (runtime/main.c portable_paths: REKARINA_ROMFS) with prompts = auto and the frame limit at the monitor's
 rate (runtime/frame_rate.c, at most 240). The RomFS stays in the .nup. Saves go to <folder>/profile. An existing
 rekarina.ini is kept (the player's settings; a totk.ini of an earlier package becomes it), as are profile and the shader cache's new entries. A new rekarina.ini also
 gets the --set lines: the setup's first graphics settings for the machine's graphics card (installer/components.py
 preset).
 
+On Linux the game and the translator have no suffix, and --lib names the libraries the game finds beside itself (the
+release's libSDL3.so.0: tools/build_game.py links against the Steam Runtime sysroot with an $ORIGIN rpath).
+
 The folder contains game code and data derived from the player's game: for their own machines only.
 
     .venv/Scripts/python tools/package_oot.py --nup <container> [--build build/oot] [--exefs ../build/oot/exefs-plain]
-                                              [--out ../OoT] [--prompts xbox] [--lang ru]
+                                              [--out ../OoT] [--prompts auto] [--lang ru]
                                               [--set key=value ...] [--preset-note TEXT]
 """
 import argparse
@@ -24,6 +28,8 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+WIN = os.name == 'nt'
+EXE = '.exe' if WIN else ''
 # nvngx_dlss.dll and AMD's FSR libraries (the loader with its two effect libraries, or the single amd_fidelityfx_vk.dll
 # of an older SDK) are loaded at run time for DLSS and FSR, when they are beside the exe
 # ... and Streamline's for DLSS Frame Generation, with our library between the game and Streamline (runtime/dlssg, built
@@ -39,10 +45,17 @@ RENAMED = {'totk_dlssg.dll': 'rekarina_dlssg.dll'}   # build name -> the name in
 OLD_NAMES = ('totk_xlate.exe', 'totk_xlate.id', 'totk_dlssg.dll')
 STATE = ('pipeline-cache.bin', 'pipeline-keys.bin', 'shader-answers.bin', 'shader-programs.bin', 'shader-prepared.bin',
          'shader-prepare-skip.txt')   # the last: variants the driver does not finish building (runtime/vk_pipeline.c)
+# Every overlay folder tools/make_oot_prompts.py writes, and the files beside them that runtime/romfs.c reads: the sets'
+# cmap tables for changing prompts in the running game (prompts-live.bin), the settings menu's previews
+# (prompt-previews.bin) and the keyboard set's bound keys (prompts-keys.bin). Until 2026-11-15 the keyboard set's
+# folder and those three files stayed in the build folder: a setup's game showed the Switch prompts for the keyboard and
+# could not change sets while it ran (a player's report that not every button switched).
 FOLDERS = ('romfs-patches', 'romfs-patches-xbox', 'romfs-patches-xbox-label', 'romfs-patches-playstation',
            'romfs-patches-playstation-label', 'romfs-patches-rekarina', 'romfs-patches-rekarina-label',
+           'romfs-patches-pc', 'romfs-patches-fasttext',
            'shared-fonts-switch', 'shared-fonts-xbox',
            'shared-fonts-xbox-label')
+PROMPT_FILES = ('prompts-live.bin', 'prompt-previews.bin', 'prompts-keys.bin', 'prompts-hint.bin')
 
 
 def copy(src, dst):
@@ -71,13 +84,13 @@ def graphics_text(settings, note):
     lines = ['', '[graphics]',
              '# First settings for this machine' + (f' ({note})' if note else '') + '. The setup wrote them once, with this',
              '# new file, and never changes them again: set them here or in the settings menu of the game.',
-             '# dlaa = 1 switches the temporal upscaler on (taa: dlss or fsr3; dlss: dlaa, quality, balanced, performance);',
+             '# dlaa = 1 switches the upscaler on (taa: dlss, fsr3 or fsr1, the spatial one; dlss: dlaa, quality, balanced, performance);',
              '# framegen: off, fsr3 or dlss (needs dlaa = 1); tex_quality: auto, full, half, quarter.']
     return '\n'.join(lines + [f'{k} = {v}' for k, v in settings]) + '\n'
 
 
 def ini_text(nup, prompts, lang, settings=(), note=''):
-    return f"""# rekarina.ini: the settings of Rekarina. The settings menu of the game (F1) writes this file too. A TOTK_*
+    return f"""# rekarina.ini: the settings of Rekarina. The settings menu of the game (F1) writes this file too. A REKARINA_*
 # environment variable named after a key overrides its line.
 
 [paths]
@@ -101,7 +114,8 @@ realtime = 1
 astc_bc = 1
 
 [input]
-# Button prompts: nintendo (the game's own), xbox, playstation or rekarina (Rekarina's own outlined set, Xbox names).
+# Button prompts: auto (the controller or the keyboard you used last, changed while the game runs), nintendo (the
+# game's own), xbox, playstation, rekarina (Xbox names on the game's own button shapes) or pc (the keyboard and mouse).
 prompts = {prompts}
 
 [language]
@@ -116,9 +130,10 @@ def main():
     ap.add_argument('--nup', type=Path, required=True, help="the player's .nup")
     ap.add_argument('--build', type=Path, default=ROOT / 'build' / 'oot')
     ap.add_argument('--exefs', type=Path, default=ROOT.parent / 'build' / 'oot' / 'exefs-plain')
-    ap.add_argument('--xlate', type=Path, default=ROOT / 'build' / 'xlate' / 'totk_xlate.exe')
+    ap.add_argument('--xlate', type=Path, default=ROOT / 'build' / 'xlate' / ('totk_xlate' + EXE))
+    ap.add_argument('--lib', type=Path, action='append', default=[], help='a library to put beside the game (Linux: libSDL3.so.0)')
     ap.add_argument('--out', type=Path, default=ROOT.parent / 'OoT')
-    ap.add_argument('--prompts', default='xbox', choices=('xbox', 'nintendo', 'playstation', 'rekarina'))
+    ap.add_argument('--prompts', default='auto', choices=('auto', 'xbox', 'nintendo', 'playstation', 'rekarina'))
     ap.add_argument('--lang', default='ru', help='the game language for the new rekarina.ini (Switch code)')
     ap.add_argument('--set', action='append', default=[], metavar='KEY=VALUE',
                     help='a line for the [graphics] section of a new rekarina.ini (a key of runtime/cfg.c, lower case)')
@@ -131,7 +146,8 @@ def main():
             sys.exit(f'package_oot: --set {item}: not key=value')
         settings.append(m.groups())
     build, out = a.build.resolve(), a.out.resolve()
-    need = [build / 'totk.exe', a.xlate, a.exefs / 'main', a.exefs / 'main.npdm', a.nup] + [build / d for d in FOLDERS]
+    need = [build / ('rekarina' + EXE), a.xlate, a.exefs / 'main', a.exefs / 'main.npdm', a.nup] + [build / d for d in FOLDERS] + \
+        [build / f for f in PROMPT_FILES] + a.lib
     missing = [str(p) for p in need if not p.exists()]
     if missing:
         sys.exit('package_oot: missing: ' + ', '.join(missing))
@@ -139,11 +155,13 @@ def main():
         sys.exit('package_oot: --out must not be the build dir')
 
     out.mkdir(parents=True, exist_ok=True)
-    copy(build / 'totk.exe', out / 'Rekarina.exe')
+    copy(build / ('rekarina' + EXE), out / ('Rekarina' + EXE))
     for d in DLLS:
         if (build / d).exists():
             copy(build / d, out / RENAMED.get(d, d))
-    copy(a.xlate, out / 'rekarina_xlate.exe')
+    for lib in a.lib:
+        copy(lib, out / lib.name)
+    copy(a.xlate, out / ('rekarina_xlate' + EXE))
     if a.xlate.with_suffix('.id').exists():   # the translator identity is this file's content: the shader cache stays valid
         copy(a.xlate.with_suffix('.id'), out / 'rekarina_xlate.id')
     for old in OLD_NAMES:   # what a package made before the files were renamed left in the folder
@@ -152,6 +170,8 @@ def main():
     for f in STATE:
         if (build / f).exists():
             copy(build / f, out / f)
+    for f in PROMPT_FILES:
+        copy(build / f, out / f)
     # The pipelines the release's makers met in play (runtime/vk_pipeline.c keys_seed): hashes and render state only.
     # The game builds them at its start, so a first run does not build each at its first draw.
     if SEED_KEYS.is_file():
@@ -175,7 +195,7 @@ def main():
         note = re.sub(r'[^\x20-\x7e]', '?', a.preset_note)   # one comment line, whatever the card calls itself
         ini.write_bytes(ini_text(a.nup.resolve(), a.prompts, a.lang, settings, note).encode('utf-8'))
     size = sum(f.stat().st_size for f in out.rglob('*') if f.is_file())
-    print(f'package_oot: {out}: Rekarina.exe and {n} files in folders, {size / 2**30:.2f} GiB')
+    print(f'package_oot: {out}: Rekarina{EXE} and {n} files in folders, {size / 2**30:.2f} GiB')
 
 
 if __name__ == '__main__':

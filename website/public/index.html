@@ -46,11 +46,11 @@
     <div>
       <h1 class="rv"><img src="assets/logo-cream.png" alt="Rekarina" width="1040" height="192"></h1>
       <p class="lead rv d1"><b>A native PC port</b> made by static recompilation, not emulation.</p>
-      <p class="sub rv d1">Built on your own PC from your own copy of the game: 100+ fps, a sharp native picture, DLSS and FSR.</p>
+      <p class="sub rv d1">Built on your own PC from your own copy of the game: 100+ fps, a sharp native picture, DLSS and FSR, a mod manager and save import.</p>
       <div class="get rv d2" id="release">
         <!-- release:hero -->
-        <a class="plate play cursor" href="https://discord.gg/6N8PKr9zZA" rel="noopener">Join the Discord</a>
-        <span class="meta">The first public release is on its way. It will be announced on the Discord server, and the download will be here.</span>
+        <a class="plate play cursor" href="/download">Download for Windows</a>
+        <span class="meta">Rekarina.exe &middot; version 1.1.0 &middot; 152 MB &middot; Windows 10 or 11, 64-bit</span>
         <!-- /release:hero -->
         <div class="more">
           <a class="plate" href="#install">How it works</a>
@@ -73,13 +73,17 @@
         <li><h3>Native code, not emulation</h3><p>100+ fps where the console runs at 60, with a frame limit up to 240 or the monitor's rate. There is no CPU emulator and no JIT at run time.</p></li>
         <li><h3>Smooth above 60 fps</h3><p>The game's own clock follows real time, and the places where it counted frames are corrected: water ripples, the pick-up counter, physics steps on moving platforms, movie cutscenes.</p></li>
         <li><h3>A sharp native picture</h3><p>At any 16:9 resolution, plus 21:9 and 32:9 with the camera and the interface in that shape.</p></li>
-        <li><h3>DLSS, DLAA and FSR 3.1</h3><p>NVIDIA DLSS / DLAA and DLSS Frame Generation; AMD FSR 3.1 upscaling and frame generation on any GPU. The launcher fetches each vendor's library from its official repository; nothing of theirs is bundled.</p></li>
+        <li><h3>DLSS, DLAA and FSR 4.1</h3><p>NVIDIA DLSS and DLAA with a choice of model, and DLSS Frame Generation on RTX 40 and 50 cards. AMD FSR 4.1 on the Radeon cards that run it and FSR 3.1 on any other GPU, both with frame generation. For older cards and handhelds, AMD FSR 1 scales a smaller 3D scene up without motion vectors or history, at the same small cost on every GPU. The launcher fetches each vendor's library from its official repository; nothing of theirs is bundled.</p></li>
+        <li><h3>Your save comes along</h3><p>The launcher's Saves page finds a save in the folders of another port of the game or of an emulator, or takes one from a folder or a .zip you pick, and copies it into the game. The save it replaces is kept, and one press brings it back.</p></li>
+        <li><h3>Mods, with a manager</h3><p>Turn mods on and off and set their order in the launcher or on the game's own Mods tab; add one from a .zip or a folder. Texture, model and text mods load as they are, cheats turn on one by one, and code patches (.ips, .pchtxt) are built into the game by a rebuild of a few minutes that keeps saves, settings and shaders.</p></li>
         <li><h3>Settings that apply while you play</h3><p>The in-game menu (Esc or F1) is drawn in the game's own menu style, with a live picture beside the rows, so a change to the render scale, sharpening, colour or frame limit shows at once.</p></li>
-        <li><h3>Button prompts for your pad</h3><p>Xbox and PlayStation pads, the console's own layout, a set drawn for this port, and the keyboard and mouse. They change in the running game, and the keyboard prompts follow the keys you bind.</p></li>
+        <li><h3>Your pad, or the keyboard and mouse</h3><p>Xbox and PlayStation pads, and the console's own controllers with HD rumble and gyro. The mouse turns the camera by raw input, exactly as far as you move it, with its own speed for each axis. The button prompts follow the device you use, change in the running game, and the keyboard prompts show the keys you bind.</p></li>
+        <li><h3>Older cards and built-in graphics</h3><p>The launcher picks the first settings from your GPU and its video memory. FSR 1 scales a smaller scene up for built-in graphics and 4 GB cards, and the trees, bushes and grass are drawn on GPUs without mesh shaders.</p></li>
+        <li><h3>Skip what you have seen</h3><p>Every cutscene can be skipped, the three the console keeps unskippable included. An option runs the dialogue on without the pauses between phrases.</p></li>
         <li><h3>Voice acting, music and movies</h3><p>As on the console: Opus voice lines in nine languages, AV1 cutscenes.</p></li>
-        <li><h3>A launcher with updates</h3><p>It builds the game, shows each step with the time it takes, and installs new releases; the game itself tells you when one is out.</p></li>
+        <li><h3>A launcher with updates</h3><p>It builds the game, shows each step with the time it takes, and installs new releases after checking their signature, rebuilding only what changed; the game itself tells you when one is out.</p></li>
       </ul>
-      <p class="also">Also: first settings chosen from your GPU and its video memory, the menu and the launcher in every language the game has, RomFS mods from a folder, HDR10 output (experimental), a performance overlay (F10).</p>
+      <p class="also">Also: a texture cache, so ground you have crossed before streams in with far fewer hitches; the menu and the launcher in every language the game has; HDR10 output (experimental); a performance overlay (F10); Discord Rich Presence (off by default). Rekarina is free software under the GPL-3.0.</p>
     </div>
   </div>
 </section>
@@ -129,13 +133,29 @@
   </div>
 </section>
 
+<section class="block" id="launcher">
+  <div class="in">
+    <h2 class="rv">Saves and mods</h2>
+    <div class="two">
+      <div class="rv">
+        <figure class="pv"><img src="assets/launcher-saves.jpg" alt="The launcher's Saves page: two saves found in other programs' folders, with their slots and dates, and the plates Import, Choose folder, Choose .zip, Restore previous and Open folder" width="1120" height="700" loading="lazy"></figure>
+        <p class="cap">The Saves page lists the saves the launcher found, newest first. <b>Import</b> copies one into the game folder and leaves the original as it was; <b>Choose folder</b> and <b>Choose .zip</b> take a save from anywhere else, and <b>Restore previous</b> brings back the save it replaced.</p>
+      </div>
+      <div class="rv d1">
+        <figure class="pv"><img src="assets/launcher-mods.jpg" alt="The launcher's Mods page: six mods that are on, off, waiting for a rebuild or not supported, and the plates to add, order, remove and rebuild" width="1120" height="700" loading="lazy"></figure>
+        <p class="cap">The Mods page shares its list with the game's Mods tab. The higher mod wins a file two mods change; a mod with a code patch waits for <b>Rebuild</b>, and one that brings compiled code of its own is marked as not supported.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
 <section class="block" id="requirements">
   <div class="in">
     <h2 class="rv">Requirements</h2>
     <div class="panel req rv">
       <div class="row head"><div class="l"></div><div class="c">Minimum</div><div class="c">Recommended</div></div>
       <div class="row"><div class="l">System</div><div class="c">Windows 10 or 11, 64-bit</div><div class="c">Windows 11</div></div>
-      <div class="row"><div class="l">GPU</div><div class="c">Vulkan 1.3 with mesh shaders, 6 GB</div><div class="c">NVIDIA RTX with 8 GB or more</div></div>
+      <div class="row"><div class="l">GPU</div><div class="c">Vulkan 1.3, 6 GB</div><div class="c">NVIDIA RTX with 8 GB or more</div></div>
       <div class="row"><div class="l">CPU</div><div class="c">6 cores with AVX2</div><div class="c">8 cores</div></div>
       <div class="row"><div class="l">Memory</div><div class="c">16 GB</div><div class="c">32 GB</div></div>
       <div class="row"><div class="l">Disk</div><div class="c wide">30 GB free on an SSD (the game, its shader caches and the build)</div></div>
@@ -152,17 +172,21 @@
         <h3>How you know a download is ours</h3>
         <p>Every release is signed with the project's key. The launcher installs an update only when that signature fits, so a changed file is refused wherever it came from.</p>
         <!-- release:sums -->
-        <p>Rekarina.exe has no code-signing certificate, so Windows SmartScreen shows an &ldquo;unknown publisher&rdquo; page until enough people have run the file. With the first release, this page will list the SHA-256 of each file to compare.</p>
+        <p>Rekarina.exe has no code-signing certificate, so Windows SmartScreen shows an &ldquo;unknown publisher&rdquo; page until enough people have run the file. To be sure the file is the one published here, compare its SHA-256 with the line below.</p>
+        <div class="sum"><b>SHA-256 of Rekarina.exe 1.1.0</b><code>b0b25de794cf0c731c99ee61bd2e5525294f733ceac359bbc3436f91f012dafc</code></div>
+        <p class="how">In a terminal: <code>certutil -hashfile Rekarina.exe SHA256</code></p>
         <!-- /release:sums -->
       </div>
       <div class="issues panel rv d1">
         <h3>Known issues</h3>
         <ul>
-          <li><b>AMD GPUs</b> have been run on one integrated Radeon only. Short grass is not drawn there yet.</li>
+          <li><b>AMD GPUs</b> have been run on one integrated Radeon only. A discrete Radeon, a Steam Deck and a ROG Ally have not been run.</li>
           <li><b>Intel GPUs</b> have never been run.</li>
+          <li>On GPUs without mesh shaders the trees, bushes and grass are drawn by a compute stand-in; it has been checked on an NVIDIA card with mesh shaders turned off, not yet on such a GPU.</li>
           <li>The first frames after a loading screen can hitch for a quarter of a second.</li>
+          <li>With another program holding most of the video memory (a video editor, a second game) the frame rate collapses; the game says so at the top of the screen.</li>
           <li>HDR10 output is experimental and off by default.</li>
-          <li>Linux is not supported yet.</li>
+          <li>Linux: the setup builds the game on Linux in development, but there is no Linux release yet and it has not been played on a Linux PC or a Steam Deck.</li>
         </ul>
         <a class="plate" href="https://discord.gg/6N8PKr9zZA" rel="noopener">Ask on Discord</a>
         <p class="cap">One post per problem in the help forum, with the log file from the <code>logs</code> folder beside the game.</p>
@@ -179,7 +203,7 @@
       <img src="assets/logo-band.png" alt="Rekarina" width="360" height="66">
       <p>Rekarina is an independent, non-commercial fan project. It is not affiliated with, endorsed by or sponsored by the game's publisher or any platform holder. All trademarks belong to their owners.</p>
       <p>This site hosts no game files, dumps or keys. You need your own copy of the game.</p>
-      <p>Rekarina stands on <a href="https://github.com/valentderah/totk-pc-recomp" rel="noopener">the recompiler</a> by Valiantsin Dzerakh. Rekarina is free software under the GNU General Public License, version 3. This site sets no cookies and loads nothing from other sites.</p>
+      <p>Rekarina stands on <a href="https://github.com/valentderah/totk-pc-recomp" rel="noopener">the recompiler</a> by Valiantsin Dzerakh. Rekarina is free software under the <a href="https://www.gnu.org/licenses/gpl-3.0.html" rel="noopener">GNU General Public License, version 3</a> (GPL-3.0). This site sets no cookies and loads nothing from other sites.</p>
     </div>
     <nav aria-label="Links">
       <a href="https://discord.gg/6N8PKr9zZA" rel="noopener">Discord</a>

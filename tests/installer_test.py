@@ -1,5 +1,5 @@
 """installer/ bookkeeping with fake steps: fresh install, resume after a failure or cancel, transient steps, update
-with a newer release, totk.ini and the event stream. No game files, no tools; stdlib only.
+with a newer release, rekarina.ini and the event stream. No game files, no tools; stdlib only.
 
 Run: python tests/installer_test.py
 """
@@ -198,6 +198,16 @@ class RunnerTest(unittest.TestCase):
             state.load(self.bed.dest)
         self.assertEqual(e.exception.id, 'state.newer_format')
 
+    def test_state_old_name(self):
+        # a folder set up before the rename keeps its record under totk-install.json: read, then replaced
+        self.bed.dest.mkdir()
+        (self.bed.dest / state.OLD_NAME).write_text(json.dumps({'format': 1, 'release': 'old', 'steps': {'extract': {}}}))
+        data = state.load(self.bed.dest)
+        self.assertEqual(data['release'], 'old')
+        state.save(self.bed.dest, data)
+        self.assertTrue((self.bed.dest / state.NAME).is_file())
+        self.assertFalse((self.bed.dest / state.OLD_NAME).exists())
+
 
 class ReleaseFilesTest(unittest.TestCase):
     def test_release_ships_every_tool_the_steps_run(self):
@@ -348,7 +358,7 @@ class IniTest(unittest.TestCase):
     def test_write_keeps_user_lines(self):
         with tempfile.TemporaryDirectory() as d:
             d = Path(d)
-            example = d / 'totk.ini.example'
+            example = d / 'rekarina.ini.example'
             example.write_text(self.EXAMPLE)
             path = ini.write(d / '', 'en-GB', example)
             self.assertEqual(ini.get_language(path.read_text()), 'en-GB')
@@ -376,7 +386,7 @@ class CleanupTest(unittest.TestCase):
         self.expected = {'romfs': {'size': len(image), 'sha256': digest}}
         self.ctx = SimpleNamespace(reporter=Reporter(out=io.StringIO(), log_path=base / 'x.log'), dest=self.dest,
                                    temp=temp, lang='en-US', state={},
-                                   layout=SimpleNamespace(ini_example=ROOT / 'totk.ini.example', dev=False,
+                                   layout=SimpleNamespace(ini_example=ROOT / 'rekarina.ini.example', dev=False,
                                                           python=base / 'python' / 'python.exe', root=base / 'release'))
         self.saved = steps.expected_update
         steps.expected_update = lambda ctx: self.expected

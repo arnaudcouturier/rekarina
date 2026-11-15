@@ -1,0 +1,9 @@
+/* The application manifest of the game's exe (rekarina.manifest) and its icon: rekarina.ico for OoT, totk.ico for TotK
+   (also the icon of TotK-Setup.exe and of its installer window). tools/build_game.py compiles it with the runtime
+   objects, so it is also a member of librekarina.a, which the release links with --whole-archive. */
+1 24 "rekarina.manifest"
+#ifdef GAME_OOT
+1 ICON "rekarina.ico" /* Rekarina (OoT): tools/make_rekarina_icon.py draws it */
+#else
+1 ICON "totk.ico"
+#endif

@@ -103,18 +103,23 @@ typedef enum {
     UI_MENU_RUMBLE_TRIGGERS, UI_MENU_RUMBLE_TRIGGERS_DESC,
     UI_MENU_PAD_LAYOUT, UI_MENU_PAD_LAYOUT_DESC, UI_MENU_PAD_LAYOUT_AUTO, UI_MENU_PAD_LAYOUT_NINTENDO,
     UI_MENU_PAD_LAYOUT_XBOX, UI_MENU_PAD_LAYOUT_IN_USE,
-    // UI_MENU_PROMPTS_DESC_LIVE: the description where the sets change in the running game (romfs_prompts_live)
+    // UI_MENU_PROMPTS_DESC_LIVE: the description where the sets change in the running game (romfs_prompts_live);
+    // UI_MENU_PROMPTS_AUTO: the set of the device the player used last (input_prompts_wanted)
     UI_MENU_PROMPTS, UI_MENU_PROMPTS_DESC, UI_MENU_PROMPTS_DESC_LIVE, UI_MENU_PROMPTS_NINTENDO, UI_MENU_PROMPTS_XBOX, UI_MENU_PROMPTS_PC, UI_MENU_PROMPTS_PS, UI_MENU_PROMPTS_RK,
+    UI_MENU_PROMPTS_AUTO,
     // the notes under the prompts: their files are missing or damaged, they change after restart, or why they are off
-    UI_MENU_PROMPTS_MISSING, UI_MENU_PROMPTS_FAILED, UI_MENU_PROMPTS_RESTART, UI_MENU_PROMPTS_OFF_SHAPE,
+    UI_MENU_PROMPTS_MISSING, UI_MENU_PROMPTS_FAILED, UI_MENU_PROMPTS_RESTART, UI_MENU_PROMPTS_LIVE_PARTIAL, UI_MENU_PROMPTS_OFF_SHAPE,
     UI_MENU_PROMPTS_OFF_MODS, UI_MENU_PROMPTS_OFF_PATCHES,
     // "Restart now" under the prompts while they change after restart, and its confirmation (Cancel: UI_MENU_RESET_NO)
     UI_MENU_RESTART, UI_MENU_RESTART_DESC, UI_MENU_RESTART_CONFIRM, UI_MENU_RESTART_YES, UI_MENU_RESTART_SAVING,
     UI_MENU_GROUP_STICKS, UI_MENU_LSTICK_DEADZONE, UI_MENU_RSTICK_DEADZONE, UI_MENU_STICK_DEADZONE_DESC,
     UI_MENU_STICK_DEADZONE_NOW, UI_MENU_STICK_SENS, UI_MENU_STICK_SENS_DESC,
-    UI_MENU_MOUSE_MODE, UI_MENU_MOUSE_MODE_DESC, UI_MENU_MOUSE_STICK, UI_MENU_MOUSE_DIRECT,
+    UI_MENU_MOUSE_MODE, UI_MENU_MOUSE_MODE_DESC, UI_MENU_MOUSE_MODE_DESC_OOT, UI_MENU_FAST_TEXT, UI_MENU_FAST_TEXT_DESC, UI_MENU_MOUSE_STICK, UI_MENU_MOUSE_DIRECT,
     UI_MENU_MENU_CURSOR, UI_MENU_MENU_CURSOR_DESC,
     UI_MENU_MOUSE_SENS, UI_MENU_MOUSE_SENS_DESC,
+    // the mouse camera's vertical speed and inversion, and raw input or the cursor's motion (Windows)
+    UI_MENU_MOUSE_SENS_Y, UI_MENU_MOUSE_SENS_Y_DESC, UI_MENU_MOUSE_INVERT_Y, UI_MENU_MOUSE_INVERT_Y_DESC,
+    UI_MENU_MOUSE_RAW, UI_MENU_MOUSE_RAW_DESC,
     UI_MENU_WALK_KEY, UI_MENU_WALK_KEY_DESC, UI_MENU_WALK_KEY_TAKEN, UI_MENU_WALK_SCALE, UI_MENU_WALK_SCALE_DESC,
 
     // Controls tab: the remapping rows (ui/binds_page.cpp)
@@ -269,12 +274,12 @@ int ui_text_defined(const char *lang, UiTextId id);
 const char *ui_text_lang(const char *switch_code);
 
 // The game languages the F1 menu offers for a game build (rt_game_version): one entry per Mals language file the build
-// ships, each with the Switch code TOTK_LANG takes and the id of its name. 1.4.3 adds Brazilian Portuguese (USpt).
+// ships, each with the Switch code REKARINA_LANG takes and the id of its name. 1.4.3 adds Brazilian Portuguese (USpt).
 // Fills out (room for max entries) and returns the count.
 typedef struct { const char *code; UiTextId name; } UiGameLang;
 int ui_text_game_langs(int game_version, UiGameLang *out, int max);
 
-// Menu text: ui_text_in(menu language, id). The menu language is TOTK_MENU_LANG (a catalog language: "en", "ru",
+// Menu text: ui_text_in(menu language, id). The menu language is REKARINA_MENU_LANG (a catalog language: "en", "ru",
 // "de", "pt-BR", "zh-Hans", ...); unset, the system UI language when the catalog has a row for it, else English.
 // Follows a live change of the setting.
 const char *menu_text(UiTextId id);

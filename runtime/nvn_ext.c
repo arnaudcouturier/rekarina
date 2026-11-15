@@ -7,6 +7,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "cfg.h"
 #include "gfx.h"
 #include "host.h"
 #include "nvn_api.h"
@@ -83,7 +84,7 @@ NVN_API(nvnDeviceGetTimestampInNanoseconds) {
     }
     uint64_t ns = nvn_counter_ns(d->timestamp);
 #ifdef GAME_NS2
-    {   // DEBUG-TS-PENDING: TOTK_TS_PENDING_NOW=1: a report the GPU has not written yet reads as the current time (the
+    {   // DEBUG-TS-PENDING: REKARINA_TS_PENDING_NOW=1: a report the GPU has not written yet reads as the current time (the
         // console's GPU would have written it by now), not as the slot's stale value
         static int on = -1;
         if (on < 0) on = rt_knob("TS_PENDING_NOW", "0");
@@ -91,10 +92,10 @@ NVN_API(nvnDeviceGetTimestampInNanoseconds) {
         if (f && gfx_backend()->fence_done() < f) ns = kern_now_ns();
     }
 #endif
-    {   // DEBUG-TSLOG: TOTK_TSLOG=1 logs every 120th call: the counter, its time and how long ago that was
+    {   // DEBUG-TSLOG: REKARINA_TSLOG=1 logs every 120th call: the counter, its time and how long ago that was
         static int on = -1;
         static uint64_t n;
-        if (on < 0) { const char *e = getenv("TOTK_TSLOG"); on = e && *e == '1'; }
+        if (on < 0) { const char *e = cfg_env("REKARINA_TSLOG"); on = e && *e == '1'; }
         if (on && n++ % 120 < 2)
             rt_log("TSLOG call %llu counter %p ts %llu ns, now - ts %.3f ms", (unsigned long long)n, (const void *)d,
                    (unsigned long long)ns, ((double)kern_now_ns() - (double)ns) / 1e6);

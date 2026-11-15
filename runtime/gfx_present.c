@@ -11,7 +11,7 @@
 // dirty (gfx_window_mark_dirty), the next present (or gfx_window_resize) rebuilds it.
 //
 // The in-game menu (ui/menu.h) draws over the game image in the present's command buffer, after the blit. The window's
-// size and fullscreen state are the settings TOTK_WINDOW_SIZE and TOTK_FULLSCREEN, which the back end applies at start
+// size and fullscreen state are the settings REKARINA_WINDOW_SIZE and REKARINA_FULLSCREEN, which the back end applies at start
 // and whenever a cfg_set changes them (window_settings_live -> gfx_window_apply_settings).
 #include <stdio.h>
 #include <stdlib.h>
@@ -68,7 +68,7 @@ void gfx_window_mark_dirty(void) { plat_xchg32(&g_dirty, 1); }
 // tells whether an alt-tab or an overlay came before the hang or followed it.
 void gfx_window_focus_changed(int in) {
     plat_xchg32(&g_focused, in);
-    oe_set_focus(in);                          // pinned to 1 by TOTK_ASSUME_FOCUS inside
+    oe_set_focus(in);                          // pinned to 1 by REKARINA_ASSUME_FOCUS inside
     oe_push_message(OE_MSG_FOCUS_STATE_CHANGED);
     plat_inc32(&g_focus_msgs);
     struct tm t;
@@ -88,7 +88,7 @@ void gfx_window_closed(void) {
     vk_pipeline_save();
     prof_write();   // plat_exit runs no atexit handlers
     if (restart) {
-        plat_setenv("TOTK_REEXEC", NULL);   // the new process counts its own address-space retries (memory.c)
+        plat_setenv("REKARINA_REEXEC", NULL);   // the new process counts its own address-space retries (memory.c)
         if (!plat_restart()) rt_log("gfx: the restart could not start the game again");
     }
     plat_exit(0);
@@ -99,19 +99,19 @@ void gfx_window_request_restart(void) {
     gfx_window_request_close();
 }
 
-// TOTK_FULLSCREEN=1: borderless window over the monitor. TOTK_WINDOW_SIZE=<w>x<h>: client area of the window (the
+// REKARINA_FULLSCREEN=1: borderless window over the monitor. REKARINA_WINDOW_SIZE=<w>x<h>: client area of the window (the
 // swapchain follows the window; the game image is scaled to it).
-int gfx_cfg_fullscreen(void) { return cfg_bool("TOTK_FULLSCREEN"); }
+int gfx_cfg_fullscreen(void) { return cfg_bool("REKARINA_FULLSCREEN"); }
 
 void gfx_cfg_window_size(int *w, int *h) {
     int x = 0, y = 0;
-    if (sscanf(cfg_value("TOTK_WINDOW_SIZE"), "%dx%d", &x, &y) != 2 || x < 640 || y < 360 || x > 7680 || y > 4320)
+    if (sscanf(cfg_value("REKARINA_WINDOW_SIZE"), "%dx%d", &x, &y) != 2 || x < 640 || y < 360 || x > 7680 || y > 4320)
         sscanf(cfg_meta("WINDOW_SIZE")->def, "%dx%d", &x, &y);   // unparsable or out of range: the default
     *w = x;
     *h = y;
 }
 
-// The refresh rate of the window's monitor (TOTK_FPS_LIMIT=display), measured by the back end's window thread when the
+// The refresh rate of the window's monitor (REKARINA_FPS_LIMIT=display), measured by the back end's window thread when the
 // window opens, lands on another monitor or the display mode changes; readers take the stored value.
 static volatile int32_t g_rate_mhz;   // millihertz, 0 unknown
 
@@ -126,7 +126,7 @@ double gfx_window_refresh_hz(void) { return plat_cas32(&g_rate_mhz, 0, 0) / 1000
 static PlatRMutex g_pl;
 static VkSwapchainKHR g_sc;
 static VkFormat g_sc_fmt;
-static int g_sc_hdr;                        // HDR10 (TOTK_HDR, vk_hdr.c): PQ code values in Rec. 2020
+static int g_sc_hdr;                        // HDR10 (REKARINA_HDR, vk_hdr.c): PQ code values in Rec. 2020
 static VkExtent2D g_sc_ext;
 static int g_scaler;                        // the last present: 0 the game image 1:1, 1 scaled by the blit, 2 by FSR
 static uint32_t g_sc_n;
@@ -147,7 +147,7 @@ static int g_cap_w, g_cap_h, g_cap_valid;
 static int g_flip_on;            // vk_present_blit submitted the blit of swapchain image g_flip_idx; vk_present_flip presents it
 static uint32_t g_flip_idx;
 
-// ---- TOTK_FLIGHT thumbnails (flight.c; g_pl): each present also blits the swapchain image down into slot frame % g_th_n
+// ---- REKARINA_FLIGHT thumbnails (flight.c; g_pl): each present also blits the swapchain image down into slot frame % g_th_n
 // of a host-visible ring. A slot's tag names the frame it holds complete; recording a new frame clears the tag first,
 // and the tag is set once the fence of that present has signalled.
 #define TH_BYTES ((VkDeviceSize)FLIGHT_THUMB_W * FLIGHT_THUMB_H * 4)
@@ -240,16 +240,16 @@ int gfx_window_focused(void) { return g_focused; }
 unsigned gfx_window_focus_messages(void) { return (unsigned)g_focus_msgs; }
 
 // Present path (g_pl held): a settings change (cfg_version) reaches the window thread, which applies a changed size or
-// fullscreen; a changed TOTK_VK_PRESENT rebuilds the swapchain at this present.
+// fullscreen; a changed REKARINA_VK_PRESENT rebuilds the swapchain at this present.
 static void window_settings_live(void) {
     static unsigned seen;
     static int started;
-    static char present[16];   // the TOTK_VK_PRESENT the swapchain was made with
+    static char present[16];   // the REKARINA_VK_PRESENT the swapchain was made with
     unsigned v = cfg_version();
     if (started && v == seen) return;
     seen = v;
     res_fov_live();
-    const char *e = cfg_value("TOTK_VK_PRESENT");
+    const char *e = cfg_value("REKARINA_VK_PRESENT");
     if (!started || strncmp(e, present, sizeof present - 1)) {
         snprintf(present, sizeof present, "%s", e);
         if (started) plat_xchg32(&g_dirty, 1);
@@ -259,10 +259,10 @@ static void window_settings_live(void) {
 }
 
 // ---- swapchain
-static const char *g_present_got = "";   // the TOTK_VK_PRESENT value of the mode the swapchain got; "" before one
+static const char *g_present_got = "";   // the REKARINA_VK_PRESENT value of the mode the swapchain got; "" before one
 
 static VkPresentModeKHR pick_present_mode(VkPhysicalDevice pd) {
-    const char *e = cfg_value("TOTK_VK_PRESENT");
+    const char *e = cfg_value("REKARINA_VK_PRESENT");
     VkPresentModeKHR want = !strcmp(e, "mailbox") ? VK_PRESENT_MODE_MAILBOX_KHR
                           : !strcmp(e, "immediate") ? VK_PRESENT_MODE_IMMEDIATE_KHR : VK_PRESENT_MODE_FIFO_KHR;
     uint32_t n = 0;
@@ -285,7 +285,7 @@ static VkPresentModeKHR pick_present_mode(VkPhysicalDevice pd) {
     static int logged = -1;   // the mode last logged: a change from the menu shows in the log
     if ((int)got != logged) {
         logged = (int)got;
-        rt_log("gfx: present mode %s (TOTK_VK_PRESENT=%s)", name, e);
+        rt_log("gfx: present mode %s (REKARINA_VK_PRESENT=%s)", name, e);
     }
     return got;
 }
@@ -346,7 +346,7 @@ static int create_swapchain(void) {
     if (nf > 64) nf = 64;
     vkGetPhysicalDeviceSurfaceFormatsKHR(c->phys, g_surface, &nf, fmts);
     if (!nf) return 0;
-    // UNORM: the blit writes the bytes the game wrote (no sRGB encode). TOTK_HDR: HDR10 when the surface offers it.
+    // UNORM: the blit writes the bytes the game wrote (no sRGB encode). REKARINA_HDR: HDR10 when the surface offers it.
     VkSurfaceFormatKHR sf = fmts[0];
     int hdr = vk_hdr_surface_format(fmts, nf, &sf), found = hdr;
     for (uint32_t i = 0; i < nf && !found; i++)
@@ -592,10 +592,10 @@ int vk_present_captured(const uint8_t **px, int *w, int *h, VkFormat *fmt) {
     return ok;
 }
 
-// ---- TOTK_VIDEO=<file.mp4>: a video of what the window shows, for the performance clips of the README.
-// Thirty times a second (TOTK_VIDEO_FPS) of real time, from TOTK_VIDEO_AFTER seconds after the first present on, the
+// ---- REKARINA_VIDEO=<file.mp4>: a video of what the window shows, for the performance clips of the README.
+// Thirty times a second (REKARINA_VIDEO_FPS) of real time, from REKARINA_VIDEO_AFTER seconds after the first present on, the
 // swapchain image is copied to a buffer of its present slot and every second pixel of every second row goes to an
-// ffmpeg started here, which encodes it on the GPU's video encoder (h264_nvenc; TOTK_VIDEO_ENCODER names another). The
+// ffmpeg started here, which encodes it on the GPU's video encoder (h264_nvenc; REKARINA_VIDEO_ENCODER names another). The
 // window's own picture, overlay included, and nothing else on the screen. Nothing waits for the GPU: a slot's copy is
 // read when the slot comes round again, FRAMES presents later, after the wait every present makes for its slot's
 // earlier work. ffmpeg has to be on PATH.
@@ -639,7 +639,7 @@ static int video_due(void) {
     if (g_video.state == 2) return 0;
     uint64_t now = plat_now_ns();
     if (!g_video.state) {
-        const char *path = cfg_get("TOTK_VIDEO"), *after = cfg_get("TOTK_VIDEO_AFTER"), *fps = cfg_get("TOTK_VIDEO_FPS");
+        const char *path = cfg_get("REKARINA_VIDEO"), *after = cfg_get("REKARINA_VIDEO_AFTER"), *fps = cfg_get("REKARINA_VIDEO_FPS");
         if (!path || !*path) { g_video.state = 2; return 0; }
         double hz = fps && atof(fps) >= 1 ? atof(fps) : 30;
         g_video.step = (uint64_t)(1e9 / hz);
@@ -659,13 +659,13 @@ static void video_frame(const uint8_t *frame, int cap_w, int cap_h) {
     if (w < 2 || h < 2 || g_sc_hdr) { g_video.state = 2; return; }
     if (!g_video.pipe) {
         int bgra = g_sc_fmt == VK_FORMAT_B8G8R8A8_UNORM || g_sc_fmt == VK_FORMAT_B8G8R8A8_SRGB;
-        const char *enc = cfg_get("TOTK_VIDEO_ENCODER");
+        const char *enc = cfg_get("REKARINA_VIDEO_ENCODER");
         char cmd[1400];
         snprintf(cmd, sizeof cmd,
                  "ffmpeg -hide_banner -loglevel error -y -f rawvideo -pix_fmt %s -s %dx%d -r %.3f -i - -c:v %s -b:v 14M "
                  "-pix_fmt yuv420p \"%s\"",
                  bgra ? "bgra" : "rgba", w, h, 1e9 / (double)g_video.step, enc && *enc ? enc : "h264_nvenc -preset p5",
-                 cfg_get("TOTK_VIDEO"));
+                 cfg_get("REKARINA_VIDEO"));
 #ifdef _WIN32
         g_video.pipe = _popen(cmd, "wb");
 #else
@@ -678,7 +678,7 @@ static void video_frame(const uint8_t *frame, int cap_w, int cap_h) {
             g_video.state = 2;
             return;
         }
-        rt_log("gfx: video: recording %dx%d at %.0f fps to %s", w, h, 1e9 / (double)g_video.step, cfg_get("TOTK_VIDEO"));
+        rt_log("gfx: video: recording %dx%d at %.0f fps to %s", w, h, 1e9 / (double)g_video.step, cfg_get("REKARINA_VIDEO"));
     }
     if (w != g_video.w || h != g_video.h) return;   // the window changed size: those frames are left out
     const uint32_t *src = (const uint32_t *)frame;
@@ -714,7 +714,7 @@ static void save_capture(const char *path) {
 }
 
 // The rectangle {x, y, w, h} of a dw x dh swapchain image the cw x ch picture goes into: the whole image with
-// TOTK_ASPECT=stretch, else (fit, the default) the largest one of the picture's own aspect ratio, centred (a 16:9 picture
+// REKARINA_ASPECT=stretch, else (fit, the default) the largest one of the picture's own aspect ratio, centred (a 16:9 picture
 // on the Steam Deck's 1280x800 screen gets bars of 40 rows above and below; a 16:9 picture in a 21:9 window, bars at the
 // sides).
 // Where the last present put the picture, as fractions of the swapchain (x, y, w, h): menu_cursor.c's pointer
@@ -728,7 +728,7 @@ int gfx_picture_rect(float out[4]) {
 
 void gfx_fit_rect(int cw, int ch, int dw, int dh, int out[4]) {
     out[0] = out[1] = 0, out[2] = dw, out[3] = dh;
-    if (cw <= 0 || ch <= 0 || !strcmp(cfg_value("TOTK_ASPECT"), "stretch")) return;
+    if (cw <= 0 || ch <= 0 || !strcmp(cfg_value("REKARINA_ASPECT"), "stretch")) return;
     if ((int64_t)dw * ch > (int64_t)dh * cw) out[2] = (int)(((int64_t)dh * cw + ch / 2) / ch);   // window wider: pillarbox
     else out[3] = (int)(((int64_t)dw * ch + cw / 2) / cw);                                        // taller: letterbox
     // A side of the window's parity keeps the two bars equal; a picture one pixel short of the window fills it
@@ -806,6 +806,17 @@ static VkImage hudless_record(VkCommandBuffer cb, int w, int h, const int rect[4
 
 static void present_image(VkImage src, VkImageLayout layout, VkFormat fmt, int w, int h, const int crop[4], int defer) {
     int general = layout == VK_IMAGE_LAYOUT_GENERAL;
+    {   // DEBUG-FOCUS: REKARINA_TEST_FOCUS=<frame>,<frame>: the window "loses" the focus at the first frame and gains it at
+        // the second (gfx_window_focus_changed), as an alt-tab would, for a script to repeat
+        static long lose = -2, gain;
+        if (lose == -2) {
+            const char *e = cfg_get("REKARINA_TEST_FOCUS"), *c = e ? strchr(e, ',') : NULL;
+            lose = e && *e ? atol(e) : -1, gain = c ? atol(c + 1) : -1;
+        }
+        long f = (long)__atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED);
+        if (lose >= 0 && f == lose) gfx_window_focus_changed(0);
+        if (gain >= 0 && f == gain) gfx_window_focus_changed(1);
+    }
     gfx_window_start();
     VkCtx *c = vk_ctx();
     plat_rmutex_lock(&g_pl);
@@ -856,9 +867,9 @@ static void present_image(VkImage src, VkImageLayout layout, VkFormat fmt, int w
                      g_sc_ext.height, cw, ch, g_scaler};
     int overlay = g_sc_view[idx] &&
                   menu_overlay_frame(__atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED), &mt, &menu_shot);
-    {   // DEBUG-SCSHOT: TOTK_SC_SHOT=lo-hi:step saves the swapchain image of those frames (TOTK_SHOTS_DIR)
+    {   // DEBUG-SCSHOT: REKARINA_SC_SHOT=lo-hi:step saves the swapchain image of those frames (REKARINA_SHOTS_DIR)
         static char scp[512];
-        const char *e = cfg_get("TOTK_SC_SHOT"), *dir = cfg_get("TOTK_SHOTS_DIR");
+        const char *e = cfg_get("REKARINA_SC_SHOT"), *dir = cfg_get("REKARINA_SHOTS_DIR");
         unsigned long long lo, hi, st, f = __atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED);
         if (!menu_shot && e && sscanf(e, "%llu-%llu:%llu", &lo, &hi, &st) == 3 && st && f >= lo && f <= hi && (f - lo) % st == 0) {
             snprintf(scp, sizeof scp, "%s/sc%05llu.png", dir ? dir : ".", f);
@@ -899,7 +910,7 @@ static void present_image(VkImage src, VkImageLayout layout, VkFormat fmt, int w
                      VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_TRANSFER_BIT,
                      VK_ACCESS_2_TRANSFER_WRITE_BIT);
     }
-    // Colour adjustment (TOTK_COLOR_*, vk_color.c), or on an HDR10 swapchain the PQ encode (vk_hdr.c; the adjustment is
+    // Colour adjustment (REKARINA_COLOR_*, vk_color.c), or on an HDR10 swapchain the PQ encode (vk_hdr.c; the adjustment is
     // for SDR): a copy of the crop takes the game image's place below
     VkImage graded = !general ? VK_NULL_HANDLE : g_sc_hdr ? vk_hdr_encode(cb, slot, src, fmt, rect)
                                                          : vk_color_record(cb, slot, src, fmt, rect);
@@ -907,7 +918,7 @@ static void present_image(VkImage src, VkImageLayout layout, VkFormat fmt, int w
     VkImage psrc = graded ? graded : src;
     VkFormat pfmt = graded ? VK_FORMAT_R16G16B16A16_SFLOAT : fmt;
     const int *prect = graded ? grect : rect;
-    // FSR (TOTK_UPSCALER) when the picture's rectangle is larger than the crop; else the bilinear blit
+    // FSR (REKARINA_UPSCALER) when the picture's rectangle is larger than the crop; else the bilinear blit
     int fsr = general ? vk_fsr_record(cb, slot, psrc, pfmt, graded ? cw : w, graded ? ch : h, prect, dst, to) : 0;
     g_scaler = fsr == 1 ? 2 : cw != to[2] || ch != to[3];   // 2 from vk_fsr_record: sharpened, not scaled
     if (!fsr) {
@@ -979,7 +990,7 @@ static void present_image(VkImage src, VkImageLayout layout, VkFormat fmt, int w
         VkBufferImageCopy bc = {.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
                                 .imageExtent = {g_sc_ext.width, g_sc_ext.height, 1}};
         if (cap) vkCmdCopyImageToBuffer(cb, dst, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, g_cap_buf, 1, &bc);
-        if (video) {   // read FRAMES presents from now (TOTK_VIDEO)
+        if (video) {   // read FRAMES presents from now (REKARINA_VIDEO)
             vkCmdCopyImageToBuffer(cb, dst, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, g_video.buf[slot], 1, &bc);
             g_video.pending[slot] = 1, g_video.pw[slot] = (int)g_sc_ext.width, g_video.ph[slot] = (int)g_sc_ext.height;
         }

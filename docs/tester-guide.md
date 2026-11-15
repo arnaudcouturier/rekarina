@@ -16,8 +16,8 @@ from it may be shared.
 
 1. Follow [building.md](building.md): the toolchain, then build steps 1-6 (Python environments, `config.local.toml`
    with your own paths, extraction, the shader translator, lifting and linking, shader preparation). The result is
-   `build\<ver>\totk.exe`, with `<ver>` the game version you built (`v143` or `v121`).
-2. Check the build without the game: `build\<ver>\totk.exe --selftest` must print a pass.
+   `build\<ver>\rekarina.exe`, with `<ver>` the game version you built (`v143` or `v121`).
+2. Check the build without the game: `build\<ver>\rekarina.exe --selftest` must print a pass.
 3. To run the build on another of your machines, package a portable folder ([building.md](building.md), "Portable
    folder"). The folder holds game code: for your own machines only.
 4. The installer ([installer.md](installer.md)) is the other route to a machine without the toolchain: it builds the
@@ -25,25 +25,25 @@ from it may be shared.
 
 ## Run and collect the log
 
-Every run writes its log to `logs\totk.log` next to `totk.exe`; the four runs before it are kept as `totk.1.log` to
+Every run writes its log to `logs\totk.log` next to `rekarina.exe`; the four runs before it are kept as `totk.1.log` to
 `totk.4.log`, and Open log folder in the settings menu's Advanced tab (F1) shows them. Copy the log before you start the
 game again. A file stops at 64 MiB. Started with `2> file`, the game writes its log to that file instead.
 
 From `cmd.exe` in the repository root, with the validation layer on:
 
 ```bat
-set TOTK_VK_VALIDATION=1
-build\<ver>\totk.exe
+set REKARINA_VK_VALIDATION=1
+build\<ver>\rekarina.exe
 ```
 
-`TOTK_VK_VALIDATION=1` turns on the Vulkan validation layer (it comes with the Vulkan SDK). It makes the game slower;
-do one run with it and one without (`set TOTK_VK_VALIDATION=`).
+`REKARINA_VK_VALIDATION=1` turns on the Vulkan validation layer (it comes with the Vulkan SDK). It makes the game slower;
+do one run with it and one without (`set REKARINA_VK_VALIDATION=`).
 
 If the game stops with a lost device (the log says `device lost` or `VK_ERROR_DEVICE_LOST`), the lines starting with
 `vk: pass marks` name the render pass or dispatch the GPU was running. AMD GPUs write them by default. On an NVIDIA GPU,
-`set TOTK_PASS_CRUMBS=1` (or GPU pass marks: On in the Advanced tab) before the run that reproduces the crash.
+`set REKARINA_PASS_CRUMBS=1` (or GPU pass marks: On in the Advanced tab) before the run that reproduces the crash.
 
-The game keeps running behind other windows (`assume_focus = 0` in `totk.ini` pauses it instead). Shaders the preparation did not cover compile on first use, so
+The game keeps running behind other windows (`assume_focus = 0` in `rekarina.ini` pauses it instead). Shaders the preparation did not cover compile on first use, so
 the first minutes of play can stutter.
 Play into the open field (load a save, walk around for a minute, fight something if you can), then close the window.
 
@@ -51,14 +51,14 @@ Play into the open field (load a save, walk around for a minute, fight something
 
 A laptop with an iGPU and a discrete GPU, or two cards, lists every GPU at the top of the log (`vk: gpu 0: ...`).
 
-- `set TOTK_GPU_NAME=Radeon` picks the first usable GPU whose name contains that text (case does not matter).
-- `set TOTK_GPU_INDEX=1` picks GPU 1 from that list.
+- `set REKARINA_GPU_NAME=Radeon` picks the first usable GPU whose name contains that text (case does not matter).
+- `set REKARINA_GPU_INDEX=1` picks GPU 1 from that list.
 
 The line `vk: using gpu N: <name>` says which one ran.
 
 ## Mods
 
-Mods and cheats made for the emulators go into `mods/` next to `totk.exe`, one folder per mod. [mods.md](mods.md) covers
+Mods and cheats made for the emulators go into `mods/` next to `rekarina.exe`, one folder per mod. [mods.md](mods.md) covers
 installing them, their order, code patches, what does not work and what to check when something looks wrong;
 [cheats.md](cheats.md) covers cheat files. The log names every mod at the start (`mods: <name>: ...`); when you
 report a problem with mods, list them with their download links.
@@ -72,7 +72,7 @@ report a problem with mods, list them with their download links.
 3. What you saw: how far it got (menu, loading, field), roughly how smooth it ran, and screenshots of anything wrong
    (black or missing areas, flickering, wrong colours, missing grass). Win+Shift+S is fine.
 4. If it crashed or hung: what you were doing. The log of that run ends with the crash report, so send it whole.
-5. For a bug you can trigger again: a recording of your input (`set TOTK_INPUT_RECORD=input.txt`, see
+5. For a bug you can trigger again: a recording of your input (`set REKARINA_INPUT_RECORD=input.txt`, see
    [controls.md](controls.md), "Scripted input") and the save you started from.
 
 ## Steam Deck
@@ -80,7 +80,7 @@ report a problem with mods, list them with their download links.
 Build or install on Linux ([installer.md](installer.md), "Linux release"), in Desktop Mode. The game then runs in either
 mode; for Game Mode, add `totk` from the install folder to Steam as a non-Steam game.
 
-The game recognises the Deck (LCD and OLED) and uses its device profile for every setting `totk.ini` does not set:
+The game recognises the Deck (LCD and OLED) and uses its device profile for every setting `rekarina.ini` does not set:
 fullscreen, the screen's own 1280x800 (16:10: the camera and interface take that shape), the game's own 3D scale,
 vsync and a 40 fps limit. These are starting points, not measurements. What helps most:
 
@@ -93,8 +93,26 @@ vsync and a 40 fps limit. These are starting points, not measurements. What help
    proportions in the middle of the taller screen, the HUD sits at the top and bottom edges, and full-screen
    backgrounds reach them; pre-rendered cutscenes play stretched.
 
-`device_profile = desktop` in `totk.ini` turns the profile off; `deck` turns it on elsewhere, to try the Deck's
+`device_profile = desktop` in `rekarina.ini` turns the profile off; `deck` turns it on elsewhere, to try the Deck's
 settings on a PC.
+
+### OoT on the Steam Deck and on Windows handhelds
+
+OoT has no Linux build: on a Deck the Windows build runs under Proton, which recognises the Deck from the `SteamDeck`
+variable Steam sets or from the firmware's product name (Jupiter, Galileo), and turns on shadow storage by itself
+(oot-notes.md, "2026-11-15: shadow storage draws the scene"). The Deck's profile adds to the keys above the game's own
+handheld mode (`operation_mode = handheld`: the console's 1920x1080 picture, about 30 % less GPU time than docked) and
+quarter textures (`tex_quality = quarter`: the 16 GB are the GPU's memory too).
+
+A Windows handheld (ROG Ally and Ally X, ROG Xbox Ally, Legion Go, MSI Claw, by the BIOS's product name) gets the
+`handheld` profile: fullscreen, handheld mode and a 60 fps limit; textures stay on auto. `device_profile = handheld`
+turns it on elsewhere. Neither profile has run on its device yet: the frame rate in the forest, the field and the
+Market, the log (`logs\rekarina.log`) and anything that looks wrong are what helps.
+
+The launcher's first settings for a processor's own graphics (Deck, Ally, laptops without a card) draw the 3D scene at
+half size and scale it up with FSR 1 (`dlaa = 1`, `taa = fsr1`, `dlss = performance`). Worth comparing on the device:
+`dlss = quality` (67 %) and `balanced` (58 %) against `performance`, and `taa = fsr1` against `taa = fsr3` (FSR 3.1,
+temporal: sharper when standing, more GPU time), each with the frame rate in the same places.
 
 ## Switches for the developer's questions
 
@@ -102,8 +120,8 @@ Only set these when asked; each forces a fallback the build picks by itself on G
 
 | Variable | Effect |
 |---|---|
-| `TOTK_VK_NO_FLOAT64=1` | Translate shaders without 64-bit floats |
-| `TOTK_VK_SSBO_ALIGN=64` | Treat storage buffers as needing 64-byte alignment |
-| `TOTK_VK_SUBGROUP_PIN=0` | Do not pin shaders to 32 lanes; tell the translator the GPU's own subgroup size |
+| `REKARINA_VK_NO_FLOAT64=1` | Translate shaders without 64-bit floats |
+| `REKARINA_VK_SSBO_ALIGN=64` | Treat storage buffers as needing 64-byte alignment |
+| `REKARINA_VK_SUBGROUP_PIN=0` | Do not pin shaders to 32 lanes; tell the translator the GPU's own subgroup size |
 
 Each switch makes the first launch translate every shader again.

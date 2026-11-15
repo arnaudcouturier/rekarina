@@ -3,7 +3,7 @@
 A shader the replay meets for the first time is translated and its pipeline built while the game waits: the first rock
 The hero picks up stopped the game for 2.8 s. This tool reads the shaders straight from the player's NUP (tools/oot_romfs.py:
 the Shader, Layout2Shader, Effect and UI archives and the agl packages) and the game's modules, writes their default
-variants next to the build's totk.exe in the record layouts of runtime/gfx_shader.c, and runs `totk.exe
+variants next to the build's rekarina.exe in the record layouts of runtime/gfx_shader.c, and runs `rekarina.exe
 --prepare-shaders`, which translates them all and builds their stage libraries and compute pipelines once, so that the
 shader cache and the driver's own disk cache hold them. Game-derived output stays in the build directory (ignored).
 
@@ -73,8 +73,8 @@ def main():
     ap.add_argument('--nup', default=oot_romfs.NUP)
     ap.add_argument('--exefs', type=Path, default=Path('../build/oot/exefs-plain'))
     ap.add_argument('--no-run', action='store_true')
-    ap.add_argument('--exe-name', default='totk.exe',
-                    help='the file name the game will be started under: the preparation runs a copy of totk.exe of that name')
+    ap.add_argument('--exe-name', default='rekarina.exe' if os.name == 'nt' else 'rekarina',
+                    help='the file name the game will be started under: the preparation runs a copy of rekarina.exe of that name')
     a = ap.parse_args()
     t0 = time.monotonic()
     shaders = inventory(oot_romfs.RomFS(a.nup), a.exefs)
@@ -123,16 +123,17 @@ def main():
     if a.no_run:
         return 0
     # NVIDIA's driver keeps its disk cache in a file named after the executable's file name (the same name in another
-    # folder finds it, another name in the same folder does not): prepared as totk.exe and played as Rekarina.exe, none
+    # folder finds it, another name in the same folder does not): prepared as rekarina.exe and played as Rekarina.exe, none
     # of the 2.4 GiB of prepared pipelines was found, and the first minutes of play built them again while the game
     # waited (frames of 36 s and 32 s in the first run of a fresh install, 2026-11-11). So the preparation runs under
     # the name the game is started with.
+    built = out / ('rekarina.exe' if os.name == 'nt' else 'rekarina')   # tools/build_game.py's name; no suffix on Linux
     exe, made = out / a.exe_name, False
     if not exe.is_file():
         try:
-            os.link(out / 'totk.exe', exe)
+            os.link(built, exe)
         except OSError:
-            shutil.copy2(out / 'totk.exe', exe)
+            shutil.copy2(built, exe)
         made = True
     try:
         r = subprocess.run([str(exe), '--prepare-shaders'], cwd=str(out))

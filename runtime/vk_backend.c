@@ -11,7 +11,7 @@
 // the frame's display time from the pacer (nvn_api_obj.c), so present-to-present intervals stay even whatever the
 // replay took. The blit is already on the queue, so the wait blocks no submission.
 //
-// Asynchronous replay (TOTK_REPLAY_ASYNC, default 0; 1 turns it on): nvnQueueSubmitCommands
+// Asynchronous replay (REKARINA_REPLAY_ASYNC, default 0; 1 turns it on): nvnQueueSubmitCommands
 // and nvnQueuePresentTexture only queue. Each item gets its timeline value at enqueue (vk_sync_reserve), in queue
 // order; the replay thread runs the synchronous submit and present bodies in that order, so every value is signalled
 // by the submission it was handed out for. The game runs at most one frame ahead: queueing present N waits until the
@@ -75,7 +75,7 @@ static void present_main(void *arg) {
         wait_until(j.at);
         uint64_t t1 = kern_now_ns();
         vk_present_flip();
-        // TOTK_TRACE=present: one line per present: the host present's interval, the interval of the game's present
+        // REKARINA_TRACE=present: one line per present: the host present's interval, the interval of the game's present
         // calls (when the host present went out before back-edge pacing), the wait and how far past its target it went
         if (rt_trace & RT_TRACE_PRESENT)
             rt_log("present: frame %llu interval %.3f ms, game %.3f ms, waited %.3f ms, %.3f ms past target",
@@ -123,7 +123,7 @@ static void present_image(const tex_t *t, const int crop[4], uint64_t at_ns, uin
     }
     PresentJob j = {.image = img->image, .format = img->format, .w = (int)img->width, .h = (int)img->height, .frame = frame,
                     .at = at_ns, .queued = queued, .value = value};
-    vk_hdr_present_source(img, &j.image, &j.format);   // TOTK_HDR: the float picture the game copied into it, same size
+    vk_hdr_present_source(img, &j.image, &j.format);   // REKARINA_HDR: the float picture the game copied into it, same size
     if (crop) {
         j.has_crop = 1;
         for (int i = 0; i < 4; i++) j.crop[i] = crop[i];
@@ -140,10 +140,10 @@ static void present_image(const tex_t *t, const int crop[4], uint64_t at_ns, uin
     plat_cond_broadcast(&pcv);
     plat_mutex_unlock(&pl);
     if (rdoc_active()) { vk_present_drain(); rdoc_after_present(frame); }
-    {   // DEBUG-GPUCSV: TOTK_GPU_CSV=<path>: per present the frame number, the GPU busy ns reported so far and the CPU clock
+    {   // DEBUG-GPUCSV: REKARINA_GPU_CSV=<path>: per present the frame number, the GPU busy ns reported so far and the CPU clock
         static FILE *csv;
         static int init;
-        if (!init) { init = 1; const char *e = getenv("TOTK_GPU_CSV"); if (e) csv = fopen(e, "w"); }
+        if (!init) { init = 1; const char *e = cfg_env("REKARINA_GPU_CSV"); if (e) csv = fopen(e, "w"); }
         if (csv) {
             extern uint64_t perf_gpu_busy_total(void);
             fprintf(csv, "%llu,%llu,%llu\n", (unsigned long long)frame, (unsigned long long)perf_gpu_busy_total(), (unsigned long long)plat_now_ns());
@@ -160,7 +160,7 @@ static void present_image(const tex_t *t, const int crop[4], uint64_t at_ns, uin
 //   pools, the DLSS jitter: vk_exec.c vk_exec_record) were taken when the replay thread got to the submission, up to a
 //   replay later than the submit call, with the game already writing the next frame. Now nvnQueueSubmitCommands returns
 //   only once the replay thread has taken them (vk_replay_captured): the same moment as in the synchronous replay, plus
-//   the wait for the replay thread to finish what it has (TOTK_REPLAY_HANDSHAKE=0: returns at once, as before).
+//   the wait for the replay thread to finish what it has (REKARINA_REPLAY_HANDSHAKE=0: returns at once, as before).
 // - Texture and sampler registrations were applied at the call, ahead of the submissions queued before them. They are
 //   queued now, like the releases.
 // - The game polls an NVN event its other render thread sets, sleeping 1 ms between polls (main+0x57051c): a millisecond
@@ -197,7 +197,7 @@ static uint64_t r_seq_queued, r_seq_captured, r_seq_cur;   // rl: submissions qu
 static _Thread_local int on_replay_thread;
 // Under rl: calls, calls that waited and the time waited per cause, since the last replay_log line and over the run.
 static uint64_t dr_calls[DR_N], dr_waits[DR_N], dr_ns[DR_N], dr_tcalls[DR_N], dr_twaits[DR_N], dr_tns[DR_N];
-// TOTK_REPLAY_CHECK: ReadTexels compared with a read after a full drain (under rl): checked, differing, differing
+// REKARINA_REPLAY_CHECK: ReadTexels compared with a read after a full drain (under rl): checked, differing, differing
 // although no submission recorded a write to the texture in between, differing with the queue idle at the first read.
 static uint64_t ck_reads, ck_diff, ck_diff_unexplained, ck_diff_idle;
 
@@ -208,8 +208,8 @@ int vk_replay_async(void) {
         // the Depths went from 450-686 frames over 50 ms a minute to 10-13, issue #88), the only place a gain was
         // measured. While it was the default, a GTX 1660 Ti at the 60 fps cap with the GPU at 26 % reported uneven
         // motion that 0.3.4 did not have (#659). It adds up to a frame of latency.
-        on = cfg_bool("TOTK_REPLAY_ASYNC");
-        rt_log("vk: replay %s (TOTK_REPLAY_ASYNC=%d)",
+        on = cfg_bool("REKARINA_REPLAY_ASYNC");
+        rt_log("vk: replay %s (REKARINA_REPLAY_ASYNC=%d)",
                on ? "on its own thread, at most one frame behind the game" : "on the submitting thread", on);
     }
     return on;
@@ -259,8 +259,8 @@ static void replay_main(void *arg) {
     {   // Beside the game's own threads the replay ran 40 % slower than inside the submit call, where the submitting
         // thread's work is the replay (bind_resources 2.7 us a call against 2.0, 2026-11-09): the game's twelve workers
         // and this thread share the host's cores. Above normal, the scheduler runs this thread first.
-        // TOTK_REPLAY_PRIO: 0 normal, 1 above normal (the default), 2 highest. Not measured.
-        const char *e = cfg_get("TOTK_REPLAY_PRIO");
+        // REKARINA_REPLAY_PRIO: 0 normal, 1 above normal (the default), 2 highest. Not measured.
+        const char *e = cfg_get("REKARINA_REPLAY_PRIO");
         int p = e && *e ? atoi(e) : 1;
         if (p > 0) plat_thread_priority(p > 1 ? PLAT_PRIO_HIGHEST : PLAT_PRIO_ABOVE_NORMAL);
     }
@@ -457,10 +457,10 @@ static void vk_be_present(const tex_t *t, const int crop[4], uint64_t at_ns) {
 // before the game reads and resets the sum: a read then found no frame's sum or two, and the picture settled a quarter
 // brighter (thumbnail brightness 69 against 54 with the synchronous replay, 55 with this present waiting for its own
 // frame; 2026-11-11). At the present the sums of the frame before are applied once per frame, a whole simulation away
-// from that read. TOTK_ASYNC_SUMS=sync brings the old moments back.
+// from that read. REKARINA_ASYNC_SUMS=sync brings the old moments back.
 static int async_sums_at_present(void) {
     static int on = -1;
-    if (on < 0) { const char *e = cfg_get("TOTK_ASYNC_SUMS"); on = !(e && !strcmp(e, "sync")); }
+    if (on < 0) { const char *e = cfg_get("REKARINA_ASYNC_SUMS"); on = !(e && !strcmp(e, "sync")); }
     return on;
 }
 static void vk_be_results_seen(uint64_t value) {
@@ -531,9 +531,9 @@ static void vk_be_texture_release(const tex_t *t) {
     replay_enqueue(&it);
 }
 static void vk_be_program_release(const prog_t *p) { replay_drain(DR_PROG_RELEASE); vk_program_release(p); }
-static int sub_log_on(void) {   // DEBUG-SUBLOG: TOTK_SUBLOG=<first game frame>: the submissions of six frames from there
+static int sub_log_on(void) {   // DEBUG-SUBLOG: REKARINA_SUBLOG=<first game frame>: the submissions of six frames from there
     static int64_t f0 = -2;
-    if (f0 == -2) { const char *e = cfg_get("TOTK_SUBLOG"); f0 = e && *e ? atoll(e) : -1; }
+    if (f0 == -2) { const char *e = cfg_get("REKARINA_SUBLOG"); f0 = e && *e ? atoll(e) : -1; }
     return f0 >= 0 && (int64_t)game_frames >= f0 && (int64_t)game_frames < f0 + 6;
 }
 // Asynchronous: the handles (nvn_submit_prepare_async ran under the front end's submit lock) are copied and queued;
@@ -551,7 +551,7 @@ static uint64_t vk_be_submit(const uint64_t *handles, int n) {
     // The handshake (top of this section): until the replay thread has taken the submission's copies, at most
     // HANDSHAKE_NS (the replay may itself be waiting for a signal of the game's: then the submit goes on as the first
     // version did).
-    // TOTK_REPLAY_HANDSHAKE=<bytes> (A/B) lets submissions with fewer bytes of recordings go without the wait. OoT's
+    // REKARINA_REPLAY_HANDSHAKE=<bytes> (A/B) lets submissions with fewer bytes of recordings go without the wait. OoT's
     // frame is five small submissions (16 bytes to 26 KiB of recordings) spread over the game's frame and one of
     // 1.2 MiB right before the present, and waiting at a small one is waiting for the replay of the frame before to
     // end with the rest of the game's frame still to do: the frame is the replay plus that rest, as with the
@@ -560,7 +560,7 @@ static uint64_t vk_be_submit(const uint64_t *handles, int n) {
     // waiting; 2026-11-11). A gain here needs their copies taken on the submitting thread.
     static int handshake = -1;
     if (handshake < 0) {
-        const char *e = cfg_get("TOTK_REPLAY_HANDSHAKE");
+        const char *e = cfg_get("REKARINA_REPLAY_HANDSHAKE");
         handshake = e && *e ? atoi(e) : 1;
     }
     uint64_t bytes = 0;
@@ -606,9 +606,9 @@ void vk_replay_flush_held(void) {
 static int replay_check(void) {
     static int on = -1;
     if (on < 0) {
-        const char *e = cfg_get("TOTK_REPLAY_CHECK");
+        const char *e = cfg_get("REKARINA_REPLAY_CHECK");
         on = e && strcmp(e, "0");
-        if (on) rt_log("vk: TOTK_REPLAY_CHECK: every ReadTexels is read again after a full replay drain and compared");
+        if (on) rt_log("vk: REKARINA_REPLAY_CHECK: every ReadTexels is read again after a full replay drain and compared");
     }
     return on;
 }
@@ -617,7 +617,7 @@ static int replay_check(void) {
 // completed), not for the whole queue. The readback copy goes through the upload batch on the same queue, after every
 // submission the replay has submitted. Submissions still queued or being recorded run after the copy, as on hardware
 // when the GPU has not reached them yet: the game only sees their texels after waiting on a sync, and every sync
-// value covers replay and GPU, so a read the game synchronised sees them. TOTK_REPLAY_CHECK compares with a full drain.
+// value covers replay and GPU, so a read the game synchronised sees them. REKARINA_REPLAY_CHECK compares with a full drain.
 static void vk_be_read_texels(const tex_t *t, const view_t *v, const NVNcopyRegion *r, uint8_t *dst, uint64_t row,
                               uint64_t img) {
     vk_sync_start();

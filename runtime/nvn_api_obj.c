@@ -18,6 +18,7 @@
 #include "nvn_api.h"
 #include "nvn_hmap.h"
 #include "nvn_tex.h"
+#include "ov.h"
 #include "platform/platform.h"
 
 // ---------- Descriptor pools
@@ -737,7 +738,7 @@ NVN_API(nvnWindowSetCrop) {
 // ---------- Present pacing
 // The vsync thread ticks at a fixed 60 Hz whatever the monitor does, so one game frame lasts `interval` ticks. With
 // the real-time frame step (frame_rate.c) game speed does not depend on the interval, so a frame is shown when it is
-// ready, at most at the frame limit (TOTK_FPS_LIMIT: 30 to 240 per second or the monitor's rate): holding it to the
+// ready, at most at the frame limit (REKARINA_FPS_LIMIT: 30 to 240 per second or the monitor's rate): holding it to the
 // 2nd or 3rd tick would only add latency and 50 ms frames.
 #define VSYNC_HZ 60ull
 static uint64_t present_period(const win_t *o) {
@@ -792,7 +793,7 @@ NVN_API(nvnWindowAcquireTexture) {
     // frame controller turns into GPU time) without an NVN sync of their own, and with the GPU two or three frames
     // behind (a GPU-bound scene) every other frame came out white and the controller never saw the GPU's time. So the
     // sync is fenced with the submissions up to that next present (pfence); before it, it is already satisfied
-    // (fenced 3, fence 0), as when presents were copies queued in submit order. TOTK_ACQUIRE_SYNC=0: always satisfied.
+    // (fenced 3, fence 0), as when presents were copies queued in submit order. REKARINA_ACQUIRE_SYNC=0: always satisfied.
     if (s) {
         static int on = -1;
         if (on < 0) on = rt_knob("ACQUIRE_SYNC", "1");
@@ -843,9 +844,9 @@ NVN_API(nvnQueuePresentTexture) {
         uint64_t vk_listlog_addr(void), vk_listlog_hash(void);
         double vk_listlog_ms(void);
         uint64_t fr_ = __atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED);
-        static int64_t dat = -1;   // TOTK_LISTLOG_DUMP_AT=<frame> (default 950): the first of the three presents dumped
-        if (dat < 0) { const char *e = cfg_get("TOTK_LISTLOG_DUMP_AT"); dat = e ? atoll(e) : 950; }
-        const char *dd = vk_listlog_addr() && fr_ >= (uint64_t)dat && fr_ <= (uint64_t)dat + 2 ? cfg_get("TOTK_LISTLOG_DUMP") : NULL;
+        static int64_t dat = -1;   // REKARINA_LISTLOG_DUMP_AT=<frame> (default 950): the first of the three presents dumped
+        if (dat < 0) { const char *e = cfg_get("REKARINA_LISTLOG_DUMP_AT"); dat = e ? atoll(e) : 950; }
+        const char *dd = vk_listlog_addr() && fr_ >= (uint64_t)dat && fr_ <= (uint64_t)dat + 2 ? cfg_get("REKARINA_LISTLOG_DUMP") : NULL;
         if (dd) {   // the guest bytes of the pool (9.5 MiB) at this present
             char fp[1100];
             snprintf(fp, sizeof fp, "%s/guest_%06llu.bin", dd, (unsigned long long)fr_);
@@ -868,6 +869,12 @@ NVN_API(nvnQueuePresentTexture) {
             // the game draws 4/(4 + tier) of the window: 2048x1152 and 1706x960 of 2560x1440 (measured)
             crop[2] = (int)(t->d.width * 4u / (4u + (unsigned)tier)), crop[3] = (int)(t->d.height * 4u / (4u + (unsigned)tier));
             crop[0] = crop[1] = 0;
+        } else if (t && !crop[2] && !crop[3] && ov_handheld()) {
+            // Handheld (REKARINA_OPERATION_MODE=handheld, the console's own screen): OoT draws its 1920x1080 picture into
+            // the top left 3/4 of the 2560x1440 window and sets no crop; shown whole, the picture filled a corner
+            // (2026-11-15). The present enlarges that rectangle as the console's display shows it.
+            crop[2] = (int)(t->d.width * 3u / 4u), crop[3] = (int)(t->d.height * 3u / 4u);
+            crop[0] = crop[1] = 0;
         }
     }
 #endif
@@ -881,8 +888,8 @@ NVN_API(nvnQueuePresentTexture) {
         // the house and with the player's settings). Waiting at the present for the submissions up to it: none in 326
         // and twice none in 201. Waiting for those of the previous present (=1), a fenced and blocking acquire
         // (nvnWindowAcquireTexture) or the fence readback of small targets (vk_texture.c) alone left them.
-        // TOTK_PRESENT_SYNC: c this present's own work (the OoT default), <k> that of k presents ago, n none, off (the
-        // TotK default) no wait; TOTK_PRESENT_FINISH=1 (A/B) finishes the queue and writes small targets back at once.
+        // REKARINA_PRESENT_SYNC: c this present's own work (the OoT default), <k> that of k presents ago, n none, off (the
+        // TotK default) no wait; REKARINA_PRESENT_FINISH=1 (A/B) finishes the queue and writes small targets back at once.
         // A frame in flight (1) has no white frames since the replay honours the game's waits for the CPU
         // (OP_WAIT_EVENT), but the far trees lose their leaves every eighth frame now and then: the game reads its
         // foliage records after the submit that uses them, and the submit-time mirror copies (vk_memory.c) took them too
@@ -894,13 +901,13 @@ NVN_API(nvnQueuePresentTexture) {
         static int pf = -1, ps = -2;
         static uint64_t back[8];
         if (pf < 0) {
-            const char *f = cfg_get("TOTK_PRESENT_FINISH");
+            const char *f = cfg_get("REKARINA_PRESENT_FINISH");
             pf = f && *f == '1';
-            const char *e = cfg_get("TOTK_PRESENT_SYNC");
+            const char *e = cfg_get("REKARINA_PRESENT_SYNC");
 #ifdef GAME_OOT
             // c: 2026-11-08, camera turning in the forest, real time, two runs each: the whole frame's brightness jumped by
             // 1.5-2.0 of 255 from one frame to the next with c1 (p99; the "fast flicker") and by 0.1-0.3 with c, at 94 -> 88 fps.
-            // With the replay on its own thread (TOTK_REPLAY_ASYNC) the wait is for the previous present's results: waiting
+            // With the replay on its own thread (REKARINA_REPLAY_ASYNC) the wait is for the previous present's results: waiting
             // for this frame's own would keep the game from running beside the replay, which is what that thread is for.
             if (!e || !*e) e = gfx_replay_async() ? "1" : "c";
 #endif
@@ -913,9 +920,9 @@ NVN_API(nvnQueuePresentTexture) {
         }
         const GfxBackend *b = gfx_backend();
         uint64_t last = nvn_fence_last();
-        {   // DEBUG: TOTK_PRESENT_SLEEP_US=<us>: the present sleeps that long (CPU-side pacing, no GPU wait)
+        {   // DEBUG: REKARINA_PRESENT_SLEEP_US=<us>: the present sleeps that long (CPU-side pacing, no GPU wait)
             static int64_t us = -1;
-            if (us < 0) { const char *e = cfg_get("TOTK_PRESENT_SLEEP_US"); us = e ? atoll(e) : 0; }
+            if (us < 0) { const char *e = cfg_get("REKARINA_PRESENT_SLEEP_US"); us = e ? atoll(e) : 0; }
             if (us > 0) plat_sleep_ms((uint32_t)((us + 999) / 1000));
         }
         uint64_t waited = 0;

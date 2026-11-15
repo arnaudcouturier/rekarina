@@ -1,8 +1,8 @@
-// TOTK_DUMP=<frame>: a frame dump for the Vulkan back end, which RenderDoc cannot capture (it hides
+// REKARINA_DUMP=<frame>: a frame dump for the Vulkan back end, which RenderDoc cannot capture (it hides
 // VK_EXT_external_memory_host). Between presents frame-1 and frame, the replay's command buffers also copy, after each
 // render pass, its colour and depth targets and, after each dispatch, the storage images it writes into host buffers;
 // the completion thread turns them into 8-bit PNGs once the submission is done. 3D textures (LUTs, volumes) sampled or
-// written in the frame are copied once each, slices side by side. Files in TOTK_DUMP_DIR (default "dump"):
+// written in the frame are copied once each, slices side by side. Files in REKARINA_DUMP_DIR (default "dump"):
 //   pass_<seq>_t<i>_<w>x<h>_<vkformat>_<name>.png   colour target i (td: depth; img<slot>: storage image; lut<id>: 3D;
 //                                                    a BC target drawn through a block view: its blocks as that view)
 //   ..._tm.png                                       float formats: x/(1+x) of the same image (the plain one clamps)
@@ -11,17 +11,17 @@
 //   images.txt   per image: channel min/max, distinct texel values over the image and over its top quarter
 // Sampled 8-bit 2D textures up to TEX2D_CAP texels are copied once each as pass_<seq>_tex<id>_... at the end of the pass
 // that samples them; texture lines carry the storage address, mirror state, upload count and the image's and slot's
-// swizzle. Copies and texture clears are logged as "copy/clear after pass N". TOTK_DUMP_LOG=<from> also logs the
-// frames from..frame-1 to passes.txt, with PNGs only of targets up to 64K texels. TOTK_DUMP_BUF=<addr>:<size>[:...]
+// swizzle. Copies and texture clears are logged as "copy/clear after pass N". REKARINA_DUMP_LOG=<from> also logs the
+// frames from..frame-1 to passes.txt, with PNGs only of targets up to 64K texels. REKARINA_DUMP_BUF=<addr>:<size>[:...]
 // snapshots one GPU buffer range after every logged pass (buf_<pass>.bin and bufs.txt, see buf_snap).
 // PNGs are opaque (alpha dropped). Integer formats are scaled by the image maximum, depth by its min..max range, SNORM
 // as x/2+1/2, UNORM and sRGB bytes written as stored. Caps: MAX_PASSES passes copied, PNG_CAP bytes of PNGs.
-// TOTK_DUMP_TEX=<id>|<w>x<h>[,...]: those texture slots, or 2D textures of that size, are copied where first sampled,
+// REKARINA_DUMP_TEX=<id>|<w>x<h>[,...]: those texture slots, or 2D textures of that size, are copied where first sampled,
 // whatever their format.
-// TOTK_DUMP_UBO=<n>: each listed pipeline also prints the first n vec4 of its user uniform blocks (c3 and up; 1 means 16,
+// REKARINA_DUMP_UBO=<n>: each listed pipeline also prints the first n vec4 of its user uniform blocks (c3 and up; 1 means 16,
 // the cap is 4096), read from guest memory when the entry is listed. A block the submission rewrites with UpdateUniformBuffer shows its value from
 // before the submission (vk_exec_draw.c upd_note).
-// TOTK_DUMP_SKIP_RUNS=1: a render pass with the same targets as the render pass before it is logged but not copied
+// REKARINA_DUMP_SKIP_RUNS=1: a render pass with the same targets as the render pass before it is logged but not copied
 // (the terrain decals draw one pass each into the G-buffer and would use up both caps).
 #include <math.h>
 #include <stdarg.h>
@@ -44,13 +44,13 @@
 #define TEX2D_CAP (1u << 20)        // texels of a sampled 2D texture that is dumped
 
 int vk_dump_armed;
-static uint64_t dump_tick;   // TOTK_DUMP=t<ticks>: dump_frame is set once game time reaches it
-static uint64_t dump_frame, log_from;   // log_from: TOTK_DUMP_LOG, first frame logged to passes.txt without images
+static uint64_t dump_tick;   // REKARINA_DUMP=t<ticks>: dump_frame is set once game time reaches it
+static uint64_t dump_frame, log_from;   // log_from: REKARINA_DUMP_LOG, first frame logged to passes.txt without images
 static char dir[400];
 static FILE *passes_f, *images_f;
 static int seq, finished, copied;      // copied: passes and dispatches of the dump frame whose images were copied
-static int skip_runs, dump_ubo;        // TOTK_DUMP_SKIP_RUNS, TOTK_DUMP_UBO (vec4 per block, 0 for none)
-static uint32_t want_tex[16][2];       // TOTK_DUMP_TEX: slot id and 0, or width and height
+static int skip_runs, dump_ubo;        // REKARINA_DUMP_SKIP_RUNS, REKARINA_DUMP_UBO (vec4 per block, 0 for none)
+static uint32_t want_tex[16][2];       // REKARINA_DUMP_TEX: slot id and 0, or width and height
 static int nwant_tex;
 static uint64_t last_targets;          // targets_sig of the last render pass; 0 after a dispatch
 static const char *pass_skip;          // why the current pass copies nothing, or NULL
@@ -241,7 +241,7 @@ static void write_images(const Job *j) {
         FILE *rf = fopen(rp, "wb");
         if (rf) fwrite(j->map, 1, j->bytes, rf), fclose(rf);
     }
-    if (mode == M_DEPTH && getenv("TOTK_DUMP_RAW")) {   // DEBUG-PROBE: the depth values as floats, row by row
+    if (mode == M_DEPTH && cfg_env("REKARINA_DUMP_RAW")) {   // DEBUG-PROBE: the depth values as floats, row by row
         char rp[600];
         snprintf(rp, sizeof rp, "%s/%s.f32", dir, j->name);
         FILE *rf = fopen(rp, "wb");
@@ -249,7 +249,7 @@ static void write_images(const Job *j) {
             for (uint64_t i = 0; i < n; i++) fwrite(px + 4 * i, 4, 1, rf);
             fclose(rf);
         }
-    } else if (getenv("TOTK_DUMP_RAW4")) {   // DEBUG: any image's decoded texels, four floats each, row by row
+    } else if (cfg_env("REKARINA_DUMP_RAW4")) {   // DEBUG: any image's decoded texels, four floats each, row by row
         char rp[600];
         snprintf(rp, sizeof rp, "%s/%s.rgba32f", dir, j->name);
         FILE *rf = fopen(rp, "wb");
@@ -311,9 +311,9 @@ static const char *copy_region(VkExec *ex, VkImage image, VkFormat vf, VkImageAs
                                const char *name) {
     const Fmt *f = fmt_of(vf);
     if (!f) return "format not decoded";
-    // DEBUG: TOTK_DUMP_NOTARGETS=1 copies only the textures asked for (TOTK_DUMP_TEX), not the passes' targets
-    if (getenv("TOTK_DUMP_NOTARGETS") && !strstr(name, "_tex")) return "targets off";
-    const char *only = getenv("TOTK_DUMP_ONLY");   // DEBUG: copy only images whose name holds one of these (comma list)
+    // DEBUG: REKARINA_DUMP_NOTARGETS=1 copies only the textures asked for (REKARINA_DUMP_TEX), not the passes' targets
+    if (cfg_env("REKARINA_DUMP_NOTARGETS") && !strstr(name, "_tex")) return "targets off";
+    const char *only = cfg_env("REKARINA_DUMP_ONLY");   // DEBUG: copy only images whose name holds one of these (comma list)
     if (only && *only) {
         int hit = 0;
         for (const char *s = only; *s && !hit;) {
@@ -374,7 +374,7 @@ static const char *copy_out(VkExec *ex, VkImage image, VkFormat vf, VkImageAspec
     return copy_region(ex, image, vf, aspect, level, layer, 0, (VkExtent3D){w, h, d}, w, h, d, name);
 }
 
-// ---- TOTK_DUMP_BUF=<addr>:<size>[:<off>:<stride>:<w>:<h>]: after every pass and dispatch that is logged, the GPU
+// ---- REKARINA_DUMP_BUF=<addr>:<size>[:<off>:<stride>:<w>:<h>]: after every pass and dispatch that is logged, the GPU
 // buffer range is copied to a host buffer; when it differs from the previous copy it goes to buf_<pass>.bin, and
 // bufs.txt gets the changed bytes' extent plus, with the grid arguments, one map per dword of the w x h records of
 // `stride` bytes at `off` (each record a letter: its value's index in the table under the map).
@@ -562,7 +562,7 @@ static void flush_luts(VkExec *ex, int n) {
         const char *why = bf ? copy_region(ex, l->image, bf, VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 0,
                                            (VkExtent3D){l->w, l->h, l->d}, (l->w + 3) / 4, (l->h + 3) / 4, l->d, name)
                              : copy_out(ex, l->image, l->format, VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, l->w, l->h, l->d, name);
-        for (uint32_t lv = 1; bf && l->is2d && lv < l->levels && lv < 8 && getenv("TOTK_DUMP_TEX_LEVELS"); lv++) {
+        for (uint32_t lv = 1; bf && l->is2d && lv < l->levels && lv < 8 && cfg_env("REKARINA_DUMP_TEX_LEVELS"); lv++) {
             // DEBUG: the smaller levels of a BC texture too (_L<level>_blocks)
             uint32_t lw = l->w >> lv ? l->w >> lv : 1, lh = l->h >> lv ? l->h >> lv : 1;
             char ln[180];
@@ -931,30 +931,30 @@ out:
 static void make_dirs(char *path) { plat_file_mkdir_p(path); }
 
 void vk_dump_init(void) {
-    const char *e = cfg_get("TOTK_DUMP");
-    if (e && *e == 't') {   // TOTK_DUMP=t<ticks>: the frame after game time reaches that many 60 Hz ticks
+    const char *e = cfg_get("REKARINA_DUMP");
+    if (e && *e == 't') {   // REKARINA_DUMP=t<ticks>: the frame after game time reaches that many 60 Hz ticks
         dump_tick = strtoull(e + 1, NULL, 10);   // (frame_step_ticks): the same scene at any frame rate
         dump_frame = dump_tick ? UINT64_MAX : 0;
         if (!dump_frame) return;
     } else if (!e || !*e || !(dump_frame = strtoull(e, NULL, 10))) {
         return;
     }
-    const char *lf = cfg_get("TOTK_DUMP_LOG");
+    const char *lf = cfg_get("REKARINA_DUMP_LOG");
     if (lf && *lf) log_from = strtoull(lf, NULL, 10);
-    const char *sr = cfg_get("TOTK_DUMP_SKIP_RUNS");
+    const char *sr = cfg_get("REKARINA_DUMP_SKIP_RUNS");
     skip_runs = sr && *sr && *sr != '0';
-    const char *du = cfg_get("TOTK_DUMP_UBO");
+    const char *du = cfg_get("REKARINA_DUMP_UBO");
     dump_ubo = du && *du ? atoi(du) : 0;
     if (dump_ubo == 1) dump_ubo = 16;
     if (dump_ubo > 4096) dump_ubo = 4096;
     if (dump_ubo < 0) dump_ubo = 0;
-    const char *wt = cfg_get("TOTK_DUMP_TEX");
+    const char *wt = cfg_get("REKARINA_DUMP_TEX");
     for (char *q = (char *)wt; q && *q && nwant_tex < 16; q += *q == ',') {
         uint32_t *w = want_tex[nwant_tex++];
         w[0] = (uint32_t)strtoul(q, &q, 10);
         w[1] = *q == 'x' ? (uint32_t)strtoul(q + 1, &q, 10) : 0;
     }
-    const char *d = cfg_get("TOTK_DUMP_DIR");
+    const char *d = cfg_get("REKARINA_DUMP_DIR");
     snprintf(dir, sizeof dir, "%s", d && *d ? d : "dump");
     make_dirs(dir);
     char path[600];
@@ -963,7 +963,7 @@ void vk_dump_init(void) {
     snprintf(path, sizeof path, "%s/images.txt", dir);
     images_f = fopen(path, "w");
     if (!passes_f || !images_f) rt_fatal("vk_dump: cannot write to %s", dir);
-    const char *bf = cfg_get("TOTK_DUMP_BUF");
+    const char *bf = cfg_get("REKARINA_DUMP_BUF");
     if (bf && *bf) {
         char *q;
         bd_addr = strtoull(bf, &q, 0);
@@ -980,17 +980,17 @@ void vk_dump_init(void) {
     rt_log("vk_dump: frame %llu goes to %s", (unsigned long long)dump_frame, dir);
 }
 
-// DEBUG-LUMLOG: with TOTK_DUMP=t<ticks never reached>, dump the frame after the next present (nvn_api_cmd.c arms it at
+// DEBUG-LUMLOG: with REKARINA_DUMP=t<ticks never reached>, dump the frame after the next present (nvn_api_cmd.c arms it at
 // the first copy of OoT's luminance read-back)
 void vk_dump_arm_soon(void) {
     if (dump_tick && dump_frame == UINT64_MAX) {
-        const char *o = getenv("TOTK_DUMP_ARM_OFS");   // frames after the present count at arming (default 2)
+        const char *o = cfg_env("REKARINA_DUMP_ARM_OFS");   // frames after the present count at arming (default 2)
         dump_frame = __atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED) + (uint64_t)(o && *o ? atoi(o) : 2);
         rt_log("vk_dump: armed: frame %llu is dumped", (unsigned long long)dump_frame);
     }
 }
 
-// DEBUG-DUMPCLEARS: TOTK_DUMP_CLEARS=<n> with TOTK_DUMP=t<ticks never reached>: the frame of the first submission
+// DEBUG-DUMPCLEARS: REKARINA_DUMP_CLEARS=<n> with REKARINA_DUMP=t<ticks never reached>: the frame of the first submission
 // that holds n or more clears is dumped (from that submission on). OoT's frames have 23; the ones with 45
 // are those in which the sun's light drops out for a frame or two while the camera turns (docs/oot-notes.md).
 static int count_clears(const op_hdr *h, int depth) {
@@ -1007,31 +1007,41 @@ static int count_clears(const op_hdr *h, int depth) {
         h = nvn_op_next(h);
     }
 }
-// DEBUG-DUMPEMPTY: TOTK_DUMP_EMPTY=1 with TOTK_DUMP=t<ticks never reached>: the frame being recorded is dumped from
+// DEBUG-DUMPDARK: REKARINA_DUMP_ON_DARK=1 with REKARINA_DUMP=t<ticks never reached>: the first dark frame the flight
+// recorder's flash watch sees past frame 3200 (REKARINA_FLIGHT_FLASH_DARK sets how dark) arms a dump of the frame being
+// recorded: a run of dark frames is still going on four presents after its start, when the watch sees it.
+void vk_dump_arm_dark(uint64_t dark_frame) {
+    static int on = -1;
+    if (on < 0) on = cfg_get("REKARINA_DUMP_ON_DARK") != NULL;
+    if (!on || !dump_tick || dump_frame != UINT64_MAX || dark_frame < 3200) return;
+    dump_frame = __atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED) + 1;
+    rt_log("vk_dump: frame %llu was dark: frame %llu is dumped", (unsigned long long)dark_frame, (unsigned long long)dump_frame);
+}
+// DEBUG-DUMPEMPTY: REKARINA_DUMP_EMPTY=1 with REKARINA_DUMP=t<ticks never reached>: the frame being recorded is dumped from
 // here on (vk_texture.c calls it when a new 640x360 depth image at an address with no content appears after frame
 // 3200: the frame in which OoT's transient targets move to other addresses).
 void vk_dump_arm_now(const char *why) {
     static int on = -1;
-    if (on < 0) on = cfg_get("TOTK_DUMP_EMPTY") != NULL;
+    if (on < 0) on = cfg_get("REKARINA_DUMP_EMPTY") != NULL;
     if (!on || !dump_tick || dump_frame != UINT64_MAX) return;
     if (__atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED) < 3200) return;
     dump_frame = __atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED) + 1;
     rt_log("vk_dump: %s: frame %llu is dumped from here on", why, (unsigned long long)dump_frame);
 }
-// DEBUG-DUMPAFTER: TOTK_DUMP_AFTER_CLEARS=<n> with TOTK_DUMP=t<ticks never reached>: the frame after the first frame
+// DEBUG-DUMPAFTER: REKARINA_DUMP_AFTER_CLEARS=<n> with REKARINA_DUMP=t<ticks never reached>: the frame after the first frame
 // with n clears or more (past frame 3200, the frame before it with fewer) is dumped whole (vk_exec.c pl_frame).
 void vk_dump_arm_after(uint64_t frame, uint64_t clears, uint64_t before) {
     static int min = -1;
-    if (min < 0) { const char *e = cfg_get("TOTK_DUMP_AFTER_CLEARS"); min = e && atoi(e) > 0 ? atoi(e) : 0; }
+    if (min < 0) { const char *e = cfg_get("REKARINA_DUMP_AFTER_CLEARS"); min = e && atoi(e) > 0 ? atoi(e) : 0; }
     if (!min || !dump_tick || dump_frame != UINT64_MAX || frame < 3200 || clears < (uint64_t)min || before >= (uint64_t)min) return;
-    const char *o = getenv("TOTK_DUMP_ARM_OFS");
+    const char *o = cfg_env("REKARINA_DUMP_ARM_OFS");
     dump_frame = frame + (uint64_t)(o && *o ? atoi(o) : 1);
     rt_log("vk_dump: frame %llu had %llu clears (the one before %llu): frame %llu is dumped", (unsigned long long)frame,
            (unsigned long long)clears, (unsigned long long)before, (unsigned long long)dump_frame);
 }
 void vk_dump_arm_clears(const uint64_t *handles, int n) {
     static int min = -1;
-    if (min < 0) { const char *e = cfg_get("TOTK_DUMP_CLEARS"); min = e && atoi(e) > 0 ? atoi(e) : 0; }
+    if (min < 0) { const char *e = cfg_get("REKARINA_DUMP_CLEARS"); min = e && atoi(e) > 0 ? atoi(e) : 0; }
     if (!min || !dump_tick || dump_frame != UINT64_MAX) return;
     if (__atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED) < 3000) return;   // past the load
     int c = 0;
@@ -1064,7 +1074,7 @@ void vk_dump_present(uint64_t frame) {
            (unsigned long long)(png_bytes >> 20), dir);
 }
 
-// ---- DEBUG-PROBE: TOTK_PASS_PROBE=1 (used with TOTK_FLIGHT=1)
+// ---- DEBUG-PROBE: REKARINA_PASS_PROBE=1 (used with REKARINA_FLIGHT=1)
 // After every render pass the centre texel of colour target 0 (of the depth target when there is no colour) and a
 // PR_GX x PR_GY grid of texels over it are copied into a host-visible ring of PR_FRAMES frames. A flight dump
 // snapshots the ring (vk_probe_snap) and writes probes.tsv: frame, pass number in the frame, target address, format,
@@ -1084,7 +1094,7 @@ void vk_dump_present(uint64_t frame) {
 #define PR_SLOT (PR_PTS * 16)
 typedef struct { uint64_t addr; const Fmt *f; uint32_t w, h, dispatches; } ProbeMeta;
 typedef struct VkProbeSnap VkProbeSnap;
-// Per draw into a full-size R11G11B10F target (TOTK_PROBE_SKIP=<addr> leaves one target out): every bound uniform and
+// Per draw into a full-size R11G11B10F target (REKARINA_PROBE_SKIP=<addr> leaves one target out): every bound uniform and
 // storage block of the vertex and fragment stages, as guest memory holds it at the recording (at most 16 KiB of each):
 // non-finite floats in it, a hash, and whether the replay binds a submit-time copy (vk_usnap_find).
 #define PD_DRAWS 64
@@ -1114,7 +1124,7 @@ static struct { VkImage image; VkFormat format; uint32_t w, h, levels; uint64_t 
 static int cube_n;
 static struct { VkImage image; VkFormat format; VkImageAspectFlags aspect; uint32_t w, h; uint64_t addr; } vsp[8];
 static int nvsp;
-// The first full-size R11G11B10F target of each frame other than TOTK_PROBE_SKIP (OoT's character layer) is also
+// The first full-size R11G11B10F target of each frame other than REKARINA_PROBE_SKIP (OoT's character layer) is also
 // copied whole in a crop around the porch's the hero (CR_W x CR_H from CR_X0, CR_Y0), PR_FRAMES frames kept.
 #define CR_X0 640
 #define CR_Y0 500
@@ -1177,9 +1187,9 @@ static void pc_done(void *arg) {   // completion thread
             free(pc_prev), pc_prev = cur, pc_prev_n = pages;
         }
     }
-    {   // DEBUG: TOTK_PAGECHK_SAVE=<dir>: the GPU's bytes of storage slot 1 (OoT skin: the light structs) per frame
+    {   // DEBUG: REKARINA_PAGECHK_SAVE=<dir>: the GPU's bytes of storage slot 1 (OoT skin: the light structs) per frame
         static const char *sd = (const char *)1;
-        if (sd == (const char *)1) sd = cfg_get("TOTK_PAGECHK_SAVE");
+        if (sd == (const char *)1) sd = cfg_get("REKARINA_PAGECHK_SAVE");
         if (sd && j->hash[0] && j->frame >= 815 && j->frame <= 875) {   // and slot 0 (the light lists) in a short window
             char fp0[1100];
             snprintf(fp0, sizeof fp0, "%s/lists_%06llu_%llx.bin", sd, (unsigned long long)j->frame, (unsigned long long)j->addr[0]);
@@ -1226,7 +1236,7 @@ static int probe_init(void) {
     if (pr_on >= 0) return pr_on;
     plat_mutex_lock(&pr_lock);
     if (pr_on < 0) {
-        const char *e = cfg_get("TOTK_PASS_PROBE");
+        const char *e = cfg_get("REKARINA_PASS_PROBE");
         int on = e && (*e == '1' || *e == '2');
         pr_light = e && *e == '2';   // 2: crops and page checks only, no texel grids (they load the GPU)
         if (on) {
@@ -1267,10 +1277,10 @@ void vk_probe_pass_end(VkExec *ex) {
     if (!probe_init()) return;
     const VkExecTarget *t = ex->color[0].image ? &ex->color[0] : ex->depth.image ? &ex->depth : NULL;
     if (!t || t->is3d || t->blocks || t->samples > 1 || !t->width || !t->height) return;
-    // TOTK_PASS_PROBE_MINW=<pixels>: only passes into targets that wide. Every pass probed costs the GPU a stop (the
+    // REKARINA_PASS_PROBE_MINW=<pixels>: only passes into targets that wide. Every pass probed costs the GPU a stop (the
     // forest village fell to 18 fps and its flashes stayed away); the 30 or so large passes of a frame do not.
     static int minw = -1;
-    if (minw < 0) { const char *e = cfg_get("TOTK_PASS_PROBE_MINW"); minw = e && *e ? atoi(e) : 0; }
+    if (minw < 0) { const char *e = cfg_get("REKARINA_PASS_PROBE_MINW"); minw = e && *e ? atoi(e) : 0; }
     if ((int)t->width < minw) return;
     probe_image(ex, t->image, t->format, t == &ex->depth ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT, t->level,
                 t->base_layer, 0, t->width, t->height, t->img ? t->img->addr : 0);
@@ -1282,7 +1292,7 @@ void vk_probe_pass_end(VkExec *ex) {
                             cube[i].addr | 2 | ((uint64_t)face << 2) | ((uint64_t)lv << 5));
             }
     cube_n = 0;
-    for (int i = 0; i < nvsp; i++)   // TOTK_PROBE_VS: the vertex stage's textures of the pass's draws
+    for (int i = 0; i < nvsp; i++)   // REKARINA_PROBE_VS: the vertex stage's textures of the pass's draws
         probe_image(ex, vsp[i].image, vsp[i].format, vsp[i].aspect, 0, 0, 0, vsp[i].w, vsp[i].h, vsp[i].addr | 1);
     nvsp = 0;
     if (pc_pending >= 0) {   // the GPU's bytes of the page-checked buffers at the pass end
@@ -1347,7 +1357,7 @@ void vk_probe_pass_end(VkExec *ex) {
         }
     }
     static uint64_t skip = 1;
-    if (skip == 1) { const char *e = cfg_get("TOTK_PROBE_SKIP"); skip = e ? strtoull(e, NULL, 0) : 0; }
+    if (skip == 1) { const char *e = cfg_get("REKARINA_PROBE_SKIP"); skip = e ? strtoull(e, NULL, 0) : 0; }
     uint64_t frame = __atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED) + 1;
     int s = (int)(frame % CR_FRAMES);
     if (cr_map && t == &ex->color[0] && t->format == VK_FORMAT_B10G11R11_UFLOAT_PACK32 && t->width >= CR_X0 + CR_W &&
@@ -1370,7 +1380,7 @@ void vk_probe_pass_end(VkExec *ex) {
     }
 }
 
-// TOTK_PROBE_CS=<hash>: the first dispatch of that compute shader each frame: its uniform blocks c3..c18 and storage
+// REKARINA_PROBE_CS=<hash>: the first dispatch of that compute shader each frame: its uniform blocks c3..c18 and storage
 // slots 0..15 (first 4 KiB each) as guest memory (or the submit-time copy) holds them, and as the GPU sees them right
 // after the dispatch. Written to dispatch.bin with the flight dump.
 #define DC_SLOTS 32
@@ -1383,7 +1393,7 @@ static void probe_image(VkExec *ex, VkImage image, VkFormat format, VkImageAspec
                         uint32_t layer, uint32_t z, uint32_t width, uint32_t height, uint64_t addr);
 static void dispatch_capture(VkExec *ex, const GfxShader *cs, const VkPipeInfo *info) {
     static uint64_t want = 1;
-    if (want == 1) { const char *e = cfg_get("TOTK_PROBE_CS"); want = e ? strtoull(e, NULL, 16) : 0; }
+    if (want == 1) { const char *e = cfg_get("REKARINA_PROBE_CS"); want = e ? strtoull(e, NULL, 16) : 0; }
     if (!want || !cs || shader_hash(cs) != want) return;
     for (uint32_t i = 0; info && i < info->n_bindings; i++) {   // its sampled 2D textures of 2048 and more: grid-probed
         const VkPipeBinding *bd = &info->bindings[i];
@@ -1541,11 +1551,11 @@ static void probe_image(VkExec *ex, VkImage image, VkFormat format, VkImageAspec
     ex->recorded += 3;
 }
 
-// TOTK_PROBE_VS=<hash>: the 2D textures the vertex stage of draws with that vertex shader samples are grid-probed at
+// REKARINA_PROBE_VS=<hash>: the 2D textures the vertex stage of draws with that vertex shader samples are grid-probed at
 // the pass end (as passes of their own in probes.tsv / box.tsv).
 static void probe_vs_textures(VkExec *ex) {
     static uint64_t want = 1;
-    if (want == 1) { const char *e = cfg_get("TOTK_PROBE_VS"); want = e ? strtoull(e, NULL, 16) : 0; }
+    if (want == 1) { const char *e = cfg_get("REKARINA_PROBE_VS"); want = e ? strtoull(e, NULL, 16) : 0; }
     if (!want) return;
     const GfxShader *vs, *fs;
     vk_exec_draw_shaders(&vs, &fs);
@@ -1614,18 +1624,18 @@ void vk_probe_draw(VkExec *ex, uint32_t count, uint32_t instances) {
             }
         }
     }
-    {   // DEBUG: TOTK_PROBE_FS=<hash>: logs fs c4[2] of that shader's draws, once a frame (OoT's sky LUT: sun intensity)
+    {   // DEBUG: REKARINA_PROBE_FS=<hash>: logs fs c4[2] of that shader's draws, once a frame (OoT's sky LUT: sun intensity)
         static uint64_t want = 1, last;
-        if (want == 1) { const char *e = cfg_get("TOTK_PROBE_FS"); want = e ? strtoull(e, NULL, 16) : 0; }
+        if (want == 1) { const char *e = cfg_get("REKARINA_PROBE_FS"); want = e ? strtoull(e, NULL, 16) : 0; }
         if (want) {
             const GfxShader *vs, *fs;
             vk_exec_draw_shaders(&vs, &fs);
             uint64_t fr = __atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED) + 1;
             if (fs && shader_hash(fs) == want && fr != last && ex->ubo[1][1].addr) {
                 last = fr;
-                {   // DEBUG-TRAP: TOTK_EXPTRAP=1: after the sky draw of frames 1400-1406, the page of its c4[2].w is closed
+                {   // DEBUG-TRAP: REKARINA_EXPTRAP=1: after the sky draw of frames 1400-1406, the page of its c4[2].w is closed
                     static int tr = -1;
-                    if (tr < 0) tr = cfg_get("TOTK_EXPTRAP") != NULL;
+                    if (tr < 0) tr = cfg_get("REKARINA_EXPTRAP") != NULL;
                     if (tr && fr >= 1400 && fr <= 1406) {
                         void mem_trap_page(uint64_t addr);
                         rt_log("EXPTRAP frame %llu c4 at %#llx (c4[2].w %g)", (unsigned long long)fr,
@@ -1673,7 +1683,7 @@ void vk_probe_draw(VkExec *ex, uint32_t count, uint32_t instances) {
     const VkExecTarget *t = &ex->color[0];
     if (!t->image || t->format != VK_FORMAT_B10G11R11_UFLOAT_PACK32 || t->width < 1280 || !t->img) return;
     static uint64_t skip = 1;
-    if (skip == 1) { const char *e = cfg_get("TOTK_PROBE_SKIP"); skip = e ? strtoull(e, NULL, 0) : 0; }
+    if (skip == 1) { const char *e = cfg_get("REKARINA_PROBE_SKIP"); skip = e ? strtoull(e, NULL, 0) : 0; }
     if (t->img->addr == skip) return;
     uint64_t frame = __atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED) + 1;
     int s = (int)(frame % PR_FRAMES);
@@ -1715,7 +1725,7 @@ void vk_probe_draw(VkExec *ex, uint32_t count, uint32_t instances) {
                 uint64_t pages = (u->size + 4095) / 4096;
                 j->hash[b] = malloc(pages * 8);
                 const uint8_t *src = (const uint8_t *)(uintptr_t)u->addr;
-                for (uint64_t p = 0; j->hash[b] && p < pages && !getenv("TOTK_PAGECHK_SAVE"); p++)
+                for (uint64_t p = 0; j->hash[b] && p < pages && !cfg_env("REKARINA_PAGECHK_SAVE"); p++)
                     j->hash[b][p] = pc_hash(src + p * 4096, u->size - p * 4096 < 4096 ? u->size - p * 4096 : 4096);
                 total += (u->size + 4095) & ~4095ull;
             }

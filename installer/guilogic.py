@@ -160,7 +160,7 @@ class Form:
     dlss: bool = False
 
     def installed_state(self):
-        """The recorded state of the install folder (totk-install.json), or None. Never raises."""
+        """The recorded state of the install folder (rekarina-install.json), or None. Never raises."""
         if not self.dest.strip():
             return None
         try:
@@ -172,7 +172,7 @@ class Form:
         return self.installed_state() is not None
 
     def problems(self):
-        """Ids of the entries that are missing or wrong, in screen order. A folder with totk-install.json needs only
+        """Ids of the entries that are missing or wrong, in screen order. A folder with rekarina-install.json needs only
         itself; the CLI asks for the game files when it must extract again."""
         found = []
         update = self.update_mode()

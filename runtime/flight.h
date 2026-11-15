@@ -1,4 +1,4 @@
-// TOTK_FLIGHT=1 flight recorder (flight.c): the last frames' timing and event counts plus a thumbnail each, written to
+// REKARINA_FLIGHT=1 flight recorder (flight.c): the last frames' timing and event counts plus a thumbnail each, written to
 // disk on F8 or after a slow frame, so a glitch or stutter seen in play can be read after the fact.
 #pragma once
 #include <stdint.h>
@@ -6,7 +6,7 @@
 #define FLIGHT_THUMB_W 320
 #define FLIGHT_THUMB_H 180
 
-extern int flight_on;   // TOTK_FLIGHT=1, set once by flight_init before the first present
+extern int flight_on;   // REKARINA_FLIGHT=1, set once by flight_init before the first present
 
 void flight_init(void);   // prof_start calls it
 // perf_present, once per present on the render thread: the interval since the previous present, the render thread's
@@ -21,7 +21,7 @@ void vk_thumbs_frame(uint64_t frame);    // the present thread names the frame o
 // flight or was overwritten. Takes the present lock for one slot copy (about 20 us); any thread.
 int vk_thumbs_read(uint64_t frame, uint8_t *rgba);
 
-// DEBUG-PROBE (vk_dump.c, TOTK_PASS_PROBE=1): a copy of the per-pass centre texels of the last frames, taken when a
+// DEBUG-PROBE (vk_dump.c, REKARINA_PASS_PROBE=1): a copy of the per-pass centre texels of the last frames, taken when a
 // dump starts; vk_probe_write writes it as TSV and frees it. NULL when the probe is off.
 typedef struct VkProbeSnap VkProbeSnap;
 VkProbeSnap *vk_probe_snap(void);

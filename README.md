@@ -73,29 +73,37 @@ Numbers from another machine are welcome: [docs/performance.md](docs/performance
   beside the game (up to 14 GB), so ground you have crossed before streams in without hitches
 - **Voice acting, music and movies** as on the console: Opus voice lines in nine languages, AV1 cutscenes
 - **Sharp native picture** at any 16:9 resolution, plus 21:9 and 32:9 with the camera and the interface in that shape
-- **NVIDIA DLSS / DLAA and DLSS Frame Generation**, **AMD FSR 3.1** upscaling and frame generation on any GPU. The
+- **NVIDIA DLSS / DLAA and DLSS Frame Generation**, **AMD FSR 4.1** on the Radeon cards that run it and **FSR 3.1** on any GPU, upscaling and frame generation. The
   launcher fetches each vendor's library from its official repository for the GPU it finds; nothing of theirs is
   bundled here
 - **Settings that apply while you play**: the in-game menu (Esc or F1) is drawn in the game's own menu style, with a
   live picture beside the rows, so a change to the render scale, sharpening, colour or frame limit shows at once
 - **Presets by hardware**: the first settings are chosen from your GPU and its video memory, and a texture quality
   setting keeps 6 and 8 GB cards out of trouble
+- **Older cards and built-in graphics**: **AMD FSR 1** scales a smaller 3D scene up at the same small cost on any GPU
+  (the first choice on built-in graphics and 4 GB cards), and the trees, bushes and grass are drawn on GPUs without
+  mesh shaders
+- **Your save comes along**: the launcher's Saves page brings a save in from another port of the game or from an
+  emulator (Ryujinx and its forks, the yuzu family), or from a folder or a .zip; the save it replaces is kept
+- **Controllers and the mouse**: Xbox and PlayStation pads, the console's own controllers with HD rumble and gyro,
+  and a raw mouse camera that turns exactly as far as the mouse moves, with its own speed for each axis
 - **Button prompts** for Xbox, PlayStation and Switch pads, a set drawn for this port, and the keyboard and mouse:
-  they change in the running game, the menu shows the chosen set as the game draws it, and the keyboard prompts
-  follow the keys you bind
+  they follow the device you use, change in the running game, and the keyboard prompts follow the keys you bind
+- **Skip what you have seen**: every cutscene can be skipped, the three the console keeps unskippable included, and
+  an option runs the dialogue on without the pauses between phrases
 - **Launcher with updates**: it builds the game, shows each step with the time it takes, and installs new releases;
   the game itself tells you when one is out
 - **Menu and launcher in every language the game has**: English, Russian, Japanese, German, French, Spanish, Italian,
   Dutch, Portuguese, Korean, Simplified and Traditional Chinese
-- RomFS mods from a folder, HDR10 output (experimental), a performance overlay (F10), Discord Rich Presence (off by
-  default)
+- Mods with a manager (the launcher's Mods page and the game's Mods tab), HDR10 output (experimental), a performance
+  overlay (F10), Discord Rich Presence (off by default)
 
 ## Requirements
 
 | | Minimum | Recommended |
 |---|---|---|
 | System | Windows 10 or 11, 64-bit | Windows 11 |
-| GPU | Vulkan 1.3 with mesh shaders, 6 GB | NVIDIA RTX with 8 GB or more |
+| GPU | Vulkan 1.3, 6 GB | NVIDIA RTX with 8 GB or more |
 | CPU | 6 cores with AVX2 | 8 cores |
 | Memory | 16 GB | 32 GB |
 | Disk | 30 GB free on an SSD (the game, its shader caches and the build) | |
@@ -122,7 +130,7 @@ The same launcher as a folder is `Rekarina-Setup-<version>-windows.zip`, for tho
 themselves; start `Rekarina-Launcher.exe` in it.
 
 Saves and settings live in the game folder and survive updates and rebuilds. Settings are in the in-game menu; every
-key is also in `rekarina.ini` beside the game ([the key list](totk.ini.example) explains each). Controls:
+key is also in `rekarina.ini` beside the game ([the key list](rekarina.ini.example) explains each). Controls:
 [docs/controls.md](docs/controls.md).
 
 ## Updates
@@ -135,12 +143,14 @@ what changed and re-prepares the shaders, so the first minutes after an update d
 
 ## Known issues
 
-- **AMD GPUs: the short grass is missing.** On the one AMD GPU the port has been run on (an integrated Radeon) trees,
-  bushes, ground plants and their shadows are drawn, and the carpet of short grass is not: its draws go through task
-  shaders, which that driver does not survive, so the port leaves them out on AMD's Windows driver. A discrete Radeon,
-  a ROG Ally and a Steam Deck have not been run: reports with a log and a screenshot are very welcome.
+- **AMD GPUs** have been run on one integrated Radeon only, where the whole picture is drawn, the short grass
+  included. On AMD's Windows driver the draws of that grass go without the game's GPU render conditions (inside one
+  the driver stopped the GPU), so the grass the game would cull is drawn anyway: a little more GPU work. A discrete
+  Radeon, a ROG Ally and a Steam Deck have not been run: reports with a log and a screenshot are very welcome.
   [docs/oot-notes.md](docs/oot-notes.md) ("AMD") has the details.
 - Intel GPUs have never been run.
+- On GPUs without mesh shaders the trees, bushes and grass go through a compute stand-in, checked on an NVIDIA card
+  with its mesh shaders turned off, not yet on such a GPU.
 - A processor without AVX2 gets a slower build of the game, chosen by the launcher; that path has not been run on such
   a machine.
 - HDR10 output is experimental and off by default.
@@ -150,7 +160,8 @@ what changed and re-prepares the shaders, so the first minutes after an update d
 - The numbers above are with the camera turning in place. Running through the field or the Market gives 73 to 80
   fps on the same machine without the texture cache, with short hitches as new ground streams in; the texture cache
   (`tex_cache = 1`, the default) brings that to about 84 fps and removes most of the hitches.
-- Linux is not supported yet.
+- There is no Linux release yet: the setup builds the game on Linux in development, but it has not been played on a
+  Linux PC or a Steam Deck.
 
 Found something else? Open an issue with the form, and attach the log (`logs\rekarina.log` beside the game), or ask
 on the [Discord server](https://discord.gg/6N8PKr9zZA).

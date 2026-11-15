@@ -1,4 +1,4 @@
-// DLSS Frame Generation (TOTK_FRAMEGEN = dlss; applies after a restart) through totk_dlssg.dll
+// DLSS Frame Generation (REKARINA_FRAMEGEN = dlss; applies after a restart) through totk_dlssg.dll
 // (runtime/dlssg/nx2_sl.cpp), which drives NVIDIA Streamline. Like AMD's frame generation (vk_fg.cpp) it needs DLSS or
 // FSR 3.1 upscaling on, whose depth, motion vectors and camera it hands over, and an RTX 40 or 50 GPU.
 //
@@ -7,7 +7,7 @@
 // DLSS-G needs; the present path calls Streamline's swapchain functions (gfx_present.c), and every present records the
 // frame's constants and tags first (vk_dlssg_frame). Generation pauses while the menu is open.
 //
-// DLSS-G needs Reflex, whose low-latency mode paces the game (TOTK_REFLEX, default 1; 0 off, 2 on with boost): the
+// DLSS-G needs Reflex, whose low-latency mode paces the game (REKARINA_REFLEX, default 1; 0 off, 2 on with boost): the
 // game's frame sleeps in Reflex where it starts (its acquire of a window image), and each frame carries the latency
 // markers from that start to the host present, all with the frame's number, the count of the game's presents up to it.
 // The mode is the swapchain's, so it is set again after each one (vk_dlssg_create_swapchain).
@@ -55,7 +55,7 @@ static void sl_line(const char *line) { rt_log("%s", line); }
 static int reflex_mode(void) {
     static int m = -1;
     if (m < 0) {
-        const char *s = cfg_get("TOTK_REFLEX");
+        const char *s = cfg_get("REKARINA_REFLEX");
         m = s && *s ? atoi(s) : 1;
         if (m < 0 || m > 2) m = 1;
     }
@@ -64,7 +64,7 @@ static int reflex_mode(void) {
 
 int vk_dlssg_wanted(void) {
     if (S.wanted < 0) {
-        S.wanted = !strcmp(cfg_value("TOTK_FRAMEGEN"), "dlss");
+        S.wanted = !strcmp(cfg_value("REKARINA_FRAMEGEN"), "dlss");
         if (S.wanted && !vk_dlaa_wanted()) {
             rt_log("dlssg: frame generation needs DLSS or FSR 3.1 upscaling (any mode): off");
             S.wanted = 0;

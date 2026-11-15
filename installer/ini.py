@@ -1,6 +1,6 @@
 """totk.ini: set the game language and keep everything else (keys and syntax as runtime/cfg.c reads them).
 
-A new file starts from totk.ini.example, whose lines are all commented defaults. The language goes into `lang`
+A new file starts from rekarina.ini.example, whose lines are all commented defaults. The language goes into `lang`
 (a Switch language code, runtime/ov_system.c): an active `lang = ...` line is rewritten in place, else the commented
 `# lang = ...` line of the example is activated, else the line is added to [language] (created at the end if
 missing). Other lines, comments and line order stay as they are.
@@ -9,7 +9,7 @@ import os
 import re
 from pathlib import Path
 
-# runtime/ov_system.c: the codes TOTK_LANG offers. Each language appears once, under the code the game accepts.
+# runtime/ov_system.c: the codes REKARINA_LANG offers. Each language appears once, under the code the game accepts.
 LANGUAGES = ('ja', 'en-US', 'en-GB', 'fr', 'fr-CA', 'de', 'it', 'es', 'es-419', 'nl', 'pt', 'pt-BR', 'ru', 'ko',
              'zh-Hans', 'zh-Hant')
 # Older installer builds wrote these two codes; they are read as the canonical ones and rewritten on the next install.

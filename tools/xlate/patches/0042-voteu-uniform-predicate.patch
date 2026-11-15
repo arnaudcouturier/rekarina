@@ -1,0 +1,20 @@
+TOTK: VOTEU writes its vote to a uniform predicate, as it writes its ballot to a uniform register. AVote put the vote of
+both VOTE and VOTEU into the lane predicate of that number. OoT's eye shaders take `VOTEU.ANY UR63, UP0, P0` of
+"the object's light probe is not empty" and copy UP0 into P0 with the next instruction (PLOP3 P0 = UP0); the red
+channel of the probe's light is then computed under P0. With the vote in P0 and nothing in UP0, P0 took whatever UP0
+held from an earlier, unrelated test: the red factor stayed an unrelated register value (negative here), and the
+whites of the hero's eyes came out cyan. A destination of UPT (the culling kernels' votes) is discarded either way.
+
+--- a/src/Ryujinx.Graphics.Shader/Instructions/InstEmitAmpereAlu.cs
++++ b/src/Ryujinx.Graphics.Shader/Instructions/InstEmitAmpereAlu.cs
+@@ -1506,7 +1506,9 @@
+
+             if (vote != null)
+             {
+-                ASetPred(context, x.Bits(81, 84), vote);
++                // VOTEU's predicate is a uniform one (UP), as its register is (UR): the shaders read it back as one
++                // (PLOP3 P0 = UP0 right after a VOTEU.ANY UR63, UP0, P0)
++                ASetPred(context, x.Bits(81, 84), vote, toUniform);
+             }
+
+             int rd = ARd(x, toUniform);

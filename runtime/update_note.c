@@ -143,7 +143,7 @@ static void check_thread(void *arg) {
 }
 
 void update_note_start(void) {
-    if (!cfg_bool("TOTK_UPDATE_CHECK")) {
+    if (!cfg_bool("REKARINA_UPDATE_CHECK")) {
         rt_log("update: the check is off (UPDATE_CHECK=0)");
         return;
     }
@@ -151,7 +151,7 @@ void update_note_start(void) {
 }
 
 int update_note_latest(char *out, size_t cap) {
-    if (!atomic_load(&newer) || !cfg_bool("TOTK_UPDATE_CHECK")) return 0;
+    if (!atomic_load(&newer) || !cfg_bool("REKARINA_UPDATE_CHECK")) return 0;
     if (out && cap) snprintf(out, cap, "%s", latest);
     return 1;
 }

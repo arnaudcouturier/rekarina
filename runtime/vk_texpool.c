@@ -16,7 +16,7 @@
 // vk_texture_pool_slot_locked, which creates and uploads images as a draw binding would. The whole token changes too
 // often to follow (its address generation is shared by every texture hashed to the same bucket: 6000 slots a frame
 // resolved again in the forest). Making a texture resident costs an upload (and an ASTC decode), so each submission
-// resolves slots for at most TOTK_TPOOL_MS milliseconds (default 2); a lightmap appears a few frames after its area
+// resolves slots for at most REKARINA_TPOOL_MS milliseconds (default 2); a lightmap appears a few frames after its area
 // loads.
 #include <stdlib.h>
 #include <string.h>
@@ -61,7 +61,7 @@ static int setup(void) {
     VkCtx *c = vk_ctx();
     if (!c || !c->device) return 0;   // asked before the device exists: not decided yet
     if (!rt_knob("TPOOL", "1")) {
-        rt_log("vk_texpool: off (TOTK_TPOOL=0): pool-indexed texture arrays keep the draw's slots");
+        rt_log("vk_texpool: off (REKARINA_TPOOL=0): pool-indexed texture arrays keep the draw's slots");
         return -1;
     }
     VkPhysicalDeviceVulkan12Features f12 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES};
@@ -120,7 +120,7 @@ static int setup(void) {
     T.reg = calloc(ntex, sizeof *T.reg), T.img = calloc(ntex, sizeof *T.img), T.dirty = calloc(ntex, 1);
     T.v2d = calloc(ntex, sizeof *T.v2d), T.v2da = calloc(ntex, sizeof *T.v2da);
     if (!T.reg || !T.img || !T.dirty || !T.v2d || !T.v2da) rt_fatal("vk_texpool: out of memory");
-    const char *e = cfg_get("TOTK_TPOOL_MS");
+    const char *e = cfg_get("REKARINA_TPOOL_MS");
     int ms = e ? atoi(e) : 0;
     T.budget_ns = (uint64_t)(ms > 0 ? ms : 2) * 1000000ull;
     rt_log("vk_texpool: the texture pool's set holds %d texture ids and %d sampler ids (set %d)", T.ntex,
@@ -253,9 +253,9 @@ static void take_gone(int n) {
     T.ngone = 0, T.gone_all = 0;
 }
 
-static int pump_ms(void) {       // TOTK_TPOOL_PUMP_MS, 0 off
+static int pump_ms(void) {       // REKARINA_TPOOL_PUMP_MS, 0 off
     static int ms = -1;
-    if (ms < 0) { const char *e = cfg_get("TOTK_TPOOL_PUMP_MS"); ms = e && *e ? atoi(e) : 8; }
+    if (ms < 0) { const char *e = cfg_get("REKARINA_TPOOL_PUMP_MS"); ms = e && *e ? atoi(e) : 8; }
     return ms;
 }
 static int pumping;              // update() runs from vk_tpool_pump: its own budget
@@ -274,11 +274,11 @@ static void resolve_slot(int id, uint32_t reg) {
         sec_end(SEC_TP_RESOLVE, sec1);
         sec_end(T.img[id] ? SEC_TP_OLD : SEC_TP_NEW, sec1);
         if (sec1) sec_count(SEC_TP_SLOTS, 1);
-        // TOTK_TPOOL_HIDE=<classes> (a test): the pool shows the stand-in for textures of these classes
+        // REKARINA_TPOOL_HIDE=<classes> (a test): the pool shows the stand-in for textures of these classes
         // (vk_texture_pool_class), to see on screen which classes shaders read through the pool. What they do not read
         // may be evicted while registered (vk_texture.c evictable).
         static int hide = -1;
-        if (hide < 0) { const char *e = cfg_get("TOTK_TPOOL_HIDE"); hide = e && *e ? atoi(e) : 0; }
+        if (hide < 0) { const char *e = cfg_get("REKARINA_TPOOL_HIDE"); hide = e && *e ? atoi(e) : 0; }
         // the class bits 1, 2 and 4 name a class to hide; with 8 in the mask, of those classes only the textures a draw
         // has bound (8 alone: every such texture)
         int cls = img && hide ? vk_texture_pool_class(img) : 0;
@@ -304,8 +304,19 @@ static void resolve_slot(int id, uint32_t reg) {
         if (a != T.dummy2d) vk_live_check_use((uint64_t)(uintptr_t)a, "the texture pool's slot (resolved, 2D view)", (uint64_t)id);
         if (b != T.dummy2da) vk_live_check_use((uint64_t)(uintptr_t)b, "the texture pool's slot (resolved, array view)", (uint64_t)id);
     }
-    if (a != T.v2d[id]) T.v2d[id] = a, put(GFX_POOL_2D, (uint32_t)id, a, VK_NULL_HANDLE);
-    if (b != T.v2da[id]) T.v2da[id] = b, put(GFX_POOL_2D_ARRAY, (uint32_t)id, b, VK_NULL_HANDLE);
+    // A slot whose image went (dirty) is written even when the handles compare equal. The old views are destroyed once
+    // the GPU is past the submission that let the image go, and the driver hands their handle values to later views:
+    // the view found now can carry the dead one's handle while the set still holds the dead one's descriptor, which a
+    // shader indexing the slot reads at the destroyed image's address (a lost device, possibly seconds later).
+    int force = T.dirty[id];
+    {   // DEBUG-TPOOLABA: dirty slots whose new view had the old view's handle (the write the old rule skipped)
+        static uint64_t n_same;
+        if (force && ((a != T.dummy2d && a == T.v2d[id]) || (b != T.dummy2da && b == T.v2da[id])) && !(n_same++ & 255))
+            rt_log("vk_texpool: %llu slots so far whose image went got a view with the old view's handle (slot %d)",
+                   (unsigned long long)n_same, id);
+    }
+    if (force || a != T.v2d[id]) T.v2d[id] = a, put(GFX_POOL_2D, (uint32_t)id, a, VK_NULL_HANDLE);
+    if (force || b != T.v2da[id]) T.v2da[id] = b, put(GFX_POOL_2D_ARRAY, (uint32_t)id, b, VK_NULL_HANDLE);
     T.reg[id] = reg, T.img[id] = im, T.dirty[id] = 0;
 }
 
@@ -345,11 +356,11 @@ static void update(void) {
     uint64_t t0 = plat_now_ns();
     int checked = 0, stopped = 0;
     // A scene load registers thousands of slots at once; resolved 2 ms at a time, the lightmaps came in over the first seconds of
-    // play and half the world was dark. While the previous update left a large backlog (TOTK_TPOOL_BURST_MIN slots, default 1024)
-    // the budget is TOTK_TPOOL_BURST_MS (default 50), so they finish behind the game's fade from black. A smaller backlog
+    // play and half the world was dark. While the previous update left a large backlog (REKARINA_TPOOL_BURST_MIN slots, default 1024)
+    // the budget is REKARINA_TPOOL_BURST_MS (default 50), so they finish behind the game's fade from black. A smaller backlog
     // is the world streaming in while the player moves: the Market registers a few hundred slots within half a
     // second of running, about a tenth of them new textures to create and upload, and under the long budget those were
-    // frames of 25 to 50 ms, ten in a row (2026-11-12). They get TOTK_TPOOL_MID_MS (default 4) per update instead. Slots
+    // frames of 25 to 50 ms, ten in a row (2026-11-12). They get REKARINA_TPOOL_MID_MS (default 4) per update instead. Slots
     // that showed an image before (a texture the game's compaction moved, a slot registered again) may be on screen and
     // would show the stand-in while they wait, so those come first and keep the long budget: they mostly find their
     // image by its content (vk_texture.c adopt_released) and cost no upload.
@@ -357,8 +368,8 @@ static void update(void) {
     static uint64_t burst_ns, mid_ns;
     static int burst_min;
     if (!burst_ns) {
-        burst_ns = knob_ms("TOTK_TPOOL_BURST_MS", 50), mid_ns = knob_ms("TOTK_TPOOL_MID_MS", 4);
-        const char *e = cfg_get("TOTK_TPOOL_BURST_MIN");
+        burst_ns = knob_ms("REKARINA_TPOOL_BURST_MS", 50), mid_ns = knob_ms("REKARINA_TPOOL_MID_MS", 4);
+        const char *e = cfg_get("REKARINA_TPOOL_BURST_MIN");
         burst_min = e && *e ? atoi(e) : 1024;
     }
     uint64_t pump_ns = (uint64_t)pump_ms() * 1000000ull;
@@ -435,7 +446,7 @@ static void update(void) {
     sec_end(SEC_TP_UPDATE, sec0);
 }
 
-// TOTK_SECTIONS, the 60-frame line: slots registered and those the pool has not resolved (racy reads; a diagnostic).
+// REKARINA_SECTIONS, the 60-frame line: slots registered and those the pool has not resolved (racy reads; a diagnostic).
 void vk_tpool_backlog(int *registered, int *unresolved) {
     int n = vk_texture_slot_count(), r = 0, u = 0;
     if (!T.reg) n = 0;
@@ -452,7 +463,7 @@ void vk_tpool_backlog(int *registered, int *unresolved) {
 // Submissions while no draw binds the pool (the title and the loading screen, long before the first scene frame) resolve
 // the registered slots a piece at a time. The first scene frames then find them done, where they used to spend hundreds
 // of milliseconds creating and uploading in plain view. The budget is what keeps the loading screen smooth; resolving
-// them unbudgeted from the title on ran at 7 fps. TOTK_TPOOL_PUMP_MS: the budget per submission, 0 off.
+// them unbudgeted from the title on ran at 7 fps. REKARINA_TPOOL_PUMP_MS: the budget per submission, 0 off.
 void vk_tpool_pump(void) {
     static uint32_t done_gen;
     if (pump_ms() <= 0 || !ready()) return;

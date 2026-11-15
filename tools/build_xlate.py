@@ -2,7 +2,7 @@
 
 Copies tools/vendor/ryujinx to build/xlate/ryujinx, applies tools/xlate/patches/*.patch there (tools/vendor stays
 byte-identical; 0001-0004 are MNG's, 0005-0013, 0015 and 0016 are ours; 0017-0020, the Ampere / NVN2 frontend for
-Switch 2 games, are MNG's and seedds/nxnative's, 0021-0041 ours), then runs `dotnet publish`. Needs the .NET 10 SDK, the MSVC build
+Switch 2 games, are MNG's and seedds/nxnative's, 0021-0042 ours), then runs `dotnet publish`. Needs the .NET 10 SDK, the MSVC build
 tools and vswhere.exe (docs/building.md). Run with .venv. On Linux it builds build/xlate/totk_xlate for linux-x64, which
 NativeAOT links with the system's clang (no MSVC); NativeAOT builds for the OS it runs on only.
 
@@ -44,7 +44,7 @@ BUILD = ROOT / "build" / "xlate"
 WIN = os.name == "nt"
 EXE = "totk_xlate.exe" if WIN else "totk_xlate"
 VSWHERE_DIR = Path(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)")) / "Microsoft Visual Studio" / "Installer"
-PATCH_COUNT = 40   # tools/xlate/patches/*.patch: a missing or stray file stops the build
+PATCH_COUNT = 42   # tools/xlate/patches/*.patch: a missing or stray file stops the build
 
 
 def find_dotnet() -> str | None:
@@ -172,7 +172,9 @@ def prepare_sources() -> Path:
 # Sources that translate like earlier ones. Left: what the sources hash to (source_identity); right: the earlier identity
 # they keep. Patch 0040 changed the translation of mesh shaders that output points or a point size and of no other
 # shader (seven of OoT's), and patch 0041 that of mesh shaders on the devices that ask for whole index
-# vectors; runtime/gfx_shader.c build_code_hash gives exactly those a program hash of their own, so every other cache
+# vectors, and patch 0042 that of programs whose VOTEU writes a uniform predicate other than UPT (OoT's eye
+# shaders); patch 0043 adds a translation only a job with "as_compute" asks for (a mesh emulation kernel, its own
+# stage GFX_STAGE_MSC in the program hash); runtime/gfx_shader.c build_code_hash gives exactly those a program hash of their own, so every other cache
 # entry made under the earlier identity is what this build would write. A change to any source gives another left
 # side and the entry stops applying by itself; then it is removed, or made anew with the same care (translate a
 # corpus with both builds and compare the files). The sources' comments were reworded since (no game is named in
@@ -180,6 +182,10 @@ def prepare_sources() -> Path:
 # translator came from.
 SAME_AS = {
     "d69568d7529e818425697e9eb3a769888f796dc8fb255090a92e70ee841a50cd":
+        "b9d1309569a87e96595514e3e1eccb56e907a0b67a1bac3577ae00acd9c8e726",
+    "509b66df57c65317b67426f91979f3c6aed7ed1fb375b5db785c523cf23067ff":
+        "b9d1309569a87e96595514e3e1eccb56e907a0b67a1bac3577ae00acd9c8e726",
+    "7db37617542e2afade37a4d45c19ba14f3b92fc24c89d22d403709289252c5d1":
         "b9d1309569a87e96595514e3e1eccb56e907a0b67a1bac3577ae00acd9c8e726",
 }   # same-as-end
 

@@ -114,8 +114,8 @@
     [UI_MENU_UPSCALE_GROUP] = "Upscaling et génération d'images",
     [UI_MENU_FSR_VERSION] = "Version de FSR",
     [UI_MENU_FSR_VERSION_DESC] = "Quel upscaler AMD FSR est utilisé quand l'upscaler temporel est AMD FSR. Automatique prend FSR 4.1 (apprentissage automatique) sur les cartes Radeon qui le gèrent et FSR 3.1 sur toutes les autres. S'applique tout de suite.",
-    [UI_MENU_TAA] = "Upscaler temporel",
-    [UI_MENU_TAA_DESC] = "L'upscaler utilisé par la ligne DLSS / DLAA : NVIDIA DLSS (GPU RTX) ou AMD FSR (tout GPU). Après un redémarrage.",
+    [UI_MENU_TAA] = "Upscaler",
+    [UI_MENU_TAA_DESC] = "L'upscaler utilisé par la ligne DLSS / DLAA : NVIDIA DLSS (GPU RTX), AMD FSR (tout GPU, temporel) ou AMD FSR 1 (tout GPU, spatial : le plus léger, pour les cartes anciennes et les PC portables de jeu). Après un redémarrage.",
     [UI_MENU_FRAMEGEN] = "Génération d'images",
     [UI_MENU_FRAMEGEN_DESC] = "Une image générée entre deux images dessinées par le jeu, sans toucher au HUD : AMD FSR sur tout GPU, NVIDIA DLSS sur les séries RTX 40 et 50. Après un redémarrage.",
     [UI_MENU_FRAMEGEN_NEEDS] = "Nécessite DLSS / DLAA activé : elle utilise ses vecteurs de mouvement.",
@@ -233,14 +233,16 @@
                              "et la souris pour la caméra. Le jeu lit ses icônes au démarrage : elles changent donc après "
                              "un redémarrage. Elles font partie des fichiers du jeu : un bouton réattribué dans "
                              "Commandes garde donc son ancienne icône à l'écran.",
-    [UI_MENU_PROMPTS_DESC_LIVE] = "Quels boutons les icônes du jeu affichent : Nintendo (ceux du jeu), Xbox, PlayStation, le jeu d'icônes au trait propre à Rekarina ou PC : clavier et souris, avec les touches que vous avez attribuées. La rangée de boutons ci-dessus est le jeu choisi, tel que le jeu le dessine. Les boutons de façade suivent la disposition des boutons ci-dessus. S'applique immédiatement.",
+    [UI_MENU_PROMPTS_DESC_LIVE] = "Quels boutons les icônes du jeu affichent. Automatique suit l'appareil sur lequel vous avez appuyé en dernier : clavier et souris, ou les boutons de la manette elle-même (Xbox, PlayStation, Nintendo ; un Steam Deck ou une console portable sous Windows affiche Xbox). Ou toujours le même jeu d'icônes : Nintendo (ceux du jeu), Xbox, PlayStation, Rekarina (noms Xbox sur les formes de boutons du jeu) ou PC : clavier et souris, avec les touches que vous avez attribuées. La rangée de boutons ci-dessus est le jeu d'icônes tel que le jeu le dessine. Les boutons de façade suivent la disposition des boutons ci-dessus. S'applique immédiatement.",
     [UI_MENU_PROMPTS_NINTENDO] = "Nintendo", [UI_MENU_PROMPTS_XBOX] = "Xbox", [UI_MENU_PROMPTS_PC] = "PC", [UI_MENU_PROMPTS_PS] = "PlayStation", [UI_MENU_PROMPTS_RK] = "Rekarina",
+    [UI_MENU_PROMPTS_AUTO] = "Automatique",
     [UI_MENU_PROMPTS_MISSING] = "fichiers d'icônes manquants : relancez l'installation",
     [UI_MENU_PROMPTS_FAILED] = "fichiers d'icônes endommagés : relancez l'installation",
     [UI_MENU_PROMPTS_RESTART] = "les icônes changent après redémarrage",
+    [UI_MENU_PROMPTS_LIVE_PARTIAL] = "Changé tout de suite. Les boutons déjà affichés par le jeu et l'aide d'action en bas gardent leur ancien aspect jusqu'au redémarrage.",
     [UI_MENU_PROMPTS_OFF_SHAPE] = "désactivées : résolution du jeu non 16:9",
     [UI_MENU_PROMPTS_OFF_MODS] = "désactivées : un mod RomFS remplace leurs fichiers",
-    [UI_MENU_PROMPTS_OFF_PATCHES] = "désactivées tant que TOTK_ROMFS_PATCHES est défini",
+    [UI_MENU_PROMPTS_OFF_PATCHES] = "désactivées tant que REKARINA_ROMFS_PATCHES est défini",
     [UI_MENU_RESTART] = "Redémarrer maintenant",
     [UI_MENU_RESTART_DESC] = "Ferme le jeu et le relance avec les nouvelles icônes. La progression depuis votre dernière "
                              "sauvegarde est perdue.",
@@ -253,12 +255,25 @@
     [UI_MENU_STICK_DEADZONE_NOW] = "stick actuel : %.0f %%",
     [UI_MENU_MOUSE_MODE] = "Caméra à la souris",
     [UI_MENU_MOUSE_MODE_DESC] = "Direct : la caméra tourne selon le déplacement de la souris, comme dans un jeu PC, sans zone morte ni courbe de stick (jeu 1.4.3 ; les autres versions utilisent l'émulation du stick). Émulation du stick : la souris agit comme le stick droit.",
+    [UI_MENU_FAST_TEXT] = "Dialogues plus rapides",
+    [UI_MENU_FAST_TEXT_DESC] = "Supprime les pauses que les messages du jeu marquent entre les phrases : le texte défile sans s'arrêter.",
+    [UI_MENU_MOUSE_MODE_DESC_OOT] = "Direct : la caméra tourne exactement autant que la souris se déplace, à toute vitesse, sans zone morte, courbe ni vitesse maximale du stick. Émulation du stick : la souris agit comme le stick droit, avec sa courbe et sa vitesse maximale.",
     [UI_MENU_MOUSE_STICK] = "Émulation du stick",
     [UI_MENU_MOUSE_DIRECT] = "Direct",
     [UI_MENU_MENU_CURSOR] = "Souris dans les menus du jeu",
     [UI_MENU_MENU_CURSOR_DESC] = "Dans les menus du jeu (titre, inventaire, boutiques, choix de dialogue), le pointeur s'affiche : l'élément survolé est sélectionné, le clic gauche confirme, le clic droit revient en arrière. Seulement quand la souris ou une touche a été utilisée en dernier : avec une manette, les menus restent inchangés (jeu 1.4.3).",
     [UI_MENU_MOUSE_SENS] = "Sensibilité caméra (souris)",
     [UI_MENU_MOUSE_SENS_DESC] = "La vitesse à laquelle la souris tourne la caméra.",
+    [UI_MENU_MOUSE_SENS_Y] = "Vitesse verticale de la souris",
+    [UI_MENU_MOUSE_SENS_Y_DESC] = "La vitesse à laquelle la caméra tourne quand la souris monte et descend, par rapport à "
+                                  "la gauche et la droite : 0.50 deux fois moins vite, 1.00 pareil.",
+    [UI_MENU_MOUSE_INVERT_Y] = "Inverser l'axe vertical de la souris",
+    [UI_MENU_MOUSE_INVERT_Y_DESC] = "Inverse le haut et le bas pour la caméra à la souris. Seulement la souris : les "
+                                    "options de caméra du jeu s'appliquent toujours.",
+    [UI_MENU_MOUSE_RAW] = "Entrée brute de la souris",
+    [UI_MENU_MOUSE_RAW_DESC] = "Activé : la caméra suit le mouvement propre de la souris, sans la vitesse ni "
+                               "l'accélération du pointeur de Windows. Désactivé : elle suit le pointeur, avec les deux, "
+                               "comme sur le bureau (avec un pavé tactile, par exemple).",
     [UI_MENU_WALK_KEY] = "Touche de marche",
     [UI_MENU_WALK_KEY_DESC] = "Maintenez-la pour n'incliner qu'en partie les sticks du clavier : au clavier, le personnage "
                               "marche au lieu de courir. L'amplitude de marche fixe l'inclinaison. La manette et la souris "

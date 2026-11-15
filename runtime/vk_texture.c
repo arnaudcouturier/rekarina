@@ -121,7 +121,7 @@ static Tex *rel_head, *rel_tail;   // released entries in release order (sweep_r
 static uint64_t n_uploads, n_reuploads;
 // Re-uploads since the last perf line (tex_lock): all, and those of textures a WriteTexels wrote since their last upload.
 static uint64_t ru_n, ru_bytes, ru_ns, ru_wt_n, ru_wt_bytes, ru_wt_ns;
-// TOTK_TEX_ALIAS (default on; =0: a new image over live storage starts empty): a new descriptor over the storage of a
+// REKARINA_TEX_ALIAS (default on; =0: a new image over live storage starts empty): a new descriptor over the storage of a
 // live image that the GPU wrote gets that image's content (alias_copy). Counts since the last log line.
 static int tex_alias = -1;
 static uint64_t n_alias_copied, n_alias_upload, n_alias_uninit;
@@ -156,7 +156,7 @@ static uint32_t reg_serial;
 
 static uint32_t agen_idx(uint64_t addr) { return (uint32_t)(addr * 0x9E3779B97F4A7C15ull >> 52); }
 
-// ---- lookups as of a place in the command stream (TOTK_CHUNK_ASOF=0 turns it off)
+// ---- lookups as of a place in the command stream (REKARINA_CHUNK_ASOF=0 turns it off)
 // A slot whose own texture is released, or was never rendered, follows the entry at its storage that the GPU wrote
 // last (slot_resolve, "content follows the memory"), and a new image over live storage takes that entry's content
 // (entry_of). "Last" is the order in which the replay thread records writes. The threads that record the chunks of a
@@ -213,7 +213,7 @@ static void lock(void) {
 }
 static void unlock(void) { plat_rmutex_unlock(&tex_lock); }
 
-// ---- uploads ahead of first use (TOTK_TEX_PREP; "up_main" below)
+// ---- uploads ahead of first use (REKARINA_TEX_PREP; "up_main" below)
 // up_worker: this thread is the one that uploads ahead. Inside upload() it fills staging memory of its own with the
 // texture lock released (fill_lock held instead: vk_texture_range_gone waits on it before a pool's memory goes), so
 // the replay thread is not held up by the copy.
@@ -337,10 +337,10 @@ static int format_compressed(VkFormat f) {   // vkCmdClearColorImage takes no bl
            (f >= VK_FORMAT_ASTC_4x4_SFLOAT_BLOCK && f <= VK_FORMAT_ASTC_12x12_SFLOAT_BLOCK);
 }
 
-static int suballoc_on(void) {   // TOTK_TEX_SUBALLOC=0: every texture lets the driver choose dedicated memory
+static int suballoc_on(void) {   // REKARINA_TEX_SUBALLOC=0: every texture lets the driver choose dedicated memory
     static int on = -1;
     if (on < 0) {
-        const char *v = getenv("TOTK_TEX_SUBALLOC");
+        const char *v = cfg_env("REKARINA_TEX_SUBALLOC");
         on = !(v && v[0] == '0');
     }
     return on;
@@ -370,7 +370,7 @@ static void zero_suballoc(VkCtx *c, const Tex *e) {
     vk_defer_buffer(b, NULL);
 }
 
-// TOTK_SECTIONS: what asked for the entry being made (texture lock): 0 a render target or vk_texture_get, 1 a draw's
+// REKARINA_SECTIONS: what asked for the entry being made (texture lock): 0 a render target or vk_texture_get, 1 a draw's
 // binding, 2 the texture pool's update. The calls of one creation, also for the TEXSLOW line.
 static int sec_mk;
 enum { ICS_CREATE, ICS_REQ, ICS_RESOLVE, ICS_BIND, ICS_VMA, ICS_N };
@@ -415,7 +415,7 @@ static int bind_pool_memory(VkCtx *c, Tex *e, VkImage img, uint64_t guest_size) 
     static uint64_t why_n;
 #define ALIAS_WHY(k) do { why[k]++, why_b[k] += req.size; if (!(++why_n & 1023)) rt_log("ALIASWHY bound %llu (%llu MiB), depth too large %llu (%llu MiB), unresolved %llu, misaligned %llu (%llu MiB), memory type %llu; this one: size %llu guest %llu align %llu", (unsigned long long)why[0], (unsigned long long)(why_b[0] >> 20), (unsigned long long)why[1], (unsigned long long)(why_b[1] >> 20), (unsigned long long)why[2], (unsigned long long)why[3], (unsigned long long)(why_b[3] >> 20), (unsigned long long)why[4], (unsigned long long)req.size, (unsigned long long)guest_size, (unsigned long long)req.alignment); } while (0)
     if ((e->f.depth || e->f.stencil) && req.size > guest_size) { ALIAS_WHY(1); return 0; }
-    {   // DEBUG-DEPTHALIAS: TOTK_DEPTH_ALIAS=0: a depth image never aliases pool memory (memory of its own)
+    {   // DEBUG-DEPTHALIAS: REKARINA_DEPTH_ALIAS=0: a depth image never aliases pool memory (memory of its own)
         static int da = -1;
         if (da < 0) da = rt_knob("DEPTH_ALIAS", "1");
         if (!da && (e->f.depth || e->f.stencil)) { ALIAS_WHY(1); return 0; }
@@ -429,15 +429,15 @@ static int bind_pool_memory(VkCtx *c, Tex *e, VkImage img, uint64_t guest_size) 
     VkDeviceSize at = sp.alloc_offset;
     bind_res.alloc = sp.alloc, bind_res.at = at, bind_res.size = req.size;
     if (at % req.alignment) {
-        // an offset the pool's block cannot take: its twin takes it VK_MEM_TWIN_SHIFT bytes lower (TOTK_POOL_TWIN=0: memory
+        // an offset the pool's block cannot take: its twin takes it VK_MEM_TWIN_SHIFT bytes lower (REKARINA_POOL_TWIN=0: memory
         // of its own, as before)
         static int twin = -1;
-        // TOTK_POOL_TWIN: 0 never, 1 always, unset (OoT): while video memory is over 80 % of its budget.
+        // REKARINA_POOL_TWIN: 0 never, 1 always, unset (OoT): while video memory is over 80 % of its budget.
         // Measured in the village: the same frame rate either way (72.3 against 72.7 fps, 63.0 against 62.5 with frame
         // generation), 0.35-0.5 GiB less video memory with it, and an image bound into pool memory costs the replay
         // ~0.3 ms where a recycled image of its own costs nothing, so it is used only when memory is short.
         if (twin < 0) {
-            const char *v = cfg_get("TOTK_POOL_TWIN");
+            const char *v = cfg_get("REKARINA_POOL_TWIN");
 #ifdef GAME_OOT
             twin = v && *v ? atoi(v) : 2;
 #else
@@ -502,14 +502,14 @@ static VkDeviceSize image_size(const VkImageCreateInfo *ci) {
 
 // UNDEFINED -> GENERAL; new depth / stencil images start cleared (LAS textures.c: the game copies depth
 // without stencil, and the stencil of those images must not be whatever the memory held).
-// Not a depth image bound into pool memory (TOTK_DEPTH_NEW_CLEAR=1: as before): the clear goes into the upload batch,
+// Not a depth image bound into pool memory (REKARINA_DEPTH_NEW_CLEAR=1: as before): the clear goes into the upload batch,
 // which runs ahead of the whole part being recorded, and it writes the pool's bytes, which other render targets of the
 // frame share. OoT's transient targets reuse their storage within a frame, and a character's 384x384 shadow map
 // gets a new address whenever the frame's set of targets changes (every few frames while the player runs): the new
 // image's clear then zeroed the storage of a target the same part still read from, drawn before the map in the
 // game's order. Part of the picture and the characters in it went dark for one frame, 5 to 17 times in 2,000 frames
 // of running through the Market, where video memory is short and every transient target lies in pool memory
-// (TOTK_POOL_TWIN); none after. The console clears nothing there either: the game clears a target before it draws.
+// (REKARINA_POOL_TWIN); none after. The console clears nothing there either: the game clears a target before it draws.
 static void init_image(Tex *e, VkCommandBuffer cb) {
     VkImageMemoryBarrier2 ib = {.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2, .srcStageMask = VK_PIPELINE_STAGE_2_NONE,
                                 .dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
@@ -520,7 +520,7 @@ static void init_image(Tex *e, VkCommandBuffer cb) {
     VkDependencyInfo di = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .imageMemoryBarrierCount = 1, .pImageMemoryBarriers = &ib};
     vkCmdPipelineBarrier2(cb, &di);
     static int bound_clear = -1;
-    if (bound_clear < 0) bound_clear = getenv("TOTK_DEPTH_NEW_CLEAR") != NULL;   // a test switch, not a setting
+    if (bound_clear < 0) bound_clear = cfg_env("REKARINA_DEPTH_NEW_CLEAR") != NULL;   // a test switch, not a setting
     if ((e->f.depth || e->f.stencil) && (!e->bound_to || e->f.stencil || bound_clear)) {
         VkClearDepthStencilValue zero = {0.0f, 0};
         VkImageSubresourceRange rg = {e->pub.aspect, 0, VK_REMAINING_MIP_LEVELS, 0, VK_REMAINING_ARRAY_LAYERS};
@@ -537,7 +537,7 @@ static void init_image(Tex *e, VkCommandBuffer cb) {
     }
 }
 
-// TOTK_SHADOW_SCALE (1 to 4): the game's shadow maps are made this many times larger on each side. TotK renders its
+// REKARINA_SHADOW_SCALE (1 to 4): the game's shadow maps are made this many times larger on each side. TotK renders its
 // sun cascades into a 960x960 DEPTH16 2D array of 4 layers and its static shadows into 1440x1440 and 720x720 arrays of 2,
 // whatever the output resolution, and shrinks the cascades under load (872, 848, 800, 480 and so on). Those are made
 // larger here: render passes into them scale the game's viewports and scissors (vk_exec.c resolve_rt, pass_scale),
@@ -547,7 +547,7 @@ static void init_image(Tex *e, VkCommandBuffer cb) {
 static int shadow_scale(void) {
     static int scale = -1;
     if (scale < 0) {
-        int s = cfg_int("TOTK_SHADOW_SCALE");
+        int s = cfg_int("REKARINA_SHADOW_SCALE");
         s = s < 1 ? 1 : s > 4 ? 4 : s;
         rt_log("vk: shadow map scale %d", s);
         scale = s;
@@ -564,7 +564,7 @@ static int shadow_scale_of(const nvn_texdesc *d, const TexVkFormat *f, uint32_t 
     return d->width * (uint32_t)scale <= most ? scale : 1;
 }
 
-// ---- Images made ahead (TOTK_TEX_PREMAKE, on for OoT)
+// ---- Images made ahead (REKARINA_TEX_PREMAKE, on for OoT)
 // Binding a new image into pool memory costs ~0.3 ms in the driver whatever its size (the kernel reserves and maps GPU
 // address space), and OoT gives its transient render targets a new address every frame: 5-15 such images
 // a frame in forest village, 1.5-2 ms of the replay thread's 12 ms. The game initializes those textures on its own
@@ -649,7 +649,7 @@ void vk_texture_premake(const tex_t *t) {
             return;
         }
         __atomic_store_n(&pm_started, 1, __ATOMIC_RELEASE);
-        rt_log("vk: images in pool memory are made ahead of their first use by a thread of their own (TOTK_TEX_PREMAKE=1)");
+        rt_log("vk: images in pool memory are made ahead of their first use by a thread of their own (REKARINA_TEX_PREMAKE=1)");
     }
     PMS.asked++;
     Premade *slot = NULL;
@@ -764,11 +764,11 @@ static VkImage alias_image(VkCtx *c, Tex *e, const VkImageCreateInfo *ci, uint64
 }
 
 // defer_init: the caller records the image's first transition (init_image or alias_copy).
-// DEBUG-R8LOG: TOTK_R8LOG=1 logs what happens to R8 textures 256 or more wide and 400 or less high (the subtitle lines):
+// DEBUG-R8LOG: REKARINA_R8LOG=1 logs what happens to R8 textures 256 or more wide and 400 or less high (the subtitle lines):
 // creation with the storage layout, CPU uploads, copies into them and passes that draw into them, up to 400 lines.
 void vk_dbg_r8(const char *what, const tex_t *t, long a, long b) {
     static int on = -1, n;
-    if (on < 0) on = cfg_get("TOTK_R8LOG") != NULL;
+    if (on < 0) on = cfg_get("REKARINA_R8LOG") != NULL;
     if (!on || !t || t->d.format != 0x1 || t->d.width < 256 || t->d.height > 400 || n >= 400) return;
     n++;
     rt_log("R8LOG frame %llu %s off %#llx mem %p %ux%u flags %#x levels %u stride %u pkg_bh %d has_layout %d lay0 %#x "
@@ -796,14 +796,14 @@ static Tex *create_tex(const tex_t *t, const TexKey *k, int defer_init) {
     nvn_texlayout L;
     nvn_tex_layout(d, &L);
     vk_dbg_r8("create", t, defer_init, 0);   // DEBUG-R8LOG
-    if (d->width >= 4096 && d->height >= 4096 && cfg_get("TOTK_BIGLOG"))   // DEBUG-BIGLOG
+    if (d->width >= 4096 && d->height >= 4096 && cfg_get("REKARINA_BIGLOG"))   // DEBUG-BIGLOG
     {
         rt_log("BIGLOG create %p fmt %#x flags %#x pool_flags %#x frame %llu", (const void *)t->mem, d->format, d->flags,
                (unsigned)t->pool_flags, (unsigned long long)__atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED));
         void vk_dump_arm_soon(void);
         void boot_shots_arm(uint64_t n);
         if (d->width == 12288) boot_shots_arm(__atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED));
-        const char *aw = getenv("TOTK_BIGLOG_ARM_W");   // the width whose creation arms the dump (default 4096)
+        const char *aw = cfg_env("REKARINA_BIGLOG_ARM_W");   // the width whose creation arms the dump (default 4096)
         if (d->width == (uint32_t)(aw && *aw ? atoi(aw) : 4096) && (d->format == 0x34 || d->format == 0x32)) vk_dump_arm_soon();
     }
     uint32_t w = umax(d->width, 1), h = umax(d->height, 1), depth = 1, layers = 1;
@@ -866,14 +866,14 @@ static Tex *create_tex(const tex_t *t, const TexKey *k, int defer_init) {
     // The 512x512 float maps of the ground fog's fluid simulation are only read and written by compute shaders. Created as
     // possible render targets too, one of their passes (cs 3a7117b072154c38) took 9 ms where its twin took 0.2 ms, on the frames
     // the simulation runs; without those usages the same frames took 30 ms instead of 39 in two runs of three.
-    // TOTK_SIM_NO_ATTACH=0 keeps the usages.
+    // REKARINA_SIM_NO_ATTACH=0 keeps the usages.
     if (w == 512 && h == 512 && !tex_mirrored(t) && (f.vk == VK_FORMAT_R16G16_SFLOAT || f.vk == VK_FORMAT_R16G16B16A16_SFLOAT) &&
         (usage & VK_IMAGE_USAGE_STORAGE_BIT) && rt_knob("SIM_NO_ATTACH", "1"))
         usage &= ~(VkImageUsageFlags)(VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_ATTACHMENT_FEEDBACK_LOOP_BIT_EXT);
-    {   // DEBUG-TEXFLAGS: TOTK_TEXFLAGS=1: each distinct (flags, format, target) of a new non-depth image, once, with its size
+    {   // DEBUG-TEXFLAGS: REKARINA_TEXFLAGS=1: each distinct (flags, format, target) of a new non-depth image, once, with its size
         static struct { uint32_t fl, fm, tg; } seen[256];
         static int ns;
-        if (getenv("TOTK_TEXFLAGS") && !ds && ns < 256) {
+        if (cfg_env("REKARINA_TEXFLAGS") && !ds && ns < 256) {
             int found = 0;
             for (int i = 0; i < ns; i++) found |= seen[i].fl == (uint32_t)d->flags && seen[i].fm == (uint32_t)d->format && seen[i].tg == (uint32_t)d->target;
             if (!found) {
@@ -887,14 +887,14 @@ static Tex *create_tex(const tex_t *t, const TexKey *k, int defer_init) {
                             .samples = (VkSampleCountFlagBits)samples, .tiling = VK_IMAGE_TILING_OPTIMAL, .usage = usage,
                             .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED};
     int bw, bh, block_views = 0;
-    // TOTK_BLOCK_VIEWS_3D (default 0): a 3D BC image also gets block views. On RDNA2 cards (driver 26.10.1, issue #5)
+    // REKARINA_BLOCK_VIEWS_3D (default 0): a 3D BC image also gets block views. On RDNA2 cards (driver 26.10.1, issue #5)
     // the 32x32x32 BC4 volume the game creates at the logo, made BLOCK_TEXEL_VIEW_COMPATIBLE and 2D_ARRAY_COMPATIBLE,
     // took a GPU write just past the end of its memory: device lost at the first submit after it when the image ended
     // its memory block. Draws into a 3D BC image go through a stand-in instead (vk_exec.c bc_target).
     static int bv3d = -1;
     if (bv3d < 0) {
         bv3d = rt_knob("BLOCK_VIEWS_3D", "0");
-        rt_log("vk: 3D BC textures %s (TOTK_BLOCK_VIEWS_3D=%d)", bv3d ? "get block views (renderable)" : "have no block views",
+        rt_log("vk: 3D BC textures %s (REKARINA_BLOCK_VIEWS_3D=%d)", bv3d ? "get block views (renderable)" : "have no block views",
                bv3d);
     }
     if (!ds && samples == 1 && f.vk == f.ideal && nvn_fmt_bpb(d->format, &bw, &bh) && bw == 4 && bh == 4 &&
@@ -931,7 +931,7 @@ static Tex *create_tex(const tex_t *t, const TexKey *k, int defer_init) {
     uint64_t spk_t0 = plat_now_ns();   // DEBUG-SPIKE
     int spk_alias = 0;
     if (__builtin_expect(sec_on, 0) && !pm_thread) memset(ics, 0, sizeof ics);
-    // TOTK_TEX_FRESH_OWN=1 (a test, off): a render target at storage no other descriptor names takes memory of its own,
+    // REKARINA_TEX_FRESH_OWN=1 (a test, off): a render target at storage no other descriptor names takes memory of its own,
     // so that a released image can go to the next target of its shape (recycle_take). OoT puts its transient
     // targets at ever new addresses, 5-15 a frame in the village, and an image bound into pool memory serves no other
     // address. Measured there it lost: the game then names the same storage through a second descriptor (a depth target
@@ -976,13 +976,13 @@ static Tex *create_tex(const tex_t *t, const TexKey *k, int defer_init) {
     // one vkAllocateMemory (a kernel call) per new texture, thousands of them in the frames right after a save loads.
     // vmaAllocateMemory with the plain requirements sub-allocates instead, from the blocks the headroom thread keeps ahead
     // (vk_headroom.c). Render targets keep vmaCreateImage and the driver's preference.
-    // Above TOTK_TEX_SUBALLOC_KB (default 2048) a texture has memory of its own: freed, it goes back to the system at
+    // Above REKARINA_TEX_SUBALLOC_KB (default 2048) a texture has memory of its own: freed, it goes back to the system at
     // once. A freed piece of a block stays the allocator's until the whole block is empty, and after a few map
     // changes the blocks held one to three gigabytes with nothing in it, which the driver counts as the game's all
     // the same (vk_texture.c sweep_pressure). The large textures are few and hold most of the bytes.
     static VkDeviceSize suballoc_max;
     if (!suballoc_max) {
-        const char *v = cfg_get("TOTK_TEX_SUBALLOC_KB");
+        const char *v = cfg_get("REKARINA_TEX_SUBALLOC_KB");
         suballoc_max = (VkDeviceSize)(v && atoi(v) > 0 ? atoi(v) : 2048) << 10;
     }
     enum { SUBALLOC_MAX = 32 << 20 };
@@ -1042,7 +1042,7 @@ static Tex *create_tex(const tex_t *t, const TexKey *k, int defer_init) {
     {   // DEBUG-SPIKE: a slow image creation
         uint64_t dt = plat_now_ns() - spk_t0;
         if ((vk_spike_on > 0 || sec_on) && dt > 3000000) {
-            char split[96] = "";   // the calls are timed only under TOTK_SECTIONS
+            char split[96] = "";   // the calls are timed only under REKARINA_SECTIONS
             if (sec_on) snprintf(split, sizeof split, "; create %.1f requirements %.1f resolve %.1f bind %.1f vma %.1f", sec_ticks_ms(ics[ICS_CREATE]),
                                  sec_ticks_ms(ics[ICS_REQ]), sec_ticks_ms(ics[ICS_RESOLVE]), sec_ticks_ms(ics[ICS_BIND]), sec_ticks_ms(ics[ICS_VMA]));
             rt_log("TEXSLOW %.1f ms %s %ux%ux%u fmt %#x target %d levels %u layers %u%s", dt / 1e6, spk_alias ? (e->alloc ? "own memory after alias failed" : "alias") : "own memory",
@@ -1055,10 +1055,10 @@ static Tex *create_tex(const tex_t *t, const TexKey *k, int defer_init) {
             if (rep_keys && rep_keys[h & (REP_SLOTS - 1)] == h) sec_count(al ? SEC_REP_ALIAS_REPEAT : SEC_REP_OWN_REPEAT, 1);
         }
     }
-    {   // DEBUG-TEXNEW: TOTK_TEXNEW=<frame>:<frames>: every image made in those frames
+    {   // DEBUG-TEXNEW: REKARINA_TEXNEW=<frame>:<frames>: every image made in those frames
         static int on = -1;
         static uint64_t from, cnt;
-        if (on < 0) { const char *v = cfg_get("TOTK_TEXNEW"); on = v && sscanf(v, "%llu:%llu", (unsigned long long *)&from, (unsigned long long *)&cnt) == 2; }
+        if (on < 0) { const char *v = cfg_get("REKARINA_TEXNEW"); on = v && sscanf(v, "%llu:%llu", (unsigned long long *)&from, (unsigned long long *)&cnt) == 2; }
         uint64_t f = __atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED);
         if (on && f >= from && f < from + cnt) {
             uint64_t h = rep_hash(k);
@@ -1080,6 +1080,7 @@ static Tex *create_tex(const tex_t *t, const TexKey *k, int defer_init) {
     {
         static int32_t n_stale;
         int stale = vk_exec_views_gone(img);
+        if (stale) vk_tpool_image_gone(img);   // a pool slot written with one of those views resolves again
         if (stale && n_stale++ < 16)
             rt_log("vk: new image %#llx had %d cached views of a destroyed image with its handle; dropped",
                    (unsigned long long)(uintptr_t)img, stale);
@@ -1204,15 +1205,15 @@ static void destroy_tex(Tex *e) {
     vk_defer_free(e);
 }
 
-// TOTK_TEX_RECYCLE=<frames> (default 30, 0: off): a new GPU-only image takes the image and memory of a released entry of the same
+// REKARINA_TEX_RECYCLE=<frames> (default 30, 0: off): a new GPU-only image takes the image and memory of a released entry of the same
 // shape that has been released at least that long, instead of allocating. The console renders transient targets into the same
 // memory one after the other; here each address got an image of its own, about 3 GB released and waiting in heavy scenes.
 static VkImage recycle_take(const VkImageCreateInfo *ci, VmaAllocation *out) {
     static int age = -1;
     static uint64_t taken;
     if (age < 0) {
-        const char *s = getenv("TOTK_TEX_RECYCLE");
-        // OoT: 6 frames. Its transient targets never come back to an address (TOTK_TEXNEW: 3195 distinct
+        const char *s = cfg_env("REKARINA_TEX_RECYCLE");
+        // OoT: 6 frames. Its transient targets never come back to an address (REKARINA_TEXNEW: 3195 distinct
         // address and shape pairs of 3273 new images), so 30 frames only kept ~240 dead targets, ~850 MiB, waiting.
         age = s ? atoi(s) :
 #ifdef GAME_OOT
@@ -1239,7 +1240,7 @@ static VkImage recycle_take(const VkImageCreateInfo *ci, VmaAllocation *out) {
     return VK_NULL_HANDLE;
 }
 
-// ---- TOTK_TEX_ADOPT (default on; 0: off): a new texture whose storage holds the bytes a released one was filled
+// ---- REKARINA_TEX_ADOPT (default on; 0: off): a new texture whose storage holds the bytes a released one was filled
 // from takes that one's image instead of an upload.
 // The game's texture manager compacts its memory all the time in some places (the thread aglTextureDataMgr::
 // Compaction; the Market and the field, not the forest): it copies a texture's bytes to another address,
@@ -1285,7 +1286,7 @@ static int comes_back_intact(const Tex *e);
 // storage address of a released or parked texture with the same descriptor, size and content print, has that
 // texture's bytes and takes its hash. The print is the hash of 64 samples of 64 bytes spread over the storage and
 // its two ends: it stands between the copy's record and a storage written again since, by other means than a large
-// copy. TOTK_TEX_MOVED=0: every new entry hashes its storage.
+// copy. REKARINA_TEX_MOVED=0: every new entry hashes its storage.
 #define MOVES 4096
 static struct { uint64_t dst, src, n; } moves[MOVES];
 static uint32_t nmoves;
@@ -1337,7 +1338,7 @@ static uint64_t content_print(const uint8_t *p, uint64_t n) {
 
 // Images of destroyed entries, kept by what they hold: the move's source is often destroyed before its copy is made
 // (another texture is initialized at its address, or it leaves the released list), and the same block comes back to
-// an address it had a few moves ago. At most PARK_MAX images and TOTK_TEX_PARK_MB of video memory (default 384; 0: none
+// an address it had a few moves ago. At most PARK_MAX images and REKARINA_TEX_PARK_MB of video memory (default 384; 0: none
 // are kept), each for PARK_FRAMES presents at most; the oldest goes first. The cache is outside the released entries'
 // pressure rule (sweep_pressure destroys those above 75 % of the device's budget, which a 12 GiB card at 1440p is
 // always above, and their images come here), so it has its own: never more than 1/32 of the budget (128 MiB on a
@@ -1395,7 +1396,7 @@ static void park_trim(uint64_t room) {
 // noted while running through the Market), and where video memory is short the cache kept nothing.
 static int moved_away(const Tex *e) {
     static int moved_on = -1;
-    if (moved_on < 0) { const char *v = getenv("TOTK_TEX_MOVED"); moved_on = !v || *v != '0'; }
+    if (moved_on < 0) { const char *v = cfg_env("REKARINA_TEX_MOVED"); moved_on = !v || *v != '0'; }
     uint64_t dst;
     VkMemSpan m;
     if (!moved_on || !moved_to(e->key.addr, e->t.L.size, &dst) || !vk_mem_resolve(dst, e->t.L.size, &m)) return 0;
@@ -1405,7 +1406,7 @@ static int moved_away(const Tex *e) {
 // destroy_tex: e's image goes into the cache instead of being destroyed. 1: taken (the caller must not destroy it).
 static int park_image(Tex *e) {
     if (park_budget == ~0ull) {
-        const char *v = getenv("TOTK_TEX_PARK_MB"), *on = getenv("TOTK_TEX_ADOPT");
+        const char *v = cfg_env("REKARINA_TEX_PARK_MB"), *on = cfg_env("REKARINA_TEX_ADOPT");
         park_budget = (on && *on == '0') ? 0 : (uint64_t)(v && *v ? atoi(v) : 384) << 20;
     }
     uint64_t limit = park_budget < park_cap ? park_budget : park_cap;
@@ -1446,8 +1447,8 @@ static void park_clear(void) {
 
 // sweep_pressure, with the device's use and budget: the cache's cap, and its retreat when the device is nearly full.
 static void park_pressure(uint64_t used, uint64_t budget) {
-    static int full = -1;   // TOTK_TEX_PARK_FULL=<percent> overrides PARK_FULL
-    if (full < 0) { const char *v = getenv("TOTK_TEX_PARK_FULL"); full = v && atoi(v) > 0 ? atoi(v) : PARK_FULL; }
+    static int full = -1;   // REKARINA_TEX_PARK_FULL=<percent> overrides PARK_FULL
+    if (full < 0) { const char *v = cfg_env("REKARINA_TEX_PARK_FULL"); full = v && atoi(v) > 0 ? atoi(v) : PARK_FULL; }
     park_cap = budget / 32;
     park_hold = used > budget / 100 * (uint64_t)full;
     static uint64_t held, sweeps;
@@ -1468,7 +1469,7 @@ static void park_pressure(uint64_t used, uint64_t budget) {
 // e was just made for t and nothing has used its image yet (entry_of, tex_lock held). 1: e holds its texels now.
 static int adopt_released(Tex *e, const tex_t *t) {
     static int on = -1;
-    if (on < 0) { const char *v = getenv("TOTK_TEX_ADOPT"); on = !v || *v != '0'; }
+    if (on < 0) { const char *v = cfg_env("REKARINA_TEX_ADOPT"); on = !v || *v != '0'; }
     e->has_chash = 0;
     if (!on || !e->pub.mirrored || e->pub.gpu_owned || !e->alloc || e->bound_to || !t->mem || t->L.size < 4096) return 0;
     uint32_t gen;
@@ -1478,7 +1479,7 @@ static int adopt_released(Tex *e, const tex_t *t) {
     Tex *src_rel = NULL;
     {   // "moved storage": the hash of the texture these bytes were copied from
         static int moved_on = -1;
-        if (moved_on < 0) { const char *v = getenv("TOTK_TEX_MOVED"); moved_on = !v || *v != '0'; }
+        if (moved_on < 0) { const char *v = cfg_env("REKARINA_TEX_MOVED"); moved_on = !v || *v != '0'; }
         uint64_t src = 0;
         int have = 0;
         if (moved_on && moved_from((uintptr_t)t->mem, t->L.size, &src)) {
@@ -1580,7 +1581,7 @@ static int adopt_released(Tex *e, const tex_t *t) {
 // of a released entry is its last lookup (touch: use_frame), not its release.
 #define RELEASED_IDLE 120   // frames without a lookup before a released entry counts as let go for good
 static int released_in_use(const Tex *e, uint64_t now) {
-    static int on = -1;   // TOTK_REL_KEEP=0: the old clock, the release (a test: the castle's ground goes dark again)
+    static int on = -1;   // REKARINA_REL_KEEP=0: the old clock, the release (a test: the castle's ground goes dark again)
     if (on < 0) on = rt_knob("REL_KEEP", "1") != 0;
     return on && e->use_frame > e->rel_frame && now - e->use_frame < RELEASED_IDLE;
 }
@@ -1595,13 +1596,13 @@ static void sweep_released(void) {
     }
 }
 
-// TOTK_TEX_VRAM_PRESSURE (percent of the device-local budget, default 85; 0 = off): above it, each submit drops up to
+// REKARINA_TEX_VRAM_PRESSURE (percent of the device-local budget, default 85; 0 = off): above it, each submit drops up to
 // PRESSURE_STEP of the oldest released entries, so a 4 GiB card does not keep RELEASED_MAX released images (each ASTC
 // one decoded to RGBA8) while the heap spills into system memory. A few per submit, for the reason above. First the
 // entries that come back intact: mirrored ones the GPU never wrote, re-uploaded from their storage. A render target
 // lives only in its image; dropping it brought the texture back empty (black flashes in a Depths boss fight, ~170
 // "left uninitialised" aliases a minute: transient targets released and taken back within frames). So a target goes
-// only once it has stayed released for TOTK_TEX_DROP_AGE frames (default 600; 0: never). With 30, the value from
+// only once it has stayed released for REKARINA_TEX_DROP_AGE frames (default 600; 0: never). With 30, the value from
 // 2026-11-10 to 2026-11-12, OoT lost what its lighting reads: it lets go of targets for longer than that
 // and takes them back with their content, and in the Market the lit scene came out black for one frame 20 to
 // 30 times in 95 s (fog, particles and HUD on a dark scene: the "shadow flicker" of the performance video at 1:22;
@@ -1664,7 +1665,10 @@ static void drawn(Tex *e) {
 }
 static void touch(Tex *e) {
     e->use_round = look_round;
-    e->use_frame = __atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED);
+    // The texture pool resolves every registered slot, also the stale ones no draw reads: its lookup does not keep a
+    // released entry (released_in_use). Counted, the pool kept ~2,000 released targets "in use" past the limit of the
+    // list, and the sweeps dropped and the pool made them again in bursts (frames of 50-68 ms, 2026-11-15).
+    if (!(pool_lookup && e->released)) e->use_frame = __atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED);
     if (!pool_lookup || !e->draw_round) drawn(e);   // a new entry ages from its making
 }
 static int cold(const Tex *e, uint64_t now, uint32_t age) {
@@ -1898,13 +1902,13 @@ static void ht_take(void) {
 // Whether e may be evicted while the game keeps it registered: only what a draw binds by handle when it uses it.
 // Baked lighting and the terrain's layers are read through the pool's set by handles in a storage buffer, with no
 // binding to see; those stay as long as they are registered. Seen on screen with the pool showing the stand-in for
-// one class at a time (TOTK_TPOOL_HIDE, vk_texpool.c): without the textures decoded from ASTC the forest and the field
+// one class at a time (REKARINA_TPOOL_HIDE, vk_texpool.c): without the textures decoded from ASTC the forest and the field
 // look as they do with them (two runs of the same setting differ as much), without the other single-layer textures
 // the lightmapped surfaces go dark and the stone path loses its stones.
 // A texture some draw has bound (ever_drawn) is taken to be used through bindings: it goes by when a draw last
 // named it, like the textures decoded from ASTC. The material tables name those too, for the maps the game left as
 // well, so a table's word for them means nothing; with the pool showing the stand-in for every texture a draw had
-// bound (TOTK_TPOOL_HIDE=8) the picture did not change. A texture no draw ever bound is used through the pool if at
+// bound (REKARINA_TPOOL_HIDE=8) the picture did not change. A texture no draw ever bound is used through the pool if at
 // all (the baked lighting's arrays among them): it goes by when a table last named it (ht_take), and only while the
 // tables are being read (ht_fresh).
 // The tables are read a few times a second, so a texture a table names for the first time is seen up to a quarter
@@ -1913,11 +1917,11 @@ static void ht_take(void) {
 // the textures of an arriving map are named before its first frame. Without this class the textures no draw ever
 // bound stayed for every map visited (the masks and lighting of the parts of a map the player did not look at): 3.7
 // GiB after six maps, and the card was over its budget again in the fifth minute of the tour.
-// TOTK_TEX_EVICT_CLASS: 0 none, 1 single-layer textures decoded from ASTC only, 2 those and every texture a draw
+// REKARINA_TEX_EVICT_CLASS: 0 none, 1 single-layer textures decoded from ASTC only, 2 those and every texture a draw
 // has bound, 3 also what only the handle tables name, arrays and volumes included (default).
 static int evict_class = -1;
 static int evict_cls(void) {
-    if (evict_class < 0) { const char *v = cfg_get("TOTK_TEX_EVICT_CLASS"); evict_class = v && *v ? atoi(v) : 3; }
+    if (evict_class < 0) { const char *v = cfg_get("REKARINA_TEX_EVICT_CLASS"); evict_class = v && *v ? atoi(v) : 3; }
     return evict_class;
 }
 static int evictable(const Tex *e) {
@@ -1946,7 +1950,7 @@ static int pool_holds_back(const tex_t *t, int id) {
     return !named;
 }
 
-// TOTK_TEX_EVICT (percent of the device-local budget, default 88, 0 = off): above it, once the released entries that
+// REKARINA_TEX_EVICT (percent of the device-local budget, default 88, 0 = off): above it, once the released entries that
 // come back intact are gone, live entries go too, least recently looked up first: those that come back intact (the CPU
 // provides their bytes) and that are idle. A later lookup creates the image again and uploads it from its storage, as
 // for a texture seen the first time. Up to EVICT_STEP entries per check; the next check waits until the GPU is past the
@@ -2003,7 +2007,7 @@ static void evict_cold(uint64_t want, uint64_t used, uint64_t budget, int mode) 
 }
 
 // Live textures with their own memory by what brings them back, the idle part apart, then the formats holding the most
-// and the largest entries (TOTK_TRACE=perf, every 600 frames).
+// and the largest entries (REKARINA_TRACE=perf, every 600 frames).
 static void texture_census(uint64_t frame) {   // tex_lock held
     enum { K_BC, K_CPU, K_GPU, K_N };
     static const char *const kn[K_N] = {"ASTC as BC", "other CPU-written", "GPU-written"};
@@ -2056,20 +2060,20 @@ static void texture_census(uint64_t frame) {   // tex_lock held
 
 static void sweep_pressure(void) {   // tex_lock held
     if (vram_pressure < 0) {
-        const char *s = cfg_get("TOTK_TEX_VRAM_PRESSURE");
+        const char *s = cfg_get("REKARINA_TEX_VRAM_PRESSURE");
         vram_pressure = s && *s ? atoi(s) : 75;
         if (vram_pressure < 0 || vram_pressure > 100) vram_pressure = 75;
-        const char *a = cfg_get("TOTK_TEX_DROP_AGE");
+        const char *a = cfg_get("REKARINA_TEX_DROP_AGE");
         drop_age = a && *a ? atoi(a) : 600;
         if (drop_age < 0) drop_age = 0;
         rt_log("vk: released textures under VRAM pressure: %s%d%%", vram_pressure ? "dropped above " : "off", vram_pressure);
     }
     if (tex_evict < 0) {
-        const char *s = cfg_get("TOTK_TEX_EVICT");
+        const char *s = cfg_get("REKARINA_TEX_EVICT");
         tex_evict = s && *s ? atoi(s) : 88;
         if (tex_evict < 0 || tex_evict > 100) tex_evict = 88;
         if (tex_evict) rt_log("vk: textures no draw used lately are evicted while the room under %d%% of the video memory budget is short", tex_evict);
-        else rt_log("vk: textures are never evicted (TOTK_TEX_EVICT=0)");
+        else rt_log("vk: textures are never evicted (REKARINA_TEX_EVICT=0)");
     }
     // the budget query every 8 submits; every second one behind a loading screen, where textures arrive by the hundred
     uint64_t now_f = __atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED);
@@ -2100,7 +2104,7 @@ static void sweep_pressure(void) {   // tex_lock held
             }
         }
     }
-    // Room for what comes next: what is left under the line (TOTK_TEX_EVICT percent of the budget) plus what the
+    // Room for what comes next: what is left under the line (REKARINA_TEX_EVICT percent of the budget) plus what the
     // allocator's blocks hold free. Freed textures leave their bytes in the blocks (a block goes back to the system
     // only when nothing is left in it), so the use the driver reports hardly falls after an eviction, and judged by it
     // alone every texture went the moment it was long cold, for no gain: the tour of six maps evicted 4.3 GiB that
@@ -2119,7 +2123,7 @@ static void sweep_pressure(void) {   // tex_lock held
     }
 }
 
-// TOTK_TRACE=perf: what the released entries hold (tex_lock held). Own memory only: an entry bound into pool memory
+// REKARINA_TRACE=perf: what the released entries hold (tex_lock held). Own memory only: an entry bound into pool memory
 // costs nothing of its own.
 static void released_census(uint64_t frame) {
     struct { uint64_t n, bytes; } cls[3] = {{0}};   // 0 droppable (clean mirror), 1 GPU content, 2 other
@@ -2191,7 +2195,7 @@ static void shrink_rgb(int format, const uint8_t *src, uint8_t *dst, size_t n) {
     for (size_t i = 0; i < n; i++, src += 4 * e, dst += 3 * e) memcpy(dst, src, 3 * e);
 }
 
-// TOTK_ASTC=check: the compute decoder's texels of n regions (gpu: the regions one after the other) against
+// REKARINA_ASTC=check: the compute decoder's texels of n regions (gpu: the regions one after the other) against
 // astc_decode_ldr of the same raw blocks (raw: the staging bytes the regions point into).
 static void astc_check(const Tex *e, const uint8_t *raw, const VkAstcRegion *ar, int n, const uint8_t *gpu) {
     static volatile int32_t n_bad;
@@ -2231,22 +2235,22 @@ static void astc_check(const Tex *e, const uint8_t *raw, const VkAstcRegion *ar,
                (unsigned long long)n_texels, (unsigned long long)n_diff_tex);
 }
 
-// Staging bytes of one part of a texture upload decoded or copied on the CPU (see upload). With TOTK_ASTC=cpu a
+// Staging bytes of one part of a texture upload decoded or copied on the CPU (see upload). With REKARINA_ASTC=cpu a
 // large ASTC array decodes to RGBA8 in one go: a staging buffer of 676682336 bytes failed (-2) on an Intel UHD with
 // 8 GB of shared memory and the game closed before the title screen.
 #define UPLOAD_PART (32ull << 20)   // fits the staging pool (vk_staging takes up to half of its 64 MiB block)
 
 // Copies the whole storage into the image (every level and layer the image has).
-// ---- the texture cache (tex_cache, TOTK_TEX_CACHE; on by default since 2026-11-13): the BC3 form of ASTC textures on disk.
-// With TOTK_ASTC_BC the GPU decodes an ASTC texture and encodes it to BC3 at its first use: 16 to 35 ms of GPU time
+// ---- the texture cache (tex_cache, REKARINA_TEX_CACHE; on by default since 2026-11-13): the BC3 form of ASTC textures on disk.
+// With REKARINA_ASTC_BC the GPU decodes an ASTC texture and encodes it to BC3 at its first use: 16 to 35 ms of GPU time
 // for one of the field's large textures, in the frame that first draws it, so running through the field had 58
 // frames over 25 ms a minute where standing and turning had none (2026-11-12). The blocks that encode makes are the
 // same every time, so they are kept: tex-cache/<hash of the storage>-<format>-<size>-<levels>x<layers>.bc3 beside the
-// game (TOTK_TEX_CACHE_DIR names another folder), every level and layer in upload's order. A texture whose storage
+// game (REKARINA_TEX_CACHE_DIR names another folder), every level and layer in upload's order. A texture whose storage
 // has that hash is filled from the file with one buffer-to-image copy. A miss decodes as before and also copies the
 // blocks to a host buffer, which the reaper thread writes out once the GPU is past the batch (vk_defer_call); the
 // storage is hashed again after it was read, and a texture the game wrote meanwhile is not kept.
-// The folder holds at most tex_cache_mb MiB (TOTK_TEX_CACHE_MB, default 14336): a thread counts it at start and deletes
+// The folder holds at most tex_cache_mb MiB (REKARINA_TEX_CACHE_MB, default 14336): a thread counts it at start and deletes
 // files, in the order the listing gives them, until it fits; while the game runs nothing new is written once the
 // count and what this run wrote reach the limit. Nothing fills the folder ahead of play yet.
 // On by default since 2026-11-13. What it gains depends on what decides the frame: docs/oot-notes.md, "The morning's
@@ -2283,7 +2287,7 @@ static int tex_cache_count(const char *name, void *ctx) {
 // only, and the replay thread read each at disk speed at its texture's first use: the first run through Castle Town
 // Market after a restart had 38 frames over 25 ms a minute where the next had 15 and a run without the cache 12, and
 // the 180 frames after an arrival in the field took 22 ms each instead of 18 (2026-11-13). The count's thread reads
-// them at the lowest priority, in the listing's order: TOTK_TEX_CACHE_WARM_MB at most (default 8192, less where the
+// them at the lowest priority, in the listing's order: REKARINA_TEX_CACHE_WARM_MB at most (default 8192, less where the
 // machine has under 22 GiB of memory, see tex_cache_scan; 0: none). It
 // gives up when the disk gives less than 150 MiB a second over the first 256 MiB: a hard disk, where these reads
 // would hold up the game's own loading.
@@ -2318,7 +2322,7 @@ static void tex_cache_scan(void *arg) {
            tc_limit / 1073741824.0, s.deleted ? "; files over the limit deleted" : "");
     // The default leaves the file cache what the machine has beyond the game: the game's working set is about 13 GiB
     // (2026-11-14), so with 16 GiB of memory 8 GiB of files could only push the game's own pages out.
-    const char *wm = getenv("TOTK_TEX_CACHE_WARM_MB");
+    const char *wm = cfg_env("REKARINA_TEX_CACHE_WARM_MB");
     float ram_used, ram_total, ram_proc;
     plat_mem_info(&ram_used, &ram_total, &ram_proc);
     int warm_mb = ram_total < 0 ? 8192 : ram_total < 14336 + 512 ? 0 : ram_total > 14336 + 8192 ? 8192 : (int)ram_total - 14336;
@@ -2336,8 +2340,8 @@ static const char *tex_cache_dir(void) {
     static char dir[512];
     static int state;   // 0 not asked, 1 on, -1 off
     if (!state) {
-        const char *d = getenv("TOTK_TEX_CACHE_DIR"), *mb = cfg_get("TOTK_TEX_CACHE_MB");
-        state = cfg_bool("TOTK_TEX_CACHE") ? 1 : -1;
+        const char *d = cfg_env("REKARINA_TEX_CACHE_DIR"), *mb = cfg_get("REKARINA_TEX_CACHE_MB");
+        state = cfg_bool("REKARINA_TEX_CACHE") ? 1 : -1;
         // cfg_get gives no table default: unset, the limit was 6144 MiB whatever the table said, and a folder that had
         // reached it took no new texture (2026-11-13)
         tc_limit = (int64_t)(mb && atoi(mb) >= 256 ? atoi(mb) : 14336) << 20;
@@ -2631,7 +2635,7 @@ static int fills_no_page(const Tex *e) {
 }
 
 // A texture that fills no page keeps a copy of its storage bytes from when a GPU write to it was recorded
-// (vk_texture_gpu_written), up to SNAP_MAX bytes; wb_exact (TOTK_WB_EXACT, default on) enables it.
+// (vk_texture_gpu_written), up to SNAP_MAX bytes; wb_exact (REKARINA_WB_EXACT, default on) enables it.
 enum { SNAP_MAX = 4096 };
 static int wb_exact = -1;
 static volatile int32_t n_kept;
@@ -2642,7 +2646,7 @@ static volatile int32_t n_kept;
 // camera renders the ID, screen rect and depth of what is under the reticle into 4x4 targets of 512 bytes, two
 // slots used in turn, and the CPU reads them a frame later. One slot's rect target shares its page with data the CPU
 // writes every frame: without the copy its renders were never written back, the game read a zero rect every other
-// frame and the target's name label blinked. TOTK_WB_EXACT=0 restores the page-only decision.
+// frame and the target's name label blinked. REKARINA_WB_EXACT=0 restores the page-only decision.
 static int storage_rewritten(const Tex *e, uint32_t since, uint32_t *now) {
     uint64_t lo = (e->pub.addr + 0xfff) & ~0xfffull, hi = (e->pub.addr + e->t.L.size) & ~0xfffull;
     if (hi <= lo) lo = e->pub.addr, hi = e->pub.addr + e->t.L.size;
@@ -2660,7 +2664,7 @@ static int storage_rewritten(const Tex *e, uint32_t since, uint32_t *now) {
 // its storage, every 18 frames or so, although nobody had written it: 3 ms of copying each time, and one frame in
 // three or four of those came out a third darker (the upload's frame; the flight recorder's flash watch counted 21 in
 // 95 s, 2026-11-12). So a texture of more than two pages keeps its own bytes of those two pages from its last upload
-// (edge_keep), and a write that touched only them counts when those bytes differ. TOTK_TEX_EDGE=0: every write counts.
+// (edge_keep), and a write that touched only them counts when those bytes differ. REKARINA_TEX_EDGE=0: every write counts.
 static int tex_edge = -1;
 static uint64_t n_edge_spared;
 static void edge_span(const Tex *e, uint64_t *lo, uint64_t *hi) {
@@ -2722,7 +2726,7 @@ static void make_fresh_snap(Tex *e) {
     if (ch) upload(e);
 }
 
-// ---------------------------------------------------------------- aliases (TOTK_TEX_ALIAS)
+// ---------------------------------------------------------------- aliases (REKARINA_TEX_ALIAS)
 // Bytes per block and block size of the image's VkFormat (ASTC decodes to RGBA8, RGB expands to RGBA); 0 when the
 // VkFormat substitutes another one of unknown size.
 static int img_block(const Tex *e, int *bw, int *bh) {
@@ -2803,14 +2807,14 @@ static int alias_copy(Tex *e, const Tex *src) {
     return 1;
 }
 
-// DEBUG-TEXWATCH: TOTK_TEXWATCH=<hex addr>,... logs from frame TOTK_TEXWATCH_FROM (default 4400) which entry and
+// DEBUG-TEXWATCH: REKARINA_TEXWATCH=<hex addr>,... logs from frame REKARINA_TEXWATCH_FROM (default 4400) which entry and
 // VkImage each lookup of a texture at those addresses resolves to (600 lines at most)
 static void tex_watch(const char *where, const TexKey *k, const Tex *e) {
     static int n = -1, nl;
     static uint64_t w[8], from;
     if (n < 0) {
         n = 0;
-        const char *s = cfg_get("TOTK_TEXWATCH"), *f = cfg_get("TOTK_TEXWATCH_FROM");
+        const char *s = cfg_get("REKARINA_TEXWATCH"), *f = cfg_get("REKARINA_TEXWATCH_FROM");
         from = f && *f ? strtoull(f, NULL, 0) : 4400;
         for (char *x; s && *s && n < 8; s = *x == ',' ? x + 1 : x) {
             w[n++] = strtoull(s, &x, 16);
@@ -2818,6 +2822,13 @@ static void tex_watch(const char *where, const TexKey *k, const Tex *e) {
         }
     }
     if (!n || nl >= 600) return;
+    const char *wk = cfg_get("REKARINA_TEXWATCH_KEYS");   // =stale: only lookups that ended on an entry older than a live one of its format
+    if (e && wk && !strcmp(wk, "stale")) {
+        int stale = 0;
+        for (const Tex *p = nvn_hm_get(&by_addr, &k->addr); p && !stale; p = p->next_at)
+            stale = p != e && !p->released && p->key.d.format == e->key.d.format && wr_at(p) > wr_at(e);
+        if (!stale) return;
+    }
     int hit = 0;
     for (int i = 0; i < n; i++) hit |= w[i] == k->addr;
     uint64_t fr = __atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED);
@@ -2833,23 +2844,33 @@ static void tex_watch(const char *where, const TexKey *k, const Tex *e) {
            e && memcmp(&e->key, k, sizeof *k) ? " (other key)" : "", e ? e->alloc != NULL : -1,
            e ? e->pub.gpu_owned : -1, e ? e->pub.mirrored : -1, e ? e->gpu_dirty : -1, e ? (unsigned)e->run : 0u,
            e ? (unsigned)e->t.pool_flags : 0u, all, live);
+    if (cfg_get("REKARINA_TEXWATCH_KEYS"))   // every entry at the address with its whole key and its write order
+        for (const Tex *p = nvn_hm_get(&by_addr, &k->addr); p; p = p->next_at)
+            rt_log("TEXWATCH   %s%p tgt %d fmt %#x flags %#x %ux%ux%u lv %u smp %d stride %u bh %d layout %d %02x%02x%02x%02x "
+                   "wr %llu (as of %llu) gpu_owned %d mirrored %d%s", p == e ? "> " : "  ", (const void *)p, p->key.d.target,
+                   p->key.d.format, p->key.d.flags, p->key.d.width, p->key.d.height, p->key.d.depth, p->key.d.levels,
+                   p->key.d.samples, p->key.d.stride, p->key.d.pkg_block_h, p->key.has_layout, p->key.layout[0],
+                   p->key.layout[1], p->key.layout[2], p->key.layout[3], (unsigned long long)p->wr_serial,
+                   (unsigned long long)wr_at(p), p->pub.gpu_owned, p->pub.mirrored, p->released ? " RELEASED" : "");
 }
 
-// DEBUG-ALIASLOG: TOTK_ALIASLOG=<from frame>: every new entry at an address that already has entries (800 lines at
+// DEBUG-ALIASLOG: REKARINA_ALIASLOG=<from frame>: every new entry at an address that already has entries (800 lines at
 // most): the new key, each entry there and what became of it (released ones are replaced, a live one may be the
 // content source), and whether the new image got content. For the whole-scene black frames (flight.c flash watch).
 static int alias_log_on(void) {
     static int on = -1;
     static uint64_t from;
-    if (on < 0) { const char *e = cfg_get("TOTK_ALIASLOG"); on = e && *e; from = on ? strtoull(e, NULL, 0) : 0; }
+    if (on < 0) { const char *e = cfg_get("REKARINA_ALIASLOG"); on = e && *e; from = on ? strtoull(e, NULL, 0) : 0; }
     return on && __atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED) >= from;
 }
 static void alias_log(const char *what, const TexKey *k, const Tex *p) {
     static int n, only = -1;
-    // TOTK_ALIASLOG_EMPTY=1: only the new images that got no content or a copy, without the square target whose size
+    // REKARINA_ALIASLOG_EMPTY=1: only the new images that got no content or a copy, without the square target whose size
     // changes every frame while the camera turns; 6000 lines
-    if (only < 0) only = cfg_get("TOTK_ALIASLOG_EMPTY") != NULL;
-    if (only && (!(strstr(what, "EMPTY") || strstr(what, "copied") || strstr(what, "storage")) ||
+    if (only < 0) only = cfg_get("REKARINA_ALIASLOG_EMPTY") ? atoi(cfg_get("REKARINA_ALIASLOG_EMPTY")) : 0;
+    // =2: also the released entries a new one replaces and the new ones that take a released one's image
+    if (only && (!(strstr(what, "EMPTY") || strstr(what, "copied") || strstr(what, "storage") ||
+                   (only == 2 && (strstr(what, "replaces") || strstr(what, "released one")))) ||
                  (k->d.width == k->d.height && k->d.width > 512 && k->d.format == 0x34)))
         return;
     if (n >= (only ? 6000 : 800)) return;
@@ -2867,7 +2888,7 @@ static Tex *entry_of(const tex_t *t) {
     Tex *e = nvn_hm_get(&by_key, &k);
     if (!e) {
         if (tex_alias < 0) {
-            tex_alias = cfg_bool("TOTK_TEX_ALIAS");
+            tex_alias = cfg_bool("REKARINA_TEX_ALIAS");
             rt_log("vk: texture aliases: %s", tex_alias ? "a new image takes the live image's content" : "a new image starts empty");
         }
         uint64_t sec0 = sec_begin();
@@ -2955,9 +2976,9 @@ const VkTexImage *vk_texture_get(const tex_t *t) {
 }
 
 // Render targets the CPU reads without NVN's invalidate (vk_texture_write_back_small); small_pending: one may be dirty.
-// wb_limit: targets up to this size (bytes) always go back when the CPU waits for a fence, TOTK_WB_FENCE_LIMIT, read
+// wb_limit: targets up to this size (bytes) always go back when the CPU waits for a fence, REKARINA_WB_FENCE_LIMIT, read
 // once. A larger one goes back unless the GPU wrote it in each of the last WB_RUN frames (wb_wanted). wb_trace:
-// TOTK_TRACE=gfx, read together with it.
+// REKARINA_TRACE=gfx, read together with it.
 enum { WB_SMALL_DEFAULT = 64 << 10, WB_RUN = 16 };
 static int small_pending;
 static uint64_t wb_limit = WB_SMALL_DEFAULT;
@@ -2966,7 +2987,7 @@ static int wb_cfg_read;
 
 static void wb_cfg_init(void) {
     if (wb_cfg_read) return;
-    int v = cfg_int("TOTK_WB_FENCE_LIMIT");
+    int v = cfg_int("REKARINA_WB_FENCE_LIMIT");
     wb_limit = v < 0 ? 0 : (uint64_t)v;
     wb_trace = (rt_trace & RT_TRACE_GFX) != 0;
     wb_cfg_read = 1;
@@ -2981,17 +3002,17 @@ static int wb_wanted(const Tex *e) { return e->t.L.size <= wb_limit || e->run < 
 
 void vk_texture_gpu_written(const tex_t *t) {
     if (!t || !t->mem) return;
-    {   // DEBUG-BIGLOG: TOTK_BIGLOG=1: who writes 4096x4096 textures (the far shadow maps the fog reads), and when
+    {   // DEBUG-BIGLOG: REKARINA_BIGLOG=1: who writes 4096x4096 textures (the far shadow maps the fog reads), and when
         static int on = -1, k;
-        if (on < 0) on = cfg_get("TOTK_BIGLOG") != NULL;
+        if (on < 0) on = cfg_get("REKARINA_BIGLOG") != NULL;
         if (on && t->d.width >= 4096 && t->d.height >= 4096 && (k++ < 20 || !(k % 200)))
             rt_log("BIGLOG written#%d %p fmt %#x by %p (vk_texture_gpu_written at %p) frame %llu", k, (const void *)t->mem,
                    t->d.format, __builtin_return_address(0), (void *)vk_texture_gpu_written,
                    (unsigned long long)__atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED));
     }
-    {   // DEBUG-LUMLOG: who writes the 1x1 RGBA32F luminance targets (caller address, look it up in totk.map)
+    {   // DEBUG-LUMLOG: who writes the 1x1 RGBA32F luminance targets (caller address, look it up in rekarina.map)
         static int on = -1, k;
-        if (on < 0) on = cfg_get("TOTK_LUMLOG") != NULL;
+        if (on < 0) on = cfg_get("REKARINA_LUMLOG") != NULL;
         if (on && t->d.format == 0x2e && t->d.width == 1 && t->d.height == 1 && (k++ < 6 || !(k % 300)))
             rt_log("LUMLOG written#%d %p by %p (vk_texture_gpu_written at %p) frame %llu pool_flags %#x mirrored %d", k,
                    (const void *)t->mem, __builtin_return_address(0), (void *)vk_texture_gpu_written,
@@ -3010,13 +3031,13 @@ void vk_texture_gpu_written(const tex_t *t) {
         if (e->pub.mirrored) {
             e->gpu_dirty = 1;
             storage_rewritten(e, 0, &e->gpu_gen);   // CPU writes up to here are older than this render
-            if (wb_exact < 0) wb_exact = cfg_bool("TOTK_WB_EXACT");
+            if (wb_exact < 0) wb_exact = cfg_bool("REKARINA_WB_EXACT");
             if (wb_exact && !e->snap && e->t.L.size <= SNAP_MAX && fills_no_page(e) && !(e->snap = malloc(SNAP_MAX)))
                 rt_fatal("vk: out of memory for a texture's storage copy");
             if (e->snap) memcpy(e->snap, (const void *)(uintptr_t)e->pub.addr, e->t.L.size);
             e->gpu_seq = ++gpu_writes;
             e->gpu_fence = vk_exec_recording_fence();
-            if (mem_result_watch_on() && getenv("TOTK_RESULT_WATCH_TEX") && e->t.L.size <= 65536)   // DEBUG-RESULTWATCH: who reads it before the write-back
+            if (mem_result_watch_on() && cfg_env("REKARINA_RESULT_WATCH_TEX") && e->t.L.size <= 65536)   // DEBUG-RESULTWATCH: who reads it before the write-back
                 mem_result_watch(e->pub.addr, e->t.L.size, e->gpu_fence);
             uint64_t fr = __atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED);
             if (fr != e->run_frame || !e->run) {
@@ -3089,7 +3110,7 @@ void vk_texture_range_gone(uint64_t lo, uint64_t size, VmaAllocation alloc) {
 // ---------------------------------------------------------------- descriptor slots
 static uint64_t n_same_regs;   // vk_texture_register calls that changed nothing
 uint64_t vk_texture_same_regs(void) { return __atomic_load_n(&n_same_regs, __ATOMIC_RELAXED); }
-static int same_reg_on(void) {   // TOTK_TEX_SAME_REG=0: every registration goes the full way
+static int same_reg_on(void) {   // REKARINA_TEX_SAME_REG=0: every registration goes the full way
     static int on = -1;
     if (on < 0) on = rt_knob("TEX_SAME_REG", "1");
     return on;
@@ -3196,9 +3217,9 @@ static void note_writer(Tex *e) {
 static int asof_on(void) {
     static int on = -1;
     if (on < 0) {
-        const char *e = cfg_get("TOTK_CHUNK_ASOF");
+        const char *e = cfg_get("REKARINA_CHUNK_ASOF");
         on = !(e && *e == '0');
-        if (!on) rt_log("vk: chunks of a draw stretch look textures up as the replay thread sees them (TOTK_CHUNK_ASOF=0)");
+        if (!on) rt_log("vk: chunks of a draw stretch look textures up as the replay thread sees them (REKARINA_CHUNK_ASOF=0)");
     }
     return on;
 }
@@ -3245,7 +3266,7 @@ static Tex *newest_writer(const TexKey *k, Tex *own, int cpu_content) {
     return best ? best : own;
 }
 
-// ---- texture quality (TOTK_TEX_QUALITY: auto, full, half)
+// ---- texture quality (REKARINA_TEX_QUALITY: auto, full, half)
 // At 2560x1440 OoT holds about 6.5 GiB of video memory, 2.8 GiB of it the ASTC textures transcoded to BC3
 // (twice to four times their size on the console). On a card with 8 GiB, or one another program holds part of, the
 // system's budget for the game is less than that, Windows moves images to system memory and the frame rate falls to a
@@ -3271,7 +3292,7 @@ static uint64_t texq_n, texq_bytes;
 
 static int texq_on(void) {
     if (texq_mode < 0) {
-        const char *e = cfg_get("TOTK_TEX_QUALITY");
+        const char *e = cfg_get("REKARINA_TEX_QUALITY");
         int m = e && !strcmp(e, "quarter") ? 2 : e && !strcmp(e, "half") ? 1 : e && !strcmp(e, "full") ? 0 : -1;
         double free_gib = -1;
         if (m < 0) {
@@ -3308,10 +3329,10 @@ static int texq_on(void) {
                                             "quarter: ASTC textures of 1,024 texels and more load from their third level, of 512 and "
                                             "BC textures of 1,024 from their second"};
         if (free_gib >= 0)
-            rt_log("vk: texture quality %s (%.1f GiB of video memory are free for the game; TOTK_TEX_QUALITY: auto, full, half, "
+            rt_log("vk: texture quality %s (%.1f GiB of video memory are free for the game; REKARINA_TEX_QUALITY: auto, full, half, "
                    "quarter)", name[m], free_gib);
         else
-            rt_log("vk: texture quality %s (TOTK_TEX_QUALITY)", name[m]);
+            rt_log("vk: texture quality %s (REKARINA_TEX_QUALITY)", name[m]);
     }
     return texq_mode;
 }
@@ -3355,7 +3376,57 @@ static int texq_shape(const tex_t *t, tex_t *out) {
     return 1;
 }
 
+// Two descriptors whose images hold the same picture: target, format, size, levels and samples (flags, layout, stride
+// and swizzle may differ: the images are ours, not the storage).
+static int same_shape(const TexKey *a, const TexKey *b) {
+    const nvn_texdesc *x = &a->d, *y = &b->d;
+    return a->addr == b->addr && x->target == y->target && x->format == y->format && x->width == y->width &&
+           x->height == y->height && x->depth == y->depth && x->levels == y->levels &&
+           (x->samples > 1) == (y->samples > 1) && (x->samples <= 1 || x->samples == y->samples);
+}
+
+// REKARINA_FOLLOW_SHAPE=0: a live descriptor once written keeps its own image (slot_resolve), as before 2026-11-15.
+static int follow_same_shape(void) {
+    static int on = -1;
+    if (on < 0) {
+        const char *e = cfg_get("REKARINA_FOLLOW_SHAPE");
+        on = !(e && *e == '0');
+        if (!on) rt_log("vk: a written descriptor keeps its own image when one of the same shape is written later (REKARINA_FOLLOW_SHAPE=0)");
+    }
+    return on;
+}
+
+// An entry whose image can stand for a slot's descriptor: the same size, the same depth or layer count, one sample or
+// several alike, and a format of the same texel size and block (an R11G11B10F target read through an RGB9E5
+// descriptor, a depth image through an R32F one). Another size at the storage is the game reusing the memory: a
+// lookup of that image with the slot's coordinates reads the wrong texels. REKARINA_FOLLOW_ANY=1: any entry, as before
+// 2026-11-15.
+static int fits_slot(const TexKey *p, const TexKey *k) {
+    static int any = -1;
+    if (any < 0) { const char *e = cfg_get("REKARINA_FOLLOW_ANY"); any = e && *e == '1'; }
+    if (any) return 1;
+    const nvn_texdesc *a = &p->d, *b = &k->d;
+    if (a->width != b->width || a->height != b->height || a->depth != b->depth || (a->samples > 1) != (b->samples > 1))
+        return 0;
+    int aw, ah, bw, bh, ab = nvn_fmt_bpb(a->format, &aw, &ah), bb = nvn_fmt_bpb(b->format, &bw, &bh);
+    return ab && ab == bb && aw == bw && ah == bh;
+}
+
+// newest_writer among the entries that fit the slot's descriptor k
+static Tex *newest_writer_fit(const TexKey *k, Tex *own, int cpu_content) {
+    Tex *best = NULL;
+    for (Tex *p = nvn_hm_get(&by_addr, &k->addr); p; p = p->next_at) {
+        if (p->released || (cpu_content && !p->pub.gpu_owned && !same_but_swizzle(&p->key, k))) continue;
+        if (p->key.d.target != k->d.target || !fits_slot(&p->key, k)) continue;
+        if (!best || wr_at(p) > wr_at(best) ||
+            (wr_at(p) == wr_at(best) && same_but_swizzle(&p->key, k) && !same_but_swizzle(&best->key, k)))
+            best = p;
+    }
+    return best ? best : own;
+}
+
 static Tex *slot_resolve(TexSlot *s, view_t *view, int *has_view) {
+    int no_make = 0;   // the pool's lookup leaves the slot unresolved rather than make an image (below)
     *view = s->v;
     *has_view = s->has_view;
     TexKey k;
@@ -3406,20 +3477,56 @@ static Tex *slot_resolve(TexSlot *s, view_t *view, int *has_view) {
         // same-but-swizzle one wins a tie). The first live entry of the list was often a target of another size
         // that this frame had not rendered yet, and the whole 3D scene came out black for a frame (the composite
         // read it: one black frame every 600-1,300, flight.c flash watch).
+        // Only an entry whose image fits the slot's descriptor (fits_slot): when the game moves its transient targets,
+        // an R8 1280x720 mask of a compute chain had its own entry released and followed an RGBA8 2560x1440 target
+        // written later at that storage; the chain wrote and read its 1280x720 grid in the corner of the larger
+        // image, the sun-shadow pass took a quarter-size copy of the scene for its mask, and the lit objects lost
+        // their sunlight for several frames (2026-11-15).
         int cpu_content = tex_mirrored(&s->t);
-        e = newest_writer(&k, e, cpu_content);
+        Tex *own = e;
+        e = newest_writer_fit(&k, e, cpu_content);
+        // The pool's lookup of a slot whose own entry is gone, at storage only entries of another shape hold: no new
+        // image (the stale slots the pool resolves would be made again after every sweep); a draw that binds the slot
+        // makes it. (pool_slot_locked leaves the slot unresolved meanwhile.)
+        if (!e && pool_lookup && newest_writer(&k, NULL, cpu_content)) no_make = 1;
+        {   // DEBUG-FITLOG: REKARINA_FITLOG=1: lookups the fit rule sent to the slot's own entry (or a new one) where any
+            // entry at the storage would have been followed before
+            static int on = -1, nl;
+            if (on < 0) on = cfg_get("REKARINA_FITLOG") != NULL;
+            Tex *any = on && e == own && nl < 3000 ? newest_writer(&k, NULL, cpu_content) : NULL;
+            if (any && any != e) {
+                nl++;
+                rt_log("FITLOG frame %llu addr %#llx slot %ux%u fmt %#x tgt %d -> %s; other %ux%u fmt %#x wr %llu",
+                       (unsigned long long)__atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED),
+                       (unsigned long long)k.addr, k.d.width, k.d.height, k.d.format, k.d.target,
+                       !own ? "a new entry" : own->released ? "its released entry" : "its entry", any->key.d.width,
+                       any->key.d.height, any->key.d.format, (unsigned long long)wr_at(any));
+            }
+        }
     } else if (!wr_at(e) && !e->pub.mirrored) {
         // A live descriptor the GPU never wrote, at storage another descriptor rendered: it reads that render (a new
-        // descriptor over a transient target the game rendered through another one).
-        Tex *w = newest_writer(&k, e, 0);
+        // descriptor over a transient target the game rendered through another one), when its image fits.
+        Tex *w = newest_writer_fit(&k, e, 0);
         if (w && wr_at(w)) e = w;
+    } else if (!e->pub.mirrored && __atomic_load_n(&awr[agen_idx(e->key.addr)], __ATOMIC_ACQUIRE) > wr_at(e) &&
+               follow_same_shape()) {   // (the bucket's newest write first: most lookups have nothing newer to walk to)
+        // A live descriptor the GPU wrote some frames ago, at storage that another descriptor of the same shape (format,
+        // size, levels) was written through since: it reads that newer write. When the game moves its transient
+        // targets to other addresses (a frame that switches an effect on or off), the sun-shadow pass reads an R8
+        // 1280x720 mask that a compute pass of the same frame wrote through a second descriptor at the same storage;
+        // the reader kept its own image, filled frames earlier at another layout, and the objects lost their sunlight
+        // for several frames (the dark frames while the camera turns, 2026-11-15). Only the same shape: a target of
+        // another size written later at the address is the game's reuse of the memory, not this content.
+        Tex *w = newest_writer(&k, e, 0);
+        if (w && w != e && wr_at(w) > wr_at(e) && same_shape(&w->key, &e->key)) e = w;
     }
     {   // DEBUG-SPIKE: entries made while a slot resolves
         uint64_t spk0 = plat_now_ns();
         int made = !e && s->t.mem;
         int mk0 = sec_mk;   // not the pool: a draw's binding
         if (sec_on && !mk0) sec_mk = 1;
-        if (!e) e = s->t.mem && !cold_kept_out(&k, s->t.L.size) && !pool_holds_back(&s->t, (int)(s - tslots)) ? entry_of(&s->t) : NULL;
+        if (!e && !no_make)
+            e = s->t.mem && !cold_kept_out(&k, s->t.L.size) && !pool_holds_back(&s->t, (int)(s - tslots)) ? entry_of(&s->t) : NULL;
         if (sec_on) sec_mk = mk0;
         if (made) vk_spike.tex += plat_now_ns() - spk0, vk_spike.ntex++;
     }
@@ -3454,7 +3561,7 @@ static Tex *slot_resolve(TexSlot *s, view_t *view, int *has_view) {
     return e;
 }
 
-// ---- uploads ahead of first use (TOTK_TEX_PREP=1; off by default)
+// ---- uploads ahead of first use (REKARINA_TEX_PREP=1; off by default)
 // A texture reaches the GPU at its first use: the pool set's update, or a draw's binding, creates its image and fills
 // it, a file read or a copy out of the game's memory of up to 14 MiB, on the replay thread. Arriving on a map the game
 // registers textures for about three seconds (15 new ones a frame, 1 to 5 ms of copies and as much again in the pool
@@ -3478,7 +3585,7 @@ static uint64_t up_done, up_dropped;
 static int up_on(void) {
     static int on = -1;
     if (on < 0) {
-        const char *v = getenv("TOTK_TEX_PREP");
+        const char *v = cfg_env("REKARINA_TEX_PREP");
         on = v && *v == '1';
     }
     return on;
@@ -3550,7 +3657,7 @@ static void up_queue(int id, uint32_t serial) {
             plat_event_init(&upq_ev, 0, 0);
             if (plat_thread_spawn(up_main, NULL, "vk uploads ahead", 0)) {
                 __atomic_store_n(&up_started, 1, __ATOMIC_RELEASE);
-                rt_log("vk: textures are uploaded ahead of their first use by a thread of their own (TOTK_TEX_PREP=1)");
+                rt_log("vk: textures are uploaded ahead of their first use by a thread of their own (REKARINA_TEX_PREP=1)");
             } else {
                 __atomic_store_n(&up_started, -1, __ATOMIC_RELEASE);
             }
@@ -3590,10 +3697,10 @@ static const VkTexImage *pool_slot_locked(int id, view_t *view, int *has_view) {
     if (!t->mem) return NULL;
     VkMemSpan m;
     if (!nvn_gpu_only((uintptr_t)t->mem) && !vk_mem_resolve((uintptr_t)t->mem, t->L.size ? t->L.size : 1, &m)) return NULL;
-    // TOTK_TPOOL_NO_GPU=0 turns this off. A slot of a GPU-only target with no live image gets a stand-in. The pool otherwise makes
+    // REKARINA_TPOOL_NO_GPU=0 turns this off. A slot of a GPU-only target with no live image gets a stand-in. The pool otherwise makes
     // a new image for every registered slot, so targets dropped or recycled came back as permanent live images and memory never fell.
     static int no_gpu = -1;
-    if (no_gpu < 0) { const char *s = getenv("TOTK_TPOOL_NO_GPU"); no_gpu = !(s && s[0] == '0'); }
+    if (no_gpu < 0) { const char *s = cfg_env("REKARINA_TPOOL_NO_GPU"); no_gpu = !(s && s[0] == '0'); }
     if (no_gpu && nvn_gpu_only((uintptr_t)t->mem)) {
         TexKey k;
         make_key(t, &k);
@@ -3663,7 +3770,7 @@ const VkTexImage *vk_texture_by_id_locked(int id, view_t *view, int *has_view) {
             if (!pool_lookup) drawn(e), e->ever_drawn = 1;
         }
         if (!(++n_asof & 0xfffff))
-            rt_log("vk: %llu texture lookups of draw stretches so far resolved as of their stretch's place (TOTK_CHUNK_ASOF)",
+            rt_log("vk: %llu texture lookups of draw stretches so far resolved as of their stretch's place (REKARINA_CHUNK_ASOF)",
                    (unsigned long long)n_asof);
         if (view) *view = has_view ? v : s->v;
         if (has_view) *has_view = view ? hv : s->has_view;
@@ -4066,7 +4173,7 @@ typedef struct {
 static void write_back_n(Tex **v, int n) {
     int np = 0, cap = 0;
     WbPart *p = NULL;
-    for (int i = 0; i < n && mem_result_watch_on() && getenv("TOTK_RESULT_WATCH_TEX"); i++)   // DEBUG-RESULTWATCH: the pages open for the write-back
+    for (int i = 0; i < n && mem_result_watch_on() && cfg_env("REKARINA_RESULT_WATCH_TEX"); i++)   // DEBUG-RESULTWATCH: the pages open for the write-back
         if (v[i]->t.L.size <= 65536) mem_result_release(v[i]->pub.addr, v[i]->t.L.size);
     for (int i = 0; i < n; i++) {
         Tex *e = v[i];
@@ -4099,10 +4206,10 @@ static void write_back_n(Tex **v, int n) {
     }
     free(p);
     for (int i = 0; i < n; i++) v[i]->gpu_dirty = 0;
-    {   // DEBUG-LUMLOG: TOTK_LUMLOG=1: the 1x1 RGBA32F targets the CPU reads back (OoT's auto-exposure luminance), every
+    {   // DEBUG-LUMLOG: REKARINA_LUMLOG=1: the 1x1 RGBA32F targets the CPU reads back (OoT's auto-exposure luminance), every
         // 10th write-back of them
         static int on = -1, k;
-        if (on < 0) on = cfg_get("TOTK_LUMLOG") != NULL;
+        if (on < 0) on = cfg_get("REKARINA_LUMLOG") != NULL;
         for (int i = 0; on && i < n; i++)
             if (v[i]->t.d.format == 0x2e && v[i]->t.d.width == 1 && v[i]->t.d.height == 1 && !(k++ % 300)) {
                 const float *x = (const float *)(uintptr_t)v[i]->pub.addr;
@@ -4128,6 +4235,21 @@ static int owned_dirty(uint64_t addr, uint64_t size, Tex **hit) {
 
 // A storage image may be written by the shaders of the submission being recorded (texture lock held, vk_exec_draw.c
 // tex_info). Its storage is not marked GPU-owned: only the write fence for ReadTexels.
+// The colour of one of the game's fill-in textures: a CPU-filled RGBA8 texture of at most 8x8 texels (OoT keeps 4x4
+// ones in black, white and clear, and binds them to whatever a material leaves empty, a 3D or cube sampler included).
+// 1 with the first texel's bytes in rgba; 0 for any other texture. Texture lock held.
+int vk_texture_fill_colour_locked(const VkTexImage *img, uint8_t rgba[4]) {
+    const Tex *e = (const Tex *)img;   // pub is the entry's first member
+    const nvn_texdesc *d = &e->t.d;
+    int bw, bh;
+    if (img->gpu_owned || img->gone || !e->t.mem || img->samples > 1 || img->width > 8 || img->height > 8 || img->depth > 1 ||
+        (img->format != VK_FORMAT_R8G8B8A8_UNORM && img->format != VK_FORMAT_R8G8B8A8_SRGB) ||
+        nvn_fmt_bpb(d->format, &bw, &bh) != 4 || bw != 1 || bh != 1)
+        return 0;
+    memcpy(rgba, (const uint8_t *)(uintptr_t)e->t.mem, 4);
+    return 1;
+}
+
 void vk_texture_storage_bound_locked(const VkTexImage *img) {
     Tex *e = (Tex *)img;   // pub is the first member
     uint64_t f = vk_exec_recording_fence();
@@ -4182,7 +4304,7 @@ uint64_t vk_texture_dirty_fence(uint64_t addr, uint64_t size) {
 // GPU, a frame behind, has not run the copy by then, so the game keeps the copy's initial value (the sun counts as
 // occluded under the forest canopy) and lights the scene with it for good. Delivered at once (the present waiting
 // for the GPU, or a write-back on that read), the sun counted as visible and the sky, fog and aerial perspective came
-// out 2.4 times too bright: the long-standing haze (docs/oot-notes.md). TOTK_READBACK_LAG=0 delivers at once.
+// out 2.4 times too bright: the long-standing haze (docs/oot-notes.md). REKARINA_READBACK_LAG=0 delivers at once.
 static int rb_lag = -1;
 void vk_texture_readback_hold(const tex_t *t) {
     if (rb_lag < 0) rb_lag = rt_knob("READBACK_LAG", "0");   // DEBUG: on (1) it changed nothing visible
@@ -4228,7 +4350,7 @@ void vk_texture_write_back(uint64_t addr, uint64_t size) {
 // still go back on an invalidate, memcpy or ReadTexels.
 int vk_texture_small_dirty(void) { return __atomic_load_n(&small_pending, __ATOMIC_ACQUIRE); }
 
-// TOTK_TRACE=gfx: a dirty target the fence write-back leaves alone because it is over the limit and drawn every frame
+// REKARINA_TRACE=gfx: a dirty target the fence write-back leaves alone because it is over the limit and drawn every frame
 // (what a CPU read after the wait would miss), or sends back although it is over the default limit. One line per
 // target address and outcome; the table is small and a full one stops logging.
 static void wb_note(const Tex *e, int skipped) {
@@ -4299,19 +4421,19 @@ void vk_texture_write_back_small(uint64_t fence) {
 // CPU waited for a fence (vk_texture_write_back_small) or read the storage through NVN (vk_texture_write_back), and
 // such a write-back is a readback on the graphics queue that waits for everything queued before it. Whenever the GPU
 // ran late the game read old luminance, and while the camera moved every other frame came out white (with every
-// present waiting for the GPU, TOTK_PRESENT_FINISH=1: none in 699 shots). So the small targets (wb_wanted, at most
+// present waiting for the GPU, REKARINA_PRESENT_FINISH=1: none in 699 shots). So the small targets (wb_wanted, at most
 // FB_MAX bytes, plain formats) that a submission renders are copied into host buffers at the end of that
 // submission's own command buffer, and the completion callback of its fence puts the bytes into their storage before
 // the fence counts as done (vk_sync.c): what the console's GPU writes into memory as it renders, with no CPU wait.
 // The target stays gpu_dirty; a later sync wait or NVN read finds its storage written since the render
-// (storage_rewritten) and leaves it. Off by default (TOTK_FENCE_READBACK=1): the white frames went with the blocking
+// (storage_rewritten) and leaves it. Off by default (REKARINA_FENCE_READBACK=1): the white frames went with the blocking
 // acquire (nvn_api_obj.c nvnWindowAcquireTexture) and stayed without it, with this on or off.
 #define FB_MAX (64u << 10)
 typedef struct { tex_t t; Region g; NVNcopyRegion r; VkBuffer sb; VmaAllocation sa; const uint8_t *stg; } FbPart;
 typedef struct FbJob { struct FbJob *next; uint64_t frame; volatile int done; int n; FbPart p[]; } FbJob;
 static int fb_on = -1;
 
-// Frame-latency readbacks (TOTK_READBACK_FRAMES=<k>, default 1 for OoT, 0 elsewhere). The console's GPU
+// Frame-latency readbacks (REKARINA_READBACK_FRAMES=<k>, default 1 for OoT, 0 elsewhere). The console's GPU
 // runs about a frame behind its CPU, and OoT's auto exposure is tuned to that: the CPU reads the 1x1
 // luminance of its small targets (after nvnMemoryPoolInvalidateMappedRange) and takes whatever the GPU has written by
 // then, the result of the frame before. Here such a read used to write back the newest render at once (the GPU done
@@ -4324,7 +4446,7 @@ static int fb_on = -1;
 static int rb_frames = -1;
 static int readback_frames(void) {
     if (rb_frames < 0) {
-        const char *e = cfg_get("TOTK_READBACK_FRAMES");
+        const char *e = cfg_get("REKARINA_READBACK_FRAMES");
 #ifdef GAME_OOT
         rb_frames = e && *e ? atoi(e) : 1;
 #else
@@ -4332,7 +4454,7 @@ static int readback_frames(void) {
 #endif
         if (rb_frames < 0) rb_frames = 0;
         if (rb_frames > 4) rb_frames = 4;
-        if (rb_frames) rt_log("vk: small render targets reach their storage %d frame(s) after their render (TOTK_READBACK_FRAMES)", rb_frames);
+        if (rb_frames) rt_log("vk: small render targets reach their storage %d frame(s) after their render (REKARINA_READBACK_FRAMES)", rb_frames);
     }
     return rb_frames;
 }
@@ -4471,7 +4593,7 @@ static VkCompareOp compare_op(uint32_t f) {
     }
 }
 
-static struct { int init, mirror_clamp_edge, minmax, border_no_format; float aniso; } sf;   // aniso: TOTK_ANISO, 0 = the game's
+static struct { int init, mirror_clamp_edge, minmax, border_no_format; float aniso; } sf;   // aniso: REKARINA_ANISO, 0 = the game's
 
 static void sampler_features(VkCtx *c) {
     if (sf.init) return;
@@ -4483,7 +4605,7 @@ static void sampler_features(VkCtx *c) {
     sf.mirror_clamp_edge = f12.samplerMirrorClampToEdge;
     sf.minmax = f12.samplerFilterMinmax;
     sf.border_no_format = c->has_custom_border_color && cbf.customBorderColors && cbf.customBorderColorWithoutFormat;
-    const char *an = cfg_value("TOTK_ANISO");
+    const char *an = cfg_value("REKARINA_ANISO");
     sf.aniso = strcmp(an, "game") ? (float)atoi(an) : 0;
     rt_log("vk: anisotropic filtering: %s", sf.aniso > 1 ? an : "the game's");
     sf.init = 1;
@@ -4520,7 +4642,7 @@ static VkSampler make_sampler(VkCtx *c, const samp_par *d) {
     if (si.maxLod < si.minLod) si.maxLod = si.minLod;
     float lim = c->props.limits.maxSamplerLodBias;
     si.mipLodBias = fmaxf(-lim, fminf(lim, d->lod_bias));
-    // TOTK_ANISO raises the level for filtered, mipmapped colour samplers that repeat on U and V: the surface textures,
+    // REKARINA_ANISO raises the level for filtered, mipmapped colour samplers that repeat on U and V: the surface textures,
     // which tile, so ground and walls seen at a shallow angle stay sharp into the distance. Depth-compare (shadow)
     // samplers, nearest or unmipmapped ones (data maps, LUTs) and clamped ones keep the game's level: clamped samplers
     // read screen-sized buffers, whose coordinates can stretch steeply at an object's edge, where anisotropic taps reach
@@ -4540,7 +4662,7 @@ static VkSampler make_sampler(VkCtx *c, const samp_par *d) {
         si.compareEnable = VK_TRUE;
         si.compareOp = compare_op(d->cmp_func);
         // A depth-compare sampler set to nearest returns 0 or 1 per tap, and the game's shaders smooth shadow edges by
-        // a few taps spaced for its own shadow map texels. With TOTK_SHADOW_SCALE those taps cover a fraction of the
+        // a few taps spaced for its own shadow map texels. With REKARINA_SHADOW_SCALE those taps cover a fraction of the
         // area and the edges turn hard and stepped; linear filtering makes every tap a 2x2 PCF instead.
         if (shadow_scale() > 1) si.magFilter = si.minFilter = VK_FILTER_LINEAR;
     }
@@ -4595,8 +4717,8 @@ static float dlss_bias;
 static int dlss_biased(const samp_par *k) {
     int rep_s = k->ws == NVN_WRAP_MODE_REPEAT || k->ws == NVN_WRAP_MODE_MIRRORED_REPEAT;
     int rep_t = k->wt == NVN_WRAP_MODE_REPEAT || k->wt == NVN_WRAP_MODE_MIRRORED_REPEAT;
-    static int all = -1;   // DEBUG-BIAS: TOTK_DLSS_BIAS_ALL=1 also takes the clamped trilinear samplers
-    if (all < 0) { const char *e = cfg_get("TOTK_DLSS_BIAS_ALL"); all = !e || atoi(e) > 0; }
+    static int all = -1;   // DEBUG-BIAS: REKARINA_DLSS_BIAS_ALL=1 also takes the clamped trilinear samplers
+    if (all < 0) { const char *e = cfg_get("REKARINA_DLSS_BIAS_ALL"); all = !e || atoi(e) > 0; }
     return !k->cmp_mode && k->minf == NVN_MIN_FILTER_LINEAR_MIPMAP_LINEAR && (rep_s || rep_t || all);
 }
 
@@ -4646,10 +4768,10 @@ VkSampler vk_sampler_by_id_locked(int id) {
     return v;
 }
 
-// DEBUG-SAMP3D: TOTK_SAMP3D=1 logs the filters and wrap modes of each sampler paired with a 3D texture, once per sampler.
+// DEBUG-SAMP3D: REKARINA_SAMP3D=1 logs the filters and wrap modes of each sampler paired with a 3D texture, once per sampler.
 void vk_debug_samp3d_locked(int id, int separate, int format) {
     static uint8_t seen[4096];
-    if (id < 0 || id >= nsslots || id >= 4096 || seen[id] || !sslots[id].used || !getenv("TOTK_SAMP3D")) return;
+    if (id < 0 || id >= nsslots || id >= 4096 || seen[id] || !sslots[id].used || !cfg_env("REKARINA_SAMP3D")) return;
     seen[id] = 1;
     const samp_par *p = &sslots[id].p;
     rt_log("SAMP3D sampler %d separate %d format %d: min %u mag %u wrap %u %u %u", id, separate, format, p->minf, p->magf, p->ws, p->wt, p->wr);
@@ -4674,7 +4796,7 @@ void vk_debug_image_where_locked(int id, const char *what) {
 
 // A depth-compare read through a sampler without a compare is undefined in Vulkan. NVIDIA's driver compares anyway; AMD's
 // returns the raw depth, so the game's shadow tests come out wrong there. Such a read gets the slot's sampler with the
-// compare on: the game's function when it set a valid one, LEQUAL otherwise. TOTK_SHADOW_COMPARE=0: the game's sampler.
+// compare on: the game's function when it set a valid one, LEQUAL otherwise. REKARINA_SHADOW_COMPARE=0: the game's sampler.
 VkSampler vk_sampler_compare_by_id_locked(int id) {
     VkCtx *c = vk_ctx();
     if (!c || id < 0 || id >= nsslots || !sslots[id].used) return VK_NULL_HANDLE;

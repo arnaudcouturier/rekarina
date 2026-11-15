@@ -1,6 +1,6 @@
 // Host input for nn::hid (runtime/ov_input.c): an SDL3 gamepad (no SDL window needed), the keyboard and the mouse,
 // merged into Switch npad button bits and stick axes. Button order follows libnx HidNpadButton (ISC). The key and pad
-// bindings are the tables in input_map.c (totk.ini overrides them). The keyboard and the mouse come from the window
+// bindings are the tables in input_map.c (rekarina.ini overrides them). The keyboard and the mouse come from the window
 // system's back end (input_wsys.h: input_win.c with Win32, input_sdl.c with SDL), which also owns the cursor capture.
 // Keys and their map: docs/controls.md.
 // The gamepad also rumbles (input_rumble) and, when it has a gyro and an accelerometer, feeds the six-axis sensor from a
@@ -10,9 +10,11 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
+#include <strings.h>
 #include <SDL3/SDL.h>
 
 #include "cfg.h"
+#include "fs.h"
 #include "host.h"
 #include "input.h"
 #include "input_map.h"
@@ -37,13 +39,16 @@ static SDL_Gamepad *pad;
 static uint64_t next_scan;
 static int pad_rumble;               // the open gamepad has rumble motors
 static volatile int32_t pad_labels[4];  // ... and the labels of its south, east, west, north buttons (PAD_LABEL_*), any thread
-static int pad_east_a;               // ... and labels its east face button A (Nintendo layout under TOTK_PAD_LAYOUT=auto)
+static int pad_east_a;               // ... and labels its east face button A (Nintendo layout under REKARINA_PAD_LAYOUT=auto)
+static volatile int32_t pad_family = -1;   // ... and the kind of its labels (input_pad_family), -1 none; any thread
 static int pad_layout = -1;          // PAD_LAYOUT_* in effect for the open gamepad, -1 to pick again; live (cfg_version)
 static unsigned pad_layout_seen;
 static volatile int32_t pad_layout_shown = -1;   // pad_layout for the menu (any thread), -1 without a gamepad
+static volatile int32_t pad_hd;      // ... is a Switch Pro Controller or Joy-Con that takes HD rumble packets; any thread
+static uint64_t hd_until;            // gamepad thread: when the last HD packet's duration runs out (ms), 0 none running
 static SDL_JoystickID sensor_pad;    // the gamepad whose sensors the motion thread set up, 0 none
 static int sensor_ok;                // ... and it has both sensors, enabled
-static int motion_thread;            // 0 not started, 1 running, -1 off (TOTK_MOTION=0, no SDL)
+static int motion_thread;            // 0 not started, 1 running, -1 off (REKARINA_MOTION=0, no SDL)
 static volatile int32_t motion_on;   // input_motion_start ran: the gamepad thread feeds the six-axis sensor
 // Once the game runs, the gamepad thread (pad_main) alone calls SDL's gamepad functions. SDL holds its joystick lock while
 // a device is enumerated and opened, 280-320 ms a frame each time a pad came or went when the game's poll made those calls.
@@ -56,8 +61,28 @@ static struct {
     int want_rumble, want_triggers;       // a rumble waits for the gamepad thread
     uint16_t low, high;
     uint32_t ms;
+    int want_hd;                          // ... and it came with the game's two sides (hd)
+    InputVibration hd[2];
 } snap;
 static volatile int32_t pad_layout_stale;   // the gamepad changed: pad_layout_get picks the layout again
+
+// The device the button prompts follow under REKARINA_PROMPTS = auto (input_pad_in_use, input_prompts_wanted): the one the
+// player pressed something on last. Only new presses count, so nothing held or resting decides: a gamepad button that
+// went down, or a stick that crossed PROMPT_STICK_ON after the dead zone (it counts again once back under
+// PROMPT_STICK_OFF, so a stick resting near the line does not count twice and a drifting one, inside its dead zone,
+// never); a key or mouse button the game binds (input_map.keys, mouse buttons only while captured) or Esc that went
+// down while the game window is in front and no text entry is open. Keys held when the window comes to the front are
+// taken as the start (the Tab of an Alt+Tab back). Mouse motion moves the camera and never shows a prompt, so it does
+// not count: a Steam Deck's trackpad set up as a mouse keeps the controller's prompts. The other device takes over
+// once its press has stayed the newest for PROMPT_SETTLE_NS, so a key brushed while playing on the pad (or a
+// handheld's extra button that sends one) does not flip the prompts back and forth. The prompts' own switch
+// (romfs.c romfs_prompts_live) then writes the new set into the game's font, each present.
+enum { PROMPT_STICK_ON = 19661, PROMPT_STICK_OFF = 8192 };   // 60 % and 25 % of full deflection
+#define PROMPT_SETTLE_NS 400000000ull
+enum { DEV_NONE = -1, DEV_KBM, DEV_PAD };
+static volatile int32_t prompt_dev = DEV_NONE;   // the device the prompts follow, DEV_NONE before the first press
+static int prompt_newest = DEV_NONE;             // under lock: the device of the newest press, and when it was
+static uint64_t prompt_newest_ns;
 
 // SDL buttons of the gamepad inputs (input_map.h PAD_*), by position; PAD_ZL and PAD_ZR are the triggers (axes).
 static const SDL_GamepadButton pad_sdl[PAD_COUNT] = {
@@ -71,7 +96,7 @@ static const SDL_GamepadButton pad_sdl[PAD_COUNT] = {
     [PAD_LPADDLE2] = SDL_GAMEPAD_BUTTON_LEFT_PADDLE2, [PAD_RPADDLE2] = SDL_GAMEPAD_BUTTON_RIGHT_PADDLE2,
 };
 
-// TOTK_INPUT_SCRIPT=<file>: lines "<frame> <button> [hold]" or "<frame> LSTICK|RSTICK <x> <y> [hold]", ORed into the real input.
+// REKARINA_INPUT_SCRIPT=<file>: lines "<frame> <button> [hold]" or "<frame> LSTICK|RSTICK <x> <y> [hold]", ORed into the real input.
 // <frame> and its hold are 60 Hz ticks of game time since the first present (frame_step_ticks: presents at 60 fps), so
 // the title menus get the presses at the same game time at any frame limit. A line "@<ms> ..." is timed instead: <ms>
 // and its hold are milliseconds of the world clock (frame_step_world_us, game time since the loaded save's first
@@ -91,10 +116,10 @@ static int32_t script_mouse[2];      // one-shot raw counts, consumed by the cam
 
 static void script_load(void) {
     script_state = 1;
-    const char *path = cfg_get("TOTK_INPUT_SCRIPT");
+    const char *path = cfg_get("REKARINA_INPUT_SCRIPT");
     if (!path || !*path) return;
     FILE *f = fopen(path, "r");
-    if (!f) { rt_log("input: cannot open TOTK_INPUT_SCRIPT %s", path); return; }
+    if (!f) { rt_log("input: cannot open REKARINA_INPUT_SCRIPT %s", path); return; }
     char line[256];
     int cap = 0, ln = 0;
     while (fgets(line, sizeof line, f)) {
@@ -161,7 +186,7 @@ static void script_apply(uint64_t *b, int32_t sl[2], int32_t sr[2]) {
     }
 }
 
-// TOTK_INPUT_RECORD=<file>: writes the merged input as TOTK_INPUT_SCRIPT lines, one per button press and per stick
+// REKARINA_INPUT_RECORD=<file>: writes the merged input as REKARINA_INPUT_SCRIPT lines, one per button press and per stick
 // segment, so a played session replays as a script. A stick segment ends when an axis moves by more than REC_STICK_STEP.
 // An event that begins on the world clock is written timed ("@<ms>", hold in ms), one before it in ticks
 // (frame_step_ticks). When the world clock starts, held buttons and sticks are cut there and go on as timed events.
@@ -204,11 +229,11 @@ static void rec_flush_all(void) {
 
 static void rec_apply(uint64_t b, const int32_t sl[2], const int32_t sr[2]) {
     if (!rec_state) {
-        const char *path = cfg_get("TOTK_INPUT_RECORD");   // no default: not recording when unset
+        const char *path = cfg_get("REKARINA_INPUT_RECORD");   // no default: not recording when unset
         rec = path && *path ? fopen(path, "w") : NULL;
         rec_state = rec ? 1 : -1;
-        if (path && *path && !rec) rt_log("input: cannot open TOTK_INPUT_RECORD %s", path);
-        if (rec) { fprintf(rec, "# Recorded input (TOTK_INPUT_RECORD); frame = 60 Hz ticks of game time, @ms = world clock.\n"); atexit(rec_flush_all);
+        if (path && *path && !rec) rt_log("input: cannot open REKARINA_INPUT_RECORD %s", path);
+        if (rec) { fprintf(rec, "# Recorded input (REKARINA_INPUT_RECORD); frame = 60 Hz ticks of game time, @ms = world clock.\n"); atexit(rec_flush_all);
                    rt_log("input: recording to %s", path); }
     }
     if (rec_state != 1) return;
@@ -251,15 +276,43 @@ static void rec_apply(uint64_t b, const int32_t sl[2], const int32_t sr[2]) {
     if (wrote) fflush(rec);
 }
 
+static void mouse_take_camera(int32_t *dx, int32_t *dy);
+
+// DEBUG-TESTMOUSE: REKARINA_TEST_MOUSE=<counts a second>[,<frame>]: a steady horizontal mouse from that frame on (gfx
+// frames, as the shots count them), counts by the time since the last call with the fraction carried, as a real
+// mouse's reports add up; they join the script's counts, so the direct path or the stick path (mouse_camera) takes
+// them, whichever turns the camera. Under lock.
+static void test_mouse(void) {
+    static double rate = -1, carry;
+    static uint64_t last, from;
+    if (rate < 0) {
+        const char *e = cfg_get("REKARINA_TEST_MOUSE");
+        rate = e && *e ? atof(e) : 0;
+        const char *c = e ? strchr(e, ',') : NULL;
+        from = c ? strtoull(c + 1, NULL, 10) : 0;
+    }
+    if (!(rate > 0) || __atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED) < from) return;
+    uint64_t now = plat_now_ns();
+    if (last) {
+        double c = rate * (double)(now - last) / 1e9 + carry, whole = floor(c);
+        carry = c - whole, script_mouse[0] += (int32_t)whole;
+    }
+    last = now;
+}
+
 void input_direct_mouse_sample(int enabled, int32_t *dx, int32_t *dy) {
     plat_mutex_lock(&lock);
     enabled = enabled && !g_block && !g_menu;
-    *dx = script_mouse[0]; *dy = script_mouse[1];
-    script_mouse[0] = script_mouse[1] = 0;
+    test_mouse();
+    *dx = *dy = 0;
+    if (enabled) {   // otherwise they stay for the stick path (mouse_camera)
+        *dx = script_mouse[0]; *dy = script_mouse[1];
+        script_mouse[0] = script_mouse[1] = 0;
+    }
     if (!enabled) { *dx = *dy = 0; }
     else if (ikb_captured() && ikb_foreground() && input_cursor_allowed()) {
         int32_t x, y;
-        ikb_mouse_take(&x, &y);
+        mouse_take_camera(&x, &y);   // the script's counts stay as written; a recording keeps what the camera got
         int64_t sx = (int64_t)*dx + x, sy = (int64_t)*dy + y;
         *dx = (int32_t)(sx < INT32_MIN ? INT32_MIN : sx > INT32_MAX ? INT32_MAX : sx);
         *dy = (int32_t)(sy < INT32_MIN ? INT32_MIN : sy > INT32_MAX ? INT32_MAX : sy);
@@ -275,26 +328,42 @@ void input_direct_mouse_sample(int enabled, int32_t *dx, int32_t *dy) {
     plat_mutex_unlock(&lock);
 }
 
-static float mouse_sens = -1;              // TOTK_MOUSE_SENS, 0 = mouse camera off; live (cfg_version)
+static float mouse_sens = -1;              // REKARINA_MOUSE_SENS, 0 = mouse camera off; live (cfg_version)
+static float mouse_vert = 1;               // REKARINA_MOUSE_SENS_Y, negative with REKARINA_MOUSE_INVERT_Y; read with mouse_sens
 static unsigned mouse_sens_seen;
 
 static float mouse_sens_get(void) {
     unsigned ver = cfg_version();
     if (mouse_sens >= 0 && ver == mouse_sens_seen) return mouse_sens;
     mouse_sens_seen = ver;
-    double v = cfg_double("TOTK_MOUSE_SENS");
+    double v = cfg_double("REKARINA_MOUSE_SENS"), y = cfg_double("REKARINA_MOUSE_SENS_Y");
+    mouse_vert = (float)((y < 0.1 ? 0.1 : y > 3 ? 3 : y) * (cfg_bool("REKARINA_MOUSE_INVERT_Y") ? -1 : 1));
     mouse_sens = (float)(v < 0 ? 0 : v > 10 ? 10 : v);
     return mouse_sens;
 }
 
+// The counts that turn the camera: ikb_mouse_take's, the vertical ones times REKARINA_MOUSE_SENS_Y and turned over with
+// REKARINA_MOUSE_INVERT_Y (both live; 1 and off leave the counts as they are). The fraction a scaled count leaves is carried
+// into the next sample, so a slow vertical move at 0.5 still turns the camera by every second count rather than by none.
+// The selectors' cursor (mouse_camera) takes the counts as they are. Under lock.
+static void mouse_take_camera(int32_t *dx, int32_t *dy) {
+    static double carry;
+    ikb_mouse_take(dx, dy);
+    mouse_sens_get();
+    if (mouse_vert == 1) { carry = 0; return; }
+    double y = *dy * (double)mouse_vert + carry, whole = trunc(y);
+    carry = y - whole;
+    *dy = (int32_t)(whole < INT32_MIN ? INT32_MIN : whole > INT32_MAX ? INT32_MAX : whole);
+}
 
-// ---- walk key: the keyboard's stick samples scaled down while a key is held (TOTK_WALK_KEY, TOTK_WALK_SCALE)
+
+// ---- walk key: the keyboard's stick samples scaled down while a key is held (REKARINA_WALK_KEY, REKARINA_WALK_SCALE)
 // A keyboard key is all or nothing, so every keyboard-driven stick sample is +/-32767 and the game only ever sees a
 // full tilt. Holding this key scales those two samples, which gives the half tilt a gamepad gets from its analog range,
 // so the keyboard can walk as well as run. yuzu and eden do the same with their modifier and modifier_scale settings.
 // Only the keyboard is scaled: the gamepad's axes and the mouse camera sample their own values.
-static int walk_key = KEY_NONE;        // TOTK_WALK_KEY as a KEY_*, KEY_NONE = off; live (cfg_version)
-static float walk_scale = 0.51f;       // TOTK_WALK_SCALE, 0.2 to 0.9; live (cfg_version)
+static int walk_key = KEY_NONE;        // REKARINA_WALK_KEY as a KEY_*, KEY_NONE = off; live (cfg_version)
+static float walk_scale = 0.51f;       // REKARINA_WALK_SCALE, 0.2 to 0.9; live (cfg_version)
 static unsigned walk_seen = ~0u;
 
 // The ini takes the key names the Controls tab writes; a hand-written line may spell them in any case.
@@ -312,7 +381,7 @@ static void walk_get(void) {
     unsigned ver = cfg_version();
     if (ver == walk_seen) return;
     walk_seen = ver;
-    const char *name = cfg_value("TOTK_WALK_KEY");   // "none" (the default) turns the key off
+    const char *name = cfg_value("REKARINA_WALK_KEY");   // "none" (the default) turns the key off
     int key = KEY_NONE;
     if (*name && !name_matches(name, "none")) {
         for (int k = KEY_A; k < KEY_COUNT && key == KEY_NONE; k++)
@@ -322,10 +391,10 @@ static void walk_get(void) {
     // 0.51 rather than 0.5: a keyboard sample is 32767, and 32767 * 0.5 = 16383 falls one short of stick_bits'
     // STICK_DIR (16384), which would leave the game's stick-direction bits clear while the walk key is held. The value
     // in the settings table carries that default; this code only rejects what the table's range does not allow.
-    const char *sv = cfg_value("TOTK_WALK_SCALE");
+    const char *sv = cfg_value("REKARINA_WALK_SCALE");
     char *end;
     double d = strtod(sv, &end);
-    double s = end == sv || *end || !(d >= 0.2 && d <= 0.9) ? strtod(cfg_meta("TOTK_WALK_SCALE")->def, NULL) : d;
+    double s = end == sv || *end || !(d >= 0.2 && d <= 0.9) ? strtod(cfg_meta("REKARINA_WALK_SCALE")->def, NULL) : d;
     if (key != walk_key || (float)s != walk_scale) {
         walk_key = key;
         walk_scale = (float)s;
@@ -369,6 +438,7 @@ static void mouse_camera(int32_t out[2], int selector) {
         frame = ~0ull;
         return;   // the camera update takes the raw counts itself, once, outside the HID stick path
     }
+    test_mouse();
     if (!ikb_captured()) {
         ikb_mouse_take(&dx, &dy);
         held[0] = held[1] = 0;
@@ -378,8 +448,14 @@ static void mouse_camera(int32_t out[2], int selector) {
         double age = frame == ~0ull ? 0 : (double)(now - t0) / 1e9;
         if (fr != frame) {
             double dt = age < 0.004 ? 0.004 : age > 0.1 ? 0.1 : age;
-            ikb_mouse_take(&dx, &dy);
-            input_mouse_stick(dx, dy, dt, mouse_sens_get(), held);
+            mouse_take_camera(&dx, &dy);
+            dx += script_mouse[0], dy += script_mouse[1];   // an input script's counts the direct path left
+            script_mouse[0] = script_mouse[1] = 0;
+            double per_count, full;
+            if (input_direct_mouse_stick_curve(&per_count, &full))
+                input_mouse_stick_curved(dx, dy, dt, mouse_sens_get(), per_count, full, held);
+            else
+                input_mouse_stick(dx, dy, dt, mouse_sens_get(), held);
             frame = fr;
             t0 = now;
         } else if (age > 0.1) {
@@ -414,8 +490,10 @@ static void stick(const int16_t *axes, SDL_GamepadAxis ax, SDL_GamepadAxis ay, f
 static void scan_pads(void) {
     if (pad && SDL_GamepadConnected(pad)) return;
     if (pad) {
-        SDL_CloseGamepad(pad); pad = NULL; sensor_pad = 0; sensor_ok = 0;
+        SDL_CloseGamepad(pad); pad = NULL; sensor_pad = 0; sensor_ok = 0; hd_until = 0;
+        plat_xchg32(&pad_hd, 0);
         plat_xchg32(&pad_layout_shown, -1);
+        plat_xchg32(&pad_family, -1);
         for (int i = 0; i < 4; i++) plat_xchg32(&pad_labels[i], PAD_LABEL_NONE);
         rt_log("input: gamepad disconnected");
     }
@@ -426,8 +504,10 @@ static void scan_pads(void) {
     if (!pad) return;
     pad_rumble = SDL_GetBooleanProperty(SDL_GetGamepadProperties(pad), SDL_PROP_GAMEPAD_CAP_RUMBLE_BOOLEAN, false);
     pad_east_a = SDL_GetGamepadButtonLabel(pad, SDL_GAMEPAD_BUTTON_EAST) == SDL_GAMEPAD_BUTTON_LABEL_A;
+    int shapes = 0;
     for (int i = 0; i < 4; i++) {
         SDL_GamepadButtonLabel lb = SDL_GetGamepadButtonLabel(pad, pad_sdl[PAD_SOUTH + i]);
+        shapes |= lb >= SDL_GAMEPAD_BUTTON_LABEL_CROSS && lb <= SDL_GAMEPAD_BUTTON_LABEL_TRIANGLE;
         plat_xchg32(&pad_labels[i], lb == SDL_GAMEPAD_BUTTON_LABEL_A          ? PAD_LABEL_A
                                             : lb == SDL_GAMEPAD_BUTTON_LABEL_B        ? PAD_LABEL_B
                                             : lb == SDL_GAMEPAD_BUTTON_LABEL_X        ? PAD_LABEL_X
@@ -438,10 +518,36 @@ static void scan_pads(void) {
                                             : lb == SDL_GAMEPAD_BUTTON_LABEL_TRIANGLE ? PAD_LABEL_TRIANGLE
                                                                                       : PAD_LABEL_NONE);
     }
+    // The prompts' kind goes by the labels SDL reports, which it takes from the pad's type (and, for Steam's virtual
+    // pad, from the controller behind it): DualShock 4, DualSense and Edge have shapes; Switch Pro and Joy-Con have A on
+    // the east button; Xbox and XInput pads, the Steam Deck's own controls (Valve, 0x28de) and Windows handhelds (ROG
+    // Ally, Legion Go: XInput) have A at the bottom, as does a pad whose labels SDL does not know.
+    int family = shapes ? PROMPTS_PS : pad_east_a ? PROMPTS_NINTENDO : PROMPTS_XBOX;
+    plat_xchg32(&pad_family, family);
+    SDL_GamepadType gt = SDL_GetGamepadType(pad);
+    const char *type = SDL_GetGamepadStringForType(gt);
+    rt_log("input: gamepad type %s, vendor %04x product %04x: %s labels", type && *type ? type : "unknown",
+           SDL_GetGamepadVendor(pad), SDL_GetGamepadProduct(pad),
+           family == PROMPTS_PS ? "PlayStation" : family == PROMPTS_NINTENDO ? "Nintendo" : "Xbox");
     __atomic_store_n(&pad_layout_stale, 1, __ATOMIC_RELEASE);
+    // A Switch Pro Controller or a Joy-Con with rumble gets the game's two bands per side (hd_send) until it refuses them.
+    // Only Nintendo's own (vendor 057e: Joy-Con L 2006, R 2007, the pair SDL combines 2008, Pro Controller 2009,
+    // charging grip 200e, which clones in Switch mode copy): the Switch 2 controllers have no gamepad type of their own,
+    // and SDL drives them with another driver (SDL_HINT_JOYSTICK_HIDAPI_SWITCH2), not the one hd_send's packet suits.
+    uint16_t pv = SDL_GetGamepadVendor(pad), pp = SDL_GetGamepadProduct(pad);
+    int nintendo_hd = pv == 0x057e && ((pp >= 0x2006 && pp <= 0x2009) || pp == 0x200e);
+    plat_xchg32(&pad_hd, pad_rumble && nintendo_hd &&
+                             (gt == SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_PRO || gt == SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_JOYCON_LEFT ||
+                              gt == SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_JOYCON_RIGHT ||
+                              gt == SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_JOYCON_PAIR));
     int motion = SDL_GamepadHasSensor(pad, SDL_SENSOR_GYRO) && SDL_GamepadHasSensor(pad, SDL_SENSOR_ACCEL);
     rt_log("input: gamepad \"%s\" (%s, %s, east button %s)", SDL_GetGamepadName(pad), pad_rumble ? "rumble" : "no rumble",
            motion ? "gyro and accelerometer" : "no motion sensors", pad_east_a ? "labelled A" : "not labelled A");
+    // An XInput pad has no motion sensors, and a program that stands in for another controller shows up as one
+    if (!motion && (gt == SDL_GAMEPAD_TYPE_XBOX360 || gt == SDL_GAMEPAD_TYPE_XBOXONE))
+        rt_log("input: an Xbox-type (XInput) gamepad: no gyro reaches the game. A PlayStation or Switch controller looks "
+               "like this when Steam Input, DS4Windows or BetterJoy stands in for it; SDL must open the controller itself "
+               "for its gyro and its own rumble");
 }
 
 // Under lock: the layout of the open gamepad, picked again when a setting or the gamepad changed; logs each change.
@@ -451,7 +557,7 @@ static int pad_layout_get(void) {
     if (pad_layout >= 0 && ver == pad_layout_seen) return pad_layout;
     pad_layout_seen = ver;
     int was = pad_layout;
-    const char *set = cfg_value("TOTK_PAD_LAYOUT");
+    const char *set = cfg_value("REKARINA_PAD_LAYOUT");
     pad_layout = input_pad_layout_pick(set, pad_east_a);
     if (pad_layout != was)
         rt_log("input: gamepad layout %s (pad_layout = %s)", pad_layout == PAD_LAYOUT_XBOX ? "xbox" : "nintendo", set);
@@ -459,7 +565,7 @@ static int pad_layout_get(void) {
     return pad_layout;
 }
 
-// The TOTK_BIND_* values last applied, one per line; the tables are built again when one changes (the menu's remapping rows write
+// The REKARINA_BIND_* values last applied, one per line; the tables are built again when one changes (the menu's remapping rows write
 // them while the game runs). Under lock.
 static unsigned binds_seen = ~0u;
 static char binds_applied[4096];
@@ -472,7 +578,7 @@ static void binds_refresh(void) {
     size_t len = 0;
     for (int a = 0; a < ACTION_COUNT; a++) {
         char var[32];
-        snprintf(var, sizeof var, "TOTK_BIND_%s", input_action_name(a));
+        snprintf(var, sizeof var, "REKARINA_BIND_%s", input_action_name(a));
         const char *s = cfg_get(var);
         len += (size_t)snprintf(now + len, len < sizeof now ? sizeof now - len : 0, "%s\n", s ? s : "");
     }
@@ -481,16 +587,19 @@ static void binds_refresh(void) {
     input_map_configure();
 }
 
-// TOTK_TEST_PAD=<lx>,<ly>,<rx>,<ry> (test runs): an SDL virtual gamepad whose sticks rest at these raw SDL axis values
-// (-32768..32767, down is +y), attached before the first scan so it is the gamepad the game reads: drift and full
-// deflection go through the same mapping and dead zone as a real pad.
+// REKARINA_TEST_PAD=<lx>,<ly>,<rx>,<ry>[,<kind>] (test runs): an SDL virtual gamepad whose sticks rest at these raw SDL axis
+// values (-32768..32767, down is +y), attached before the first scan so it is the gamepad the game reads: drift and full
+// deflection go through the same mapping and dead zone as a real pad. kind (ps5, ps4, switch, xbox) gives it that
+// controller's USB ids, so SDL reports its type and the automatic prompts follow it (a check of the prompt sets without
+// the pads).
 static void test_pad_attach(void) {
     static SDL_Joystick *joy;   // kept open: a virtual joystick's axes are set through an open handle
-    const char *e = cfg_get("TOTK_TEST_PAD");
+    const char *e = cfg_get("REKARINA_TEST_PAD");
     int v[4];
     if (!e || !*e) return;
-    if (sscanf(e, "%d,%d,%d,%d", &v[0], &v[1], &v[2], &v[3]) != 4) {
-        rt_log("input: TOTK_TEST_PAD=%s is not <lx>,<ly>,<rx>,<ry>; no test gamepad", e);
+    char kind[16] = "";
+    if (sscanf(e, "%d,%d,%d,%d,%15s", &v[0], &v[1], &v[2], &v[3], kind) < 4) {
+        rt_log("input: REKARINA_TEST_PAD=%s is not <lx>,<ly>,<rx>,<ry>; no test gamepad", e);
         return;
     }
     SDL_VirtualJoystickDesc d;
@@ -499,6 +608,12 @@ static void test_pad_attach(void) {
     d.naxes = SDL_GAMEPAD_AXIS_COUNT;
     d.nbuttons = SDL_GAMEPAD_BUTTON_COUNT;
     d.name = "TotK test gamepad";
+    static const struct { const char *kind; Uint16 vendor, product; const char *name; } ids[] = {
+        {"ps5", 0x054c, 0x0ce6, "DualSense Wireless Controller"}, {"ps4", 0x054c, 0x09cc, "PS4 Controller"},
+        {"switch", 0x057e, 0x2009, "Pro Controller"}, {"xbox", 0x045e, 0x0b13, "Xbox Wireless Controller"},
+    };
+    for (size_t i = 0; i < sizeof ids / sizeof *ids; i++)
+        if (!strcmp(kind, ids[i].kind)) d.vendor_id = ids[i].vendor, d.product_id = ids[i].product, d.name = ids[i].name;
     SDL_JoystickID id = SDL_AttachVirtualJoystick(&d);
     joy = id ? SDL_OpenJoystick(id) : NULL;
     if (!joy) {
@@ -509,15 +624,15 @@ static void test_pad_attach(void) {
                                             SDL_GAMEPAD_AXIS_RIGHTY};
     for (int i = 0; i < 4; i++)
         SDL_SetJoystickVirtualAxis(joy, axes[i], (Sint16)(v[i] < -32768 ? -32768 : v[i] > 32767 ? 32767 : v[i]));
-    rt_log("input: test gamepad attached, sticks at %d,%d %d,%d", v[0], v[1], v[2], v[3]);
+    rt_log("input: test gamepad attached (%s), sticks at %d,%d %d,%d", d.name, v[0], v[1], v[2], v[3]);
 }
 
 static void pad_main(void *arg);
 
 static void start(void) {
     binds_refresh();
-    const char *e = cfg_get("TOTK_INPUT");
-    if (e && !strcmp(e, "none")) { state = -1; rt_log("input: disabled (TOTK_INPUT=none)"); return; }
+    const char *e = cfg_get("REKARINA_INPUT");
+    if (e && !strcmp(e, "none")) { state = -1; rt_log("input: disabled (REKARINA_INPUT=none)"); return; }
     if (!SDL_Init(SDL_INIT_GAMEPAD)) { state = -1; rt_log("input: SDL gamepad init failed (%s), keyboard only", SDL_GetError()); }
     else state = 1;
     if (state == 1) test_pad_attach();
@@ -572,7 +687,7 @@ static int pad_physical(uint8_t pd[PAD_COUNT], int16_t *ax) {
     return on;
 }
 
-// Under lock, state 1: the open gamepad's buttons (Switch bits after TOTK_PAD_LAYOUT and the TOTK_BIND_* lines) and
+// Under lock, state 1: the open gamepad's buttons (Switch bits after REKARINA_PAD_LAYOUT and the REKARINA_BIND_* lines) and
 // sticks; 0 without a connected gamepad.
 static int pad_read(uint64_t *b, int32_t sl[2], int32_t sr[2]) {
     uint8_t pd[PAD_COUNT] = {0};
@@ -597,6 +712,54 @@ int input_pad_stick_percent(double pct[2]) {
     return ok;
 }
 
+// Under lock: a new press on the gamepad for prompt_dev, from its Switch buttons b and sticks (after the dead zone): a
+// button that was up at the last poll, or a stick past PROMPT_STICK_ON that fell under PROMPT_STICK_OFF since it last
+// counted.
+static int pad_pressed(uint64_t b, const int32_t sl[2], const int32_t sr[2]) {
+    static uint64_t was;
+    static int armed[2] = {1, 1};
+    int press = (b & ~was) != 0;
+    was = b;
+    const int32_t *st[2] = {sl, sr};
+    for (int s = 0; s < 2; s++) {
+        int32_t x = abs(st[s][0]), y = abs(st[s][1]), m = x > y ? x : y;
+        if (armed[s] && m > PROMPT_STICK_ON) press = 1, armed[s] = 0;
+        else if (!armed[s] && m < PROMPT_STICK_OFF) armed[s] = 1;
+    }
+    return press;
+}
+
+// Under lock, the game window in front: a new press for prompt_dev of a key or mouse button the game binds (down[]
+// after the capture rules) or of Esc. fresh: the window just came to the front, what is held is taken as the start.
+static int keys_pressed(const uint8_t down[KEY_COUNT], int esc, int fresh) {
+    static uint8_t was[KEY_COUNT];
+    static int esc_was;
+    int press = 0;
+    if (!fresh) {
+        for (int i = 0; i < input_map.nkeys; i++)
+            if (down[input_map.keys[i].key] && !was[input_map.keys[i].key]) press = 1;
+        press |= esc && !esc_was;
+    }
+    memcpy(was, down, sizeof was);
+    esc_was = esc;
+    return press;
+}
+
+// Under lock: dev (DEV_PAD, DEV_KBM; DEV_NONE: no press in this poll) pressed now; prompt_dev follows once the newest
+// press has kept its device for PROMPT_SETTLE_NS (the first press at once).
+static void prompt_track(int dev) {
+    static int logged;
+    uint64_t now = plat_now_ns();
+    if (dev != DEV_NONE && dev != prompt_newest) prompt_newest = dev, prompt_newest_ns = now;
+    int cur = (int)__atomic_load_n(&prompt_dev, __ATOMIC_RELAXED);
+    if (prompt_newest == DEV_NONE || prompt_newest == cur) return;
+    if (cur != DEV_NONE && now - prompt_newest_ns < PROMPT_SETTLE_NS) return;
+    __atomic_store_n(&prompt_dev, prompt_newest, __ATOMIC_RELAXED);
+    if (logged < 64)
+        rt_log("input: device in use: %s%s", prompt_newest == DEV_PAD ? "the gamepad" : "the keyboard and mouse",
+               ++logged == 64 ? " (further changes are not logged)" : "");
+}
+
 static void poll_merged(uint64_t *buttons, int32_t *lx, int32_t *ly, int32_t *rx, int32_t *ry) {
     uint64_t b = 0;
     int32_t sl[2] = {0, 0}, sr[2] = {0, 0};
@@ -607,7 +770,10 @@ static void poll_merged(uint64_t *buttons, int32_t *lx, int32_t *ly, int32_t *rx
         if (state == 1) pad_read(&b, sl, sr);
         int pad_used = b || abs(sl[0]) > PAD_USED || abs(sl[1]) > PAD_USED || abs(sr[0]) > PAD_USED ||
                        abs(sr[1]) > PAD_USED, kbm_used = 0;
-        if (ikb_foreground()) {
+        int pad_press = pad_pressed(b, sl, sr), key_press = 0;
+        static int was_front;   // the game window was in front at the last poll
+        int front = ikb_foreground();
+        if (front) {
             uint8_t down[KEY_COUNT] = {0};
             // Mouse buttons count only while the cursor is captured, and a button already held when the capture began
             // (the click that refocused the window) is ignored until it is released.
@@ -623,6 +789,8 @@ static void poll_merged(uint64_t *buttons, int32_t *lx, int32_t *ly, int32_t *rx
                 if (!cap || mouse_ignore[k]) down[k] = 0;
             }
             was_captured = cap;
+            // (keys typed into a text entry are text: the Steam Deck's on-screen keyboard keeps the pad's prompts)
+            key_press = keys_pressed(down, ikb_escape(), !was_front) && g_block != 1;
             b |= input_map_buttons(down);
             int32_t k[2];
             walk_get();
@@ -647,6 +815,8 @@ static void poll_merged(uint64_t *buttons, int32_t *lx, int32_t *ly, int32_t *rx
         // A press or a full-way stick on the pad wins over keys held in the same poll: the player picked it up
         if (pad_used) __atomic_store_n(&g_kbm_last, 0, __ATOMIC_RELAXED);
         else if (kbm_used) __atomic_store_n(&g_kbm_last, 1, __ATOMIC_RELAXED);
+        was_front = front;
+        prompt_track(pad_press ? DEV_PAD : key_press ? DEV_KBM : DEV_NONE);
     }
     script_apply(&b, sl, sr);
     rec_apply(b, sl, sr);
@@ -676,7 +846,7 @@ static volatile uint64_t g_block_closed, g_menu_closed;
 #define RELEASE_WAIT_NS 1000000000ull
 
 int input_cursor_allowed(void) {
-    const char *in = cfg_get("TOTK_INPUT");
+    const char *in = cfg_get("REKARINA_INPUT");
     return g_block != 1 && g_menu != 1 && mouse_sens_get() > 0 && !(in && !strcmp(in, "none")) && !menu_cursor_pointer();
 }
 
@@ -747,6 +917,70 @@ uint16_t rumble_motor(float a, float curve, float strength) {
     return v >= 65535.0f ? 65535 : (uint16_t)v;
 }
 
+// ---- Switch HD rumble: the rumble data of the Switch Pro Controller and the Joy-Con, as the public reverse-engineering
+// notes on the Switch's controllers describe it (Nintendo_Switch_Reverse_Engineering: the rumble data section of its
+// HID notes and its rumble data table). Four bytes per side, a high and a low band each:
+//   frequency: the code c = round(32 * log2(f / 10 Hz)). The high band keeps (c - 0x60) * 4, nine bits from byte 0 into
+//     bit 0 of byte 1 (codes 0x61..0xdf: 81.75 to 1252.57 Hz); the low band keeps c - 0x40 in the low seven bits of
+//     byte 2 (codes 0x41..0xbf: 40.87 to 626.28 Hz). A frequency outside a band takes the band's nearest end.
+//   amplitude: a step e of 0 to 100 on the table's logarithmic scale, step 100 being amplitude 1.0, the most the notes
+//     call safe (more is clamped). The high band keeps 2e in the upper seven bits of byte 1; the low band keeps
+//     0x40 + e / 2 in byte 3 and the odd half step in bit 7 of byte 2.
+// Neutral, nothing at 160 and 320 Hz, is 00 01 40 40. cfg_probe.c checks the encoding against the notes' values.
+
+// The frequency code of f Hz, clamped to lo..hi; a frequency that is not a positive number counts as neutral Hz.
+static int hd_freq_code(float f, float neutral, int lo, int hi) {
+    double c = round(32 * log2((f > 0 && isfinite(f) ? f : neutral) / 10.0));
+    return c < lo ? lo : c > hi ? hi : (int)c;
+}
+
+// The amplitude step of a. The table's amplitude grows by 2^(1/32) a step from about 0.23 up (step 32) to 1.0 (step
+// 100), by 2^(1/16) a step from about 0.115 (step 16 is 0.1175) and by 2^(1/4) a step below (step 8 is 0.0334); its
+// first step is 0.0078, so anything from 0.004 is at least step 1. NaN and values <= 0 are step 0.
+static int hd_amp_step(float a) {
+    if (!(a > 0)) return 0;
+    double l = log2(a < 1 ? a : 1);
+    double e = round(a >= 0.227f ? 100 + 32 * l : a >= 0.115f ? 16 + 16 * (l - log2(0.1175)) : 8 + 4 * (l - log2(0.0334)));
+    if (e < 1 && a >= 0.004f) e = 1;
+    return e < 0 ? 0 : e > 100 ? 100 : (int)e;
+}
+
+void input_hd_rumble_encode(const InputVibration *v, uint8_t out[4]) {
+    int hf = (hd_freq_code(v->freq_high, 320, 0x61, 0xdf) - 0x60) * 4, lf = hd_freq_code(v->freq_low, 160, 0x41, 0xbf) - 0x40;
+    int eh = hd_amp_step(v->amp_high), el = hd_amp_step(v->amp_low);
+    out[0] = (uint8_t)(hf & 0xff);
+    out[1] = (uint8_t)(eh * 2 | hf >> 8);
+    out[2] = (uint8_t)(lf | (el & 1) << 7);
+    out[3] = (uint8_t)(0x40 + el / 2);
+}
+
+int input_rumble_hd(void) { return __atomic_load_n(&pad_hd, __ATOMIC_RELAXED) != 0; }
+
+// On the gamepad thread: the game's two sides as one Switch rumble output packet, sent through SDL's HIDAPI Switch
+// driver. SDL 3.4.18 (toolchain/deps-mingw) takes, in SDL_SendGamepadEffect, exactly ten bytes whose first is 0x10 (the
+// rumble-only output report): it keeps bytes 2..5 as the left side and 6..9 as the right, numbers the packet itself and
+// writes it, replacing any rumble of its own ("Unknown Nintendo Switch Pro effect type" for another first byte). A packet
+// has no duration: hd_until keeps the ms of the request, and pad_main sends the neutral packet when they run out, as
+// SDL_RumbleGamepad's duration would stop the pad when the game stops streaming. 0 when this pad does not take it (not a
+// Switch Pro Controller or Joy-Con, or SDL refused the packet: logged once, and the pad keeps SDL_RumbleGamepad).
+static int hd_send(const InputVibration hd[2], uint32_t ms, uint64_t now_ms) {
+    if (!__atomic_load_n(&pad_hd, __ATOMIC_RELAXED)) return 0;
+    uint8_t p[10] = {0x10, 0};
+    input_hd_rumble_encode(&hd[0], p + 2);
+    input_hd_rumble_encode(&hd[1], p + 6);
+    if (!SDL_SendGamepadEffect(pad, p, sizeof p)) {
+        rt_log("input: \"%s\" does not take HD rumble packets (%s): it gets the two-motor rumble", SDL_GetGamepadName(pad),
+               SDL_GetError());
+        plat_xchg32(&pad_hd, 0);
+        hd_until = 0;
+        return 0;
+    }
+    static int logged;
+    if (!logged) logged = 1, rt_log("input: HD rumble: the game's two bands per side go to \"%s\"", SDL_GetGamepadName(pad));
+    hd_until = ms ? now_ms + ms : 0;
+    return 1;
+}
+
 int input_pad_layout(void) {
     return (int)plat_cas32(&pad_layout_shown, 0, 0);
 }
@@ -754,6 +988,70 @@ int input_pad_layout(void) {
 int input_pad_label(int pad_id) {
     if (pad_id < PAD_SOUTH || pad_id > PAD_NORTH) return PAD_LABEL_NONE;
     return (int)plat_cas32(&pad_labels[pad_id - PAD_SOUTH], 0, 0);
+}
+
+int input_pad_family(void) { return (int)__atomic_load_n(&pad_family, __ATOMIC_RELAXED); }
+
+int input_pad_in_use(void) {
+    return input_pad_family() >= 0 && __atomic_load_n(&prompt_dev, __ATOMIC_RELAXED) != DEV_KBM;
+}
+
+// The prompts REKARINA_PROMPTS asks for (input_prompts_pick). Unset is the settings table's default (auto for OoT), except
+// that 0.1.9's pad_layout = xbox_prompts still means the Xbox prompts then. Read again when cfg_version changes: the
+// prompts' switch asks every present (romfs.c romfs_prompts_live). The memo is the version and the pick in one word,
+// so a thread that read an older version leaves a memo the next call reads again.
+static int prompts_pick_now(void) {
+    static volatile uint64_t memo = ~0ull;   // cfg_version << 32 | the pick
+    unsigned v = cfg_version();
+    uint64_t m = __atomic_load_n(&memo, __ATOMIC_ACQUIRE);
+    if (m != ~0ull && (unsigned)(m >> 32) == v) return (int)(uint32_t)m;
+    const char *set = cfg_get("REKARINA_PROMPTS"), *layout = cfg_value("REKARINA_PAD_LAYOUT");
+    if ((!set || !*set) && strcasecmp(layout, "xbox_prompts")) set = cfg_value("REKARINA_PROMPTS");
+    int pick = input_prompts_pick(set, layout);
+    __atomic_store_n(&memo, (uint64_t)v << 32 | (uint32_t)pick, __ATOMIC_RELEASE);
+    return pick;
+}
+
+int input_prompts_auto(void) { return prompts_pick_now() == PROMPTS_AUTO; }
+
+const char *input_prompts_wanted(void) {
+    int pick = prompts_pick_now();
+    if (pick != PROMPTS_AUTO || !__atomic_load_n(&state, __ATOMIC_RELAXED))
+        return input_prompts_folder(pick, cfg_value("REKARINA_PAD_LAYOUT"));
+    int fam = input_pad_family(), dev = (int)__atomic_load_n(&prompt_dev, __ATOMIC_RELAXED);
+    // Right after SDL was started a connected pad may not be listed yet (scan_pads at start found none, the gamepad
+    // thread scans again after RESCAN_MS): the keyboard's set would show, then the pad's a second later, each change a
+    // rewrite of the font's table and the action hint's images. Before the first press, for 1.5 s from the first ask
+    // under auto, the set loaded at start stays and the thread scans every 50 ms. Nothing waits: romfs.c asks at each
+    // present.
+    if (fam < 0 && dev == DEV_NONE) {
+        static uint64_t first_ns, forced_ns;
+        static int told;
+        uint64_t now = plat_now_ns(), t0 = __atomic_load_n(&first_ns, __ATOMIC_ACQUIRE);
+        if (!t0) {   // the first ask starts the window; a racing first ask keeps the other's start
+            uint64_t none = 0;
+            t0 = __atomic_compare_exchange_n(&first_ns, &none, now, 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE) ? now : none;
+        }
+        const char *loaded = romfs_prompts();
+        if (now - t0 < 1500000000ull && loaded) {
+            if (now - __atomic_load_n(&forced_ns, __ATOMIC_RELAXED) >= 50000000ull) {
+                __atomic_store_n(&forced_ns, now, __ATOMIC_RELAXED);
+                __atomic_store_n(&next_scan, 0, __ATOMIC_RELAXED);
+            }
+            return loaded;
+        }
+        if (!__atomic_exchange_n(&told, 1, __ATOMIC_ACQ_REL))
+            rt_log("input: start: no gamepad %.0f ms after the first ask, the prompts follow the keyboard",
+                   (now - t0) / 1e6);
+    }
+    int kind = fam >= 0 && dev != DEV_KBM ? fam : PROMPTS_PC;
+    // A game folder from an older setup has no keyboard set (the menu does not offer it): the pad's set stays.
+    if (kind == PROMPTS_PC && !romfs_prompts_ready("romfs-patches-pc")) kind = fam >= 0 ? fam : PROMPTS_XBOX;
+    if (kind == PROMPTS_PC) return input_prompts_device_folder(kind, PAD_LAYOUT_XBOX);   // no layout to follow
+    // The layout in effect; a pad opened since the last poll gets the one pad_layout_get will pick for its labels.
+    int l = input_pad_layout();
+    if (l < 0) l = input_pad_layout_pick(cfg_value("REKARINA_PAD_LAYOUT"), fam == PROMPTS_NINTENDO);
+    return input_prompts_device_folder(kind, l);
 }
 
 void input_map_snapshot(InputMap *m) {
@@ -790,10 +1088,10 @@ int input_capture(int reset, int *id) {
 }
 
 int input_rumble_triggers_enabled(void) {
-    return cfg_bool("TOTK_RUMBLE_TRIGGERS");
+    return cfg_bool("REKARINA_RUMBLE_TRIGGERS");
 }
 
-int input_rumble(uint16_t low, uint16_t high, uint32_t ms) {
+int input_rumble(uint16_t low, uint16_t high, const InputVibration hd[2], uint32_t ms) {
     int ok = 0;
     static int triggers = -1;
     static unsigned seen;
@@ -801,6 +1099,8 @@ int input_rumble(uint16_t low, uint16_t high, uint32_t ms) {
     plat_mutex_lock(&snap_lock);
     if (snap.on && snap.rumble) {   // the gamepad thread sends the newest one: a rumble can block on a wireless pad
         snap.want_rumble = 1, snap.want_triggers = triggers, snap.low = low, snap.high = high, snap.ms = ms;
+        snap.want_hd = hd != NULL;
+        if (hd) memcpy(snap.hd, hd, sizeof snap.hd);
         ok = 1;
     }
     plat_mutex_unlock(&snap_lock);
@@ -847,14 +1147,14 @@ int input_motion_enabled(void) {
     unsigned v = cfg_version();
     if (on < 0 || v != seen) {
         seen = v;
-        on = cfg_bool("TOTK_MOTION");
+        on = cfg_bool("REKARINA_MOTION");
     }
     return on;
 }
 
 // 250 Hz: a gamepad that came or went is picked up, the gamepads update (reports read, rumble expiry), their state goes
 // into the snapshot the game's poll reads, a waiting rumble is sent, and the newest gyro and accelerometer sample goes into
-// the fusion. Without a gamepad with sensors, or with motion off (TOTK_MOTION=0, live), nothing is fed and the six-axis
+// the fusion. Without a gamepad with sensors, or with motion off (REKARINA_MOTION=0, live), nothing is fed and the six-axis
 // sensor reads at rest.
 static void pad_main(void *arg) {
     (void)arg;
@@ -876,13 +1176,19 @@ static void pad_main(void *arg) {
         plat_mutex_lock(&snap_lock);
         snap.on = on, snap.rumble = on && pad_rumble;
         memcpy(snap.pd, pd, sizeof pd), memcpy(snap.ax, ax, sizeof ax);
-        int rumble = snap.want_rumble, triggers = snap.want_triggers;
+        int rumble = snap.want_rumble, triggers = snap.want_triggers, has_hd = snap.want_hd;
         uint16_t low = snap.low, high = snap.high;
         uint32_t ms = snap.ms;
+        InputVibration hd[2];
+        memcpy(hd, snap.hd, sizeof hd);
         snap.want_rumble = 0;
         plat_mutex_unlock(&snap_lock);
+        if (on && !rumble && hd_until && now >= hd_until) {   // the game stopped streaming: stop as a duration would
+            static const InputVibration rest[2] = {{0, 160, 0, 320}, {0, 160, 0, 320}};
+            hd_send(rest, 0, now);
+        }
         if (on && rumble) {
-            SDL_RumbleGamepad(pad, low, high, ms);
+            if (!has_hd || !hd_send(hd, ms, now)) SDL_RumbleGamepad(pad, low, high, ms);
             if (triggers) SDL_RumbleGamepadTriggers(pad, high, high, ms);   // unsupported pads return false: ignored
         }
         float a[3], g[3];
@@ -899,7 +1205,7 @@ void input_motion_start(void) {
     plat_mutex_lock(&lock);
     if (!state) start();
     if (!motion_thread) {
-        if (!input_motion_enabled()) rt_log("input: motion off (TOTK_MOTION=0); it can be turned on while the game runs");
+        if (!input_motion_enabled()) rt_log("input: motion off (REKARINA_MOTION=0); it can be turned on while the game runs");
         motion_thread = state == 1 ? 1 : -1;
         __atomic_store_n(&motion_on, state == 1, __ATOMIC_RELAXED);
     }

@@ -9,7 +9,7 @@ with the bundled clang (hostcheck.c).
 Install folder: exefs/, romfs/ (romfs.bin, index.json), profile/, shared-fonts/ (Chinese and Korean text), totk.exe
 and its DLLs, nvngx_dlss.dll (with --dlss), romfs-index.bin, romfs-patches/, romfs-patches-xbox/,
 romfs-patches-xbox-label/, romfs-patches-pc/, totk_xlate.exe, the
-shader state of totk.exe --prepare-shaders, totk.ini, totk-install.json.
+shader state of totk.exe --prepare-shaders, totk.ini, rekarina-install.json.
 Temp folder (<temp>/<dest name>-<hash>): check/ (ExeFS of both inputs, the host check), unpacked/ (the NSP of an NSZ
 or XCZ input until the extraction is done), gen/ (C), build/ (objects), logs/. The cleanup keeps gen/, build/ and
 logs/: the next run lifts into the same gen/, where recomp/gen.py rewrites only the chunks whose C changed, and Ninja
@@ -981,17 +981,18 @@ class Compile(Step):
             '--version', version_tag(game_version(ctx)), '--expected', layout.expected(game_version(ctx)),
             '--exefs', dest / 'exefs', '--romfs', dest / 'romfs',
             '--profile', dest / 'profile'], parse)
-        exe = build / ('totk' + EXE)
+        exe = build / ('rekarina' + EXE)   # tools/build_game.py's name; the TotK player's folder holds it as totk.exe
         if code or not exe.is_file():
             raise InstallError('compile.failed', code=code, log=str(log))
+        game = dest / ('totk' + EXE)
         try:
-            replace_file(exe, dest / exe.name)
+            replace_file(exe, game)
         except PermissionError:
-            raise InstallError('compile.exe_in_use', path=str(dest / exe.name)) from None
+            raise InstallError('compile.exe_in_use', path=str(game)) from None
         replace_file(build / 'romfs-index.bin', dest / 'romfs-index.bin')
         for dll in layout.dlls:
             replace_file(dll, dest / dll.name)
-        return {'exe_sha256': file_sha256(dest / exe.name), 'cpu': cpu}
+        return {'exe_sha256': file_sha256(game), 'cpu': cpu}
 
 
 # ---- 6. prepare
@@ -1107,7 +1108,7 @@ class Prepare(Step):
         rep.progress('prepare', 'seed', force=True)
         code, log = run_tool(ctx, 'prepare', layout.tools / 'prepare_shaders.py',
                              [dest, '--version', version_tag(game_version(ctx)), '--romfs', dest / 'romfs', '--exefs',
-                              dest / 'exefs', '--list', shader_list], parse)
+                              dest / 'exefs', '--list', shader_list, '--exe', 'totk' + EXE], parse)
         if code or not (dest / 'shader-prepared.bin').is_file():
             raise InstallError('prepare.shaders_failed', code=code, log=str(log))
         if skipped[0]:

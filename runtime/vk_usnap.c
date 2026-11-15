@@ -12,10 +12,10 @@
 // - A GPU write within the submission (UpdateUniformBuffer, a storage buffer a shader writes, a buffer copy or fill,
 //   an image-to-buffer copy: vk_usnap_drop) drops the copies it touches from then on, so later draws read the result.
 // - The arena goes back to a free list once the submission's fence is done (completion thread).
-// The design follows MacNativeGames' TOTK_UBO_SNAPSHOT (games/totk/third_party/d2r_gfx/gfx/nvn/nvn_mtl.m usnap_take,
+// The design follows MacNativeGames' REKARINA_UBO_SNAPSHOT (games/totk/third_party/d2r_gfx/gfx/nvn/nvn_mtl.m usnap_take,
 // usnap_drop; MIT, Copyright (c) 2026 jhaizhou); the code is ours.
 // The copy is taken where vk_exec_record starts: at the submit call when the replay runs on the submitting thread, later
-// with TOTK_REPLAY_ASYNC. TOTK_UBO_SNAPSHOT=0 binds live memory as before; =ab alternates (TOTK_AB).
+// with REKARINA_REPLAY_ASYNC. REKARINA_UBO_SNAPSHOT=0 binds live memory as before; =ab alternates (REKARINA_AB).
 #include <stdlib.h>
 #include <string.h>
 
@@ -65,7 +65,7 @@ static struct {
 static Arena *free_arenas;
 static PlatMutex free_lock = PLAT_MUTEX_INIT;
 
-// DEBUG-USNAP-GPUW: TOTK_USNAP_GPUW=1 leaves out of the snapshot every range the GPU has written at any time, =2 only
+// DEBUG-USNAP-GPUW: REKARINA_USNAP_GPUW=1 leaves out of the snapshot every range the GPU has written at any time, =2 only
 // logs such ranges. Pages written: vk_usnap_drop (record time), vk_gpu_written and global memory writes (fence).
 #define GW_N (1u << 18)
 static uint64_t gw_pages[GW_N];
@@ -148,7 +148,7 @@ static void arena_done(void *arg) {   // completion thread: the GPU has read it
     plat_mutex_unlock(&free_lock);
 }
 
-// DEBUG-USNAP-MASK: TOTK_USNAP_SCHED=<tick0>:<ticks> with TOTK_USNAP_RANGES=lo-hi,lo-hi,...: from tick0 on, each
+// DEBUG-USNAP-MASK: REKARINA_USNAP_SCHED=<tick0>:<ticks> with REKARINA_USNAP_RANGES=lo-hi,lo-hi,...: from tick0 on, each
 // window of <ticks> game ticks snapshots only the bindings in the next range (the stage mask still applies)
 static uint64_t sched_lo, sched_hi = ~0ull;
 static void sched_update(void) {
@@ -156,7 +156,7 @@ static void sched_update(void) {
     static uint64_t t0, w, rl[32], rh[32];
     if (!read) {
         read = 1;
-        const char *e = cfg_get("TOTK_USNAP_SCHED"), *r = cfg_get("TOTK_USNAP_RANGES");
+        const char *e = cfg_get("REKARINA_USNAP_SCHED"), *r = cfg_get("REKARINA_USNAP_RANGES");
         if (e && r) {
             char *x;
             t0 = strtoull(e, &x, 0), w = *x == ':' ? strtoull(x + 1, NULL, 0) : 40;
@@ -194,14 +194,14 @@ static void collect(const op_hdr *h, int depth) {
         if (h->op == OP_CALL && depth < CALL_DEPTH) collect(nvn_op_first(((const p_jump *)a)->target), depth + 1);
         if (h->op == OP_BIND_UBO) {
             const p_bind_buf *b = a;
-            // DEBUG-USNAP-MASK: TOTK_USNAP_STAGES=<mask of stage slots>, TOTK_USNAP_LO/HI=<guest range> snapshotted
+            // DEBUG-USNAP-MASK: REKARINA_USNAP_STAGES=<mask of stage slots>, REKARINA_USNAP_LO/HI=<guest range> snapshotted
             static int64_t smask = -1;
             static uint64_t alo, ahi;
             if (smask < 0) {
-                const char *e = cfg_get("TOTK_USNAP_STAGES");
+                const char *e = cfg_get("REKARINA_USNAP_STAGES");
                 smask = e ? strtoll(e, NULL, 0) : 0xffff;
-                e = cfg_get("TOTK_USNAP_LO"), alo = e ? strtoull(e, NULL, 0) : 0;
-                e = cfg_get("TOTK_USNAP_HI"), ahi = e ? strtoull(e, NULL, 0) : ~0ull;
+                e = cfg_get("REKARINA_USNAP_LO"), alo = e ? strtoull(e, NULL, 0) : 0;
+                e = cfg_get("REKARINA_USNAP_HI"), ahi = e ? strtoull(e, NULL, 0) : ~0ull;
             }
             if (!(smask >> (b->stage & 15) & 1) || b->addr < alo || b->addr >= ahi ||
                 (!(b->stage & 15) && (b->addr < sched_lo || b->addr >= sched_hi))) {

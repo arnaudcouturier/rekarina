@@ -1,0 +1,42 @@
+# Forgejo for Rekarina at https://git.rekarina.dev, with Caddy in front (it gets and renews the HTTPS certificate by
+# itself). Git over SSH on port 2222 of the server (the server's own SSH stays on 22).
+# Start: docker compose up -d     Logs: docker compose logs -f     Update within 17.x: docker compose pull && docker compose up -d
+networks:
+  forgejo:
+
+services:
+  forgejo:
+    image: codeberg.org/forgejo/forgejo:17          # 17.x as it gets fixes; a move to 18 is done by hand (release notes)
+    container_name: forgejo
+    restart: always
+    environment:
+      - USER_UID=1000
+      - USER_GID=1000
+      - FORGEJO__server__DOMAIN=git.rekarina.dev
+      - FORGEJO__server__ROOT_URL=https://git.rekarina.dev/
+      - FORGEJO__server__SSH_DOMAIN=git.rekarina.dev
+      - FORGEJO__server__SSH_PORT=2222               # the port clone URLs show; the container listens on 22
+      - FORGEJO__database__DB_TYPE=sqlite3           # one small project: no database server needed
+      - FORGEJO__service__DISABLE_REGISTRATION=true  # nobody signs up; the admin is made on the first page
+      - FORGEJO__actions__ENABLED=true               # for the content check (a runner is added later)
+    volumes:
+      - ./forgejo:/data
+      - /etc/localtime:/etc/localtime:ro
+    ports:
+      - '2222:22'
+    networks:
+      - forgejo
+
+  caddy:
+    image: caddy:2
+    container_name: caddy
+    restart: always
+    ports:
+      - '80:80'
+      - '443:443'
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./caddy-data:/data
+      - ./caddy-config:/config
+    networks:
+      - forgejo

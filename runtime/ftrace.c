@@ -55,7 +55,7 @@ static void ft_write(void) {
 
 void ftrace_frame(uint64_t frame) {
     if (state < 0) {
-        const char *e = cfg_get("TOTK_FTRACE");
+        const char *e = cfg_get("REKARINA_FTRACE");
         state = 0;
         if (e && *e) {
             char *end;

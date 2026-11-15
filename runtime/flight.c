@@ -1,11 +1,11 @@
-// TOTK_FLIGHT=1 flight recorder: a ring of the last TOTK_FLIGHT_FRAMES (600) presents, one record each (interval,
+// REKARINA_FLIGHT=1 flight recorder: a ring of the last REKARINA_FLIGHT_FRAMES (600) presents, one record each (interval,
 // render-thread blocked time per perf kind, event counts) and a 320x180 thumbnail each (gfx_present.c, blitted on the
 // GPU by the present thread). A dump goes to <dir>/<YYYYMMDD-HHMMSS>-f<frame>/: frames.tsv and f<frame>.png per
 // thumbnail, written by a background thread. Triggers: F8 while the game window has focus, a frame interval over
-// TOTK_FLIGHT_SPIKE_MS (100; 0 off; at most one dump per 10 s), and TOTK_FLIGHT_AT=<frame>[,<frame>...]. A dump holds
+// REKARINA_FLIGHT_SPIKE_MS (100; 0 off; at most one dump per 10 s), and REKARINA_FLIGHT_AT=<frame>[,<frame>...]. A dump holds
 // the frames up to FLIGHT_POST presents after the trigger, so the aftermath is in it too. tools/flight_view.py reads it.
 //
-// Records come from perf_present (prof_win.c) on the render thread; the counts are differences of the TOTK_TRACE=perf
+// Records come from perf_present (prof_win.c) on the render thread; the counts are differences of the REKARINA_TRACE=perf
 // running totals and of vk_exec_frame. Off, the only cost is the flight_on branch in perf_present and vk_backend.c.
 #include <stdio.h>
 #include <stdlib.h>
@@ -62,7 +62,7 @@ static uint64_t prev_cnt[PERF_CNT_N], prev_xlated;
 static VkExecFrame prev_exec;
 static volatile uint64_t cost_ns, cost_max_ns;   // render-thread time in flight_frame, for the dump log line
 
-// Flash watch (TOTK_FLIGHT_FLASH=0 turns it off): each present reads the thumbnail of the frame FLASH_LAG presents back
+// Flash watch (REKARINA_FLIGHT_FLASH=0 turns it off): each present reads the thumbnail of the frame FLASH_LAG presents back
 // (complete by then, vk_thumbs_read) and takes its mean luma over a coarse grid. A frame far darker than the running
 // mean of the frames before it (below FLASH_DARK of it, the mean itself not dark) or far brighter (white frames) is
 // logged and triggers a dump with its neighbours, at most one dump per 10 s; every such frame is counted. The player's
@@ -85,31 +85,31 @@ static unsigned env_u(const char *name, unsigned def) {
 }
 
 void flight_init(void) {
-    if (strcmp(cfg_value("TOTK_FLIGHT"), "1")) return;
-    ring_n = (int)env_u("TOTK_FLIGHT_FRAMES", 600);
+    if (strcmp(cfg_value("REKARINA_FLIGHT"), "1")) return;
+    ring_n = (int)env_u("REKARINA_FLIGHT_FRAMES", 600);
     if (ring_n < 64) ring_n = 64;
     if (ring_n > 7200) ring_n = 7200;
     if (!(ring = calloc((size_t)ring_n, sizeof *ring))) { rt_log("flight: no memory for %d records, off", ring_n); return; }
-    spike_ns = (uint64_t)cfg_int("TOTK_FLIGHT_SPIKE_MS") * 1000000ull;
-    for (const char *p = cfg_get("TOTK_FLIGHT_AT"); p && *p && n_at < 16;) {
+    spike_ns = (uint64_t)cfg_int("REKARINA_FLIGHT_SPIKE_MS") * 1000000ull;
+    for (const char *p = cfg_get("REKARINA_FLIGHT_AT"); p && *p && n_at < 16;) {
         char *end;
         unsigned long long f = strtoull(p, &end, 10);
         if (end == p) break;
         at_frames[n_at++] = f;
         p = *end == ',' ? end + 1 : end;
     }
-    const char *d = cfg_get("TOTK_FLIGHT_DIR");
+    const char *d = cfg_get("REKARINA_FLIGHT_DIR");
     char tmp[PLAT_PATH_MAX];
     if (d && *d) snprintf(tmp, sizeof tmp, "%s", d);
-    else {   // <exe dir>/../flight: build/flight for build/v121*/totk.exe
+    else {   // <exe dir>/../flight: build/flight for build/v121*/rekarina.exe
         char *slash = plat_exe_path(tmp, sizeof tmp) ? plat_last_sep(tmp) : NULL;
         if (slash) snprintf(slash, sizeof tmp - (size_t)(slash - tmp), "/../flight");
         else snprintf(tmp, sizeof tmp, "flight");
     }
     if (!plat_full_path(tmp, base_dir, sizeof base_dir)) snprintf(base_dir, sizeof base_dir, "%s", tmp);
-    thumbs_on = env_u("TOTK_FLIGHT_THUMBS", 1) != 0;
+    thumbs_on = env_u("REKARINA_FLIGHT_THUMBS", 1) != 0;
     if (thumbs_on) vk_thumbs_enable(ring_n);
-    flash_on = thumbs_on && env_u("TOTK_FLIGHT_FLASH", 1) != 0 &&
+    flash_on = thumbs_on && env_u("REKARINA_FLIGHT_FLASH", 1) != 0 &&
                (flash_px = malloc((size_t)FLIGHT_THUMB_W * FLIGHT_THUMB_H * 4)) != NULL;
     flight_on = 1;
     rt_log("flight: on: last %d frames, %s; dump on F8, on a frame over %llu ms (one per 10 s)%s, to %s", ring_n,
@@ -349,7 +349,7 @@ void flight_frame(uint64_t frame, uint64_t now_ns, uint64_t interval_ns, const u
     r->t_ns = now_ns - t0_ns;
     r->interval_us = (uint32_t)(interval_ns / 1000);
     for (int k = 0; k < PERF_N; k++) r->blocked_us[k] = (uint32_t)(blocked_ns[k] / 1000);
-    // vk_exec_frame grows until vk_exec_frame_log resets it, which TOTK_TRACE=gfx does right after this call
+    // vk_exec_frame grows until vk_exec_frame_log resets it, which REKARINA_TRACE=gfx does right after this call
     const VkExecFrame *x = &vk_exec_frame;
     int reset = (rt_trace & RT_TRACE_GFX) != 0;
     r->n[C_SUBMITS] = (uint32_t)(x->submits - (reset ? 0 : prev_exec.submits));
@@ -376,7 +376,7 @@ void flight_frame(uint64_t frame, uint64_t now_ns, uint64_t interval_ns, const u
     if (key && !key_was) trigger(frame, interval_ns, "F8");
     key_was = key;
     for (int i = 0; i < n_at; i++)
-        if (at_frames[i] == frame) trigger(frame, interval_ns, "TOTK_FLIGHT_AT");
+        if (at_frames[i] == frame) trigger(frame, interval_ns, "REKARINA_FLIGHT_AT");
     if (spike_ns && interval_ns > spike_ns && recorded > 30 && (!last_spike_ns || now_ns - last_spike_ns >= FLIGHT_SPIKE_GAP_NS)) {
         if (!dump_at) last_spike_ns = now_ns;
         trigger(frame, interval_ns, "spike");
@@ -391,10 +391,10 @@ void flight_frame(uint64_t frame, uint64_t now_ns, uint64_t interval_ns, const u
             }
         double l = sum / n;
         uint64_t f = frame - FLASH_LAG;
-        // TOTK_FLIGHT_FLASH_DARK=<percent of the running mean> (default 35): 80 also counts the frames that lose their
+        // REKARINA_FLIGHT_FLASH_DARK=<percent of the running mean> (default 35): 80 also counts the frames that lose their
         // lighting but keep fog, particles and HUD (vk_texture.c sweep_pressure has what they were)
         static double dark_at = 0;
-        if (!dark_at) { const char *e = cfg_get("TOTK_FLIGHT_FLASH_DARK"); dark_at = e && atof(e) > 0 ? atof(e) / 100.0 : FLASH_DARK; }
+        if (!dark_at) { const char *e = cfg_get("REKARINA_FLIGHT_FLASH_DARK"); dark_at = e && atof(e) > 0 ? atof(e) / 100.0 : FLASH_DARK; }
         int cls = flash_avg > 30 && l < flash_avg * dark_at ? 'd'
                 : flash_avg > 20 && flash_avg < 150 && l > flash_avg * FLASH_BRIGHT && l > 180 ? 'b' : 0;
         if (cls && cls == flash_kind) {
@@ -419,6 +419,10 @@ void flight_frame(uint64_t frame, uint64_t now_ns, uint64_t interval_ns, const u
                 }
             }
             if (!(flash_kind == 'L' && cls)) flash_kind = cls, flash_len = cls ? 1 : 0, flash_start = f, flash_luma = l;
+            if (cls == 'd' && flash_len == 1) {   // DEBUG-DUMPDARK (vk_dump.c)
+                void vk_dump_arm_dark(uint64_t dark_frame);
+                vk_dump_arm_dark(f);
+            }
         }
         if (!cls) flash_avg = flash_avg ? flash_avg * 0.9 + l * 0.1 : l;   // flashes stay out of the mean
     }

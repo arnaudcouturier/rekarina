@@ -3,7 +3,8 @@
 The player's whole path in one window: choose the folder with the OoT dump, choose where the game goes,
 press Start, watch the steps, press Play. Once the game is built the window opens on its home screen instead: Play, the
 mods (a page of its own: the list of the mods folder with a switch per mod, their order, adding and taking out, and the
-rebuild a mod's code patch asks for; mods.py), the
+rebuild a mod's code patch asks for; mods.py), the saves (a page that lists the saves of this game found in the
+emulators' and the other ports' folders and copies one into the game folder, keeping the one it replaces; saves.py), the
 settings file, the game's folder, the way back to the form for a rebuild, and three lines about this machine: the
 graphics card the setup found and the first settings it chose for it (components.py), the optional libraries that are
 still missing with a Retry, and whether a newer Rekarina is out, with Update now and its release notes (update.py).
@@ -12,13 +13,14 @@ The folders are remembered between runs (launcher.json in the user's application
 language switch and the event model are its); this file adds the home screen, the launcher's own jobs (the update, the
 component download: they run in a thread and feed the same step list), the time column of the step list (eta.py) and
 replaces the form, the finish screen and the look. Text: installer/text/<lang>.json, ids "ui.oot_*", "step.oot_*",
-"oot.*", "update.*", "preset.*", "comp.*", "eta.*", "ui.mods_*", "mods.*".
+"oot.*", "update.*", "preset.*", "comp.*", "eta.*", "ui.mods_*", "mods.*", "ui.saves_*", "saves.*".
 
 The look is the in-game menu's (runtime/ui/menu.cpp): its colours, its typeface, its rows with a dark value cell, its
 white cursor. The keyboard works as in the game's menus: on the drawn screens the arrow keys and Tab move the cursor
 over the plates and Enter or the space bar presses the one it is on; on the form and the finish screen Tab walks the
 fields and buttons, Enter presses the button it is on (in a field: Start) and Esc goes back. On the Mods page Up and
-Down walk the list, Enter or the space bar switches the mod, Left, Right and Tab reach the plates.
+Down walk the list, Enter or the space bar switches the mod, Left, Right and Tab reach the plates; the Saves page
+works the same way, with Enter bringing the chosen save in.
 
     --lang <code>                window language, one of guilogic.UI_LANGUAGES (default: the Windows display language)
     --game DIR --dest DIR        fill the form (a shortcut or a test)
@@ -46,7 +48,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
-from . import components, eta, ini, mods, net, oot, update
+from . import components, eta, ini, mods, net, oot, saves, update
 from . import shots as screenshots
 from . import state as statefile
 from tkinter import font as tkfont
@@ -390,10 +392,13 @@ def step_share(row):
 
 # ---- end of theme --------------------------------------------------------------------------------------------------
 
-PROMPTS = ('xbox', 'rekarina', 'playstation', 'nintendo')
+# auto: the set of the controller or the keyboard the player used last, switched while the game runs (runtime/input.c)
+PROMPTS = ('auto', 'xbox', 'rekarina', 'playstation', 'nintendo')
 PROGRESS_EVERY = 0.2   # seconds between two progress events a job's thread sends to the window
 FACTS = ('ui.oot_fact_gpu', 'ui.oot_fact_preset', 'ui.oot_fact_components', 'ui.oot_fact_mods')   # the home sheet's table
 MODS_TOP, MODS_ROWS = 126, 7      # the Mods page: the first row's top on the stage; the rows it shows at once
+SAVES_ROWS = 6                    # the Saves page: the rows it shows at once
+SAVES_MARK = {saves.PORT: '\u25c6', saves.EMULATOR: '\u25c7', saves.FOLDER: '\u25cb', saves.ARCHIVE: '\u25cb'}
 MODS_MARK = {'on': '\u2714', 'off': '\u25cb', 'no': '\u2013'}   # as the step marks: done, waiting, left out
 
 
@@ -440,7 +445,7 @@ class OotForm:
     game: str = ''
     dest: str = ''
     lang: str = ''
-    prompts: str = 'xbox'
+    prompts: str = 'auto'
     dlls: str = ''
     toolchain: str = ''
 
@@ -545,6 +550,11 @@ class RekarinaApp(App):
         self.mod_list, self.mod_sel, self.mod_first = [], None, 0   # the Mods page: the list, the chosen name, the top row
         self.mod_at = 0                  # the chosen mod's place in the list
         self.mod_note, self.mod_busy = None, False                  # (colour, text) under the list; a mod is being copied
+        self.forced_saves = None         # the self test's stand-in for the saves found: (list, the game folder's own)
+        self.save_list, self.save_at, self.save_first = [], 0, 0    # the Saves page: the list, the chosen row, the top row
+        self.save_own, self.save_backups = None, []                 # the game folder's save; what imports replaced
+        self.save_note, self.save_busy = None, False                # (colour, text) under the list; a copy is running
+        self.save_asked = None           # the source whose import waits for Replace to be pressed
         self.menu_font = load_menu_font(layout.runtime)
         self.base_font = 'Segoe UI' if os.name == 'nt' else 'DejaVu Sans'
         self.fonts = set_fonts(root, ui_lang if ui_lang in UI_LANGUAGES else 'en', self.menu_font, self.base_font)
@@ -638,6 +648,7 @@ class RekarinaApp(App):
         self.cursor_item = c.create_image(0, 0, anchor='nw', state='hidden')
         self.build_run_stage()
         self.build_mods_stage()
+        self.build_saves_stage()
         self.build_stage_log()
         for key, step in (('<Down>', 1), ('<Right>', 1), ('<Up>', -1), ('<Left>', -1)):
             c.bind(key, lambda _e, step=step, rows=key in ('<Down>', '<Up>'): self.arrow(step, rows))
@@ -659,8 +670,8 @@ class RekarinaApp(App):
         if not hasattr(self, 'stage'):   # gui.py's own first screen, before the stage is there
             return super().show(name)
         changed, self.screen = name != self.screen, name
-        drawn = name in ('home', 'run', 'mods')
-        for tag in ('scr:home', 'scr:run', 'scr:mods'):
+        drawn = name in ('home', 'run', 'mods', 'saves')
+        for tag in ('scr:home', 'scr:run', 'scr:mods', 'scr:saves'):
             self.stage.itemconfigure(tag, state='normal' if tag == 'scr:' + name else 'hidden')
         if changed:
             self.cursor_keys = False
@@ -671,6 +682,8 @@ class RekarinaApp(App):
                 self.layout_home()
             elif name == 'mods':
                 self.refresh_mods()
+            elif name == 'saves':
+                self.refresh_saves()
             else:
                 self.refresh_run()
             if changed:
@@ -727,7 +740,7 @@ class RekarinaApp(App):
             self.go_home()
         elif self.screen == 'finish':
             self.leave_finish()
-        elif self.screen == 'mods':
+        elif self.screen in ('mods', 'saves'):
             self.go_home()
 
     # ---- the cursor ------------------------------------------------------------------------------------------------
@@ -747,7 +760,7 @@ class RekarinaApp(App):
 
     def place_cursor(self):
         p = self.cursor_on
-        if p is None or not p.shown or not p.enabled or (self.screen in ('run', 'mods') and not self.cursor_keys):
+        if p is None or not p.shown or not p.enabled or (self.screen in ('run', 'mods', 'saves') and not self.cursor_keys):
             self.stage.itemconfigure(self.cursor_item, state='hidden')
             return
         key = (p.width, p.height)
@@ -789,12 +802,16 @@ class RekarinaApp(App):
             p.invoke()
         elif self.screen == 'mods':   # the cursor is in the list: the chosen mod's switch
             self.toggle_mod()
+        elif self.screen == 'saves':   # the chosen save comes in
+            self.import_chosen_save()
         return 'break'
 
     def arrow(self, step, rows):
         """An arrow key. On the Mods page Up and Down (rows) walk the list and take the cursor off the plates."""
         if self.screen == 'mods' and rows:
             return self.step_mod(step)
+        if self.screen == 'saves' and rows:
+            return self.step_save(step)
         return self.move_cursor(step)
 
     # ---- the log ---------------------------------------------------------------------------------------------------
@@ -912,7 +929,8 @@ class RekarinaApp(App):
         self.home_play.place(34, 100)
         self.bind_text(self.home_play, 'text', 'ui.oot_play')
         y = 202
-        for id, command in (('ui.oot_home_mods', self.open_mods), ('ui.oot_home_settings', self.open_settings),
+        for id, command in (('ui.oot_home_mods', self.open_mods), ('ui.oot_home_saves', self.open_saves),
+                            ('ui.oot_home_settings', self.open_settings),
                             ('ui.open_folder', self.open_game_folder), ('ui.oot_home_update', lambda: self.show('form'))):
             p = Plate(self, 'plate46', 266, command, 'RekPlate', tags)
             p.place(34, y)
@@ -1344,6 +1362,262 @@ class RekarinaApp(App):
         else:
             self.pending_title = ('ui.oot_rebuild_mods', {})
         self.start()
+
+    # ---- saves ----------------------------------------------------------------------------------------------------
+    # The Saves page: a row per save found on this machine (saves.py: the other ports' folders, the emulators'), where
+    # it is from on the strip, its slots and the time it was last written in the dark cell. Up and Down move the
+    # game's cursor over the list; Enter, a double click or Import copies the chosen save into the game folder. A save
+    # from anywhere else comes in through Choose folder or Choose .zip. The save the game folder held is kept
+    # (profile/save-before-import), and Restore previous brings the newest of those back. Replacing a save asks once:
+    # Import turns into Replace and the line under the list says what happens.
+
+    def build_saves_stage(self):
+        c, tags = self.stage, ('scr:saves',)
+        title = StageText(c, c.create_text(34, 78, anchor='nw', fill=CREAM, font='RekTitle', tags=tags))
+        self.bind_text(title, 'text', 'ui.saves_title')
+        self.saves_path = c.create_text(STAGE_W - 34, 100, anchor='e', fill=DIM, font='RekSmall', tags=tags)
+        self.saves_empty = StageText(c, c.create_text(34, MODS_TOP + 6, anchor='nw', fill=SOFT, font='RekBody',
+                                                      width=STAGE_W - 68, tags=tags))
+        self.bind_text(self.saves_empty, 'text', 'ui.saves_empty')
+        self.save_rows = []
+        for i in range(SAVES_ROWS):
+            y, row_tags = MODS_TOP + i * STEP_PITCH, tags + (f'saves:row{i}',)
+            row = c.create_image(34, y, image=self.art['row'], anchor='nw', tags=row_tags)
+            mark = c.create_text(34 + 28, y + 23, fill=DONE_TEXT, font='RekMark', tags=row_tags)
+            shade = c.create_text(34 + 55, y + 24, anchor='w', fill=PLATE_SHADE, font='RekBody', tags=row_tags)
+            name = c.create_text(34 + 54, y + 23, anchor='w', fill=CREAM, font='RekBody', tags=row_tags)
+            note = c.create_text(0, y + 24, anchor='w', fill=DIM, font='RekSmall', tags=row_tags)
+            value = c.create_text(34 + 722 + 164, y + 23, fill=CREAM, font='RekText', tags=row_tags)
+            self.save_rows.append((row, mark, shade, name, note, value))
+            c.tag_bind(f'saves:row{i}', '<Button-1>', lambda _e, i=i: self.click_save(i, False))
+            c.tag_bind(f'saves:row{i}', '<Double-Button-1>', lambda _e, i=i: self.click_save(i, True))
+            c.tag_bind(f'saves:row{i}', '<Enter>', lambda _e: c.configure(cursor='hand2'))
+            c.tag_bind(f'saves:row{i}', '<Leave>', lambda _e: c.configure(cursor=''))
+        self.saves_cursor = c.create_image(0, 0, image=self.art['cursor-cell'], anchor='nw', state='disabled', tags=tags)
+        self.saves_total = c.create_image(34, 0, image=self.art['total'], anchor='nw', tags=tags)
+        self.saves_now = c.create_text(0, 0, anchor='w', fill=CREAM, font='RekBody', tags=tags)
+        self.saves_line = c.create_text(34, 0, anchor='nw', fill=DIM, font='RekSmall', width=STAGE_W - 68, tags=tags)
+        make = lambda kind, id, command: (lambda p: (self.bind_text(p, 'text', id), p)[1])(   # noqa: E731
+            Plate(self, kind, 120, command, 'RekStrong', tags))
+        self.saves_import = make('go40', 'ui.saves_import', self.import_chosen_save)
+        self.saves_replace = make('go40', 'ui.saves_replace', self.confirm_save)
+        self.saves_pick_dir = make('plate40', 'ui.saves_choose_folder', lambda: self.pick_save(True))
+        self.saves_pick_zip = make('plate40', 'ui.saves_choose_zip', lambda: self.pick_save(False))
+        self.saves_restore = make('plate40', 'ui.saves_restore', self.restore_save)
+        self.saves_open = make('plate40', 'ui.open_folder', self.open_saves_folder)
+        self.saves_back = make('plate40', 'ui.back', self.go_home)
+        c.bind('<MouseWheel>', lambda e: self.screen == 'saves' and self.step_save(-1 if e.delta > 0 else 1), add='+')
+        c.itemconfigure('scr:saves', state='hidden')
+
+    def scan_saves(self):
+        """(the saves found on this machine, the game folder's own, the saves imports replaced)."""
+        if self.forced_saves is not None:
+            return list(self.forced_saves[0]), self.forced_saves[1], []
+        if not self.vars['dest'].get().strip():
+            return [], None, []
+        dest = self.mods_dest()
+        try:
+            own_dir = saves.save_dir(dest)
+            mine = os.path.normcase(os.path.realpath(own_dir)) if own_dir else None
+            found = [s for s in saves.candidates() if os.path.normcase(os.path.realpath(s.path)) != mine]
+            return found, saves.current(dest), saves.backups(dest)
+        except (OSError, saves.SaveError):
+            return [], None, []
+
+    def save_when(self, s):
+        return time.strftime('%Y-%m-%d %H:%M', time.localtime(s.modified)) if s.modified else ''
+
+    def save_value(self, s):
+        return self.cat('ui.saves_cell', slots=s.slots, when=self.save_when(s))
+
+    def save_error(self, e):
+        if isinstance(e, saves.SaveError):
+            return RED, self.cat('saves.' + e.code, **e.detail)
+        return RED, self.cat('saves.failed', detail=str(e))
+
+    def refresh_saves(self, rescan=True):
+        """The page from what is on the machine now. Only while it is shown: showing a screen shows all its items."""
+        if getattr(self, 'screen', None) != 'saves':
+            return
+        c = self.stage
+        if rescan:
+            self.save_list, self.save_own, self.save_backups = self.scan_saves()
+        found = self.save_list
+        at = self.save_at = max(0, min(self.save_at, len(found) - 1))
+        self.save_first = max(0, min(self.save_first, len(found) - SAVES_ROWS, at), at - SAVES_ROWS + 1)
+        own_dir = None
+        if self.forced_saves is None and self.vars['dest'].get().strip():
+            own_dir = saves.profile_dir(self.mods_dest()) / saves.SAVE
+        c.itemconfigure(self.saves_path, text=self.clip(str(own_dir), 'RekSmall', 760) if own_dir else '')
+        c.itemconfigure(self.saves_empty.item, state='hidden' if found else 'normal')
+        for i, (row, mark, shade, name, note, value) in enumerate(self.save_rows):
+            s = found[self.save_first + i] if self.save_first + i < len(found) else None
+            c.itemconfigure(f'saves:row{i}', state='normal' if s else 'hidden')
+            if not s:
+                continue
+            label = s.name or s.path.name
+            where = self.clip(str(s.path), 'RekSmall', 722 - 54 - 32 - self.fonts['RekBody'].measure(label))
+            c.itemconfigure(mark, text=SAVES_MARK.get(s.source, '\u25cb'))
+            c.itemconfigure(name, text=label)
+            c.itemconfigure(shade, text=label)
+            c.itemconfigure(note, text=where)
+            c.coords(note, 34 + 54 + self.fonts['RekBody'].measure(label) + 16, MODS_TOP + i * STEP_PITCH + 24)
+            c.itemconfigure(value, text=self.clip(self.save_value(s), 'RekText',
+                                                  self.art['cursor-cell'].width() - 2 * CURSOR_MARGIN - 24))
+        c.itemconfigure(self.saves_cursor, state='disabled' if found else 'hidden')
+        c.coords(self.saves_cursor, 34 + 722 - CURSOR_MARGIN, MODS_TOP + (at - self.save_first) * STEP_PITCH - CURSOR_MARGIN)
+        # the game folder's own save, the line under it, the plates
+        y = MODS_TOP + max(2, min(len(found), SAVES_ROWS)) * STEP_PITCH + 6
+        own = self.save_own
+        now = (self.cat('ui.saves_now', slots=own.slots, when=self.save_when(own)) if own
+               else self.cat('ui.saves_now_none'))
+        c.coords(self.saves_total, 34, y)
+        c.itemconfigure(self.saves_now, text=now)
+        c.coords(self.saves_now, 34 + 18, y + 22)
+        fill, line = self.save_note or (DIM, self.cat('ui.saves_hint'))
+        c.itemconfigure(self.saves_line, text=line, fill=fill)
+        c.coords(self.saves_line, 34, y + 44 + 12)
+        idle, asked = not self.save_busy, self.save_asked is not None
+        self.saves_import.show(not asked)
+        self.saves_replace.show(asked)
+        for p, on in ((self.saves_import, idle and bool(found)), (self.saves_replace, idle),
+                      (self.saves_pick_dir, idle), (self.saves_pick_zip, idle),
+                      (self.saves_restore, idle and bool(self.save_backups))):
+            p.state(['!disabled' if on else 'disabled'])
+        self.place_save_plates()
+        self.place_cursor()
+
+    def place_save_plates(self):
+        """The plates in one row above the window's lower edge, as on the Mods page: what brings a save in from the
+        left, Back at the right end."""
+        left = [p for p in (self.saves_import, self.saves_replace) if p.shown]
+        left += [self.saves_pick_dir, self.saves_pick_zip, self.saves_restore, self.saves_open]
+        right = [self.saves_back]
+        for pad, gap in ((22, 10), (14, 8), (9, 6)):
+            for p in left + right:
+                p.fit(pad=pad, least=64)
+            if sum(p.width + gap for p in left + right) - gap + 16 <= STAGE_W - 68:
+                break
+        x, y = 34, STAGE_H - 58
+        for p in left:
+            p.place(x, y)
+            x += p.width + gap
+        self.saves_back.place(STAGE_W - 34 - self.saves_back.width, y)
+
+    def open_saves(self):
+        self.save_note, self.save_asked, self.save_at, self.save_first = None, None, 0, 0
+        self.show('saves')
+
+    def step_save(self, step):
+        """The list's cursor one row on or back; the plates' cursor steps aside, and a waiting Replace is dropped."""
+        self.cursor_keys = False
+        self.set_cursor(None)
+        if self.save_list and not self.save_busy:
+            self.save_at = max(0, min(len(self.save_list) - 1, self.save_at + step))
+            self.save_asked, self.save_note = None, None
+            self.refresh_saves(rescan=False)
+        return 'break'
+
+    def click_save(self, row, bring):
+        """A click on a row chooses its save; a double click also brings it in."""
+        if self.save_first + row < len(self.save_list) and not self.save_busy:
+            self.stage.focus_set()
+            self.cursor_keys = False
+            self.set_cursor(None)
+            self.save_at = self.save_first + row
+            self.save_asked, self.save_note = None, None
+            if bring:
+                self.import_chosen_save()
+            else:
+                self.refresh_saves(rescan=False)
+
+    def import_chosen_save(self):
+        if self.save_asked is not None:
+            return self.confirm_save()
+        if self.save_list and not self.save_busy:
+            s = self.save_list[self.save_at]
+            self.ask_save(s.path, False, s.name or s.path.name)
+        return 'break'
+
+    def pick_save(self, folder):
+        """A save from a folder or a .zip the player names; a folder may hold the save some levels down."""
+        if self.save_busy or self.forced_saves is not None:
+            return
+        if folder:
+            path = filedialog.askdirectory(parent=self.root, title=self.cat('ui.saves_pick_folder'), mustexist=True)
+        else:
+            path = filedialog.askopenfilename(parent=self.root, title=self.cat('ui.saves_pick_zip'),
+                                              filetypes=[(self.cat('ui.mods_zip_files'), '*.zip')])
+        if not path:
+            return
+        source = Path(os.path.normpath(path))
+        if folder:
+            root = saves.find_root(source)
+            if root is None:
+                self.save_asked, self.save_note = None, self.save_error(saves.SaveError('not_a_save', path=str(source)))
+                return self.refresh_saves(rescan=False)
+            source = root
+        self.ask_save(source, not folder, source.name)
+
+    def ask_save(self, source, archive, name):
+        """Bring a save in: at once into a game folder without one, after Replace where it takes a save's place."""
+        if self.forced_saves is not None:
+            return
+        self.save_asked = (source, archive, name)
+        if self.save_own is None:
+            return self.confirm_save()
+        keep = saves.profile_dir(self.mods_dest()) / saves.BEFORE
+        self.save_note = (NOTE, self.cat('ui.saves_confirm', name=name, path=str(keep)))
+        self.refresh_saves(rescan=False)
+        self.cursor_keys = True
+        self.set_cursor(self.saves_replace)
+
+    def confirm_save(self):
+        if self.save_asked is None or self.save_busy:
+            return 'break'
+        (source, archive, name), dest = self.save_asked, self.mods_dest()
+        self.save_asked, self.save_busy = None, True
+        self.save_note = (SOFT, self.cat('ui.saves_importing', name=name))
+        self.refresh_saves(rescan=False)
+        work = (lambda: saves.import_zip(dest, source)) if archive else (lambda: saves.import_save(dest, source))
+        self.background(work, lambda value: self.imported_save(value, name))
+        return 'break'
+
+    def imported_save(self, value, name):
+        self.save_busy = False
+        if isinstance(value, Exception):
+            self.save_note = self.save_error(value)
+        elif value is None:
+            self.save_note = (SOFT, self.cat('ui.saves_imported', name=name))
+        else:
+            self.save_note = (SOFT, self.cat('ui.saves_imported', name=name) + ' '
+                              + self.cat('ui.saves_kept', path=str(value)))
+        self.refresh_saves()
+
+    def restore_save(self):
+        """The newest save an import replaced comes back; the imported one takes its place among the backups."""
+        if self.save_busy or not self.save_backups or self.forced_saves is not None:
+            return 'break'
+        self.save_asked = None
+        try:
+            saves.restore(self.mods_dest(), self.save_backups[0])
+            self.save_note = (SOFT, self.cat('ui.saves_restored'))
+        except (saves.SaveError, OSError) as e:
+            self.save_note = self.save_error(e)
+        self.refresh_saves()
+        return 'break'
+
+    def open_saves_folder(self):
+        folder = saves.profile_dir(self.mods_dest())
+        try:
+            folder.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            return
+        if os.name == 'nt':
+            os.startfile(str(folder))
+        else:
+            subprocess.Popen(['xdg-open', str(folder)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                             start_new_session=True)
 
     def check_updates(self, force=False):
         if self.checking or self.job:
@@ -1928,7 +2202,8 @@ SAMPLE_NOTES = ('Rekarina 1.0.1\n\n- Shorter loading between areas.\n- The water
                 '- New button prompt set for PlayStation pads.\n- The setup downloads DLSS and FSR 3.1 by itself.\n\n'
                 'The update keeps your saves, settings and shader caches. After it the setup rebuilds the game from the '
                 'dump you already have; that takes a few minutes.')
-SCREENS = ('form', 'home', 'home-update', 'mods', 'mods-empty', 'update', 'run', 'components', 'ok', 'failed')
+SCREENS = ('form', 'home', 'home-update', 'mods', 'mods-empty', 'saves', 'saves-ask', 'saves-empty', 'update', 'run',
+           'components', 'ok', 'failed')
 
 
 def sample_mods():
@@ -1941,6 +2216,16 @@ def sample_mods():
             make('Longer draw distance', kinds=(mods.FILES,), files=38, enabled=False),
             make('My cheats', kinds=(mods.CHEATS,), cheats=6),
             make('Camera plugin', kinds=(mods.FILES,), files=3, problem=mods.PLUGIN)]
+
+
+def sample_saves():
+    """Saves for the pictures: another port's, an emulator's, and the game folder's own."""
+    make = lambda source, name, path, slots, when: saves.Save(   # noqa: E731
+        Path(path), source, name, slots, 2 + 2 * slots, 160_000 * slots, when)
+    found = [make(saves.PORT, 'Another port', 'C:/Users/Player/Games/Another port/user/save/5a3c9e1f0b7d2468', 3, 1794400000),
+             make(saves.EMULATOR, 'Ryujinx', 'C:/Users/Player/AppData/Roaming/Ryujinx/bis/user/save/0000000000000007/0',
+                  2, 1793800000)]
+    return found, make(saves.OWN, '', 'C:/Games/Rekarina/profile/save/7ac0f61a', 1, 1794700000)
 
 
 def sample_update(version, available):
@@ -2007,6 +2292,18 @@ def selftest(layout, shots=None):
             app.forced_mods = []
             app.refresh_mods()
             shot(f'oot-mods-empty-{lang}')
+            app.forced_saves = sample_saves()
+            app.open_saves()
+            shot(f'oot-saves-{lang}')
+            app.save_asked = (app.save_list[0].path, False, app.save_list[0].name)
+            app.save_note = (NOTE, app.cat('ui.saves_confirm', name=app.save_list[0].name,
+                                           path='C:\\Games\\Rekarina\\profile\\save-before-import'))
+            app.refresh_saves(rescan=False)
+            shot(f'oot-saves-ask-{lang}')
+            app.forced_saves = ([], None)
+            app.save_asked, app.save_note = None, None
+            app.refresh_saves()
+            shot(f'oot-saves-empty-{lang}')
             for name, events in (('update', SAMPLE_UPDATE), ('run', SAMPLE_RUN), ('components', SAMPLE_COMPONENTS),
                                  ('ok', SAMPLE_OK), ('failed', SAMPLE_FAIL)):
                 play(app, events)

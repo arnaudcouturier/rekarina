@@ -1,6 +1,6 @@
 // AMD FidelityFX Super Resolution 1 on the present path (gfx_present.c present_image): when the window is larger than
 // the game's output, EASU scales the game's crop rectangle to the swapchain size and RCAS sharpens it, in place of the
-// bilinear vkCmdBlitImage. TOTK_UPSCALER=fsr|bilinear picks it, TOTK_SHARPNESS (0..100, 0 = no RCAS pass) sets RCAS;
+// bilinear vkCmdBlitImage. REKARINA_UPSCALER=fsr|bilinear picks it, REKARINA_SHARPNESS (0..100, 0 = no RCAS pass) sets RCAS;
 // both apply at the next frame.
 //
 // Per frame: EASU reads the source through a view of its own format (the same colour conversion the blit does) and
@@ -162,16 +162,16 @@ int vk_fsr_record(VkCommandBuffer cb, unsigned slot, VkImage src, VkFormat fmt, 
                   VkImage dst, const int out[4]) {
     int cw = crop[2], ch = crop[3];
     uint32_t dw = (uint32_t)out[2], dh = (uint32_t)out[3];
-    int rcas_only = dw == (uint32_t)cw && dh == (uint32_t)ch && !crop[0] && !crop[1] && vk_dlaa_sharpens() && cfg_int("TOTK_SHARPNESS") > 0;
+    int rcas_only = dw == (uint32_t)cw && dh == (uint32_t)ch && !crop[0] && !crop[1] && vk_dlaa_sharpens() && cfg_int("REKARINA_SHARPNESS") > 0;
     {   // DEBUG-RCASWHY
         static int n;
         static uint64_t f;
         f++;
         if (f > 1500 && n < 3) n++, rt_log("RCASWHY frame %llu: dst %ux%u crop %d,%d %dx%d src %dx%d fmt %d sharpens %d sharpness %d upscaler %s",
                                            (unsigned long long)f, dw, dh, crop[0], crop[1], cw, ch, sw, sh, (int)fmt, vk_dlaa_sharpens(),
-                                           cfg_int("TOTK_SHARPNESS"), cfg_value("TOTK_UPSCALER"));
+                                           cfg_int("REKARINA_SHARPNESS"), cfg_value("REKARINA_UPSCALER"));
     }
-    if (strcmp(cfg_value("TOTK_UPSCALER"), "fsr") || ((dw <= (uint32_t)cw && dh <= (uint32_t)ch) && !rcas_only) || !fmt) return 0;
+    if (strcmp(cfg_value("REKARINA_UPSCALER"), "fsr") || ((dw <= (uint32_t)cw && dh <= (uint32_t)ch) && !rcas_only) || !fmt) return 0;
     VkCtx *c = vk_ctx();
     if (!F.tried) init(c);
     if (!F.ok || !ensure_images(c, dw, dh)) return 0;
@@ -186,7 +186,7 @@ int vk_fsr_record(VkCommandBuffer cb, unsigned slot, VkImage src, VkFormat fmt, 
         F.src_view[slot] = VK_NULL_HANDLE;
         return 0;
     }
-    int sharp = cfg_int("TOTK_SHARPNESS");
+    int sharp = cfg_int("REKARINA_SHARPNESS");
     if (sharp < 0) sharp = 0;
     if (sharp > 100) sharp = 100;
     if (!F.logged && (dw != (uint32_t)cw || dh != (uint32_t)ch)) {
@@ -243,8 +243,184 @@ int vk_fsr_record(VkCommandBuffer cb, unsigned slot, VkImage src, VkFormat fmt, 
     return 1;
 }
 
+// ---- FSR 1 on the 3D scene (REKARINA_TAA = fsr1; vk_dlaa.c evaluate): the scene drawn smaller (the DLSS mode's share),
+// scaled to the game's picture in place of the game's own scaling dispatch, as DLSS and FSR 3.1 are. Spatial: no
+// motion vectors, no jitter, no history, so it costs the same on every card and shows nothing a temporal upscaler can
+// smear. Four compute passes on the replay's command buffer: the encode (tools/make_fsr_scene.py) maps the light
+// target's linear light into 0..1 at the scene size, EASU scales it to the picture's size, RCAS sharpens it at the
+// sharpness setting (none at 0), the decode turns it back into linear light in the caller's RGBA16F image, which the
+// caller then blits into the game's target. Its own layout and pipelines: this runs on the replay thread, the present's
+// FSR above on the present thread.
+#include "fsr_scene_spv.h"
+
+static struct {
+    int tried, ok;
+    PFN_vkCmdPushDescriptorSetKHR push;
+    VkDescriptorSetLayout dsl;
+    VkPipelineLayout layout;
+    VkPipeline enc, easu, rcas, dec;
+    VkSampler sampler;
+    VkImage img[2];                // the encoded scene (scene size), EASU's picture before RCAS (picture size)
+    VmaAllocation alloc[2];
+    VkImageView view[2];
+    uint32_t w[2], h[2];
+} S;
+
+static VkPipeline scene_pipeline(VkCtx *c, const uint32_t *code, size_t size) {
+    VkShaderModuleCreateInfo mi = {.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, .codeSize = size, .pCode = code};
+    VkShaderModule m = VK_NULL_HANDLE;
+    if (vkCreateShaderModule(c->device, &mi, NULL, &m) != VK_SUCCESS) return VK_NULL_HANDLE;
+    VkComputePipelineCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
+                                      .stage = {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+                                                .stage = VK_SHADER_STAGE_COMPUTE_BIT, .module = m, .pName = "main"},
+                                      .layout = S.layout};
+    VkPipeline p = VK_NULL_HANDLE;
+    if (vkCreateComputePipelines(c->device, VK_NULL_HANDLE, 1, &ci, NULL, &p) != VK_SUCCESS) p = VK_NULL_HANDLE;
+    vkDestroyShaderModule(c->device, m, NULL);
+    return p;
+}
+
+static int scene_init(VkCtx *c) {
+    S.tried = 1;
+    S.push = (PFN_vkCmdPushDescriptorSetKHR)vkGetDeviceProcAddr(c->device, "vkCmdPushDescriptorSetKHR");
+    if (!S.push) {
+        rt_log("vk: FSR 1 on the scene off: no VK_KHR_push_descriptor");
+        return 0;
+    }
+    VkDescriptorSetLayoutBinding b[2] = {
+        {.binding = 0, .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .descriptorCount = 1,
+         .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT},
+        {.binding = 1, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, .descriptorCount = 1,
+         .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT}};
+    VkDescriptorSetLayoutCreateInfo dci = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+                                           .flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_PUSH_DESCRIPTOR_BIT_KHR,
+                                           .bindingCount = 2, .pBindings = b};
+    VkPushConstantRange pr = {VK_SHADER_STAGE_COMPUTE_BIT, 0, 32};
+    VkPipelineLayoutCreateInfo li = {.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO, .setLayoutCount = 1,
+                                     .pSetLayouts = &S.dsl, .pushConstantRangeCount = 1, .pPushConstantRanges = &pr};
+    VkSamplerCreateInfo si = {.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO, .magFilter = VK_FILTER_LINEAR,
+                              .minFilter = VK_FILTER_LINEAR, .mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST,
+                              .addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+                              .addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+                              .addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, .maxLod = 0};
+    if (vkCreateDescriptorSetLayout(c->device, &dci, NULL, &S.dsl) != VK_SUCCESS ||
+        vkCreatePipelineLayout(c->device, &li, NULL, &S.layout) != VK_SUCCESS ||
+        vkCreateSampler(c->device, &si, NULL, &S.sampler) != VK_SUCCESS ||
+        !(S.enc = scene_pipeline(c, fsr_scene_encode_spv, sizeof fsr_scene_encode_spv)) ||
+        !(S.easu = scene_pipeline(c, fsr_easu_spv, sizeof fsr_easu_spv)) ||
+        !(S.rcas = scene_pipeline(c, fsr_rcas_spv, sizeof fsr_rcas_spv)) ||
+        !(S.dec = scene_pipeline(c, fsr_scene_decode_spv, sizeof fsr_scene_decode_spv))) {
+        rt_log("vk: FSR 1 on the scene off: its pipelines could not be created");
+        return 0;
+    }
+    return S.ok = 1;
+}
+
+static void scene_free(VkCtx *c, int i) {
+    if (S.view[i]) vkDestroyImageView(c->device, S.view[i], NULL);
+    if (S.img[i]) vmaDestroyImage(c->vma, S.img[i], S.alloc[i]);
+    S.view[i] = VK_NULL_HANDLE, S.img[i] = VK_NULL_HANDLE, S.w[i] = S.h[i] = 0;
+}
+
+// Work image i (0 the encoded scene, 1 EASU's picture) at w x h, in GENERAL. Another size waits for the device first:
+// earlier frames may still read the old one (the scene's size changes with the DLSS mode or the window, rarely).
+static int scene_image(VkCtx *c, VkCommandBuffer cb, int i, uint32_t w, uint32_t h) {
+    if (S.img[i] && S.w[i] == w && S.h[i] == h) return 1;
+    if (S.img[i]) {
+        vk_queue_lock();
+        vkDeviceWaitIdle(c->device);
+        vk_queue_unlock();
+        scene_free(c, i);
+    }
+    VkImageCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .imageType = VK_IMAGE_TYPE_2D,
+                            .format = VK_FORMAT_R16G16B16A16_SFLOAT, .extent = {w, h, 1}, .mipLevels = 1,
+                            .arrayLayers = 1, .samples = VK_SAMPLE_COUNT_1_BIT, .tiling = VK_IMAGE_TILING_OPTIMAL,
+                            .usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT};
+    VmaAllocationCreateInfo ai = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
+    if (vmaCreateImage(c->vma, &ci, &ai, &S.img[i], &S.alloc[i], NULL) != VK_SUCCESS) {
+        S.img[i] = VK_NULL_HANDLE;
+        return 0;
+    }
+    VkImageViewCreateInfo vi = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, .image = S.img[i],
+                                .viewType = VK_IMAGE_VIEW_TYPE_2D, .format = VK_FORMAT_R16G16B16A16_SFLOAT,
+                                .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
+    if (vkCreateImageView(c->device, &vi, NULL, &S.view[i]) != VK_SUCCESS) {
+        S.view[i] = VK_NULL_HANDLE;
+        scene_free(c, i);
+        return 0;
+    }
+    barrier(cb, S.img[i], VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, 0,
+            VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT | VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+    S.w[i] = w, S.h[i] = h;
+    return 1;
+}
+
+static void scene_pass(VkCommandBuffer cb, VkPipeline p, VkImageView in, VkImageView out, const float pc[8]) {
+    VkDescriptorImageInfo ii = {S.sampler, in, VK_IMAGE_LAYOUT_GENERAL}, oi = {VK_NULL_HANDLE, out, VK_IMAGE_LAYOUT_GENERAL};
+    VkWriteDescriptorSet w[2] = {
+        {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstBinding = 0, .descriptorCount = 1,
+         .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .pImageInfo = &ii},
+        {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstBinding = 1, .descriptorCount = 1,
+         .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, .pImageInfo = &oi}};
+    vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, p);
+    rec_push(S.push, cb, VK_PIPELINE_BIND_POINT_COMPUTE, S.layout, 0, in ? 2 : 1, in ? w : w + 1);
+    vkCmdPushConstants(cb, S.layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, 32, pc);
+}
+
+static void compute_after_compute(VkCommandBuffer cb) {
+    VkMemoryBarrier2 mb = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
+                           .srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                           .srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+                           .dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                           .dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_READ_BIT |
+                                            VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT};
+    VkDependencyInfo d = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1, .pMemoryBarriers = &mb};
+    vkCmdPipelineBarrier2(cb, &d);
+}
+
+int vk_fsr_scene(VkCommandBuffer cb, VkImageView src, uint32_t w, uint32_t h, VkImageView out, uint32_t ow, uint32_t oh) {
+    VkCtx *c = vk_ctx();
+    if (!S.tried) scene_init(c);
+    if (!S.ok || !w || !h || !ow || !oh) return 0;
+    int sharp = cfg_int("REKARINA_SHARPNESS");
+    if (sharp < 0) sharp = 0;
+    if (sharp > 100) sharp = 100;
+    if (!scene_image(c, cb, 0, w, h) || (sharp > 0 && !scene_image(c, cb, 1, ow, oh))) return 0;
+    // the caller ordered the scene's draws before this and earlier frames' reads of these images (a full barrier)
+    float enc[8] = {(float)w, (float)h, 0, 0, 0, 0, 0, 0};
+    scene_pass(cb, S.enc, src, S.view[0], enc);
+    vkCmdDispatch(cb, (w + 7) / 8, (h + 7) / 8, 1);
+    compute_after_compute(cb);
+    float easu[8] = {(float)w, (float)h, (float)w, (float)h, (float)ow, (float)oh, 0, 0};
+    scene_pass(cb, S.easu, S.view[0], sharp > 0 ? S.view[1] : out, easu);
+    vkCmdDispatch(cb, (ow + 15) / 16, (oh + 15) / 16, 1);
+    compute_after_compute(cb);
+    if (sharp > 0) {   // RCAS's stops: 0 the strongest, each stop halves it (as the present's)
+        float rcas[8] = {(float)ow, (float)oh, (float)(100 - sharp) / 50.0f, 0, 0, 0, 0, 0};
+        scene_pass(cb, S.rcas, S.view[1], out, rcas);
+        vkCmdDispatch(cb, (ow + 15) / 16, (oh + 15) / 16, 1);
+        compute_after_compute(cb);
+    }
+    float dec[8] = {(float)ow, (float)oh, 0, 0, 0, 0, 0, 0};
+    scene_pass(cb, S.dec, VK_NULL_HANDLE, out, dec);
+    vkCmdDispatch(cb, (ow + 7) / 8, (oh + 7) / 8, 1);
+    static int told;
+    if (!told++) rt_log("vk: FSR 1 scales the scene %ux%u to %ux%u (sharpness %d)", w, h, ow, oh, sharp);
+    return 1;
+}
+
 void vk_fsr_release(void) {
     VkCtx *c = vk_ctx();
+    if (c && S.tried) {
+        for (int i = 0; i < 2; i++) scene_free(c, i);
+        VkPipeline ps[4] = {S.enc, S.easu, S.rcas, S.dec};
+        for (int i = 0; i < 4; i++)
+            if (ps[i]) vkDestroyPipeline(c->device, ps[i], NULL);
+        if (S.sampler) vkDestroySampler(c->device, S.sampler, NULL);
+        if (S.layout) vkDestroyPipelineLayout(c->device, S.layout, NULL);
+        if (S.dsl) vkDestroyDescriptorSetLayout(c->device, S.dsl, NULL);
+        memset(&S, 0, sizeof S);
+    }
     if (!c || !F.tried) return;
     free_images(c);
     for (int i = 0; i < SLOTS; i++)

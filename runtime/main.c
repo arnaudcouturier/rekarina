@@ -1,6 +1,6 @@
-// totk.exe entry: reserves the guest address space, parses the command line and runs one mode.
+// rekarina.exe entry: reserves the guest address space, parses the command line and runs one mode.
 //
-//   totk.exe [--exefs DIR] [--romfs DIR] [--profile DIR] <mode>
+//   rekarina.exe [--exefs DIR] [--romfs DIR] [--profile DIR] <mode>
 //     --selftest        layout, dispatch table and host-function registry; needs no game files
 //     --probe-mods      the mods folder scan, order and switches (mods.c); needs no game files
 //     --probe-loader    load and relocate the modules, check them against the measured 1.2.1 values
@@ -15,7 +15,7 @@
 //     --boot            run the game to the first NVN call
 //     --seconds S       run the game (implies --boot's start-up) until the world clock (game time since the loaded
 //                       save's first frame) passed S seconds, then exit 0 at that present
-//     --shot PNG        with --seconds: save that frame; env TOTK_GPU=null|vulkan selects the back end
+//     --shot PNG        with --seconds: save that frame; env REKARINA_GPU=null|vulkan selects the back end
 //     (no mode)         run the game
 //
 // Also here: the runtime services the generated code calls besides rt_dispatch and rt_svc (rt_brk, rt_udf,
@@ -38,9 +38,9 @@
 unsigned rt_trace;
 
 // Log file. A game run whose stderr is not a file already (started from Explorer, a shortcut or a console) also
-// writes its log to logs\totk.log next to totk.exe, so a player has one to attach to a report; run_game.py and
+// writes its log to logs\totk.log next to rekarina.exe, so a player has one to attach to a report; run_game.py and
 // `2> file` keep their own file. Each start moves the earlier logs to totk.1.log .. totk.4.log. A file stops at 64 MiB
-// (TOTK_TRACE can write that much). Lines from before log_open wait in a static buffer: mem_init runs first so that
+// (REKARINA_TRACE can write that much). Lines from before log_open wait in a static buffer: mem_init runs first so that
 // nothing else lands in the guest address space, and an earlier open would put the CRT's heap there.
 #define LOG_KEEP 5
 #define LOG_CAP (64ull << 20)
@@ -133,7 +133,7 @@ static void log_open(int game) {
 }
 
 static void parse_trace(void) {
-    const char *e = cfg_get("TOTK_TRACE");   // no default: nothing is traced when unset
+    const char *e = cfg_get("REKARINA_TRACE");   // no default: nothing is traced when unset
     if (!e) return;
     static const struct { const char *name; unsigned bit; } names[] = {
         {"svc", RT_TRACE_SVC}, {"host", RT_TRACE_HOSTCALL}, {"ipc", RT_TRACE_IPC}, {"fs", RT_TRACE_FS},
@@ -144,7 +144,7 @@ static void parse_trace(void) {
         int known = 0;
         for (unsigned i = 0; i < sizeof names / sizeof *names; i++)
             if (strlen(names[i].name) == n && !strncmp(p, names[i].name, n)) rt_trace |= names[i].bit, known = 1;
-        if (!known && n) rt_log("TOTK_TRACE: unknown item '%.*s' (svc, host, ipc, fs, gfx, perf, sched, audio, present, all)", (int)n, p);
+        if (!known && n) rt_log("REKARINA_TRACE: unknown item '%.*s' (svc, host, ipc, fs, gfx, perf, sched, audio, present, all)", (int)n, p);
         p += n + (p[n] == ',');
     }
 }
@@ -240,7 +240,7 @@ static void crash_handler(const PlatCrash *x) {
     uintptr_t rip = x->rip;
     rt_logf("FATAL: %s (%#x) at host %p (", x->what, x->code, (void *)rip);
     if (x->module && !*x->module) rt_logf("outside every module)");
-    else rt_logf("%s+%#llx)", x->module ? x->module : "totk", (unsigned long long)x->offset);
+    else rt_logf("%s+%#llx)", x->module ? x->module : RT_EXE_STEM, (unsigned long long)x->offset);
     if (x->access >= 0)
         rt_logf(", %s address %#llx", x->access == 1 ? "writing" : x->access == 8 ? "executing" : "reading",
                 (unsigned long long)x->addr);
@@ -498,9 +498,9 @@ static int usage(const char *argv0) {
     return 2;
 }
 
-// Paths for a copied folder (tools/package_build.py). Per path: TOTK_EXEFS, TOTK_ROMFS, TOTK_PROFILE_DIR, else the
-// folder next to totk.exe (exefs with main.npdm, romfs with romfs.bin, any profile folder) if it is there, else the
-// path baked in at build time. A relative value is relative to totk.exe's folder.
+// Paths for a copied folder (tools/package_build.py). Per path: REKARINA_EXEFS, REKARINA_ROMFS, REKARINA_PROFILE_DIR, else the
+// folder next to rekarina.exe (exefs with main.npdm, romfs with romfs.bin, any profile folder) if it is there, else the
+// path baked in at build time. A relative value is relative to rekarina.exe's folder.
 static char pp_exefs[PLAT_PATH_MAX * 2], pp_romfs[PLAT_PATH_MAX * 2], pp_profile[PLAT_PATH_MAX * 2];
 
 static const char *portable_path(const char *dir, const char *var, const char *sub, const char *must, char *out, size_t cap,
@@ -525,9 +525,9 @@ static void portable_paths(RtConfig *c) {
     char *cut = n && n < sizeof exe ? plat_last_sep(exe) : NULL;
     if (!cut) return;
     *cut = 0;
-    c->exefs = portable_path(exe, "TOTK_EXEFS", "exefs", "main.npdm", pp_exefs, sizeof pp_exefs, c->exefs);
-    c->romfs = portable_path(exe, "TOTK_ROMFS", "romfs", "romfs.bin", pp_romfs, sizeof pp_romfs, c->romfs);
-    c->profile = portable_path(exe, "TOTK_PROFILE_DIR", "profile", NULL, pp_profile, sizeof pp_profile, c->profile);
+    c->exefs = portable_path(exe, "REKARINA_EXEFS", "exefs", "main.npdm", pp_exefs, sizeof pp_exefs, c->exefs);
+    c->romfs = portable_path(exe, "REKARINA_ROMFS", "romfs", "romfs.bin", pp_romfs, sizeof pp_romfs, c->romfs);
+    c->profile = portable_path(exe, "REKARINA_PROFILE_DIR", "profile", NULL, pp_profile, sizeof pp_profile, c->profile);
 }
 
 int main(int argc, char **argv) {
@@ -541,18 +541,23 @@ int main(int argc, char **argv) {
     if (plat_restart_wait(30000) < 0) rt_log("restart: the previous process still runs after 30 s; starting anyway");
     setvbuf(stdout, NULL, _IONBF, 0);
     setvbuf(stderr, NULL, _IONBF, 0);
+    {   // DEBUG-AFFINITY: REKARINA_AFFINITY=<mask>: the process on those logical processors only, before any thread pool
+        // is sized (plat_cpu_usable), as `start /affinity` does: a smaller processor on this one
+        const char *a = cfg_env("REKARINA_AFFINITY");
+        if (a && *a) rt_log("main: affinity %s: %s", a, plat_process_affinity(strtoull(a, NULL, 0)) ? "set" : "refused");
+    }
     plat_crash_hook(crash_handler);
     parse_trace();
     prof_start();
     // Timed guest waits (kernel.c block_inner) sleep in whole milliseconds; at the default 15.6 ms tick a 1 ms wait
-    // costs a full tick. TOTK_TIMER_1MS=0 keeps the default for comparison.
+    // costs a full tick. REKARINA_TIMER_1MS=0 keeps the default for comparison.
     plat_power_full();
-    if (cfg_bool("TOTK_TIMER_1MS")) plat_timer_1ms();
+    if (cfg_bool("REKARINA_TIMER_1MS")) plat_timer_1ms();
     cfg = (RtConfig){.exefs = rt_default_exefs, .romfs = rt_default_romfs, .profile = rt_default_profile,
-                     .gpu = cfg_get("TOTK_GPU")};
+                     .gpu = cfg_get("REKARINA_GPU")};
     portable_paths(&cfg);   // command-line paths below still win
     if (cfg.gpu && strcmp(cfg.gpu, "null") && strcmp(cfg.gpu, "vulkan")) {
-        rt_logf("TOTK_GPU must be null or vulkan, not '%s'\n", cfg.gpu);
+        rt_logf("REKARINA_GPU must be null or vulkan, not '%s'\n", cfg.gpu);
         return 2;
     }
     const char *mode = NULL, *codec_file = NULL;
@@ -591,13 +596,13 @@ int main(int argc, char **argv) {
             // 53-74 fps (2026-11-11), each of them getting its share of every core the replay was on. Above normal,
             // Windows runs the game's threads first and the others in what is left. Not for the shader preparation,
             // which runs beside the player's other work.
-            const char *e = cfg_value("TOTK_PROCESS_PRIORITY");
+            const char *e = cfg_value("REKARINA_PROCESS_PRIORITY");
             int level = !strcmp(e, "normal") ? 0 : !strcmp(e, "high") ? 2 : 1;
             if (level) plat_process_priority(level);
             rt_log("main: process priority %s (process_priority)", level == 2 ? "high" : level ? "above normal" : "normal");
         }
         cfg.boot = cfg.seconds > 0;   // --seconds starts the game like --boot, with its checkpoints
-        discord_init();   // the Rich Presence thread (discord_rpc.c); it reads totk.ini itself and idles while off
+        discord_init();   // the Rich Presence thread (discord_rpc.c); it reads rekarina.ini itself and idles while off
 #ifdef GAME_OOT
         update_note_start();   // asks once whether a newer release exists (update_note.c)
 #endif
@@ -610,7 +615,7 @@ int main(int argc, char **argv) {
     if (!strcmp(mode, "--probe-crash-null")) return probe_crash(1);
     if (!strcmp(mode, "--probe-cfg")) return probe_cfg();
 #ifdef _WIN32
-    if (!strcmp(mode, "--probe-dpi")) return probe_dpi();   // the Win32 DPI awareness of totk.manifest
+    if (!strcmp(mode, "--probe-dpi")) return probe_dpi();   // the Win32 DPI awareness of rekarina.manifest
 #endif
     if (!strcmp(mode, "--probe-mods")) return probe_mods();
     if (!strcmp(mode, "--probe-discord")) return probe_discord();

@@ -1,7 +1,7 @@
 """tools/make_romfs_patches.py --prompts and tools/button_icons.py on a RomFS made here, with no game files: each prompt
 names the label of the Xbox button that the pad layout presses, the shoulder buttons, triggers, Plus, Minus and the
 d-pad are drawn as on an Xbox controller, the PC prompts draw every button as its key or mouse button (the defaults or
-a totk.ini's bind_ lines), the resource size table grows with the fonts, every other file and member stays byte for
+a rekarina.ini's bind_ lines), the resource size table grows with the fonts, every other file and member stays byte for
 byte, the same input gives the same output, and a RomFS the tool does not recognise fails before it writes anything. Both game versions: 1.2.1 (Common.Product.110, 72x72 button guide images) and 1.4.3
 (Common.Product.140, 108x108).
 
@@ -299,7 +299,7 @@ LETTERS_2 = {ord('T'): (560, polygon((230, 0), (330, 0), (330, 600), (520, 600),
 # The other characters the PC prompts' keys show (button_icons.PC_LABELS of the defaults): a block with a counter, each
 # its own size.
 LETTERS_2.update({ord(ch): (560, lambda pen, i=i: [rect(pen, 60, 0, 300 + 10 * i, 700), rect(pen, 120, 100, 240, 600, True)])
-                  for i, ch in enumerate('ACDEFMQSW1234⇧G')})
+                  for i, ch in enumerate('ACDEFMQSW1234⇧GH')})   # H: the height a key's label is measured against
 PC_PANES = {'A': 'E', 'B': '↑', 'X': '▬', 'Y': 'L'}   # the diamond's letters with the default keys
 
 
@@ -553,7 +553,7 @@ class PromptsTest(unittest.TestCase):
 
     def test_pc_prompts_follow_the_bind_lines(self):
         romfs = self.romfs['v143']
-        ini = self.base / 'binds' / 'totk.ini'
+        ini = self.base / 'binds' / 'rekarina.ini'
         ini.parent.mkdir(parents=True)
         ini.write_text('[input]\n# bind_A = key:q\nbind_A = pad:east, key:F\nbind_B = pad:south\nbind_X = key:default\n',
                        encoding='utf-8')

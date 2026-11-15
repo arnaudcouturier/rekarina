@@ -1,6 +1,6 @@
 """Rekarina setup: OoT (Switch 2) from the player's own dump to a folder to play from.
 
-    python -m installer.oot --game <file.nup or its folder> --dest <install folder> [--lang ru] [--prompts xbox]
+    python -m installer.oot --game <file.nup or its folder> --dest <install folder> [--lang ru] [--prompts auto]
                             [--toolchain DIR] [--temp DIR] [--root DIR] [--dlls DIR]
 
 The player names the folder with their dump; the setup finds the NUP container in it, checks that it is the version
@@ -32,6 +32,7 @@ import hashlib
 import io
 import json
 import os
+import platform
 import re
 import shutil
 import signal
@@ -176,6 +177,10 @@ class OotLayout:
     xlate: Path
     temp: Path
     pgo: Path | None     # the execution profile the runtime is compiled with, when there is one
+    # A Linux release: the Steam Runtime sysroot the game compiles and links against (llvm/sysroot, as the TotK setup's
+    # installer/layout.py), and the libraries the game finds beside itself (bin/libSDL3.so.0); a checkout uses the host's
+    sysroot: Path | None = None
+    libs: tuple = ()
 
     @property
     def runtime(self):   # the icons the window shows
@@ -199,7 +204,7 @@ class OotLayout:
         need = [self.python, self.tools / 'oot_exefs.py', self.tools / 'build_game.py', self.tools / 'oot_prepare_shaders.py',
                 self.tools / 'make_oot_prompts.py', self.tools / 'make_ext_font.py', self.tools / 'package_oot.py',
                 self.recomp / 'gen.py', self.patches, self.expected, self.llvm / 'bin' / ('clang' + EXE), self.ninja,
-                self.deps / 'include', self.deps / 'lib', self.xlate]
+                self.deps / 'include', self.deps / 'lib', self.xlate, *([self.sysroot] if self.sysroot else []), *self.libs]
         return [str(p) for p in need if not p.exists()]
 
 
@@ -223,7 +228,9 @@ def find_layout(root=None, toolchain=None, temp=None):
         return OotLayout(root=root, dev=False, release=version, python=bundled, tools=root / 'tools', recomp=root / 'recomp',
                          llvm=root / 'llvm', ninja=root / 'bin' / ('ninja' + EXE), deps=root / 'runtime' / 'deps',
                          xlate=root / 'bin' / ('rekarina_xlate' + EXE), temp=Path(temp) if temp else root / 'temp',
-                         pgo=root / 'data' / 'pgo-oot.profdata')
+                         pgo=root / 'data' / 'pgo-oot.profdata',
+                         sysroot=None if WIN else root / 'llvm' / 'sysroot',
+                         libs=() if WIN else (root / 'bin' / 'libSDL3.so.0',))
     tc = toolchain_root(root, toolchain)
     llvm = tc / 'llvm' if (tc / 'llvm').is_dir() else tc
     ninja = tc / 'bin' / ('ninja' + EXE)
@@ -250,15 +257,20 @@ def ensure_zbic(ctx, step):
                             'print(sysconfig.get_paths()["purelib"])'], **quiet)
     lines = probe.stdout.split()
     try:
-        if probe.returncode or len(lines) < 2 or not WIN:
+        # the wheel of this platform: win_amd64, or on x86-64 Linux the manylinux one (glibc 2.17, older than the
+        # setup's own floor of 2.34)
+        plat = 'win_amd64' if WIN else 'manylinux' if sys.platform.startswith('linux') and platform.machine() == 'x86_64' else None
+        if probe.returncode or len(lines) < 2 or not plat:
             raise OSError('no wheel is known for this Python; install the package with: pip install zbic')
         tag, site = lines[0], Path(lines[1])
         request = urllib.request.Request(ZBIC_INDEX, headers={'User-Agent': 'Rekarina-Setup'})
         with urllib.request.urlopen(request, timeout=30) as r:
             meta = json.load(r)
-        wheels = [f for f in meta.get('urls', []) if f['filename'].endswith(f'-{tag}-{tag}-win_amd64.whl')]
+        wheels = [f for f in meta.get('urls', []) if f['filename'].endswith('.whl') and (
+            f['filename'].endswith(f'-{tag}-{tag}-win_amd64.whl') if WIN else
+            f'-{tag}-{tag}-manylinux' in f['filename'] and f['filename'].endswith('_x86_64.whl'))]
         if not wheels:
-            raise OSError(f'the index has no {tag} win_amd64 wheel of zbic {meta.get("info", {}).get("version", "")}')
+            raise OSError(f'the index has no {tag} {plat} wheel of zbic {meta.get("info", {}).get("version", "")}')
         with urllib.request.urlopen(urllib.request.Request(wheels[0]['url'], headers={'User-Agent': 'Rekarina-Setup'}),
                                     timeout=60) as r:
             data = r.read()
@@ -475,7 +487,7 @@ class Compile(Step):
                            tree_stamp(layout.pgo) if layout.pgo and layout.pgo.is_file() else 'no profile', cpu_level())
 
     def current(self, ctx, record):
-        exe = ctx.temp / 'build' / ('totk' + EXE)
+        exe = ctx.temp / 'build' / ('rekarina' + EXE)
         return exe.is_file() and exe.stat().st_size == record.get('exe_size')
 
     def run(self, ctx):
@@ -497,18 +509,19 @@ class Compile(Step):
         # function it does not know compiles without it. Without a profile the generated code stays at -O1 but for the
         # chunks with the game's hottest code (tools/data/hot-oot-v111.txt).
         pgo = layout.pgo if layout.pgo and layout.pgo.is_file() else None
-        os.environ['TOTK_RT_LTO'] = '1'
-        os.environ.pop('TOTK_PGO_RUNTIME_ONLY', None)
+        os.environ['REKARINA_RT_LTO'] = '1'
+        os.environ.pop('REKARINA_PGO_RUNTIME_ONLY', None)
         hot = layout.tools / 'data' / 'hot-oot-v111.txt'
         if not pgo and hot.is_file():
-            os.environ['TOTK_HOT_OBJS'] = str(hot)
+            os.environ['REKARINA_HOT_OBJS'] = str(hot)
         else:
-            os.environ.pop('TOTK_HOT_OBJS', None)
+            os.environ.pop('REKARINA_HOT_OBJS', None)
         code, log = run_tool(ctx, self.id, layout.tools / 'build_game.py', [
             '--version', 'oot', '--gen', ctx.temp / 'gen', '--out', build, '--toolchain', layout.llvm, '--ninja', layout.ninja,
             '--deps', layout.deps, '--exefs', ctx.dest / 'exefs', '--no-romfs', *(['--pgo', pgo] if pgo else []),
+            *(['--sysroot', layout.sysroot] if layout.sysroot else []),
             *(['--cpu', 'v2'] if cpu_level() == 'v2' else [])], parse)
-        exe = build / ('totk' + EXE)
+        exe = build / ('rekarina' + EXE)
         if code or not exe.is_file():
             raise InstallError('oot.compile_failed', code=code, log=str(log))
         return {'exe_size': exe.stat().st_size}
@@ -592,6 +605,8 @@ class Prepare(Step):
         shutil.copy2(layout.xlate, build / layout.xlate.name)
         if layout.xlate.with_suffix('.id').is_file():
             shutil.copy2(layout.xlate.with_suffix('.id'), build / layout.xlate.with_suffix('.id').name)
+        for lib in layout.libs:   # Linux: the game finds libSDL3.so.0 beside itself ($ORIGIN), here as in the package
+            shutil.copy2(lib, build / lib.name)
         phase = ['seed']
 
         def parse(line):
@@ -651,7 +666,8 @@ class Package(Step):
             preset_args += ['--set', f'{k}={v}']
         code, log = run_tool(ctx, self.id, layout.tools / 'package_oot.py', [
             '--nup', ctx.nup, '--build', build, '--exefs', ctx.dest / 'exefs', '--xlate', layout.xlate, '--out', ctx.dest,
-            '--prompts', opt.prompts or 'xbox', '--lang', opt.lang or 'en-US', *preset_args])
+            '--prompts', opt.prompts or 'auto', '--lang', opt.lang or 'en-US', *preset_args,
+            *[arg for lib in layout.libs for arg in ('--lib', lib)]])
         exe = ctx.dest / GAME_EXE
         if code or not exe.is_file():
             if code and exe.is_file():
@@ -738,8 +754,8 @@ def main(argv=None):
     ap.add_argument('--game', type=Path, help="the dump: the .nup container or the folder that holds it")
     ap.add_argument('--dest', type=Path, required=True, help='install folder')
     ap.add_argument('--lang', help='game language, a Switch language code (en-US, ru, ja, de, ...)')
-    ap.add_argument('--prompts', choices=('xbox', 'nintendo', 'playstation', 'rekarina'),
-                    help='button prompts of a new install (default xbox)')
+    ap.add_argument('--prompts', choices=('auto', 'xbox', 'nintendo', 'playstation', 'rekarina'),
+                    help='button prompts of a new install (default auto: the controller or keyboard in use)')
     ap.add_argument('--dlls', type=Path, help='a folder with your DLSS / FSR 3.1 / frame generation libraries to put '
                                               'beside the game')
     ap.add_argument('--toolchain', type=Path, help='a folder with llvm/ and bin/ninja (a checkout has none of its own)')

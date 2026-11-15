@@ -12,7 +12,7 @@
 // instead: +0 ratio = seconds * 30, +4 seconds (1.4.3: +8 interval = seconds * 60, the producer's nominal interval
 // before its half-step coefficient), the moving average of the last 5 display intervals, at most 1/15 s
 // (slower frames slow the game down, as on the console) and at least 1/240 s, so a higher frame-rate cap only changes
-// the pacer (frame_step_cap_ns, TOTK_FPS_LIMIT). The set cloth gives hair and cloth the same clock and needs realtime.
+// the pacer (frame_step_cap_ns, REKARINA_FPS_LIMIT). The set cloth gives hair and cloth the same clock and needs realtime.
 //
 // The floor: with a shorter step (ratio below 0.125) 1.4.3 aborts within seconds of some save loads (issue #241, a
 // 280 Hz monitor): Havok's hkDefaultMemoryImpl reports "Out of memory" for the buffer the physics pre-solve (profiler
@@ -39,8 +39,8 @@
 // (input.c) runs on it, so a replay presses at the same game time at any frame rate and after a first load of any
 // length; a later load (fast travel) still shifts what follows by its length.
 //
-// TOTK_TRACE=perf adds a line per 120 presents: fps, the game seconds stepped against wall seconds, and with
-// TOTK_SPEED_PROBE=1 the player's position and ground speed (an independent check: the hero runs at the same speed at
+// REKARINA_TRACE=perf adds a line per 120 presents: fps, the game seconds stepped against wall seconds, and with
+// REKARINA_SPEED_PROBE=1 the player's position and ground speed (an independent check: the hero runs at the same speed at
 // any frame rate when game time follows wall time).
 #include <math.h>
 #include <stdatomic.h>
@@ -59,7 +59,7 @@
 #ifdef GAME_OOT
 // OoT on the console steps 1/60 s, or 1/30 s when its frame controller drops to 30 fps, never more. With
 // steps up to 1/15 s (the forest house at 15-25 fps) 11 of 13 runs crashed at the camera turn (main+0xc938d0, an
-// empty resource slot); capped at 1/30 s, three runs passed it (TOTK_PRESENT_SYNC=c on, no white frame either). A
+// empty resource slot); capped at 1/30 s, three runs passed it (REKARINA_PRESENT_SYNC=c on, no white frame either). A
 // slower frame slows the game down instead, as the console's would.
 #define STEP_MAX_DEFAULT (1.0 / 30.0)
 #else
@@ -98,18 +98,18 @@ void frame_step_init(void) {
     }
     if (!rt_patch_enabled(realtime) && rt_patch_enabled(cloth)) {
         rt_patch_disable(cloth);
-        rt_log("frame rate: cloth clock off, it needs the real-time step (TOTK_REALTIME=0)");
+        rt_log("frame rate: cloth clock off, it needs the real-time step (REKARINA_REALTIME=0)");
     }
-    {   // DEBUG-STEPMAX: TOTK_STEP_MAX_FPS=<rate>: the longest step is 1/rate s (A/B of STEP_MAX_DEFAULT)
-        const char *e = cfg_get("TOTK_STEP_MAX_FPS");
-        if (e && atoi(e) > 0) STEP_MAX_S = 1.0 / atoi(e), rt_log("frame rate: longest step 1/%d s (TOTK_STEP_MAX_FPS)", atoi(e));
+    {   // DEBUG-STEPMAX: REKARINA_STEP_MAX_FPS=<rate>: the longest step is 1/rate s (A/B of STEP_MAX_DEFAULT)
+        const char *e = cfg_get("REKARINA_STEP_MAX_FPS");
+        if (e && atoi(e) > 0) STEP_MAX_S = 1.0 / atoi(e), rt_log("frame rate: longest step 1/%d s (REKARINA_STEP_MAX_FPS)", atoi(e));
     }
     if (rt_patch_enabled(realtime)) {
         step_word = (_Atomic uint64_t *)rt_patch_page();
         step_interval = (_Atomic uint32_t *)((uint8_t *)rt_patch_page() + 8);
         step_store((float)STEP_FIRST_S);
     }
-    frame_limit_live();   // TOTK_FPS_LIMIT decides the set fps60 from the start
+    frame_limit_live();   // REKARINA_FPS_LIMIT decides the set fps60 from the start
     char how[96] = "whole-vsync steps";
     if (step_word)
         snprintf(how, sizeof how, "real-time step (5-frame average of display intervals, at most 1/%.0f s)", 1.0 / STEP_MAX_S);
@@ -119,9 +119,9 @@ void frame_step_init(void) {
 
 int frame_step_realtime(void) { return step_word != NULL; }
 
-// The frame limit (menu, TOTK_FPS_LIMIT, live): 30, 60, 90, 120, 144, any whole rate from 30 to 240, or display (the
+// The frame limit (menu, REKARINA_FPS_LIMIT, live): 30, 60, 90, 120, 144, any whole rate from 30 to 240, or display (the
 // refresh rate of the window's monitor, at most 240). A higher number gives 240, the rate of the shortest step the
-// game survives (STEP_MIN_S). Unset, the older TOTK_FPS60=0 still means 30. A limit of 30 switches the set
+// game survives (STEP_MIN_S). Unset, the older REKARINA_FPS60=0 still means 30. A limit of 30 switches the set
 // fps60 off (the shipping minimum interval 2), every other limit switches it on; the controller reads its minimum
 // interval from the patched sites each frame. With the real-time step the pacer holds frames to the limit; above 60
 // only the pacer changes, as the step's floor is the limit's ceiling. Without it the game steps whole 60 Hz vsyncs and the pacer
@@ -134,7 +134,7 @@ static int limit_read;
 static int limit_hz = -1;   // 0: display; -1 before the first read
 
 static int limit_parse(void) {
-    const char *e = cfg_get("TOTK_FPS_LIMIT"), *old = cfg_get("TOTK_FPS60");
+    const char *e = cfg_get("REKARINA_FPS_LIMIT"), *old = cfg_get("REKARINA_FPS60");
 #ifdef GAME_OOT
     if (!e || !*e) return 0;   // OoT: unset is the monitor's rate (at most 240), cfg.c's default
 #endif
@@ -143,12 +143,12 @@ static int limit_parse(void) {
     char *end;
     long n = strtol(e, &end, 10);
     if (!*end && n > LIMIT_MAX_HZ) {
-        rt_log("frame rate: TOTK_FPS_LIMIT=%s is above %d, where the game's physics runs out of memory; %d", e,
+        rt_log("frame rate: REKARINA_FPS_LIMIT=%s is above %d, where the game's physics runs out of memory; %d", e,
                LIMIT_MAX_HZ, LIMIT_MAX_HZ);
         return LIMIT_MAX_HZ;
     }
     if (!*end && n >= LIMIT_MIN_HZ) return (int)n;
-    rt_log("frame rate: TOTK_FPS_LIMIT=%s is not %d..%d or display; 60", e, LIMIT_MIN_HZ, LIMIT_MAX_HZ);
+    rt_log("frame rate: REKARINA_FPS_LIMIT=%s is not %d..%d or display; 60", e, LIMIT_MIN_HZ, LIMIT_MAX_HZ);
     return 60;
 }
 
@@ -163,7 +163,7 @@ static void frame_limit_live(void) {
     if (fps60_set == -2) fps60_set = rt_patch_set("fps60");
     if (fps60_set >= 0) rt_patch_switch(fps60_set, hz != 30);
     if ((hz > 60 || hz == 0) && !step_word)
-        rt_log("frame rate: limits above 60 need the real-time step (TOTK_REALTIME=1); 60 fps");
+        rt_log("frame rate: limits above 60 need the real-time step (REKARINA_REALTIME=1); 60 fps");
     else if (hz) rt_log("frame rate: limit %d fps", hz);
     else if (gfx_window_refresh_hz() > 0) rt_log("frame rate: limit at the monitor's refresh rate (%.3f Hz now)", gfx_window_refresh_hz());
     else rt_log("frame rate: limit at the monitor's refresh rate (60 until the window measures it)");
@@ -171,20 +171,20 @@ static void frame_limit_live(void) {
 
 int vk_fg_generating(void);   // vk_fg.cpp
 
-// TOTK_MOVIE_FPS (default 60, 0 off): the frame rate while a movie plays. A movie's event script counts the game's updates
+// REKARINA_MOVIE_FPS (default 60, 0 off): the frame rate while a movie plays. A movie's event script counts the game's updates
 // as 60 Hz frames whatever the step: above 60 fps its narration lines start early, over one another, and the closing
 // fade to black comes long before the movie ends and hides it. The movies are 60 fps, so the cap shows the same pictures.
 __attribute__((weak)) int codec_movie_live(void) { return 0; }
 static int movie_cap_hz(void) {
     static int hz = -1;
     if (hz < 0) {
-        const char *e = cfg_get("TOTK_MOVIE_FPS");
+        const char *e = cfg_get("REKARINA_MOVIE_FPS");
         hz = e && *e ? atoi(e) : 60;
         if (hz && hz < LIMIT_MIN_HZ) hz = 60;
     }
     if (!hz || !codec_movie_live()) return 0;
     static int logged;
-    if (logged++ < 3) rt_log("frame rate: a movie plays: at most %d fps until it ends (TOTK_MOVIE_FPS)", hz);
+    if (logged++ < 3) rt_log("frame rate: a movie plays: at most %d fps until it ends (REKARINA_MOVIE_FPS)", hz);
     return hz;
 }
 
@@ -210,18 +210,21 @@ double frame_step_limit_hz(void) {
 }
 
 // The scene's scale of the game's 1440-line picture while the fixed path runs (recomp/patches-oot-v111.txt, set res_fixed): the
-// DLSS mode's share when DLSS or FSR 3.1 runs, else the whole picture (render_scale and TOTK_SCENE_SCALE lower it).
-int vk_dlaa_wanted(void);
+// DLSS mode's share when DLSS or FSR 3.1 runs, else the whole picture (render_scale and REKARINA_SCENE_SCALE lower it).
+int vk_dlaa_available(void);
 static double scene_share(void) {
-    if (vk_dlaa_wanted() && cfg_bool("TOTK_DLAA")) {
-        const char *m = cfg_value("TOTK_DLSS");
+    // The mode's share only where an upscaler runs (vk_dlaa_available: DLSS or FSR loaded at start). On a card
+    // without DLSS and taa = dlss, or with taa = fsr3 and no AMD library, the scene stayed at 67 % or less with only
+    // the game's own scaler to bring it back: a soft picture the menu gave no reason for.
+    if (vk_dlaa_available() && cfg_bool("REKARINA_DLAA")) {
+        const char *m = cfg_value("REKARINA_DLSS");
         return !strcmp(m, "quality") ? 2.0 / 3 : !strcmp(m, "balanced") ? 0.58 : !strcmp(m, "performance") ? 0.5
              : !strcmp(m, "ultra_performance") ? 1.0 / 3 : 1.0;
     }
     // Without DLSS the scene has the picture's size, 2560x1440: at the 0.625 the console mostly picks (1600x900) the
-    // game's own scaler left the base picture soft. render_scale = 50..100 in totk.ini lowers it for slower cards;
-    // TOTK_SCENE_SCALE (a share, 0.25..1) is the test override.
-    const char *e = cfg_get("TOTK_SCENE_SCALE"), *r = cfg_value("TOTK_RENDER_SCALE");
+    // game's own scaler left the base picture soft. render_scale = 50..100 in rekarina.ini lowers it for slower cards;
+    // REKARINA_SCENE_SCALE (a share, 0.25..1) is the test override.
+    const char *e = cfg_get("REKARINA_SCENE_SCALE"), *r = cfg_value("REKARINA_RENDER_SCALE");
     double s = e && *e ? atof(e) : r && *r >= '0' && *r <= '9' ? atof(r) / 100.0 : 1.0;
     return s < 0.25 ? 0.25 : s > 1.0 ? 1.0 : s;
 }
@@ -254,7 +257,7 @@ void res_fixed_present(void) {
     }
 }
 
-// ---- TOTK_TRACE=perf speed lines
+// ---- REKARINA_TRACE=perf speed lines
 static uint64_t win_t0, win_frames, win_hist[4];   // win_hist: frames by present interval 1, 2, 3+ ([0] unused)
 static double win_game;
 static int probe = -1;
@@ -268,7 +271,7 @@ static uint64_t read_ptr(uint64_t a) {
 }
 // 1.2.1: [main+0x4728538] (1.1.0: [main+0x4630a68], 1.4.3: [main+0x3add238]) +0x1e8 scene, its component 13 lists the
 // resident actors; the one named "Player" has its position at +0x2b4 (MacNativeGames world_survey.c, game_version.h
-// TOTK_GAME_V121/V143). The 1.1.0 slot was measured from its own dereference chain: 181 scene accesses in that build
+// REKARINA_GAME_V121/V143). The 1.1.0 slot was measured from its own dereference chain: 181 scene accesses in that build
 // read it, and one of them reproduces this walk (the 14-component check, component 13, the 0x70 stride and the name
 // compare) instruction for instruction.
 static int player_pos(float xyz[3]) {
@@ -303,7 +306,7 @@ static void speed_report(uint64_t now, double step, int interval) {
     win_hist[interval < 1 ? 1 : interval > 3 ? 3 : interval]++;
     if (win_frames < 120) return;
     if (probe < 0) {
-        const char *e = cfg_get("TOTK_SPEED_PROBE");
+        const char *e = cfg_get("REKARINA_SPEED_PROBE");
         probe = e && !strcmp(e, "1");
     }
     double wall = (double)(now - win_t0) * 1e-9;

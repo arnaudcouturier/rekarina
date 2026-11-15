@@ -42,7 +42,7 @@ Findings with their knobs: oot-notes.md; the plan in steps: native-driver.md; th
 What tonight's measurements say about the cost model:
 - Shader code size matters more than loads: the pool-table lookup is inlined at every access (hundreds per shader), and
   variants with fewer loads but more branches were slower (three levels 15.9 ms, two levels 14.8 ms, records with the
-  delta 19.1 ms). The driver's view without Nsight: `TOTK_PIPESTATS=1` (registers and machine code size per stage).
+  delta 19.1 ms). The driver's view without Nsight: `REKARINA_PIPESTATS=1` (registers and machine code size per stage).
 - Writing from shaders into host memory over PCIe is expensive (~1.2 of the merges' 2.9 ms); the copy engine moves plain
   copies at ~46 GB/s.
 - Host-side debug left on a hot path costs as much as a feature (a getenv per report: 20 % of the replay thread).
@@ -62,7 +62,7 @@ What depends on Nintendo, and how each dependency is handled:
   plus guest pages that move to the GPU when only the GPU uses them (write-backs only for what the CPU reads).
 - Six queues with GPU-side events -> one Vulkan queue now; next: queue 3 (compute) on its own queue with timeline
   semaphores for the game's GPU events, once the mirror bookkeeping is per queue.
-- The CPU signalling events the GPU waits for -> the replay waits on the game thread now (TOTK_EVENT_DEFER, which
+- The CPU signalling events the GPU waits for -> the replay waits on the game thread now (REKARINA_EVENT_DEFER, which
   records past the wait, still shows another frame's shadows one frame in 300: the replay reads more guest memory as it
   records than uniform blocks and mirrors).
 - Ampere machine code with tensor-core ops (the agl upscaler network's HMMA.16816) -> on the tensor cores through
@@ -78,7 +78,7 @@ What depends on Nintendo, and how each dependency is handled:
    mirror, the CPU's writes reach the mirror word by word (vk_memory.c gmem_merge_page has the page shadows for it), a
    guarded page writes back on a CPU access.
 2. GPU, game (~11 ms): queue 3 beside queue 6, then CSE of pool lookups in the translator. The two queues are a
-   fork-join on the GPU (TOTK_EVLOG2=<frame>, which logs every event signal and wait with its command position;
+   fork-join on the GPU (REKARINA_EVLOG2=<frame>, which logs every event signal and wait with its command position;
    2026-11-08, forest frame): 19 event words 0x13D6C8000..+0x48, values counting up per frame. Queue 6 (graphics, ~22,400
    commands) signals +0x48 at its first command; queue 3 (compute, ~400 commands) waits for it, runs ~80 commands and
    signals +0x00/+0x04/+0x0C, then waits for +0x10..+0x20, which queue 6 signals after its first ~460-910 commands (its

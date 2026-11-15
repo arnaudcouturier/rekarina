@@ -567,11 +567,11 @@ class GpuTest(unittest.TestCase):
         self.assertEqual(p('Intel(R) Arc(TM) A770 Graphics', 16)[0], 'base')
         self.assertEqual(p('NVIDIA GeForce GTX 1660 Ti', 6)[:2], ('base', 'half'))
         self.assertEqual(p('AMD Radeon RX 570', 4), ('base', 'quarter', {
-            'dlaa': '0', 'taa': 'fsr3', 'framegen': 'off', 'render_scale': '75', 'tex_quality': 'quarter'}))
+            'dlaa': '1', 'taa': 'fsr1', 'framegen': 'off', 'dlss': 'quality', 'tex_quality': 'quarter'}))
         self.assertEqual(p('AMD Radeon RX 6600', 7.98)[1], 'auto')                  # an "8 GB" card
-        # a processor's own graphics: the scene at half of the game's picture
+        # a processor's own graphics: the scene at half of the game's picture, scaled by FSR 1
         self.assertEqual(p('AMD Radeon(TM) Graphics', 4), ('handheld', 'quarter', {
-            'dlaa': '0', 'taa': 'fsr3', 'framegen': 'off', 'render_scale': '50', 'tex_quality': 'quarter'}))
+            'dlaa': '1', 'taa': 'fsr1', 'dlss': 'performance', 'framegen': 'off', 'tex_quality': 'quarter'}))
         self.assertEqual(p('AMD Custom GPU 0405', 1)[0], 'handheld')                # Steam Deck
         self.assertEqual(p('AMD Radeon 780M Graphics', 6)[:2], ('handheld', 'half'))
         self.assertEqual(p('Intel(R) Arc(TM) Graphics', 8)[0], 'handheld')

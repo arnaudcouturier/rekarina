@@ -7,7 +7,7 @@ the translator answers it was translated for. This tool reads the shaders from t
 (tools/shader_census.py inventory), keeps the list's variants whose shader is in this game version, adds each shader's
 default variant (every texture slot a 2D texture, float vertex inputs and colour outputs: the
 default bind state), and writes them next to the
-build's totk.exe in the record layouts of runtime/gfx_shader.c ("answers met in play"):
+build's rekarina.exe in the record layouts of runtime/gfx_shader.c ("answers met in play"):
 
     seed-programs.bin  "TOTKSPRG": stage, length, c1 length, runtime code hash, control section, code, c1
     seed-answers.bin   "TOTKSANS": stage, code hash, input id (zero: the runtime computes it), answers, priority
@@ -16,14 +16,14 @@ Priority (the pad byte): 0 shaders the list's warm rows flag as title/menu (t), 
 rest; a default variant takes its shader's priority and sets DEFAULT_FLAG (bit 7). The runtime reads a flagged
 record's first translation and translates it again with better answers where it reads other ones
 (runtime/gfx_shader_guess.c): integer vertex inputs, and the texture and image types a compute shader's translation
-declares, for which a compute default variant goes without texture answers. Then it runs `totk.exe --prepare-shaders`, which translates every record into the build's shader cache, writes
+declares, for which a compute default variant goes without texture answers. Then it runs `rekarina.exe --prepare-shaders`, which translates every record into the build's shader cache, writes
 shader-prepared.bin (one record per variant, in priority order) and builds every variant's stage library or compute
 pipeline once, so the GPU driver's own disk cache holds them (vk_pipeline.c "stage library prebuild"). The seed files
 can be deleted afterwards.
 
 A driver whose shader compiler crashes on a variant crashes on it in every run (NVIDIA 615.78.08 on an RTX 5080, issue
 #30). The translations and shader-prepared.bin are written by then, and the journal the run leaves names the variants
-the driver was building (vk_pipeline.c skip_init), so only the driver step runs again (`totk.exe --warm-shaders`), up to
+the driver was building (vk_pipeline.c skip_init), so only the driver step runs again (`rekarina.exe --warm-shaders`), up to
 RETRIES times, and skips them.
 
 Game-derived output stays in the build directory (ignored). The list is read at preparation time from tools/data/shader_list.tsv when that file exists (the installer archive
@@ -161,15 +161,21 @@ def bounds(control, code):
 
 
 def code_hash(stage, control, code, length, c1):
-    """gfx_shader.c build_code_hash; the tag is for an NVN2 mesh program with point output (nvn_ctl.h nvn2_ctl_mesh_points)."""
+    """gfx_shader.c build_code_hash. Tags: an NVN2 mesh program with point output (nvn_ctl.h nvn2_ctl_mesh_points),
+    and an NVN2 program whose VOTEU writes a uniform predicate other than UPT (nvn2_ctl_voteu_pred, translator patch
+    0042). The runtime's third tag, for mesh programs on devices that ask for whole index vectors, depends on the device
+    and is not written here."""
     nvn2 = struct.unpack_from('<II', control, 0) == (0x98761234, 0xc9)
     tagged = stage == STAGES['ms'] and nvn2 and length > 0x35 and (control[0x5f] != 3 or code[0x35] & 0x0f)
+    voteu = nvn2 and any(struct.unpack_from('<Q', code, o)[0] & 0xfff == 0x886 and
+                         (struct.unpack_from('<Q', code, o + 8)[0] >> 17) & 7 != 7 for o in range(0, length - 15, 16))
     return hashlib.sha256(struct.pack('<I', stage) + control + struct.pack('<Q', length) + code[:length] +
-                          struct.pack('<I', len(c1)) + c1 + (b'TKMP\1\0\0\0' if tagged else b'')).digest()
+                          struct.pack('<I', len(c1)) + c1 + (b'TKMP\1\0\0\0' if tagged else b'') +
+                          (b'TKVU\1\0\0\0' if voteu else b'')).digest()
 
 
 def driver_crashed(out):
-    """totk died while the graphics driver built variants: the journal it left names at least one."""
+    """The game died while the graphics driver built variants: the journal it left names at least one."""
     p = out / JOURNAL
     data = p.read_bytes() if p.is_file() else b''
     return any(any(data[i:i + 32]) for i in range(0, len(data), 64))
@@ -177,14 +183,14 @@ def driver_crashed(out):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument('build', type=Path, help='build directory holding totk.exe (build\\v121)')
+    ap.add_argument('build', type=Path, help='build directory holding rekarina.exe (build\\v121)')
     ap.add_argument('--version', default='v121', help='build/extracted/<version>')
     ap.add_argument('--romfs', type=Path, help='RomFS directory (default build/extracted/<version>/romfs)')
     ap.add_argument('--exefs', type=Path, help='ExeFS directory (default build/extracted/<version>/exefs)')
     ap.add_argument('--list', help='a shader_list.tsv instead of tools/data/shader_list.tsv or refs/MacNativeGames')
     ap.add_argument('--no-run', action='store_true', help='write the seed files only')
     ap.add_argument('--no-list', action='store_true', help='default variants only, without a shared shader list')
-    ap.add_argument('--exe', default='totk.exe' if os.name == 'nt' else 'totk',
+    ap.add_argument('--exe', default='rekarina.exe' if os.name == 'nt' else 'rekarina',
                     help='the game executable in the build directory that runs --prepare-shaders')
     a = ap.parse_args()
     t0 = time.monotonic()
@@ -248,7 +254,7 @@ def main():
         if not r.returncode or not driver_crashed(out):
             break
         print(f'prepare_shaders: the graphics driver crashed while building shaders (rc={r.returncode}); building them '
-              'again without the variants it was building (totk.exe --warm-shaders)', flush=True)
+              'again without the variants it was building (rekarina.exe --warm-shaders)', flush=True)
         r = subprocess.run([str(exe), '--warm-shaders'], cwd=str(out))
     print(f'{a.exe} --prepare-shaders: rc={r.returncode}; total {time.monotonic() - t0:.1f} s')
     return r.returncode

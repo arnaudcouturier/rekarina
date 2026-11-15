@@ -1,0 +1,421 @@
+TOTK: a mesh shader as a compute kernel, for a GPU without VK_EXT_mesh_shader (the job's "as_compute": n,
+MeshStage.AsCompute; runtime/vk_exec_draw.c mesh_emulate). One workgroup a meshlet runs the stage as the mesh entry
+point does and writes into the runtime's emulation buffer, through a 64-bit address the module holds as two marker
+constants the runtime replaces: the draw's VkDrawIndexedIndirectCommand, the vertices (position, then each generic
+attribute in location order, a vec4 each) and the triangles' indices, which an indexed draw with a pass-through vertex
+shader then reads. A triangle past the meshlet's count, or naming a vertex past its last, is degenerate. A task shader
+as compute keeps each task workgroup's payload and launch count in the buffer and writes the dispatch of the mesh
+kernel, whose workgroup (j, t) runs launch j of task t and takes a meshlet slot from a counter. Triangles only, without
+per-primitive attributes (Program.cs refuses the rest). Without the field every translation is as before.
+
+--- a/src/Ryujinx.Graphics.Shader/MeshStage.cs
++++ b/src/Ryujinx.Graphics.Shader/MeshStage.cs
+@@ -63,5 +63,40 @@ namespace Ryujinx.Graphics.Shader
+ 
+         /// <summary>Vertices and primitives of an attribute block.</summary>
+         public const int Block = 32;
++
++        /// <summary>
++        /// TOTK: a mesh shader for a GPU without VK_EXT_mesh_shader: a compute kernel that writes what the mesh entry point would hand to
++        /// Vulkan into the emulation buffer (CodeGen/Spirv/MeshStageWrapper.cs GenerateAsCompute; runtime vk_exec_draw.c mesh_emulate).
++        /// </summary>
++        public bool AsCompute { get; init; }
++
++        /// <summary>The emulation buffer (runtime/vk.h VK_MESH_EMU_*, which must match): its bytes; the draw's arguments at 0; under a task the
++        /// mesh kernel's dispatch arguments, the meshlets taken (a counter) and each task's launch count and payload; then the vertices
++        /// and the indices; and the two 32-bit constants that stand for its address in the module until the runtime puts the address
++        /// there.</summary>
++        public const int EmuBytes = 64 << 20;
++        public const int EmuMeshArgsOffset = 32;
++        public const int EmuCounterOffset = 48;
++        public const int EmuLaunchOffset = 4 << 10;
++        public const int EmuPayloadOffset = 64 << 10;
++        public const int EmuVertexOffset = 8 << 20;
++        public const int EmuIndexOffset = 48 << 20;
++        public const uint EmuAddressLo = 0xC0DE5A71, EmuAddressHi = 0xC0DE5A72;
++
++        /// <summary>The most mesh workgroups one task workgroup launches in the emulation (more are dropped): the mesh kernel runs this many
++        /// per task, the idle ones returning at once.</summary>
++        public const int EmuTaskLaunches = 64;
++
++        /// <summary>The task workgroups whose launch counts and payloads the emulation buffer holds.</summary>
++        public int EmuMaxTasks() => System.Math.Max(1, System.Math.Min((EmuPayloadOffset - EmuLaunchOffset) / 4,
++            (EmuVertexOffset - EmuPayloadOffset) / (System.Math.Max(PayloadWords, 1) * 4)));
++
++        /// <summary>The meshlets the emulation buffer holds when each vertex takes vec4s vec4s.</summary>
++        public int EmuMaxMeshlets(int vec4s)
++        {
++            int byVertices = (EmuIndexOffset - EmuVertexOffset) / (MaxVertices * vec4s * 16);
++            int byIndices = (EmuBytes - EmuIndexOffset) / (MaxPrimitives * 3 * 4);
++            return System.Math.Max(1, System.Math.Min(byVertices, byIndices));
++        }
+     }
+ }
+--- a/src/Ryujinx.Graphics.Shader/CodeGen/Spirv/SpirvGenerator.cs
++++ b/src/Ryujinx.Graphics.Shader/CodeGen/Spirv/SpirvGenerator.cs
+@@ -47,14 +47,17 @@ namespace Ryujinx.Graphics.Shader.CodeGen.Spirv
+             context.AddCapability(Capability.Shader);
+ 
+             // TOTK: an NVN2 task or mesh shader gets a VK_EXT_mesh_shader entry point around its kernel (MeshStageWrapper)
+-            if (context.Properties.MeshStage != null)
++            // (a mesh shader as compute, MeshStage.AsCompute, is a plain compute module that writes through a physical pointer)
++            bool meshAsCompute = context.Properties.MeshStage?.AsCompute == true;
++
++            if (context.Properties.MeshStage != null && !meshAsCompute)
+             {
+                 context.AddCapability(SpvModule.CapabilityMeshShadingEXT);
+                 context.AddExtension("SPV_EXT_mesh_shader");
+             }
+ 
+             // nxnative: raw global memory goes through physical storage buffer pointers (ShaderProperties.UsesPhysicalPointers), which take 64-bit physical addressing
+-            if (context.Properties.UsesPhysicalPointers)
++            if (context.Properties.UsesPhysicalPointers || meshAsCompute)
+             {
+                 context.AddCapability(Capability.PhysicalStorageBufferAddresses);
+                 context.AddCapability(Capability.Int64);
+--- a/src/Ryujinx.Graphics.Shader/CodeGen/Spirv/MeshStageWrapper.cs
++++ b/src/Ryujinx.Graphics.Shader/CodeGen/Spirv/MeshStageWrapper.cs
+@@ -46,6 +46,12 @@ namespace Ryujinx.Graphics.Shader.CodeGen.Spirv
+ 
+             SpvInstruction C(int v) => context.Constant(u32, v);
+ 
++            if (mesh.AsCompute)
++            {
++                GenerateAsCompute(context, body, mesh, shared);
++                return;
++            }
++
+             // The payload a task writes and its mesh shaders read
+             SpvInstruction payload = null;
+             SpvInstruction payloadPtr = context.TypePointer(SpvModule.StorageClassTaskPayloadWorkgroupEXT, u32);
+@@ -338,6 +344,330 @@ namespace Ryujinx.Graphics.Shader.CodeGen.Spirv
+             }
+         }
+ 
++        // TOTK: a mesh shader for a GPU without VK_EXT_mesh_shader (MeshStage.AsCompute; runtime vk_exec_draw.c mesh_emulate): a compute kernel,
++        // one workgroup a meshlet, that runs the stage as the mesh entry point does and writes what that would hand to Vulkan into the
++        // emulation buffer, which an indexed draw then reads as a vertex and an index buffer:
++        //   header (byte 0): VkDrawIndexedIndirectCommand {min(workgroups, the most that fit) x MaxPrimitives x 3, 1, 0, 0, 0}, by workgroup 0;
++        //   vertices (byte MeshStage.EmuVertexOffset): meshlet m's vertex v at vec4 (m x MaxVertices + v) x (1 + attributes): the position,
++        //     then each generic attribute in location order (a component the shader does not have is 0, w 1);
++        //   indices (byte MeshStage.EmuIndexOffset): meshlet m's triangle p at word (m x MaxPrimitives + p) x 3, each the vertex's number in
++        //     the vertex buffer; a triangle past the meshlet's count, or naming a vertex past its MaxVertices, is its first vertex
++        //     three times (degenerate, nothing drawn).
++        // A meshlet past the most that fit writes nothing. The buffer's address is two constants (MeshStage.EmuAddressLo, Hi) the runtime
++        // replaces before it builds the pipeline. Triangles only, without per-primitive attributes (Program.cs refuses others).
++        // Under a task the draw takes two kernels: the task's (IsTask), one workgroup a task workgroup, keeps each one's payload and launch
++        // count in the buffer (MeshStage.EmuPayloadOffset, EmuLaunchOffset) and writes the mesh kernel's dispatch arguments
++        // ({EmuTaskLaunches, tasks, 1} at EmuMeshArgsOffset); the mesh shader's (HasTask), workgroup (j, t) for launch j of task t, idle past
++        // that task's count, takes the next meshlet slot from a counter (EmuCounterOffset) and raises the draw's index count to cover it
++        // (atomic max); the runtime zeroes the arguments and the counter first.
++        private static void GenerateAsCompute(CodeGenContext context, SpvInstruction body, MeshStage mesh, SpvInstruction shared)
++        {
++            SpvInstruction u32 = context.TypeU32();
++            SpvInstruction u64 = context.TypeInt(64, 0);
++            SpvInstruction uvec2 = context.TypeVector(u32, 2);
++            SpvInstruction uvec3 = context.TypeVector(u32, 3);
++            SpvInstruction boolType = context.TypeBool();
++            SpvInstruction voidType = context.TypeVoid();
++            SpvInstruction sharedPtr = context.TypePointer(StorageClass.Workgroup, u32);
++            SpvInstruction physPtr = context.TypePointer(StorageClass.PhysicalStorageBuffer, u32);
++            SpvInstruction C(int v) => context.Constant(u32, v);
++
++            // component index in the attribute area of attribute a (-1: the position), x..w (as Generate)
++            Dictionary<int, int[]> components = new();
++
++            for (int i = 0; i < mesh.VertexComponents.Length; i++)
++            {
++                int c = mesh.VertexComponents[i];
++
++                if (c <= MeshStage.PointSize)
++                {
++                    continue;
++                }
++
++                int attr = c < 0 ? -1 : c >> 2;
++                int comp = c < 0 ? -1 - c : c & 3;
++
++                if (!components.TryGetValue(attr, out int[] slots))
++                {
++                    components[attr] = slots = [-1, -1, -1, -1];
++                }
++
++                slots[comp] = i;
++            }
++
++            int[] attrs = components.Keys.Where(a => a >= 0).OrderBy(a => a).ToArray();
++            int vec4s = 1 + attrs.Length;
++            int maxMeshlets = mesh.IsTask ? 0 : mesh.EmuMaxMeshlets(vec4s);   // a task writes no meshlets
++
++            SpvInstruction lidVariable = FindInput(context, IoVariable.ThreadId);
++            SpvInstruction groupVariable = FindInput(context, IoVariable.CtaId);
++            SpvInstruction countVariable = context.Variable(context.TypePointer(StorageClass.Input, uvec3), StorageClass.Input);
++            context.Decorate(countVariable, Decoration.BuiltIn, (SpvLiteralInteger)BuiltIn.NumWorkgroups);
++            context.AddGlobalVariable(countVariable);
++            context.Name(countVariable, "workgroups");
++
++            SpvInstruction functionType = context.TypeFunction(voidType, false);
++            SpvInstruction entry = context.Function(voidType, FunctionControlMask.MaskNone, functionType);
++            context.AddFunction(entry);
++            context.AddLabel(context.Label());
++
++            SpvInstruction counter = context.Variable(context.TypePointer(StorageClass.Function, u32), StorageClass.Function);
++            context.AddLocalVariable(counter);
++
++            SpvInstruction lid = context.CompositeExtract(u32, context.Load(uvec3, lidVariable), 0);
++            SpvInstruction group = context.CompositeExtract(u32, context.Load(uvec3, groupVariable), 0);
++            SpvInstruction groups = context.CompositeExtract(u32, context.Load(uvec3, countVariable), 0);
++            SpvInstruction baseAddress = context.Bitcast(u64, context.CompositeConstruct(uvec2,
++                context.Constant(u32, unchecked((int)MeshStage.EmuAddressLo)), context.Constant(u32, unchecked((int)MeshStage.EmuAddressHi))));
++
++            SpvInstruction Shared(SpvInstruction wordIndex) => context.AccessChain(sharedPtr, shared, wordIndex);
++
++            // a 32-bit word of the emulation buffer, by its word number
++            void Put(SpvInstruction word, SpvInstruction value)
++            {
++                SpvInstruction address = context.IAdd(u64, baseAddress, context.UConvert(u64, context.IMul(u32, word, C(4))));
++                SpvInstruction store = context.Store(context.ConvertUToPtr(physPtr, address), value, MemoryAccessMask.Aligned);
++                store.AddOperand((SpvLiteralInteger)4);
++            }
++
++            void Barrier()
++            {
++                context.ControlBarrier(
++                    context.Constant(u32, Scope.Workgroup),
++                    context.Constant(u32, Scope.Workgroup),
++                    context.Constant(u32, MemorySemanticsMask.WorkgroupMemory | MemorySemanticsMask.AcquireRelease));
++            }
++
++            void If(SpvInstruction condition, Action then)
++            {
++                SpvInstruction thenLabel = context.Label();
++                SpvInstruction merge = context.Label();
++
++                context.SelectionMerge(merge, SelectionControlMask.MaskNone);
++                context.BranchConditional(condition, thenLabel, merge);
++                context.AddLabel(thenLabel);
++                then();
++                context.Branch(merge);
++                context.AddLabel(merge);
++            }
++
++            // for (i = lid; i < end; i += threads) body(i)
++            void Loop(SpvInstruction end, Action<SpvInstruction> loopBody)
++            {
++                context.Store(counter, lid);
++
++                SpvInstruction header = context.Label();
++                SpvInstruction check = context.Label();
++                SpvInstruction bodyLabel = context.Label();
++                SpvInstruction next = context.Label();
++                SpvInstruction merge = context.Label();
++
++                context.Branch(header);
++                context.AddLabel(header);
++                context.LoopMerge(merge, next, LoopControlMask.MaskNone);
++                context.Branch(check);
++                context.AddLabel(check);
++                SpvInstruction i = context.Load(u32, counter);
++                context.BranchConditional(context.ULessThan(boolType, i, end), bodyLabel, merge);
++                context.AddLabel(bodyLabel);
++                loopBody(context.Load(u32, counter));
++                context.Branch(next);
++                context.AddLabel(next);
++                context.Store(counter, context.IAdd(u32, context.Load(u32, counter), C(mesh.Threads)));
++                context.Branch(header);
++                context.AddLabel(merge);
++            }
++
++            int words = mesh.Size / 4;
++            int input = mesh.Offsets[1] / 4, output = mesh.Offsets[2] / 4, primitives = mesh.Offsets[3];
++
++            // a pointer to a 32-bit word of the emulation buffer, by its word number, and a load of one
++            SpvInstruction Word(SpvInstruction word) =>
++                context.ConvertUToPtr(physPtr, context.IAdd(u64, baseAddress, context.UConvert(u64, context.IMul(u32, word, C(4)))));
++
++            SpvInstruction Get(SpvInstruction word)
++            {
++                SpvInstruction load = context.Load(u32, Word(word), MemoryAccessMask.Aligned);
++                load.AddOperand((SpvLiteralInteger)4);
++                return load;
++            }
++
++            // the workgroup returns here when the condition holds (the same in all its threads, so before any barrier)
++            void ReturnIf(SpvInstruction condition)
++            {
++                SpvInstruction leave = context.Label();
++                SpvInstruction merge = context.Label();
++
++                context.SelectionMerge(merge, SelectionControlMask.MaskNone);
++                context.BranchConditional(condition, leave, merge);
++                context.AddLabel(leave);
++                context.Return();
++                context.AddLabel(merge);
++            }
++
++            SpvInstruction first = context.IEqual(boolType, lid, C(0));
++
++            if (mesh.IsTask)
++            {
++                // A task workgroup t keeps its payload (output words 0 ..) and its launch count (output word 1, at most EmuTaskLaunches) for
++                // the mesh kernel, which runs EmuTaskLaunches x tasks workgroups; workgroup 0 writes those dispatch arguments.
++                int maxTasks = mesh.EmuMaxTasks();
++
++                Loop(C(words), i => context.Store(Shared(i), C(0)));
++                Barrier();
++
++                context.FunctionCall(voidType, body);
++                Barrier();
++
++                If(context.LogicalAnd(boolType, context.IEqual(boolType, group, C(0)), first), () =>
++                {
++                    Put(C(MeshStage.EmuMeshArgsOffset / 4), C(MeshStage.EmuTaskLaunches));
++                    Put(C(MeshStage.EmuMeshArgsOffset / 4 + 1), context.GlslUMin(u32, groups, C(maxTasks)));
++                    Put(C(MeshStage.EmuMeshArgsOffset / 4 + 2), C(1));
++                });
++
++                ReturnIf(context.UGreaterThanEqual(boolType, group, C(maxTasks)));
++
++                SpvInstruction payloadBase = context.IAdd(u32, C(MeshStage.EmuPayloadOffset / 4), context.IMul(u32, group, C(Math.Max(mesh.PayloadWords, 1))));
++
++                Loop(C(mesh.PayloadWords), i => Put(context.IAdd(u32, payloadBase, i), context.Load(u32, Shared(context.IAdd(u32, C(output), i)))));
++
++                If(first, () => Put(context.IAdd(u32, C(MeshStage.EmuLaunchOffset / 4), group),
++                    context.GlslUMin(u32, context.Load(u32, Shared(C(output + 1))), C(MeshStage.EmuTaskLaunches))));
++
++                context.Return();
++                context.FunctionEnd();
++
++                context.AddEntryPoint(ExecutionModel.GLCompute, entry, "main", context.GlobalVariables.ToArray());
++                context.AddExecutionMode(entry, ExecutionMode.LocalSize, (SpvLiteralInteger)mesh.Threads, (SpvLiteralInteger)1, (SpvLiteralInteger)1);
++                return;
++            }
++
++            // the meshlet this workgroup writes
++            SpvInstruction meshlet;
++
++            if (mesh.HasTask)
++            {
++                // Under a task: workgroup (j, t) is launch j of task t, idle past that task's launch count. Its stage memory takes the task's
++                // payload; its slot in the buffer is the next free one (a counter at EmuCounterOffset, zeroed by the runtime), so idle launches
++                // take no room, and the draw's index count follows the highest slot taken.
++                SpvInstruction task = context.CompositeExtract(u32, context.Load(uvec3, groupVariable), 1);
++
++                ReturnIf(context.UGreaterThanEqual(boolType, group, Get(context.IAdd(u32, C(MeshStage.EmuLaunchOffset / 4), task))));
++
++                Loop(C(words), i => context.Store(Shared(i), C(0)));
++                Barrier();
++
++                SpvInstruction payloadBase = context.IAdd(u32, C(MeshStage.EmuPayloadOffset / 4), context.IMul(u32, task, C(Math.Max(mesh.PayloadWords, 1))));
++
++                Loop(C(mesh.PayloadWords), i => context.Store(Shared(context.IAdd(u32, C(input), i)), Get(context.IAdd(u32, payloadBase, i))));
++                Barrier();
++
++                context.FunctionCall(voidType, body);
++                Barrier();
++
++                // word 0 of the stage memory (the workgroup's number, read by the kernel only) carries the slot to every thread
++                If(first, () => context.Store(Shared(C(0)), context.AtomicIAdd(u32, Word(C(MeshStage.EmuCounterOffset / 4)),
++                    C((int)Scope.Device), C((int)MemorySemanticsMask.MaskNone), C(1))));
++                Barrier();
++
++                meshlet = context.Load(u32, Shared(C(0)));
++
++                ReturnIf(context.UGreaterThanEqual(boolType, meshlet, C(maxMeshlets)));
++
++                If(first, () =>
++                {
++                    context.AtomicUMax(u32, Word(C(0)), C((int)Scope.Device), C((int)MemorySemanticsMask.MaskNone),
++                        context.IMul(u32, context.IAdd(u32, meshlet, C(1)), C(mesh.MaxPrimitives * 3)));
++                    Put(C(1), C(1));
++                });
++            }
++            else
++            {
++                Loop(C(words), i => context.Store(Shared(i), C(0)));
++                Barrier();
++
++                context.FunctionCall(voidType, body);
++                Barrier();
++
++                // the draw's arguments, once
++                If(context.LogicalAnd(boolType, context.IEqual(boolType, group, C(0)), first), () =>
++                {
++                    Put(C(0), context.IMul(u32, context.GlslUMin(u32, groups, C(maxMeshlets)), C(mesh.MaxPrimitives * 3)));
++                    Put(C(1), C(1));
++                    Put(C(2), C(0));
++                    Put(C(3), C(0));
++                    Put(C(4), C(0));
++                });
++
++                ReturnIf(context.UGreaterThanEqual(boolType, group, C(maxMeshlets)));
++                meshlet = group;
++            }
++
++            {
++                SpvInstruction count = context.GlslUMin(u32, context.ShiftRightLogical(u32, context.Load(u32, Shared(C(primitives / 4))), C(24)), C(mesh.MaxPrimitives));
++                int stride = Math.Max(mesh.VertexComponents.Length + mesh.PrimitiveComponents.Length, 1) * MeshStage.Block;
++
++                SpvInstruction Block(SpvInstruction n) => context.IAdd(u32, C(output), context.IAdd(u32,
++                    context.IMul(u32, context.UDiv(u32, n, C(MeshStage.Block)), C(stride)),
++                    context.UMod(u32, n, C(MeshStage.Block))));
++
++                SpvInstruction firstVertex = context.IMul(u32, meshlet, C(mesh.MaxVertices));
++
++                Loop(C(mesh.MaxVertices), n =>
++                {
++                    SpvInstruction block = Block(n);
++                    SpvInstruction at = context.IAdd(u32, C(MeshStage.EmuVertexOffset / 4),
++                        context.IMul(u32, context.IAdd(u32, firstVertex, n), C(vec4s * 4)));
++
++                    for (int a = 0; a < vec4s; a++)
++                    {
++                        int[] slots = a == 0 ? (components.TryGetValue(-1, out int[] p) ? p : new[] { -1, -1, -1, -1 }) : components[attrs[a - 1]];
++
++                        for (int k = 0; k < 4; k++)
++                        {
++                            SpvInstruction value = slots[k] < 0
++                                ? C(k == 3 ? 0x3f800000 : 0)
++                                : context.Load(u32, Shared(context.IAdd(u32, block, C(slots[k] * MeshStage.Block))));
++                            Put(context.IAdd(u32, at, C(a * 4 + k)), value);
++                        }
++                    }
++                });
++
++                SpvInstruction indexBase = context.IAdd(u32, C(MeshStage.EmuIndexOffset / 4), context.IMul(u32, meshlet, C(mesh.MaxPrimitives * 3)));
++
++                // one triangle a step: it is drawn when it is within the count and all three of its vertices are within the
++                // meshlet's; an index past the last vertex would name the next meshlet's vertices here (the mesh stage drops
++                // such a triangle), which drew long slivers across the scene
++                Loop(C(mesh.MaxPrimitives), n =>
++                {
++                    SpvInstruction[] index = new SpvInstruction[3];
++                    SpvInstruction live = context.ULessThan(boolType, n, count);
++
++                    for (int k = 0; k < 3; k++)
++                    {
++                        SpvInstruction at = context.IAdd(u32, context.IMul(u32, n, C(3)), C(primitives + 4 + k));
++                        SpvInstruction word = context.Load(u32, Shared(context.ShiftRightLogical(u32, at, C(2))));
++                        SpvInstruction shift = context.IMul(u32, context.BitwiseAnd(u32, at, C(3)), C(8));
++                        index[k] = context.BitwiseAnd(u32, context.ShiftRightLogical(u32, word, shift), C(0xff));
++                        live = context.LogicalAnd(boolType, live, context.ULessThan(boolType, index[k], C(mesh.MaxVertices)));
++                    }
++
++                    for (int k = 0; k < 3; k++)
++                    {
++                        Put(context.IAdd(u32, indexBase, context.IAdd(u32, context.IMul(u32, n, C(3)), C(k))),
++                            context.Select(u32, live, context.IAdd(u32, firstVertex, index[k]), firstVertex));
++                    }
++                });
++            }
++
++            context.Return();
++            context.FunctionEnd();
++
++            context.AddEntryPoint(ExecutionModel.GLCompute, entry, "main", context.GlobalVariables.ToArray());
++            context.AddExecutionMode(entry, ExecutionMode.LocalSize, (SpvLiteralInteger)mesh.Threads, (SpvLiteralInteger)1, (SpvLiteralInteger)1);
++        }
++
+         private static SpvInstruction FindInput(CodeGenContext context, IoVariable ioVariable)
+         {
+             foreach ((IoDefinition definition, SpvInstruction variable) in context.Inputs)

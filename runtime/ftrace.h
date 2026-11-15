@@ -1,4 +1,4 @@
-// Frame trace (TOTK_FTRACE=<first frame>:<frames>[:<path>], a diagnostic): one timeline of what the game's threads, the
+// Frame trace (REKARINA_FTRACE=<first frame>:<frames>[:<path>], a diagnostic): one timeline of what the game's threads, the
 // replay, the completion thread and the GPU do during a few frames, on the clock plat_now_ns reads. Each event is a tag,
 // the thread and three words. ftrace_frame (at each present) opens and closes the window; a few frames after it closes,
 // the events are written as text, sorted by time: <ms since the window opened> <thread> <tag> <a> <b> <c>.

@@ -17,6 +17,7 @@
 #include <wctype.h>
 
 #include "../ftrace.h"   // DEBUG-FAULTTRACE
+#include "cfg.h"
 #include "platform.h"
 
 _Static_assert(sizeof(PlatMutex) == sizeof(SRWLOCK), "PlatMutex holds an SRWLOCK");
@@ -174,9 +175,9 @@ uint32_t plat_cpu_fast(uint32_t *slow) {
         }
         free(buf);
         if (!f) f = plat_cpu_count(), r = 0;   // no answer: one kind of core
-        // DEBUG-CPUSLOW: TOTK_CPU_SLOW=<n> calls n of the processors slow ones, to run the paths a hybrid processor
+        // DEBUG-CPUSLOW: REKARINA_CPU_SLOW=<n> calls n of the processors slow ones, to run the paths a hybrid processor
         // takes (thread counts by plat_cpu_weighted, plat_thread_background) on a machine that has one kind of core
-        const char *fake = getenv("TOTK_CPU_SLOW");
+        const char *fake = cfg_env("REKARINA_CPU_SLOW");
         if (fake && atoi(fake) > 0 && (uint32_t)atoi(fake) < f + r) r = (uint32_t)atoi(fake), f = plat_cpu_count() - r;
         fast = f, rest = r, known = 1;
     }
@@ -757,8 +758,8 @@ static int mem_state_resident(uint64_t addr, uint64_t limit, uint64_t *end) {
 int plat_mem_state(uint64_t addr, uint64_t limit, uint64_t *end) {
     MEMORY_BASIC_INFORMATION mbi;
     {
-        static int fast = -1;   // TOTK_MEMSTATE_FAST=0: every query through VirtualQuery, as before
-        if (fast < 0) { const char *e = getenv("TOTK_MEMSTATE_FAST"); fast = !e || *e != '0'; }
+        static int fast = -1;   // REKARINA_MEMSTATE_FAST=0: every query through VirtualQuery, as before
+        if (fast < 0) { const char *e = cfg_env("REKARINA_MEMSTATE_FAST"); fast = !e || *e != '0'; }
         // only for a question of STATE_PAGES pages or fewer: a caller that asks about more gets the whole run, as before
         int st = fast && limit > addr && limit - (addr & ~0xfffull) <= (uint64_t)STATE_PAGES << 12 ? mem_state_resident(addr, limit, end) : -1;
         if (st >= 0) return st;
@@ -779,7 +780,7 @@ int plat_mem_state(uint64_t addr, uint64_t limit, uint64_t *end) {
 // a call, and a run stops where its pages stop being resident), never after it.
 int plat_mem_state_walk(uint64_t addr, uint64_t limit, uint64_t *end) {
     static int fast = -1;
-    if (fast < 0) { const char *e = getenv("TOTK_MEMSTATE_FAST"); fast = !e || *e != '0'; }
+    if (fast < 0) { const char *e = cfg_env("REKARINA_MEMSTATE_FAST"); fast = !e || *e != '0'; }
     int st = fast && limit > addr ? mem_state_resident(addr, limit, end) : -1;
     return st >= 0 ? st : plat_mem_state(addr, limit, end);
 }
@@ -1017,7 +1018,7 @@ void plat_aligned_free(void *p) { _aligned_free(p); }
 
 // ---- process
 
-#ifdef TOTK_PGO_GEN
+#ifdef REKARINA_PGO_GEN
 // compiler-rt's profile runtime (an instrumented build, tools/build_game.py --pgo gen). It writes its counters from an
 // atexit handler, which ExitProcess skips; __llvm_profile_dump writes them once and makes later writes no-ops.
 int __llvm_profile_dump(void);
@@ -1041,7 +1042,7 @@ __attribute__((constructor)) static void pgo_flush_start(void) {
 #endif
 
 void plat_exit(int code) {
-#ifdef TOTK_PGO_GEN
+#ifdef REKARINA_PGO_GEN
     __llvm_profile_dump();
 #endif
     fflush(stdout);
@@ -1540,6 +1541,16 @@ int plat_os_version(char *out, size_t cap) {
     return 1;
 }
 
+// The BIOS's product name ("ROG Ally RC71L_RC71L", "Jupiter"); Wine fills the key from the host's DMI.
+int plat_machine_name(char *out, size_t cap) {
+    wchar_t w[256];
+    DWORD size = sizeof w;
+    if (RegGetValueW(HKEY_LOCAL_MACHINE, L"HARDWARE\\DESCRIPTION\\System\\BIOS", L"SystemProductName", RRF_RT_REG_SZ,
+                     NULL, w, &size) != ERROR_SUCCESS)
+        return 0;
+    return WideCharToMultiByte(CP_UTF8, 0, w, -1, out, (int)cap, NULL, NULL) != 0;
+}
+
 int plat_is_wine(void) {
     HMODULE nt = GetModuleHandleW(L"ntdll.dll");
     return nt && GetProcAddress(nt, "wine_get_version") != NULL;
@@ -1927,10 +1938,10 @@ void plat_ipc_close(PlatIpc *p) {
 
 
 // ---- restart
-// TOTK_RESTART_WAIT names the process that called plat_restart, as its id and creation time: a process that has only
+// REKARINA_RESTART_WAIT names the process that called plat_restart, as its id and creation time: a process that has only
 // reused the id is not waited for. Waiting keeps the new process off the old one's files (the log it moves at start,
 // the saves) until the old one is gone; no handle is inherited, so none of them stays open in the new one either.
-#define RESTART_WAIT "TOTK_RESTART_WAIT"
+#define RESTART_WAIT "REKARINA_RESTART_WAIT"
 
 static uint64_t process_created(HANDLE h) {
     FILETIME c, e, k, u;

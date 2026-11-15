@@ -14,12 +14,15 @@ the .NET 10 SDK and Python 3.12+ with Pillow (.venv). The folder holds:
                file puts the folder, tools/ and recomp/ on sys.path
     llvm/      LLVM 23 (clang, lld, llvm-ar, the clang resource headers) and llvm/sysroot: the files of the sniper SDK
                sysroot the game's compile and link read, nothing else (recorded while building the runtime library)
-    runtime/   libtotkrt.a and libtotkrt-v2.a (build_game.py --make-runtime-lib --sysroot, x86-64-v3 and v2), the
+    runtime/   librekarina.a and librekarina-v2.a (build_game.py --make-runtime-lib --sysroot, x86-64-v3 and v2), the
                runtime headers, romfs.c, patches.c and ov_zstd.c (compiled per install), totk.png (the window icon),
                deps/ (Vulkan headers 1.4.363, VMA, zstd built static; SDL3, Opus and libvpx come from the sysroot)
     bin/       totk_xlate (+ .id), hactool, ninja, libSDL3.so.0 (the sysroot's; the game finds it beside itself)
-    recomp/, tools/, data/, installer/, licenses/, THIRD_PARTY_NOTICES.md, totk.ini.example, VERSION
+    recomp/, tools/, data/, installer/, licenses/, THIRD_PARTY_NOTICES.md, rekarina.ini.example, VERSION
     AppRun, totk-setup.desktop, totk-setup.png   the AppImage entry: python/bin/python3 -m installer.gui
+
+--oot makes the toolchain folder tools/make_rekarina_release.py --from takes for OoT's Linux setup: the same folder
+without the TotK shader list (it needs the refs/MacNativeGames checkout) and without the TotK setup's bundle check.
 
 --appimage packs the folder with appimagetool and the static type-2 runtime (no libfuse2 on the host). --prove compiles
 the generated C and links build/release-linux-check/totk with the folder's tools only, then runs the probes beside it.
@@ -72,6 +75,9 @@ PINS = {
     'vulkan-headers-src': ('https://github.com/KhronosGroup/Vulkan-Headers/archive/refs/tags/v1.4.363.tar.gz',
                            'cbaf687d3c59b9666fe080e7f8396b6b4f4d344a768ee6b337c59852f4526b68'),
     'vma-header': build_game.VMA_FETCH,
+    # OoT's movies are AV1 (runtime/ns2_codec.c): dav1d, the version of the Windows deps' API (7.0)
+    'dav1d-src': ('https://code.videolan.org/videolan/dav1d/-/archive/1.5.1/dav1d-1.5.1.tar.gz',
+                  'fa635e2bdb25147b1384007c83e15de44c589582bb3b9a53fc1579cb9d74b695'),
     # appimagetool and the type-2 runtime from release tags, not "continuous", whose uploads change under the same
     # URL and would stop the build at the hash check
     'appimagetool': ('https://github.com/AppImage/appimagetool/releases/download/1.9.1/appimagetool-x86_64.AppImage',
@@ -182,6 +188,35 @@ def build_deps(out, llvm, sysroot):
     shutil.copy2(lib / 'libzstd.a', d / 'lib' / 'libzstd.a')
     for name in ('zstd.h', 'zstd_errors.h'):
         shutil.copy2(lib / name, d / 'include' / name)
+    build_dav1d(d, llvm, sysroot)
+
+
+def build_dav1d(d, llvm, sysroot):
+    """libdav1d.a and its headers into deps (OoT's AV1 movies), built with the folder's clang against the sysroot.
+    Needs meson (the system's, else the .venv's) and nasm (the assembly, about a third of the decoder's speed) on the
+    build machine only."""
+    src = tar_extract('dav1d-src', WORK / 'dav1d', ['dav1d-1.5.1'], strip=1)
+    build = WORK / 'dav1d-build'
+    if not (build / 'src' / 'libdav1d.a').is_file():
+        native = WORK / 'dav1d-native.ini'
+        cc = [str(llvm / 'bin' / 'clang'), '--target=x86_64-linux-gnu', f'--sysroot={sysroot}']
+        native.write_text("[binaries]\nc = %r\nar = %r\nstrip = %r\n" % (cc, str(llvm / 'bin' / 'llvm-ar'),
+                                                                        str(llvm / 'bin' / 'llvm-strip')), encoding='utf-8')
+        meson = shutil.which('meson') or Path(sys.executable).with_name('meson')
+        shutil.rmtree(build, ignore_errors=True)
+        # the release's ninja (build_bin copies it into bin/ later; the deps come first), executable: a zip keeps no mode
+        nb = WORK / 'ninja-bin'
+        nb.mkdir(exist_ok=True)
+        shutil.copy2(mr.unpack('ninja-linux') / 'ninja', nb / 'ninja')
+        (nb / 'ninja').chmod(0o755)
+        env = dict(os.environ, PATH=f'{nb}:{os.environ.get("PATH", "")}')
+        run([meson, 'setup', build, src, '--native-file', native, '--buildtype=release', '--default-library=static',
+             '-Denable_tools=false', '-Denable_tests=false', '-Denable_examples=false'], env=env)
+        run([meson, 'compile', '-C', build], env=env, stdout=subprocess.DEVNULL)
+    shutil.copy2(build / 'src' / 'libdav1d.a', d / 'lib' / 'libdav1d.a')
+    (d / 'include' / 'dav1d').mkdir(parents=True, exist_ok=True)
+    for h in sorted((src / 'include' / 'dav1d').glob('*.h')) + sorted((build / 'include' / 'dav1d').glob('*.h')):
+        shutil.copy2(h, d / 'include' / 'dav1d' / h.name)
 
 
 def build_bin(out, llvm, sysroot):
@@ -205,16 +240,16 @@ def build_bin(out, llvm, sysroot):
 # ---- runtime/ ----------------------------------------------------------------------------------------------------------
 
 def runtime_lib(out, llvm, sysroot):
-    """libtotkrt.a (x86-64-v3) and libtotkrt-v2.a (x86-64-v2), so a machine without AVX2 can install too."""
+    """librekarina.a (x86-64-v3) and librekarina-v2.a (x86-64-v2), so a machine without AVX2 can install too."""
     version = mr.lifted_version()
     rt = out / 'runtime'
-    for cpu, name in (('v3', 'libtotkrt.a'), ('v2', 'libtotkrt-v2.a')):
+    for cpu, name in (('v3', 'librekarina.a'), ('v2', 'librekarina-v2.a')):
         build = CHECK / f'rtlib-{cpu}'
         shutil.rmtree(build, ignore_errors=True)
         run([sys.executable, ROOT / 'tools' / 'build_game.py', '--make-runtime-lib', '--toolchain', llvm,
              '--sysroot', sysroot, '--cpu', cpu, '--deps', out / 'runtime' / 'deps', '--ninja', out / 'bin' / 'ninja',
              '--version', version, '--gen', MAIN_ROOT / 'generated' / version, '--out', build])
-        shutil.copy2(build / 'libtotkrt.a', rt / name)
+        shutil.copy2(build / 'librekarina.a', rt / name)
     for p in sorted((ROOT / 'runtime').rglob('*')):
         if p.suffix in mr.RUNTIME_SUFFIXES and p.is_file():
             (rt / p.relative_to(ROOT / 'runtime')).parent.mkdir(parents=True, exist_ok=True)
@@ -229,12 +264,19 @@ def runtime_lib(out, llvm, sysroot):
 
 
 def used_sysroot_files(out, llvm, sysroot, rtlib_build):
-    """The sysroot files a game build reads: the headers of the runtime's compile (its .d files), of the install-side
-    sources and of hostcheck, and every library and object of a link (lld --trace) of the runtime library with the
-    flags and libraries build_game.py uses, its references to the generated code left unresolved."""
+    """The sysroot files a game build reads: the headers of the runtime's compile (its .d files, or ninja's deps log,
+    which takes them in and deletes them: `deps = gcc`), of the install-side sources and of hostcheck, and every library
+    and object of a link (lld --trace) of the runtime library with the flags and libraries build_game.py uses, its
+    references to the generated code left unresolved. Paths the compile names relative are the checkout's (build_game.py
+    runs ninja there). Reading only the .d files, none of the runtime's own headers came along (SDL3 among them) and a
+    player's build of OoT failed on runtime/audio_mixer.c."""
     used = set()
     for dep in rtlib_build.rglob('*.d'):
         used.update(re.findall(r'\S+', dep.read_text(encoding='utf-8', errors='replace').replace('\\\n', ' ')))
+    if (rtlib_build / '.ninja_deps').is_file():
+        deps = subprocess.run([str(out / 'bin' / 'ninja'), '-f', str(rtlib_build / 'build.ninja'), '-t', 'deps'], cwd=ROOT,
+                              capture_output=True, text=True).stdout
+        used.update(line.strip() for line in deps.splitlines() if line.startswith(' ') and line.strip())
     probe = CHECK / 'sysroot-probe'
     shutil.rmtree(probe, ignore_errors=True)
     probe.mkdir(parents=True)
@@ -249,7 +291,7 @@ def used_sysroot_files(out, llvm, sysroot, rtlib_build):
             used.update(re.findall(r'\S+', (probe / f'{i}.d').read_text().replace('\\\n', ' ')))
     trace = subprocess.run([str(c) for c in [
         llvm / 'bin' / 'clang', '--target=x86_64-linux-gnu', f'--sysroot={sysroot}', *build_game.LINK_FLAGS[:3],
-        '-Wl,--trace', '-Wl,--unresolved-symbols=ignore-all', '-Wl,--whole-archive', out / 'runtime' / 'libtotkrt.a',
+        '-Wl,--trace', '-Wl,--unresolved-symbols=ignore-all', '-Wl,--whole-archive', out / 'runtime' / 'librekarina.a',
         '-Wl,--no-whole-archive', '-L', out / 'runtime' / 'deps' / 'lib',
         *RELEASE_LIBS, '-o', probe / 'trace.out']],
         capture_output=True, text=True)
@@ -261,7 +303,7 @@ def used_sysroot_files(out, llvm, sysroot, rtlib_build):
     for p in used:
         path = Path(p)
         if not path.is_absolute():
-            continue
+            path = ROOT / path
         for q in (path, path.resolve()):   # the name read and, through symlinks, the file
             if str(q).startswith(root + '/') and q.exists():
                 files.add(q)
@@ -377,7 +419,7 @@ def build_python(out, llvm, sysroot):
     site = next(py.glob('lib/python3.*/site-packages'))
     # The release folder, tools/ and recomp/ on sys.path, as the Windows python's ._pth does: `python -m installer` and
     # the tools importing their siblings work from any directory
-    (site / 'totk-release.pth').write_text('../../../..\n../../../../tools\n../../../../recomp\n', encoding='utf-8')
+    (site / 'rekarina-release.pth').write_text('../../../..\n../../../../tools\n../../../../recomp\n', encoding='utf-8')
     check = subprocess.run([str(exe), '-c', 'import tkinter, numpy, lz4.block, cryptography, cffi, pycparser; '
                             'print("python ok: Tcl", tkinter.Tcl().eval("info patchlevel"), "numpy", numpy.__version__)'],
                            cwd='/', capture_output=True, text=True)
@@ -388,7 +430,7 @@ def build_python(out, llvm, sysroot):
 
 # ---- licences, AppImage entry ------------------------------------------------------------------------------------------
 
-def collect_licenses(out, sysroot):
+def collect_licenses(out, sysroot, shader_list_wanted=True):
     lic = out / 'licenses'
     lic.mkdir(parents=True, exist_ok=True)
     doc = sysroot / 'usr' / 'share' / 'doc'
@@ -407,8 +449,9 @@ def collect_licenses(out, sysroot):
         (out / 'python' / 'lib' / f'python{sys_version(out)}' / 'LICENSE.txt', 'python-LICENSE.txt'),
         (ROOT / 'runtime' / 'shaders' / 'ffx' / 'LICENSE.txt', 'FidelityFX-FSR-LICENSE.txt'),
         (WORK / 'hactool-linux' / 'LICENSE', 'hactool-LICENSE.txt'),
-        (MAIN_ROOT / 'refs' / 'MacNativeGames' / 'LICENSE', 'MacNativeGames-LICENSE.txt'),
-    ]
+        (WORK / 'dav1d' / 'COPYING', 'dav1d-COPYING.txt'),
+        (WORK / 'dav1d' / 'doc' / 'PATENTS', 'dav1d-PATENTS.txt'),
+    ] + ([(MAIN_ROOT / 'refs' / 'MacNativeGames' / 'LICENSE', 'MacNativeGames-LICENSE.txt')] if shader_list_wanted else [])
     for src, name in pairs:
         shutil.copy2(src, lic / name)
     import tarfile   # Debian's libvpx copyright carries no patent grant: the WebM PATENTS text from the pinned source tag
@@ -534,21 +577,21 @@ def prove(out, cpu='v3'):
     t0 = time.time()
     run([out / 'python' / 'bin' / 'python3', out / 'tools' / 'build_game.py', '--toolchain', out / 'llvm', '--cpu', cpu,
          '--sysroot', out / 'llvm' / 'sysroot', '--deps', out / 'runtime' / 'deps', '--runtime', out / 'runtime',
-         '--runtime-lib', out / 'runtime' / ('libtotkrt-v2.a' if cpu == 'v2' else 'libtotkrt.a'),
+         '--runtime-lib', out / 'runtime' / ('librekarina-v2.a' if cpu == 'v2' else 'librekarina.a'),
          '--ninja', out / 'bin' / 'ninja', '--version', version,
          '--gen', gen, '--out', chk, '--exefs', ext / 'exefs', '--romfs', ext / 'romfs', '--profile', chk / 'profile'],
         env=env)
     print(f'prove: build {time.time() - t0:.0f} s')
     shutil.copy2(out / 'bin' / 'libSDL3.so.0', chk / 'libSDL3.so.0')
-    needed = subprocess.run(['readelf', '-d', str(chk / 'totk')], capture_output=True, text=True).stdout
+    needed = subprocess.run(['readelf', '-d', str(chk / 'rekarina')], capture_output=True, text=True).stdout
     print('prove: needs', ', '.join(re.findall(r'\[(lib[^\]]+)\]', needed)))
-    glibc = sorted(set(re.findall(r'GLIBC_(\d+\.\d+)', subprocess.run(['readelf', '-V', str(chk / 'totk')],
+    glibc = sorted(set(re.findall(r'GLIBC_(\d+\.\d+)', subprocess.run(['readelf', '-V', str(chk / 'rekarina')],
                                                                          capture_output=True, text=True).stdout)),
                    key=lambda v: tuple(map(int, v.split('.'))))
     print(f'prove: newest glibc symbol version {glibc[-1] if glibc else "none"}')
     failed = []
     for probe in ['--selftest', *mr.PROBES]:
-        r = subprocess.run([str(chk / 'totk'), probe], cwd=chk, capture_output=True, text=True, timeout=900)
+        r = subprocess.run([str(chk / 'rekarina'), probe], cwd=chk, capture_output=True, text=True, timeout=900)
         tail = (r.stdout.strip().splitlines() or [''])[-1]
         print(f'{probe}: exit {r.returncode}: {tail}')
         if r.returncode:
@@ -562,6 +605,7 @@ def main():
     ap.add_argument('--out', type=Path, required=True, help='release folder (replaced)')
     ap.add_argument('--appimage', type=Path, help='also pack the folder as this AppImage')
     ap.add_argument('--prove', action='store_true', help='only run the compile-and-probe check on an existing folder')
+    ap.add_argument('--oot', action='store_true', help="the toolchain folder for OoT's setup (tools/make_rekarina_release.py)")
     ap.add_argument('--cpu', choices=('v2', 'v3'), default='v3',
                     help='--prove: build and run the check for this CPU level (default v3)')
     args = ap.parse_args()
@@ -579,12 +623,13 @@ def main():
     rtlib = runtime_lib(out, llvm, sysroot)
     build_sysroot(out, sysroot, used_sysroot_files(out, llvm, sysroot, rtlib))
     build_python(out, llvm, sysroot)
-    mr.build_sources(out, {})   # no profiles: the Linux setup compiles without one (installer/layout.py, pgo_dir)
-    collect_licenses(out, sysroot)
+    mr.build_sources(out, {}, shader_list_wanted=not args.oot)   # no profiles: the Linux setup compiles without one
+    collect_licenses(out, sysroot, shader_list_wanted=not args.oot)
     build_entry(out)
     mr.check_folder(out)
     check_glibc(out)
-    check_bundle(out)
+    if not args.oot:
+        check_bundle(out)
     mr.sizes(out)
     if args.appimage:
         write_appimage(out, args.appimage.resolve())

@@ -16,7 +16,8 @@ Static recompilation of a Switch 2 game (ARM64) into a native Windows x86-64 exe
 ## Names
 
 - The player sees Rekarina's names: `Rekarina.exe`, `rekarina.ini`, `logs\rekarina.log`, `rekarina_xlate.exe` with its `.id`, `rekarina_dlssg.dll` (`runtime/host.h` `RT_FILE_STEM`; `tools/package_oot.py` and `tools/make_rekarina_release.py` name the files). A folder made before those names existed keeps working: the game moves `totk.ini` over and still takes the old translator and library names.
-- Build outputs (`build/<ver>/totk.exe`, `build/xlate/totk_xlate.exe`), the `TOTK_` prefix of environment variables and the TotK installer keep the runtime's original names.
+- Our own names are Rekarina's everywhere (renamed from the TotK recompiler's `totk` on 2026-11-15): the build's `build/<ver>/rekarina.exe` and `rekarina.map`, `librekarina.a`, `runtime/rekarina.rc`, `rekarina.ini.example`, the setup's `rekarina-install.json`, the `REKARINA_` prefix of settings. The old ones are still read where a player or a script may have them: a `TOTK_` environment variable or ini key is the same setting (`runtime/cfg.c`), a `totk-install.json` is taken over (`installer/state.py`).
+- `totk` stays where it is not ours to rename: TotK the game and its setup's player-facing files (`totk.exe`, `totk.ini`, `TotK-Setup`), upstream names and paths (`totk-pc-recomp`, MacNativeGames' `games/totk`), the binary signatures of saved caches (`TOTKPKEY` …), and the translator's `totk_xlate` (next item).
 - `tools/build_xlate.py`, `tools/xlate/Program.cs`, the `.csproj` and `tools/xlate/patches/` make up the translator identity. A change to any of them, a rename included, makes every player's shader cache stale: change them only when the translation itself has to change.
 
 ## Game content boundary

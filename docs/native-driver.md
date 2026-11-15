@@ -86,21 +86,21 @@ read in docs: hedge-dev/UnleashedRecomp, rt64, Ship of Harkinian.
 
 ## Step 0: measure
 
-- Render thread sampling profile (TOTK_PROFILE, TOTK_PROFILE_RENDER=1, tools/prof_report.py): where the 5-6 us per draw
+- Render thread sampling profile (REKARINA_PROFILE, REKARINA_PROFILE_RENDER=1, tools/prof_report.py): where the 5-6 us per draw
   go, so the parts of the replay that are already cheap are kept.
-- Slow-frame chains (TOTK_PROFILE_SLOW): the ~120 ms frame every 30 frames on the porch, of which only ~30 ms is replay
+- Slow-frame chains (REKARINA_PROFILE_SLOW): the ~120 ms frame every 30 frames on the porch, of which only ~30 ms is replay
   and waits.
-- GPU time per submission part (TOTK_TRACE=perf) and per pass (TOTK_GPU_PASSTIME): how much GPU time the translated
+- GPU time per submission part (REKARINA_TRACE=perf) and per pass (REKARINA_GPU_PASSTIME): how much GPU time the translated
   shaders take (global memory table lookups, compare-and-swap loops) against the frame.
 - Which threads record command buffers, and how many recordings a frame submits: the parallelism step 3 can count on.
 
 ## Step 1: frames in flight
 
-nvnQueuePresentTexture waits for the frame's own GPU work (TOTK_PRESENT_SYNC=c, nvn_api_obj.c), added because the game
+nvnQueuePresentTexture waits for the frame's own GPU work (REKARINA_PRESENT_SYNC=c, nvn_api_obj.c), added because the game
 reads GPU results of the frame it just presented during its next frame without an NVN sync, and about every other frame
 came out white while the camera moved. Its records are contradictory about which read it is (the 1x1 "luminance" is a
 sun visibility test that stops ~100 frames after a load), so the step starts with an A/B over the sync variants and the
-fence readback (TOTK_PRESENT_SYNC c / 1 / n, TOTK_FENCE_READBACK 0 / 1), counting flashes in shot series with a moving
+fence readback (REKARINA_PRESENT_SYNC c / 1 / n, REKARINA_FENCE_READBACK 0 / 1), counting flashes in shot series with a moving
 camera.
 
 The console's GPU writes its results into memory in GPU order, with no CPU involved. The port should too:
@@ -112,7 +112,7 @@ The console's GPU writes its results into memory in GPU order, with no CPU invol
 - Small render targets the CPU reads: the fence readback (vk_texture.c vk_texture_fence_readback) copies them out at
   the end of their submission; a compute pass that writes the block-linear storage straight into the guest pool would
   take the completion thread out of it as well.
-- Only then is the present's wait replaced by a bound: the GPU at most one frame behind (TOTK_PRESENT_SYNC=1), later two.
+- Only then is the present's wait replaced by a bound: the GPU at most one frame behind (REKARINA_PRESENT_SYNC=1), later two.
 - Where a CPU read must still wait, it waits for that read only: guard the pages of pending GPU results (no access until
   their fence, a fault waits for it), as the write-watch side already guards idle pool pages
   (platform/win32.c plat_mem_fault_hook).

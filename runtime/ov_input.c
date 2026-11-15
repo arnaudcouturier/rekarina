@@ -1,11 +1,11 @@
 // Adapted from MacNativeGames games/totk/runtime/input.c and hid_feedback.c @ b75be8cf (MIT, Copyright (c) 2026
 // MacNativeGames contributors).
 // nn::hid overrides: one connected controller fed by input_poll (gamepad and keyboard,
-// runtime/input_win.c; nothing pressed with TOTK_INPUT=none). Docked (default) it is a full-key controller as player 1 (id 0, style bit 0); with
-// TOTK_OPERATION_MODE=handheld it is the handheld controller (id 0x20, style bit 1) and player 1 is not connected,
+// runtime/input_win.c; nothing pressed with REKARINA_INPUT=none). Docked (default) it is a full-key controller as player 1 (id 0, style bit 0); with
+// REKARINA_OPERATION_MODE=handheld it is the handheld controller (id 0x20, style bit 1) and player 1 is not connected,
 // which is the controller the game reads in that mode. Mouse and keyboard report no input. The controller has two
-// vibration devices (left, right) played on the gamepad's motors (TOTK_RUMBLE=0: none) and a six-axis sensor fed by
-// the gamepad's gyro and accelerometer (TOTK_MOTION=0, live: reads at rest). State layouts follow libnx HID.
+// vibration devices (left, right) played on the gamepad's motors (REKARINA_RUMBLE=0: none) and a six-axis sensor fed by
+// the gamepad's gyro and accelerometer (REKARINA_MOTION=0, live: reads at rest). State layouts follow libnx HID.
 #include <math.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -192,10 +192,11 @@ static void once(volatile int32_t *flag, const char *fmt, uint32_t v) {
     if (!plat_xchg32(flag, 1)) rt_log(fmt, v);
 }
 
-// TOTK_RUMBLE_STRENGTH (percent, 0..300, default 130; 0 = off) and TOTK_RUMBLE_CURVE (exponent on the amplitude, 0.2..1.5,
+// REKARINA_RUMBLE_STRENGTH (percent, 0..300, default 130; 0 = off) and REKARINA_RUMBLE_CURVE (exponent on the amplitude, 0.2..1.5,
 // default 0.6). HD rumble is strong at low amplitude, an ERM motor hardly turns there, so weak values are lifted by the
 // curve (0.1 -> 0.25) and the strength scales the result (saturating at 65535; 0.66 and up reach full drive at 130 %).
-// Both are live settings (the menu): read again whenever cfg_version changes.
+// A pad that plays the game's bands as they are gets the same curve and strength on their amplitudes (hd_amp); 100 % and
+// curve 1 leave them as the game sent them. Both are live settings (the menu): read again whenever cfg_version changes.
 static float rumble_strength = 1.3f, rumble_curve = 0.6f;
 static volatile int32_t rumble_cfg_logged;
 static unsigned rumble_cfg_seen = ~0u;
@@ -207,8 +208,8 @@ static void rumble_cfg(void) {
     unsigned v = cfg_version();
     if (v == rumble_cfg_seen) return;
     rumble_cfg_seen = v;
-    rumble_strength = cfg_float("TOTK_RUMBLE_STRENGTH", 0, 300) / 100;
-    rumble_curve = cfg_float("TOTK_RUMBLE_CURVE", 0.2f, 1.5f);
+    rumble_strength = cfg_float("REKARINA_RUMBLE_STRENGTH", 0, 300) / 100;
+    rumble_curve = cfg_float("REKARINA_RUMBLE_CURVE", 0.2f, 1.5f);
     int trig = input_rumble_triggers_enabled();
     if (!plat_xchg32(&rumble_cfg_logged, 1))
         rt_log("hid: rumble strength %.0f%%, curve %.2f, triggers %s", rumble_strength * 100, rumble_curve, trig ? "on" : "off");
@@ -226,7 +227,7 @@ static uint32_t handle_id(Cpu *c, const char *fn) {
 }
 
 // int GetVibrationDeviceHandles(VibrationDeviceHandle *out, int count, const NpadIdType &id, NpadStyleSet style):
-// utility::GetVibrationDeviceHandles' table, the first style bit in its order; none with TOTK_RUMBLE=0.
+// utility::GetVibrationDeviceHandles' table, the first style bit in its order; none with REKARINA_RUMBLE=0.
 static void ov_vibration_handles(Cpu *c) {
     uint32_t *out = arg_p(c, 0), style = (uint32_t)arg_x(c, 3);
     int max = (int)arg_x(c, 1);
@@ -236,7 +237,7 @@ static void ov_vibration_handles(Cpu *c) {
     static volatile int32_t asked;
     rumble_cfg();
     // strength 0 keeps the devices (silent), so the menu can turn rumble up again
-    if (env_zero("TOTK_RUMBLE")) { once(&asked, "hid: no vibration devices (TOTK_RUMBLE=%u)", 0); ret_x(c, 0); return; }
+    if (env_zero("REKARINA_RUMBLE")) { once(&asked, "hid: no vibration devices (REKARINA_RUMBLE=%u)", 0); ret_x(c, 0); return; }
     static const struct { uint8_t bit, n; uint32_t base; } t[] = {
         {0, 2, 0x3}, {1, 2, 0x4}, {2, 2, 0x5}, {3, 1, 0x6}, {4, 1, 0x10007}, {5, 1, 0x8}, {10, 1, 0xd}, {8, 2, 0x4},
         {30, 2, 0x21}, {29, 2, 0x20}};
@@ -251,7 +252,7 @@ static void ov_vibration_handles(Cpu *c) {
 }
 
 // int GetSixAxisSensorHandles(SixAxisSensorHandle *out, int count, const NpadIdType &id, NpadStyleSet style):
-// utility::GetSixAxisSensorHandle's order (one sensor per style, two for the Joy-Con pair). Also with TOTK_MOTION=0: the
+// utility::GetSixAxisSensorHandle's order (one sensor per style, two for the Joy-Con pair). Also with REKARINA_MOTION=0: the
 // sensor then reads at rest (six_fill), so the menu can turn motion on while the game runs.
 static void ov_six_axis_handles(Cpu *c) {
     uint32_t *out = arg_p(c, 0), style = (uint32_t)arg_x(c, 3);
@@ -295,18 +296,26 @@ static VibrationValue vib_last[2] = {{0, 160, 0, 320}, {0, 160, 0, 320}};   // v
 static uint64_t vib_at[2], sent_at;                                          // vib_lock
 static uint16_t sent_low, sent_high;                                         // vib_lock
 static int vib_allowed = 1;                                                  // vib_lock: PermitVibration
+static InputVibration sent_hd[2] = {{0, 160, 0, 320}, {0, 160, 0, 320}};     // vib_lock
 
 static float clamp01(float v) { return v > 0 ? (v < 1 ? v : 1) : 0; }   // NaN -> 0
+// A band's amplitude on a pad that plays the game's bands as they are (input.c hd_send): the motors' curve and strength
+// (rumble_motor), at most 1.0, the step the format calls safe.
+static float hd_amp(float a) { return a > 0 ? clamp01(powf(clamp01(a), rumble_curve) * rumble_strength) : 0; }
 // Share of a band at f Hz that goes to the light (high-frequency, right) motor: none at 160 Hz and below (the low band's
 // neutral frequency), all at 320 Hz and above (the high band's), log scale between.
 static float light_share(float f) { return f > 160 ? (f < 320 ? log2f(f / 160) : 1) : 0; }
 
-// Switch HD rumble -> SDL_RumbleGamepad. Each side's two bands split by frequency between the heavy (low) and the light
-// (high) motor (light_share) and add up as energy per motor (root of the summed squares); the stronger side drives each
-// motor. A side the game has not updated for 250 ms is silent. Each send lasts 250 ms and is renewed every 50 ms while
-// the game streams, so the pad stops by itself when the game stops sending (pause, freeze). Under vib_lock.
+// Switch HD rumble -> the gamepad. For the two motors (SDL_RumbleGamepad) each side's two bands split by frequency between
+// the heavy (low) and the light (high) motor (light_share) and add up as energy per motor (root of the summed squares);
+// the stronger side drives each motor. Both sides also go along as the game sent them, the amplitudes through hd_amp and
+// the frequencies untouched, which a Switch Pro Controller or Joy-Con plays as they are (input_rumble_hd; a change of the
+// bands alone is then a change too). A side the game has not updated for 250 ms is silent. Each send lasts 250 ms and is
+// renewed every 50 ms while the game streams, so the pad stops by itself when the game stops sending (pause, freeze).
+// Under vib_lock.
 static void rumble_update(uint64_t now) {
     float heavy = 0, light = 0;
+    InputVibration hd[2] = {{0, 160, 0, 320}, {0, 160, 0, 320}};
     rumble_cfg();
     for (int s = 0; s < 2 && vib_allowed; s++) {
         if (!vib_at[s] || now - vib_at[s] > RUMBLE_STALE_NS) continue;
@@ -316,12 +325,17 @@ static void rumble_update(uint64_t now) {
         float l = sqrtf(al * sl * al * sl + ah * sh * ah * sh);
         if (h > heavy) heavy = h;
         if (l > light) light = l;
+        hd[s] = (InputVibration){hd_amp(al), v->freq_low, hd_amp(ah), v->freq_high};
     }
     uint16_t lo = motor(clamp01(heavy)), hi = motor(clamp01(light));
-    int changed = lo != sent_low || hi != sent_high, on = lo || hi;
+    int with_hd = input_rumble_hd();
+    int hd_on = hd[0].amp_low > 0 || hd[0].amp_high > 0 || hd[1].amp_low > 0 || hd[1].amp_high > 0;
+    int changed = lo != sent_low || hi != sent_high || (with_hd && memcmp(hd, sent_hd, sizeof hd)),
+        on = lo || hi || (with_hd && hd_on);
     if (changed ? on && now - sent_at < RUMBLE_MIN_GAP_NS : !on || now - sent_at < RUMBLE_REFRESH_NS) return;
-    input_rumble(lo, hi, on ? RUMBLE_MS : 0);
+    input_rumble(lo, hi, hd, on ? RUMBLE_MS : 0);
     sent_low = lo, sent_high = hi, sent_at = now;
+    memcpy(sent_hd, hd, sizeof hd);
 }
 
 static void play(int side, const VibrationValue *v) {
@@ -449,7 +463,7 @@ static void ov_six_stop(Cpu *c) {
 }
 
 // All max entries, newest first: the game reads all 16 it asks for and ignores the count (main+0x2a268e0). A short
-// history repeats its oldest sample. No motion (sensor not started, no gamepad, one without a gyro, TOTK_MOTION=0):
+// history repeats its oldest sample. No motion (sensor not started, no gamepad, one without a gyro, REKARINA_MOTION=0):
 // a controller lying still, not marked connected.
 static int six_fill(MotionState *s, int max, const uint32_t *h, const char *fn) {
     if (max <= 0) return 0;

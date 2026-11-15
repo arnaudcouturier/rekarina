@@ -8,9 +8,9 @@
 // in their 16:9 shape in the middle of the picture (the UI's full-screen projection squeezed horizontally; fades and
 // the menu backgrounds that redraw a capture of the whole picture stay full width), and wide_movie shows pre-rendered
 // movies in the same middle 16:9. The heights stay the game's (1440 and 1080), so only the width grows, by the shape's
-// ratio to 16:9; the present scales the picture to the window keeping its shape (gfx_present.c, TOTK_ASPECT=fit).
+// ratio to 16:9; the present scales the picture to the window keeping its shape (gfx_present.c, REKARINA_ASPECT=fit).
 //
-// Setting TOTK_GAME_ASPECT, read at start: "16:9" (the game's own, every set off), "window" (the shape of the window,
+// Setting REKARINA_GAME_ASPECT, read at start: "16:9" (the game's own, every set off), "window" (the shape of the window,
 // or of the monitor in fullscreen), or a fixed shape "21:9" (2560x1080 monitors, 64:27), "32:9". A shape within 1% of
 // 16:9 or narrower than it keeps the game's own sizes; the widest is 32:9.
 //
@@ -43,7 +43,7 @@ static int screen_size(int *w, int *h) {
 
 // The shape the setting asks for as width / height; 0 for the game's own.
 static double wanted_ratio(void) {
-    const char *s = cfg_value("TOTK_GAME_ASPECT");
+    const char *s = cfg_value("REKARINA_GAME_ASPECT");
     if (!strcmp(s, "21:9")) return 64.0 / 27.0;
     if (!strcmp(s, "32:9")) return 32.0 / 9.0;
     if (strcmp(s, "window")) return 0;
@@ -55,12 +55,12 @@ static double wanted_ratio(void) {
     return (double)w / h;
 }
 
-// TOTK_GAME_RES: the picture's height, 1080 up to 4320 ("window": the window's height, or the monitor's in
+// REKARINA_GAME_RES: the picture's height, 1080 up to 4320 ("window": the window's height, or the monitor's in
 // fullscreen, never below the game's 1440). 1080 is the one height below the game's own: a lighter picture for slower
 // GPUs, its scene and the DLSS modes shares of it as of any other picture (scale_k).
 #define PICTURE_MIN_H 1080
 static unsigned picture_height(void) {
-    const char *s = cfg_value("TOTK_GAME_RES");
+    const char *s = cfg_value("REKARINA_GAME_RES");
     int w = 0, h = GAME_H, min = PICTURE_MIN_H;
     if (!strcmp(s, "window")) {
         if (!screen_size(&w, &h)) h = GAME_H;
@@ -154,8 +154,8 @@ void wide_init(void) {
     rt_patch_switch(sh, 1);
     rt_patch_switch(sm, 1);
     scale_k = oh > GAME_H ? (double)oh / GAME_H : 1.0;
-    {   // DEBUG-SCALEK: TOTK_SCALE_K=<factor> replaces it (a test of what the game takes the fixed scale against)
-        const char *e = getenv("TOTK_SCALE_K");
+    {   // DEBUG-SCALEK: REKARINA_SCALE_K=<factor> replaces it (a test of what the game takes the fixed scale against)
+        const char *e = cfg_env("REKARINA_SCALE_K");
         if (e && *e) scale_k = atof(e);
     }
     rt_log("widescreen: picture %ux%u, scene %ux%u (%.0f%% of it), camera aspect ratio %.4f (16:9 is %.4f), UI and movies "

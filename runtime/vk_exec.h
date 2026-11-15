@@ -140,14 +140,14 @@ void vk_exec_pass_end(VkExec *ex);
 // Full memory barrier (all commands, all memory); ends the open pass first. Copies and dispatches order themselves with
 // it. Skipped when nothing was recorded since the last one.
 void vk_exec_barrier(VkExec *ex);
-// Before a dispatch: the full barrier, or none when it follows another dispatch directly (TOTK_DISPATCH_BARRIER).
+// Before a dispatch: the full barrier, or none when it follows another dispatch directly (REKARINA_DISPATCH_BARRIER).
 void vk_exec_dispatch_barrier(VkExec *ex);
 // The command stream between two operations that may write memory or end the pass (vk_exec.c vk_exec_op_quiet): its
 // number grows at each such operation; vk_exec_cur_op is the operation being replayed.
 extern uint64_t vk_exec_op_window;
 extern const op_hdr *vk_exec_cur_op;
 int vk_exec_op_quiet(uint32_t op);   // 1: the op neither writes memory nor ends the stretch
-// vk_texture.c (TOTK_TEX_ALIAS): commands that must run at the replay's current position. vk_exec_inline_begin returns
+// vk_texture.c (REKARINA_TEX_ALIAS): commands that must run at the replay's current position. vk_exec_inline_begin returns
 // the command buffer being recorded after a full barrier (an open pass is ended; *reopen says so), or VK_NULL_HANDLE
 // when this thread is not recording a replay. vk_exec_inline_end begins the pass again when it was open.
 // vk_exec_inline_buffer: a device buffer for transfers, destroyed when the submission completes.
@@ -181,7 +181,7 @@ void vk_exec_draw_shaders(const GfxShader **vs, const GfxShader **fs);
 VkBuffer vk_exec_inline_buffer(VkDeviceSize size);
 // vk_exec.c: the stand-in a 3D BC render target is drawn through goes with its image (vk_exec_image_gone).
 void vk_exec_bc_gone(VkImage image);
-// vk_hdr.c: with TOTK_HDR=1, notes a draw into a presented window texture (vk_hdr_track: set by the first present).
+// vk_hdr.c: with REKARINA_HDR=1, notes a draw into a presented window texture (vk_hdr_track: set by the first present).
 extern int vk_hdr_track;
 void vk_hdr_draw(VkExec *ex, const VkPipeInfo *info);
 // Scissor 0 clipped to the render area of the open pass; extent 0: nothing to draw.
@@ -194,7 +194,7 @@ int vk_exec_targets_recent(VkExec *ex, int any);
 // The current pass's targets with their formats, extents and the frames they were last rendered in (diagnostics).
 void vk_exec_targets_describe(VkExec *ex, char *buf, size_t cap);
 
-// TOTK_TRACE=gfx: replay counters of the current frame, logged and reset at each present (vk_exec_frame_log).
+// REKARINA_TRACE=gfx: replay counters of the current frame, logged and reset at each present (vk_exec_frame_log).
 typedef struct {
     uint64_t passes, draws_seen, draws, clears, copies, dispatches, submits;
     uint64_t relaxed_barriers;           // passes that followed a pass with the relaxed barrier (vk_exec.c relaxed_pass_barrier)
@@ -209,13 +209,13 @@ void vk_exec_frame_written(const tex_t *t);                    // vk_texture_gpu
 uint64_t vk_exec_recording_fence(void);                        // fence of the submission this thread records, else 0
 void vk_exec_frame_log(const tex_t *presented, uint64_t frame);
 
-// TOTK_DUMP=<frame> (vk_dump.c): between presents frame-1 and frame, every pass's targets and every dispatch's storage
-// images are copied out and written as PNGs to TOTK_DUMP_DIR (default "dump"), with passes.txt (targets, pipelines,
+// REKARINA_DUMP=<frame> (vk_dump.c): between presents frame-1 and frame, every pass's targets and every dispatch's storage
+// images are copied out and written as PNGs to REKARINA_DUMP_DIR (default "dump"), with passes.txt (targets, pipelines,
 // textures, samplers) and images.txt (per image value statistics). The hooks run only when vk_dump_armed is set.
 extern int vk_dump_armed;
 void vk_dump_init(void);                 // reads the environment; vk_exec_record's first call
 void vk_dump_pass_end(VkExec *ex);       // after vkCmdEndRendering
-void vk_probe_pass_end(VkExec *ex);      // DEBUG-PROBE: after vkCmdEndRendering, TOTK_PASS_PROBE=1
+void vk_probe_pass_end(VkExec *ex);      // DEBUG-PROBE: after vkCmdEndRendering, REKARINA_PASS_PROBE=1
 void vk_probe_dispatch(VkExec *ex, const GfxShader *cs, const VkPipeInfo *info);   // DEBUG-PROBE: after a dispatch
 VkDescriptorBufferInfo vk_exec_probe_ubo(VkExec *ex, int st, int slot);   // DEBUG-PROBE
 VkDescriptorBufferInfo vk_exec_probe_support(void);                     // DEBUG-PROBE
@@ -225,7 +225,7 @@ void vk_dump_dispatch(VkExec *ex, const GfxShader *cs, VkPipeline p, const VkPip
 void vk_dump_copy(VkExec *ex, uint32_t op, const void *payload);   // before a copy or texture clear is replayed
 void vk_dump_present(uint64_t frame);    // vk_be_present: waits for the dump frame's copies and closes the logs
 
-// c0, the NVN driver constant bank of one stage (vk_exec_draw.c; TOTK_FIX_C0=0 binds zeros instead): bank is
+// c0, the NVN driver constant bank of one stage (vk_exec_draw.c; REKARINA_FIX_C0=0 binds zeros instead): bank is
 // VK_C0_BYTES, stage an NVN stage (0 vertex, 1 fragment, 5 compute), ssbo and ubo the 16 bound slots of that stage.
 #ifdef GAME_NS2
 #define VK_C0_BYTES 0xA00u               // NVN2's mesh stage table runs to 0x870 (seedds/nxnative DMSH_DRV_SIZE)

@@ -112,8 +112,8 @@
     [UI_MENU_UPSCALE_GROUP] = "Upscaling e geração de fotogramas",
     [UI_MENU_FSR_VERSION] = "Versão do FSR",
     [UI_MENU_FSR_VERSION_DESC] = "Qual upscaler AMD FSR é usado quando o upscaler temporal é o AMD FSR. Automático usa o FSR 4.1 (aprendizagem automática) nas placas Radeon que o suportam e o FSR 3.1 em todas as outras. Aplica-se de imediato.",
-    [UI_MENU_TAA] = "Upscaler temporal",
-    [UI_MENU_TAA_DESC] = "Que upscaler a linha DLSS / DLAA usa: NVIDIA DLSS (GPU RTX) ou AMD FSR (qualquer GPU). Após reiniciar.",
+    [UI_MENU_TAA] = "Upscaler",
+    [UI_MENU_TAA_DESC] = "Que upscaler a linha DLSS / DLAA usa: NVIDIA DLSS (GPU RTX), AMD FSR (qualquer GPU, temporal) ou AMD FSR 1 (qualquer GPU, espacial: o mais leve, para placas antigas e portáteis). Após reiniciar.",
     [UI_MENU_FRAMEGEN] = "Geração de fotogramas",
     [UI_MENU_FRAMEGEN_DESC] = "Um fotograma gerado entre cada dois que o jogo desenha, com o HUD deixado de fora: AMD FSR em qualquer GPU, NVIDIA DLSS nas séries RTX 40 e 50. Após reiniciar.",
     [UI_MENU_FRAMEGEN_NEEDS] = "Requer DLSS / DLAA ligado: usa os seus vetores de movimento.",
@@ -229,14 +229,16 @@
                              "a câmara. O jogo lê os ícones no arranque, por isso mudam após reiniciar. Fazem parte dos "
                              "ficheiros do jogo, pelo que um botão que reatribuas em Controlos mantém o ícone antigo "
                              "no ecrã.",
-    [UI_MENU_PROMPTS_DESC_LIVE] = "Que botões os ícones do jogo mostram: Nintendo (os do próprio jogo), Xbox, PlayStation, o conjunto de contorno do próprio Rekarina ou PC: teclado e rato, com as teclas que atribuiu. A fila de botões acima é o conjunto escolhido, tal como o jogo o desenha. Os botões frontais seguem a disposição dos botões acima. Aplica-se de imediato.",
+    [UI_MENU_PROMPTS_DESC_LIVE] = "Que botões os ícones do jogo mostram. Automático segue o dispositivo em que carregou num botão por último: teclado e rato, ou os botões do próprio comando (Xbox, PlayStation, Nintendo; um Steam Deck ou uma consola portátil com Windows mostra Xbox). Ou sempre um conjunto: Nintendo (os do próprio jogo), Xbox, PlayStation, Rekarina (nomes Xbox nas formas de botão do próprio jogo) ou PC: teclado e rato, com as teclas que atribuiu. A fila de botões acima é o conjunto, tal como o jogo o desenha. Os botões frontais seguem a disposição dos botões acima. Aplica-se de imediato.",
     [UI_MENU_PROMPTS_NINTENDO] = "Nintendo", [UI_MENU_PROMPTS_XBOX] = "Xbox", [UI_MENU_PROMPTS_PC] = "PC", [UI_MENU_PROMPTS_PS] = "PlayStation", [UI_MENU_PROMPTS_RK] = "Rekarina",
+    [UI_MENU_PROMPTS_AUTO] = "Automático",
     [UI_MENU_PROMPTS_MISSING] = "ficheiros dos ícones em falta: executa de novo o instalador",
     [UI_MENU_PROMPTS_FAILED] = "ficheiros dos ícones danificados: executa de novo o instalador",
     [UI_MENU_PROMPTS_RESTART] = "os ícones mudam após reiniciar",
+    [UI_MENU_PROMPTS_LIVE_PARTIAL] = "Alterado já. Os botões que o jogo já desenhou e a indicação de ação em baixo mantêm o aspeto antigo até reiniciar o jogo.",
     [UI_MENU_PROMPTS_OFF_SHAPE] = "desligados numa resolução do jogo que não seja 16:9",
     [UI_MENU_PROMPTS_OFF_MODS] = "desligados: um mod RomFS substitui os ficheiros",
-    [UI_MENU_PROMPTS_OFF_PATCHES] = "desligados enquanto TOTK_ROMFS_PATCHES estiver definida",
+    [UI_MENU_PROMPTS_OFF_PATCHES] = "desligados enquanto REKARINA_ROMFS_PATCHES estiver definida",
     [UI_MENU_RESTART] = "Reiniciar agora",
     [UI_MENU_RESTART_DESC] = "Fecha o jogo e inicia-o de novo com os novos ícones. O progresso feito desde que "
                              "guardaste pela última vez perde-se.",
@@ -249,12 +251,25 @@
     [UI_MENU_STICK_DEADZONE_NOW] = "manípulo agora: %.0f %%",
     [UI_MENU_MOUSE_MODE] = "Câmara com o rato",
     [UI_MENU_MOUSE_MODE_DESC] = "Direto: a câmara roda consoante a distância que o rato se move, como num jogo de PC, sem zona morta nem curva de manípulo (jogo 1.4.3; as outras versões usam a emulação de manípulo). Emulação de manípulo: o rato funciona como o manípulo direito.",
+    [UI_MENU_FAST_TEXT] = "Diálogos mais rápidos",
+    [UI_MENU_FAST_TEXT_DESC] = "Retira as pausas que as mensagens do jogo fazem entre as frases, para que o texto avance sem parar.",
+    [UI_MENU_MOUSE_MODE_DESC_OOT] = "Direto: a câmara roda exatamente o quanto o rato se move, a qualquer velocidade, sem zona morta, curva nem velocidade máxima do manípulo. Emulação do manípulo: o rato funciona como o manípulo direito, com a curva e a velocidade máxima dele.",
     [UI_MENU_MOUSE_STICK] = "Emulação de manípulo",
     [UI_MENU_MOUSE_DIRECT] = "Direto",
     [UI_MENU_MENU_CURSOR] = "Rato nos menus do jogo",
     [UI_MENU_MENU_CURSOR_DESC] = "Nos menus do próprio jogo (título, inventário, lojas, escolhas de diálogo) aparece o ponteiro: o item por baixo dele fica selecionado, o clique esquerdo confirma, o clique direito volta atrás. Só depois de o rato ou uma tecla terem sido os últimos a ser usados, pelo que um comando vê os menus inalterados (jogo 1.4.3).",
     [UI_MENU_MOUSE_SENS] = "Sensibilidade da câmara (rato)",
     [UI_MENU_MOUSE_SENS_DESC] = "A rapidez com que o rato roda a câmara.",
+    [UI_MENU_MOUSE_SENS_Y] = "Velocidade vertical do rato",
+    [UI_MENU_MOUSE_SENS_Y_DESC] = "A rapidez com que a câmara roda ao mover o rato para cima e para baixo, em comparação "
+                                  "com a esquerda e a direita: 0.50 é metade, 1.00 igual.",
+    [UI_MENU_MOUSE_INVERT_Y] = "Inverter vertical do rato",
+    [UI_MENU_MOUSE_INVERT_Y_DESC] = "Troca cima e baixo na câmara do rato. Só o rato: as opções de câmara do próprio jogo "
+                                    "continuam a aplicar-se.",
+    [UI_MENU_MOUSE_RAW] = "Entrada em bruto do rato",
+    [UI_MENU_MOUSE_RAW_DESC] = "Ligado: a câmara segue o movimento do próprio rato, sem a velocidade e a aceleração do "
+                               "ponteiro do Windows. Desligado: segue o ponteiro, com ambas, como no ambiente de trabalho "
+                               "(num touchpad, por exemplo).",
     [UI_MENU_WALK_KEY] = "Tecla de andar",
     [UI_MENU_WALK_KEY_DESC] = "Mantém-na premida para inclinar só em parte os manípulos do teclado, para que com o "
                               "teclado se ande em vez de correr. A Inclinação ao andar define quanto. O comando e o "

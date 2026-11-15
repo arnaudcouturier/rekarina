@@ -4,7 +4,7 @@
 
 // Bits of libnx HidNpadButton (A=0 B=1 X=2 Y=3 StickL=4 StickR=5 L=6 R=7 ZL=8 ZR=9 Plus=10 Minus=11 Left=12 Up=13 Right=14
 // Down=15) and the stick directions (StickLLeft..Down 16-19, StickRLeft..Down 20-23, derived from the sticks).
-// Sticks are -32767..32767, up is +y. TOTK_INPUT=none reports no input. Callable from any thread.
+// Sticks are -32767..32767, up is +y. REKARINA_INPUT=none reports no input. Callable from any thread.
 void input_poll(uint64_t *buttons, int32_t *lx, int32_t *ly, int32_t *rx, int32_t *ry);
 // 1 when keyboard and mouse are the device the player used last, 0 when the gamepad is: what is shown for pointing
 // (menu_cursor.c shows the pointer in the game's menus only for the keyboard and mouse)
@@ -20,6 +20,9 @@ void input_direct_mouse_radial(int32_t dx, int32_t dy, float sensitivity, float 
 typedef struct { float distance; uint64_t pulse_until, neutral_until; int direction; } InputMouseRow;
 void input_direct_mouse_row(int32_t dx, float sensitivity, uint64_t now, InputMouseRow *row, int32_t out[2]);
 int input_direct_mouse_selector_active(void);
+// OoT: the camera update runs but the direct mouse cannot turn its camera (swimming): the HID stick takes the mouse
+// through the game's curve at the direct mouse's speed (input_mouse_stick_curved). deg_per_count: the direct turn.
+int input_direct_mouse_stick_curve(double *deg_per_count, double *full_deg_s);
 // Consume direct mouse counts, including one-shot MOUSE events from an input script. enabled=0 discards scripted
 // counts while leaving the real mouse for menu input. Live counts require cursor capture and foreground focus.
 void input_direct_mouse_sample(int enabled, int32_t *dx, int32_t *dy);
@@ -40,7 +43,7 @@ void input_menu(int open);
 int input_menu_gate(int *held, int menu_open, uint64_t *buttons, int32_t sticks[4]);
 int input_overlay_gate(int *held, uint64_t *buttons);   // L3+R3: 1 in the poll both go down
 int input_pad_read(uint64_t *buttons, int32_t *lx, int32_t *ly);
-// The gamepad layout in effect (PAD_LAYOUT_*, input_map.h; TOTK_PAD_LAYOUT, live); -1 without a gamepad. Any thread.
+// The gamepad layout in effect (PAD_LAYOUT_*, input_map.h; REKARINA_PAD_LAYOUT, live); -1 without a gamepad. Any thread.
 int input_pad_layout(void);
 // How far the open gamepad's left (pct[0]) and right (pct[1]) sticks are from the centre now, in percent of full
 // deflection, before the dead zone: the menu shows it on the dead zone rows, so a drifting stick's resting value can be
@@ -51,7 +54,23 @@ int input_pad_stick_percent(double pct[2]);
 enum { PAD_LABEL_NONE, PAD_LABEL_A, PAD_LABEL_B, PAD_LABEL_X, PAD_LABEL_Y, PAD_LABEL_CROSS, PAD_LABEL_CIRCLE,
        PAD_LABEL_SQUARE, PAD_LABEL_TRIANGLE };
 int input_pad_label(int pad);
-// The menu's remapping rows (Controls tab). input_map_snapshot copies the tables in effect (after any changed TOTK_BIND_* line).
+// The kind of labels the open gamepad has, as input_map.h PROMPTS_*: PROMPTS_PS (shapes), PROMPTS_NINTENDO (A on the
+// east button) or PROMPTS_XBOX (any other: A at the bottom, or labels SDL does not know); -1 without a gamepad. Any thread.
+int input_pad_family(void);
+// 1 when the gamepad is the device the player pressed something on last, 0 for the keyboard and mouse: a button press
+// or a stick pushed past 60 % on the pad, a key or mouse button the game binds (or Esc) on the other side. Mouse motion
+// does not count (a Steam Deck's trackpad as a mouse keeps the pad), and the other device takes over only after
+// staying the newest for 0.4 s. Before any press, 1 while a gamepad is connected. Any thread.
+int input_pad_in_use(void);
+// The folder of button prompts the settings ask for now (input_map.h input_prompts_folder of REKARINA_PROMPTS and
+// REKARINA_PAD_LAYOUT; unset REKARINA_PROMPTS is the settings table's default). REKARINA_PROMPTS = auto: the set of the device in
+// use (input_pad_in_use, input_pad_family) for the layout in effect (input_prompts_device_folder), the keyboard's
+// romfs-patches-pc only where the setup wrote it; before input has started, the Xbox guess of input_prompts_folder.
+// NULL is the game's own prompts. Any thread.
+const char *input_prompts_wanted(void);
+// REKARINA_PROMPTS (or the table's default) is auto.
+int input_prompts_auto(void);
+// The menu's remapping rows (Controls tab). input_map_snapshot copies the tables in effect (after any changed REKARINA_BIND_* line).
 // input_capture polls the keys, the mouse buttons and the gamepad for a press: reset 1 takes what is held now as the
 // start (a held key counts once released and pressed again) and returns NONE; then it returns KEY or PAD with *id the
 // key or pad id (input_map.h) pressed since the last call, or CANCEL for Esc. Keys count only while the game window is in front.
@@ -70,18 +89,28 @@ int input_flight_key(void);
 void input_cursor_suspend(int on);
 int input_cursor_released(void);   // Esc or a non-client activation released the cursor (probe)
 
-// Rumble: SDL_RumbleGamepad on the open gamepad, low (heavy, left) and high (light, right) motor 0..65535 for ms
-// milliseconds. 1 if a gamepad with rumble took it. Callable from any thread.
-int input_rumble(uint16_t low, uint16_t high, uint32_t ms);
+// One side of the game's HD rumble (nn::hid::VibrationValue): a low and a high band, each an amplitude (0..1) at a
+// frequency (Hz). Neutral is {0, 160, 0, 320}.
+typedef struct { float amp_low, freq_low, amp_high, freq_high; } InputVibration;
+// Rumble on the open gamepad for ms milliseconds: low (heavy, left) and high (light, right) motor 0..65535 for
+// SDL_RumbleGamepad, and hd (NULL: none) the game's left and right sides as they are to be felt, strength and curve
+// applied, which a Switch Pro Controller or Joy-Con plays as they are (input.c hd_send). 1 if a gamepad with rumble took
+// it. Callable from any thread.
+int input_rumble(uint16_t low, uint16_t high, const InputVibration hd[2], uint32_t ms);
+// The open gamepad takes the game's two bands per side (a Switch Pro Controller or Joy-Con that has not refused them):
+// ov_input.c then also sends a change of the bands alone. Any thread.
+int input_rumble_hd(void);
+// One side in the four bytes of the Switch controllers' rumble data (input.c, the format in its comment). Pure.
+void input_hd_rumble_encode(const InputVibration *v, uint8_t out[4]);
 // Motor value for a normalised amplitude: pow(a, curve) * strength, saturated to 0..65535. Pure.
 uint16_t rumble_motor(float a, float curve, float strength);
-// TOTK_RUMBLE_TRIGGERS=1: input_rumble also drives the impulse triggers (Xbox) with the high motor's value.
+// REKARINA_RUMBLE_TRIGGERS=1: input_rumble also drives the impulse triggers (Xbox) with the high motor's value.
 int input_rumble_triggers_enabled(void);
 
-// Motion (TOTK_MOTION=0 turns it off, live). input_motion_start starts the sensor thread once: every 4 ms it reads the
+// Motion (REKARINA_MOTION=0 turns it off, live). input_motion_start starts the sensor thread once: every 4 ms it reads the
 // gamepad's gyro and accelerometer (when it has them) and feeds motion_global(). Callable from any thread.
 void input_motion_start(void);
-// TOTK_MOTION is not "0" (a live setting: read again when cfg_version changes). Off: the sensor reads at rest.
+// REKARINA_MOTION is not "0" (a live setting: read again when cfg_version changes). Off: the sensor reads at rest.
 int input_motion_enabled(void);
 // SDL sensor values (accelerometer m/s^2, gyro rad/s, SDL gamepad axes) to the Switch controller frame motion_feed
 // takes (acceleration in G as gravity reads, rotation rad/s). The mapping is documented in input_win.c.

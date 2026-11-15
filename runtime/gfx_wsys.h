@@ -22,5 +22,5 @@ void gfx_window_focus_changed(int in);     // the window gained (1) or lost (0) 
 void gfx_window_presented(void);           // the first frame reached the swapchain: the window stops painting black
 void gfx_window_closed(void);              // the player closed the window: saves, then ends the process
 void gfx_window_set_refresh(double hz);    // the refresh rate of the window's monitor, 0 unknown
-int gfx_cfg_fullscreen(void);              // TOTK_FULLSCREEN
-void gfx_cfg_window_size(int *w, int *h);  // TOTK_WINDOW_SIZE, the default when unparsable or out of range
+int gfx_cfg_fullscreen(void);              // REKARINA_FULLSCREEN
+void gfx_cfg_window_size(int *w, int *h);  // REKARINA_WINDOW_SIZE, the default when unparsable or out of range

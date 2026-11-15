@@ -13,7 +13,7 @@
 // Under VRAM pressure no headroom is kept: the spare block counts against the budget that decides whether a pool gets
 // its VRAM mirror (vk_memory.c), so while use plus two blocks passes 85% of the budget the anchor goes and nothing new
 // is allocated.
-// TOTK_VRAM_HEADROOM=0 turns it off.
+// REKARINA_VRAM_HEADROOM=0 turns it off.
 
 #include <string.h>
 
@@ -51,13 +51,13 @@ static void VKAPI_PTR on_allocate(VmaAllocator a, uint32_t type, VkDeviceMemory 
 
 const VmaDeviceMemoryCallbacks *vk_headroom_callbacks(void) {
     static const VmaDeviceMemoryCallbacks cb = {.pfnAllocate = on_allocate};
-    // Off for OoT unless TOTK_VRAM_HEADROOM=1: with the thread on, the first vkBindImageMemory onto pool
+    // Off for OoT unless REKARINA_VRAM_HEADROOM=1: with the thread on, the first vkBindImageMemory onto pool
     // memory in a scene's first frame took 80-110 ms (measured five times, 190-245 ms for that frame against 124-138 ms
     // without the thread), and the frames over 25, 50 and 100 ms of the first half minute came out the same either way.
 #ifdef GAME_OOT
-    H.on = cfg_get("TOTK_VRAM_HEADROOM") && cfg_bool("TOTK_VRAM_HEADROOM");
+    H.on = cfg_get("REKARINA_VRAM_HEADROOM") && cfg_bool("REKARINA_VRAM_HEADROOM");
 #else
-    H.on = !cfg_get("TOTK_VRAM_HEADROOM") || cfg_bool("TOTK_VRAM_HEADROOM");
+    H.on = !cfg_get("REKARINA_VRAM_HEADROOM") || cfg_bool("REKARINA_VRAM_HEADROOM");
 #endif
     return H.on ? &cb : NULL;
 }
@@ -110,10 +110,10 @@ static void top_up(const VkCtx *c, uint32_t type) {
 static void headroom_main(void *arg) {
     (void)arg;
     __atomic_store_n(&H.tid, plat_thread_id(), __ATOMIC_RELEASE);
-    // Below normal; TOTK_HEADROOM_PRIO=normal was tried against the slow binds of a scene's first frame and changed
+    // Below normal; REKARINA_HEADROOM_PRIO=normal was tried against the slow binds of a scene's first frame and changed
     // nothing (vk_headroom_callbacks).
     {
-        const char *e = cfg_get("TOTK_HEADROOM_PRIO");
+        const char *e = cfg_get("REKARINA_HEADROOM_PRIO");
         if (!e || strcmp(e, "normal")) plat_thread_priority(PLAT_PRIO_BELOW_NORMAL);
     }
     uint64_t watch = 0;   // memory types seen so far
@@ -125,7 +125,7 @@ static void headroom_main(void *arg) {
         const VkCtx *c = H.stop ? NULL : vk_ctx();
         for (uint32_t t = 0; c && t < c->mem_props.memoryTypeCount && t < 64; t++) {
             if (!(watch >> t & 1)) continue;
-            // TOTK_HEADROOM_GAP=1: between submissions only (a test)
+            // REKARINA_HEADROOM_GAP=1: between submissions only (a test)
             extern volatile int32_t vk_exec_busy;
             static int gap = -1;
             if (gap < 0) gap = rt_knob("HEADROOM_GAP", "0");   // tried, no gain: the first bind stayed slow
@@ -162,5 +162,5 @@ void vk_headroom_start(void) {
     }
     H.started = 1;
     rt_log("vk: headroom: the next VMA block of each memory type in use is allocated on a background thread "
-           "(TOTK_VRAM_HEADROOM=0 turns it off)");
+           "(REKARINA_VRAM_HEADROOM=0 turns it off)");
 }

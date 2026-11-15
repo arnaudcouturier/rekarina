@@ -3,12 +3,13 @@
 // linker tables, the registry behind them, and the calls between host and guest (rt_call, rt_original).
 //
 // Every registered function dispatches through hostfn_entry, which counts the call, traces the first one
-// (TOTK_TRACE=host) and tail-calls the real function. The registry is fixed by hostfn_seal, which builds the dispatch
+// (REKARINA_TRACE=host) and tail-calls the real function. The registry is fixed by hostfn_seal, which builds the dispatch
 // table; guest threads start after that, so lookups need no lock.
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
+#include "cfg.h"
 #include "host.h"
 #include "ftrace.h"
 #include "platform/platform.h"
@@ -141,7 +142,7 @@ __attribute__((noinline)) static void hostfn_tracked(Cpu *c, GuestFn fn) {
 }
 
 // nn::fs: the call waits for the disk and the OS, and on the Switch it is an IPC request that blocks its thread, so
-// the thread gives its virtual core up for it. TOTK_CORE_DIAG found the game's loader threads (priority 58) holding
+// the thread gives its virtual core up for it. REKARINA_CORE_DIAG found the game's loader threads (priority 58) holding
 // a core through CloseFile and CreateCacheStorage while job workers and better threads waited 2-6 ms for it.
 __attribute__((noinline)) static void hostfn_blocking(Cpu *c, GuestFn fn) {
     int away = kern_core_away();
@@ -154,15 +155,15 @@ static void hostfn_entry(Cpu *c) {
     uint64_t i = (c->pc - RT_HOSTFN_BASE) >> 4;
     if (__builtin_expect((c->pc & 15) || i >= (uint64_t)nslots, 0)) bad_entry(c);
     Slot *s = &slots[i];
-    {   // DEBUG-WHOCALL: TOTK_WHOCALL=<lr hex>: the host function called with that return address, logged 4 times
+    {   // DEBUG-WHOCALL: REKARINA_WHOCALL=<lr hex>: the host function called with that return address, logged 4 times
         static uint64_t want = 1;
         static int said;
-        if (want == 1) { const char *e = getenv("TOTK_WHOCALL"); want = e ? strtoull(e, NULL, 16) : 0; }
+        if (want == 1) { const char *e = cfg_env("REKARINA_WHOCALL"); want = e ? strtoull(e, NULL, 16) : 0; }
         if (want && c->x[30] == want && said < 4)
             said++, rt_log("WHOCALL %s x0 %#llx x1 %#llx", s->name, (unsigned long long)c->x[0], (unsigned long long)c->x[1]);
     }
     // Calls are counted until the game presents its first frame (rt_counts_exact: the boot line and the probes read the
-    // count) and under TOTK_TRACE=host; in play a slot is only marked as used. The counter is one word the six threads
+    // count) and under REKARINA_TRACE=host; in play a slot is only marked as used. The counter is one word the six threads
     // that record a frame's commands all wrote at every NVN call (thousands a frame), and the cache line went from
     // core to core each time: hostfn_entry itself was ~5 % of the game threads' host time in play.
     if (__builtin_expect(rt_counts_exact || (rt_trace & RT_TRACE_HOSTCALL), 0)) {

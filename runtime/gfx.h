@@ -7,7 +7,7 @@
 // ---- moved from ov.h
 enum { OE_MSG_FOCUS_STATE_CHANGED = 15, OE_MSG_OPERATION_MODE_CHANGED = 30, OE_MSG_PERFORMANCE_MODE_CHANGED = 31 };
 void oe_push_message(uint32_t message);                   // ov_system.c
-void oe_set_focus(int in_focus);                          // ov_system.c: GetCurrentFocusState; TOTK_ASSUME_FOCUS pins 1
+void oe_set_focus(int in_focus);                          // ov_system.c: GetCurrentFocusState; REKARINA_ASSUME_FOCUS pins 1
 typedef struct { uint64_t alloc, free, realloc, user; } OvNvAllocator;
 typedef struct { OvNvAllocator graphics, devtools; uint64_t memory, memory_size; int initialized; } OvNvState;
 const OvNvState *ov_nv_state(void);                        // ov_gfx.c
@@ -27,7 +27,9 @@ int gfx_picture_rect(float out[4]);   // where the last present put the picture,
 
 // ---- shader service client (gfx_shader.c)
 enum { GFX_STAGE_VS, GFX_STAGE_TCS, GFX_STAGE_TES, GFX_STAGE_GS, GFX_STAGE_FS, GFX_STAGE_CS,
-       GFX_STAGE_TS, GFX_STAGE_MS };   // TS, MS: NVN2 task and mesh shaders (GAME_NS2)
+       GFX_STAGE_TS, GFX_STAGE_MS,     // TS, MS: NVN2 task and mesh shaders (GAME_NS2)
+       GFX_STAGE_MSC,                  // a mesh shader translated as a compute kernel (vk_exec_draw.c mesh_emulate)
+       GFX_STAGE_TSC };                // a task shader translated as a compute kernel (the same, for a draw with a task)
 enum { GFX_TEX_1D = 1, GFX_TEX_1D_ARRAY, GFX_TEX_BUFFER, GFX_TEX_2D, GFX_TEX_2D_ARRAY, GFX_TEX_2D_MS,
        GFX_TEX_2D_MS_ARRAY, GFX_TEX_3D, GFX_TEX_CUBE, GFX_TEX_CUBE_ARRAY };   // gfx_shader.c tex_names order
 enum { GFX_TYPE_FLOAT, GFX_TYPE_SINT, GFX_TYPE_UINT };
@@ -52,7 +54,7 @@ const GfxShader *gfx_shader_get_async(int stage, const uint8_t *control, const u
 const GfxShader *gfx_shader_await(int stage, const uint8_t *control, const uint8_t *code, uint64_t code_size,
                                   const GfxShaderAnswers *a);
 uint64_t gfx_shader_async_done(void);                      // translations finished by the background worker
-void gfx_shader_counts(uint64_t *keys, uint64_t *translated);   // distinct keys in memory, translations done (TOTK_TRACE=perf)
+void gfx_shader_counts(uint64_t *keys, uint64_t *translated);   // distinct keys in memory, translations done (REKARINA_TRACE=perf)
 #ifdef GAME_NS2
 // NVN2 (docs/oot-xlate.md "gmem_map"): 1 when the device gives buffers device addresses (vk_device.c sets it before
 // gfx_shader_set_host): Ampere jobs then ask for the pool table, and the translator identity says so. An SSBO entry of
@@ -80,9 +82,9 @@ void gfx_shader_prewarm(const uint8_t (*iids)[32], size_t n, const GfxShader **o
 // to shader-answers.bin, and its program to shader-programs.bin, in the directory of `keys_path` (pipeline-keys.bin).
 void gfx_shader_record_at(const char *keys_path);
 void gfx_shader_record_flush(int force);                   // appends pending records; without force at most every 2 s
-// Translates every recorded (program, answers) on `threads` threads with up to `procs` translators (TOTK_TEST_PREPARE_SHADERS).
+// Translates every recorded (program, answers) on `threads` threads with up to `procs` translators (REKARINA_TEST_PREPARE_SHADERS).
 void gfx_shader_prepare_recorded(int threads, int procs);
-// totk.exe --prepare-shaders: translates <dir>/seed-answers.bin + seed-programs.bin (tools/prepare_shaders.py) and
+// rekarina.exe --prepare-shaders: translates <dir>/seed-answers.bin + seed-programs.bin (tools/prepare_shaders.py) and
 // writes <dir>/shader-prepared.bin (stage, priority, input id per variant). 0 on success.
 int gfx_shader_prepare_seed(const char *dir, int threads, int procs);
 typedef struct { uint8_t iid[32]; uint8_t stage, prio; } GfxWarmEnt;   // prio 0: met in play; 1..3: prepared
@@ -94,7 +96,7 @@ const uint32_t *gfx_shader_spirv(const GfxShader *s, uint64_t *words);
 // A shader of the runtime's own (SPIR-V and a .res.json text as the translator writes them), outside the cache and
 // never freed; its key is the sha256 of both. NULL when the SPIR-V is malformed.
 const GfxShader *gfx_shader_own(const uint32_t *spirv, uint64_t words, const char *res_json);
-// vk_hdr.c: with TOTK_HDR=1, replaces a fragment shader's SPIR-V (malloc'd, *words long) by the HDR tonemap when it is
+// vk_hdr.c: with REKARINA_HDR=1, replaces a fragment shader's SPIR-V (malloc'd, *words long) by the HDR tonemap when it is
 // the game's tonemap; gfx_shader.c calls it for every fragment shader entering the cache.
 void vk_hdr_shader_swap(uint32_t **spirv, uint64_t *words);
 uint64_t gfx_shader_failures(void);                         // failed translations; feeds GfxStats.shader_failures
@@ -119,6 +121,11 @@ typedef struct {
 #define GFX_SSBO_FADD 0x40
 typedef struct { uint8_t type, comps, packed; } GfxShaderIo;   // GFX_TYPE_*, components, 1 with a Component decoration
 int gfx_shader_stage(const GfxShader *s);                   // GFX_STAGE_VS, GFX_STAGE_FS or GFX_STAGE_CS
+// A GFX_STAGE_MSC shader: the vec4s of each vertex it writes to the emulation buffer, the meshlets that fit and the
+// generic attributes' locations in their order (*locs, up to 32); 0 for any other shader. gfx_shader_meshc_vs: the
+// vertex shader that reads those vertices back (made once, owned by the cache); NULL on failure.
+int gfx_shader_meshc(const GfxShader *s, uint32_t *vec4s, uint32_t *max_meshlets, const uint8_t **locs);
+const GfxShader *gfx_shader_meshc_vs(const GfxShader *s);
 int gfx_shader_resources(const GfxShader *s, int kind, const GfxShaderRes **res);   // count of GFX_RES_* kind; array in *res
 uint32_t gfx_shader_slot_mask(const GfxShader *s);                    // texture/image slots whose type its translation read
 int gfx_shader_guess_refine(const GfxShader *s, int stage, const GfxShaderAnswers *a, GfxShaderAnswers *out);   // gfx_shader_guess.c
@@ -162,7 +169,7 @@ typedef struct {
     // Queues the present and returns at once; the host present goes out at at_ns (kern_now_ns clock), at once when that
     // has passed or at_ns is 0.
     void (*present)(const tex_t *t, const int crop[4], uint64_t at_ns);
-    // The present call is about to return, its wait for the GPU (nvn_api_obj.c TOTK_PRESENT_SYNC) over: waited is the
+    // The present call is about to return, its wait for the GPU (nvn_api_obj.c REKARINA_PRESENT_SYNC) over: waited is the
     // value whose results that wait found done, 0 when it waited for none. NULL: nothing.
     void (*present_end)(uint64_t waited);
     // The game starts a frame (nvn_api_obj.c nvnWindowAcquireTexture): the back end may hold it (Reflex's sleep). NULL: nothing.
@@ -177,7 +184,7 @@ typedef struct {
     void (*cpu_synced)(uint64_t fence);
 } GfxBackend;
 extern const GfxBackend gfx_null_backend, gfx_vulkan_backend;
-const GfxBackend *gfx_backend(void);                       // TOTK_GPU=null|vulkan (default vulkan)
+const GfxBackend *gfx_backend(void);                       // REKARINA_GPU=null|vulkan (default vulkan)
 
 // ---- NVN front end (nvn_procs.c)
 void nvn_procs_register(void);                             // hostfn_register every proc; before hostfn_seal (ov_gfx.c)

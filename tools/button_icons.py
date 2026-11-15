@@ -23,6 +23,7 @@ Y, L, ZL and the stick's two). Prompts drawn as fixed images (some tutorial anim
 Needs fontTools (tools/requirements-installer.txt, tools/requirements-py314.txt).
 """
 import io
+import math
 import struct
 import zlib
 
@@ -153,6 +154,55 @@ def polygon(pen, points):
     pen.closePath()
 
 
+def counter_clockwise(points):
+    """points in counter-clockwise order (as the outlines are drawn: y up), reversed when they run the other way."""
+    area = sum(points[i][0] * points[(i + 1) % len(points)][1] - points[(i + 1) % len(points)][0] * points[i][1]
+               for i in range(len(points)))
+    return points if area > 0 else points[::-1]
+
+
+def capsule(cx, y0, y1, w, n=48):
+    """A stadium standing up, w wide from y0 to y1: half circles at both ends, as points counter-clockwise."""
+    r = w / 2
+    pts = [(cx + r * math.cos(math.pi * i / n), y1 - r + r * math.sin(math.pi * i / n)) for i in range(n + 1)]
+    pts += [(cx + r * math.cos(math.pi * (1 + i / n)), y0 + r + r * math.sin(math.pi * (1 + i / n))) for i in range(n + 1)]
+    return counter_clockwise(pts)
+
+
+def clip_half(points, keep):
+    """The convex polygon points cut to the half-plane where keep (a linear function of a point) is not negative."""
+    out = []
+    for i in range(len(points)):
+        p, q = points[i], points[(i + 1) % len(points)]
+        fp, fq = keep(p), keep(q)
+        if fp >= 0:
+            out.append(p)
+        if (fp >= 0) != (fq >= 0):
+            t = fp / (fp - fq)
+            out.append((p[0] + (q[0] - p[0]) * t, p[1] + (q[1] - p[1]) * t))
+    return out
+
+
+def bar(pen, x0, y0, x1, y1):
+    polygon(pen, [(x0, y0), (x1, y0), (x1, y1), (x0, y1)])
+
+
+def bold_arrow(pen, x, y, d, s, double=False):
+    """A filled arrow pointing d ('up', 'down', 'left' or 'right'), s long, centred on (x, y), in the weight of the
+    game's own arrows beside its sticks: the head three quarters as wide as the arrow is long, the shaft a third of
+    the head. double: a head at both ends."""
+    hl, hw, sw = s * 0.46, s * 0.37, s * 0.13
+    if double:
+        hl = s * 0.36
+        pts = [(s / 2, 0), (s / 2 - hl, hw), (s / 2 - hl, sw), (-s / 2 + hl, sw), (-s / 2 + hl, hw), (-s / 2, 0),
+               (-s / 2 + hl, -hw), (-s / 2 + hl, -sw), (s / 2 - hl, -sw), (s / 2 - hl, -hw)]
+    else:
+        pts = [(s / 2, 0), (s / 2 - hl, hw), (s / 2 - hl, sw), (-s / 2, sw), (-s / 2, -sw), (s / 2 - hl, -sw),
+               (s / 2 - hl, -hw)]
+    c, sn = {'right': (1, 0), 'left': (-1, 0), 'up': (0, 1), 'down': (0, -1)}[d]
+    polygon(pen, counter_clockwise([(x + px * c - py * sn, y + px * sn + py * c) for px, py in pts]))
+
+
 def xbox_icons(g):
     """Code point -> (advance, draw(pen)) for the buttons an Xbox controller names differently from a Switch: L R = LB
     RB, ZL ZR = LT RT, Plus and Minus = Menu and View, the d-pad as a cross. g: Glyphs for the letters. The face
@@ -201,6 +251,7 @@ def xbox_icons(g):
         0xE04B: menu(), 0xE04C: view(),
         0xE049: dpad('up', 'down', 'left', 'right'), 0xE060: dpad('up'), 0xE061: dpad('down'),
         0xE062: dpad('left'), 0xE063: dpad('right'), 0xE064: dpad('up', 'down'), 0xE065: dpad('left', 'right'),
+        0xE06A: dpad('left', 'down', 'right'),
     }
 
 
@@ -260,93 +311,101 @@ def playstation_icons(g, by_position=True):
     return base
 
 
-def rekarina_icons(g, by_position=True):
-    """Code point -> (advance, draw(pen)) for Rekarina's own set: every button as an outline with a solid letter or
-    sign inside, where the game's and the Xbox set's are solid shapes with the letter cut out. The names are an Xbox
-    pad's (A B X Y, LB RB LT RT, Menu, View), the most common PC pad. by_position: each prompt names the button at
-    the Switch button's place (the Switch's A is the right button, an Xbox pad's B), for a pad played by position;
-    else by its own letter."""
-    adv, line = 640, 50   # the outline's width, in font units of a 1000-unit em
+def playstation_symbols(by_position=True):
+    """Code point -> (advance, draw(pen)) of the four face buttons' shapes alone, as lines of one weight (a ring, a
+    cross, a triangle, a square): the symbol for a layout that draws its own button disc and puts the symbol on it
+    (tools/make_oot_prompts.py KEY_TEXTURES). The A to Y order as playstation_icons with by_position."""
+    adv, cx = 640, 320
 
-    def ring(pen, cx):
-        circle(pen, cx, CY, R)
-        circle(ReverseContourPen(pen), cx, CY, R - line)
-
-    def face(letter):
+    def shape(kind):
         def draw(pen):
-            ring(pen, adv / 2)
-            g.fill(pen, letter, adv / 2, CY, 300, 300)
+            cut = ReverseContourPen(pen)
+            if kind == 'circle':
+                circle(pen, cx, CY, R * .62); circle(cut, cx, CY, R * .42)
+            elif kind == 'square':
+                s, t = R * .55, R * .35
+                polygon(pen, [(cx - s, CY - s), (cx + s, CY - s), (cx + s, CY + s), (cx - s, CY + s)])
+                polygon(cut, [(cx - t, CY - t), (cx + t, CY - t), (cx + t, CY + t), (cx - t, CY + t)])
+            elif kind == 'triangle':   # the inner one 0.2 R further in on every side: its circumradius 0.4 R less
+                for p, s in ((pen, R * .66), (cut, R * .26)):
+                    polygon(p, [(cx - s * .866, CY - s * .5), (cx + s * .866, CY - s * .5), (cx, CY + s)])
+            else:   # cross: one twelve-point outline of an X, counter-clockwise
+                a, w = R * .55, R * .10
+                polygon(pen, [(cx + x, CY + y) for x, y in (
+                    (w, 0), (a, a - w), (a - w, a), (0, w), (-(a - w), a), (-a, a - w), (-w, 0), (-a, -(a - w)),
+                    (-(a - w), -a), (0, -w), (a - w, -a), (a, -(a - w)))])
         return adv, draw
 
-    def bumper(label, width=820):
+    a, b, x, y = ('circle', 'cross', 'triangle', 'square') if by_position else ('cross', 'circle', 'square', 'triangle')
+    return {0xE040: shape(a), 0xE041: shape(b), 0xE042: shape(x), 0xE043: shape(y)}
+
+
+def rekarina_icons(g, otf, by_position=True):
+    """Code point -> (advance, draw(pen)) for Rekarina's own set: an Xbox pad's names (A B X Y, LB RB LT RT, Menu,
+    View) on the game's own button outlines, so the prompts look as the game draws them and read as the pad in the
+    player's hands. The face buttons are the game's glyphs (an Xbox pad names them alike); L, R, ZL and ZR keep the
+    game's tapered and slanted plates with LB, RB, LT and RT cut out in the game's text font where the game cuts its
+    own label; Plus and Minus keep the game's discs with the Menu sign (three bars) and the View sign (two windows) cut
+    out. The d-pad and the sticks stay the game's. g: Glyphs for the labels; otf: the game's button font (OpenType).
+    by_position: each prompt names the button at the Switch button's place (the Switch's A is the right button, an
+    Xbox pad's B), for a pad played by position; else by its own letter."""
+    font = TTFont(io.BytesIO(otf))
+    cmap, glyphs, hmtx = font.getBestCmap(), font.getGlyphSet(), font['hmtx']
+
+    def parts(cp):
+        """The contours of the game's glyph for cp with their bounds, the largest (the plate) first."""
+        rec = RecordingPen(); glyphs[cmap[cp]].draw(rec)
+        out, cur = [], []
+        for op, args in rec.value:
+            cur.append((op, args))
+            if op in ('closePath', 'endPath'):
+                one = RecordingPen(); one.value = cur; box = BoundsPen(None); one.replay(box)
+                out.append((one, box.bounds)); cur = []
+        return sorted(out, key=lambda c: -(c[1][2] - c[1][0]) * (c[1][3] - c[1][1]))
+
+    def game(cp):
+        return hmtx[cmap[cp]][0], glyphs[cmap[cp]].draw
+
+    def relabel(cp, label=None, sign=None):
+        """The game's plate of cp with label (or sign: draw(pen, cx, cy, r) of a cut-out sign) in place of its own."""
+        (plate, (x0, y0, x1, y1)), *own = parts(cp)
+        lx0, ly0 = min(b[0] for _, b in own), min(b[1] for _, b in own)
+        lx1, ly1 = max(b[2] for _, b in own), max(b[3] for _, b in own)
+
         def draw(pen):
-            rounded(pen, 40, Y0 + 70, width - 40, Y1 - 70, 70, 150)
-            rounded(ReverseContourPen(pen), 40 + line, Y0 + 70 + line, width - 40 - line, Y1 - 70 - line, 70 - line * .6, 150 - line * .6)
-            g.fill(pen, label, width / 2, CY - 6, 205, width - 250)
-        return width, draw
+            plate.replay(pen)
+            if label:
+                g.hole(pen, label, (lx0 + lx1) / 2, (ly0 + ly1) / 2, ly1 - ly0, (x1 - x0) * 0.78)
+            else:
+                sign(ReverseContourPen(pen), (x0 + x1) / 2, (y0 + y1) / 2, min(x1 - x0, y1 - y0) / 2)
+        return hmtx[cmap[cp]][0], draw
 
-    def trigger(label, width=760):
-        def draw(pen):
-            rounded(pen, 60, Y0, width - 60, Y1, 60, 230)
-            rounded(ReverseContourPen(pen), 60 + line, Y0 + line, width - 60 - line, Y1 - line, 60 - line * .6, 230 - line * .6)
-            g.fill(pen, label, width / 2, CY - 30, 215, width - 280)
-        return width, draw
+    def bars(pen, cx, cy, r):      # Menu
+        for d in (-0.36, 0, 0.36):
+            rounded(pen, cx - r * .46, cy + d * r - r * .11, cx + r * .46, cy + d * r + r * .11, r * .11)
 
-    def menu():   # three bars
-        def draw(pen):
-            ring(pen, adv / 2)
-            for dy in (-100, 0, 100):
-                rounded(pen, adv / 2 - 135, CY + dy - 30, adv / 2 + 135, CY + dy + 30, 30)
-        return adv, draw
+    def windows(pen, cx, cy, r):   # View
+        s = r * .42
+        rounded(pen, cx - s - r * .05, cy + r * .05, cx - r * .05, cy + s + r * .05, r * .06)
+        rounded(pen, cx + r * .05, cy - s - r * .05, cx + s + r * .05, cy - r * .05, r * .06)
 
-    def view():   # two overlapping windows
-        def draw(pen):
-            cx, s = adv / 2, 130
-            ring(pen, cx)
-            rounded(pen, cx - s - 12, CY + 12, cx - 12, CY + s + 12, 16)
-            rounded(pen, cx + 12, CY - s - 12, cx + s + 12, CY - 12, 16)
-        return adv, draw
-
-    def cross(pen, cx, length, arm):
-        polygon(pen, [(cx + length, CY - arm), (cx + length, CY + arm), (cx + arm, CY + arm), (cx + arm, CY + length),
-                      (cx - arm, CY + length), (cx - arm, CY + arm), (cx - length, CY + arm), (cx - length, CY - arm),
-                      (cx - arm, CY - arm), (cx - arm, CY - length), (cx + arm, CY - length), (cx + arm, CY - arm)])
-
-    def dpad(*lit):   # the cross as an outline, each direction the prompt means as a solid arm
-        def draw(pen):
-            cx, length, arm = adv / 2, R, R * 0.40
-            cross(pen, cx, length, arm)
-            cross(ReverseContourPen(pen), cx, length - line, arm - line)
-            a, far, near = arm - line, length - line, arm - line   # the arm's whole inside: it reads as solid
-            arms = {'up': [(cx - a, CY + near), (cx + a, CY + near), (cx + a, CY + far), (cx - a, CY + far)],
-                    'down': [(cx - a, CY - far), (cx + a, CY - far), (cx + a, CY - near), (cx - a, CY - near)],
-                    'left': [(cx - far, CY - a), (cx - near, CY - a), (cx - near, CY + a), (cx - far, CY + a)],
-                    'right': [(cx + near, CY - a), (cx + far, CY - a), (cx + far, CY + a), (cx + near, CY + a)]}
-            for d in lit:
-                polygon(pen, arms[d])
-        return adv, draw
-
-    a, b, x, y = ('B', 'A', 'Y', 'X') if by_position else ('A', 'B', 'X', 'Y')
-    return {
-        0xE040: face(a), 0xE041: face(b), 0xE042: face(x), 0xE043: face(y),
-        0xE044: bumper('LB'), 0xE045: bumper('RB'), 0xE046: trigger('LT'), 0xE047: trigger('RT'),
-        0xE04B: menu(), 0xE04C: view(),
-        0xE049: dpad(), 0xE060: dpad('up'), 0xE061: dpad('down'),
-        0xE062: dpad('left'), 0xE063: dpad('right'), 0xE064: dpad('up', 'down'), 0xE065: dpad('left', 'right'),
-    }
-
+    out = {0xE044: relabel(0xE044, 'LB'), 0xE045: relabel(0xE045, 'RB'), 0xE046: relabel(0xE046, 'LT'),
+           0xE047: relabel(0xE047, 'RT'), 0xE04B: relabel(0xE04B, sign=bars), 0xE04C: relabel(0xE04C, sign=windows)}
+    if by_position:   # the letters trade places as on an Xbox pad: the Switch's A is its B, X its Y
+        out.update({0xE040: game(0xE041), 0xE041: game(0xE040), 0xE042: game(0xE043), 0xE043: game(0xE042)})
+    return out
 
 # ---- keyboard and mouse prompts (--prompts pc): every button the keyboard drives, drawn as the key or mouse button
 # bound to it, in the same filled-shape style. Each glyph keeps the advance of the game's own (a wider glyph runs into
 # the text of a right-aligned guide).
-# The keyboard defaults of runtime/input_map.c (input_map_reset; the totk.ini bind_ lines apply on top, pc_binds). The
+# The keyboard defaults of runtime/input_map.c (input_map_reset; the rekarina.ini bind_ lines apply on top, pc_binds). The
 # right stick is the camera, which the mouse drives; SHAKE is the key that shakes it (the mouse never does).
 PC_BINDS = {
     'A': 'e', 'B': 'lshift', 'X': 'space', 'Y': 'mouse_l', 'L': 'q', 'R': 'r', 'ZL': 'mouse_r', 'ZR': 'f',
     'PLUS': 'tab', 'MINUS': 'm', 'LEFT': '1', 'UP': '2', 'RIGHT': '3', 'DOWN': '4', 'LCLICK': 'lctrl', 'RCLICK': 'c',
     'LSTICK_UP': 'w', 'LSTICK_LEFT': 'a', 'LSTICK_DOWN': 's', 'LSTICK_RIGHT': 'd', 'SHAKE': 'g',
 }
-# What a key shows: its letter, a symbol or a short name (key names as in totk.ini; the rest show their name).
+# What a key shows: its letter, a symbol or a short name (key names as in rekarina.ini; the rest show their name).
 PC_LABELS = {
     'lshift': '⇧', 'rshift': '⇧', 'lctrl': 'CTRL', 'rctrl': 'CTRL', 'lalt': 'ALT', 'tab': 'TAB',
     'enter': 'ENT', 'backspace': 'BKSP', 'capslock': 'CAPS', 'insert': 'INS', 'delete': 'DEL', 'home': 'HOME',
@@ -368,7 +427,7 @@ PC_MOUSE = ('mouse_l', 'mouse_r', 'mouse_m')
 
 
 def pc_binds(ini_text=None):
-    """PC_BINDS with the first key of each bind_<action> line of a totk.ini text over it (a line without a key entry,
+    """PC_BINDS with the first key of each bind_<action> line of a rekarina.ini text over it (a line without a key entry,
     or with key:default, keeps the default)."""
     binds = dict(PC_BINDS)
     for line in (ini_text or '').splitlines():
@@ -401,28 +460,25 @@ def pc_icons(g, adv, binds=PC_BINDS):
     binds puts on it. g: Glyphs for the key labels; adv: the game's advance of each glyph (font_advances), which each
     drawing keeps."""
     def mouse_body(pen, cx, y0, y1, lit=None):
-        """A mouse seen from above; lit ('l', 'r', 'm' or None) its pressed button, filled, the others hollow."""
-        h = y1 - y0; r = h * 0.33; t = h * 0.07; gap = h * 0.035
-        x0, x1, mid = cx - r, cx + r, y0 + h * 0.52
-        rounded(pen, x0, y0, x1, y1, r * 0.9, r)
-        reverse = ReverseContourPen(pen)   # holes; they never overlap each other or leave the body
-        ri = r - t
-        if lit in ('l', 'r'):   # the seams around the pressed button
-            sx0, sx1 = (x0 + t, cx - gap) if lit == 'l' else (cx + gap, x1 - t)
-            polygon(reverse, [(sx0, mid - gap), (sx1, mid - gap), (sx1, mid + gap), (sx0, mid + gap)])
-            polygon(reverse, [(cx - gap, mid + gap), (cx + gap, mid + gap), (cx + gap, y1 - t), (cx - gap, y1 - t)])
-        if lit != 'l':   # hollow left button, its outer top corner following the body
-            ix0, ix1 = x0 + t, cx - gap
-            reverse.moveTo((ix1, mid + gap)); reverse.lineTo((ix1, y1 - t)); reverse.lineTo((ix0 + ri, y1 - t))
-            reverse.curveTo((ix0 + ri - K * ri, y1 - t), (ix0, y1 - t - ri + K * ri), (ix0, y1 - t - ri))
-            reverse.lineTo((ix0, mid + gap)); reverse.closePath()
-        if lit != 'r':
-            ix0, ix1 = cx + gap, x1 - t
-            reverse.moveTo((ix0, mid + gap)); reverse.lineTo((ix1, mid + gap)); reverse.lineTo((ix1, y1 - t - ri))
-            reverse.curveTo((ix1, y1 - t - ri + K * ri), (ix1 - ri + K * ri, y1 - t), (ix1 - ri, y1 - t))
-            reverse.lineTo((ix0, y1 - t)); reverse.closePath()
-        if lit == 'm':   # the wheel, filled over the gap between the hollow buttons
-            rounded(pen, cx - h * 0.06, mid + h * 0.12, cx + h * 0.06, mid + h * 0.36, h * 0.06)
+        """A mouse seen from above, two thirds as wide as it is long, in one even outline: the buttons the top two
+        fifths, split by a seam. lit 'l' or 'r': that button solid from the outline to the middle line, so the edge
+        between the pressed and the empty button is the mouse's middle, and no wheel; 'm' or None: the wheel between
+        the buttons, larger for 'm'."""
+        h = y1 - y0; w = h * 0.66; t = h * 0.075
+        polygon(pen, capsule(cx, y0, y1, w))
+        polygon(ReverseContourPen(pen), capsule(cx, y0 + t, y1 - t, w - 2 * t))
+        ys = y1 - h * 0.43   # the buttons' lower edge
+        bar(pen, cx - w / 2 + t / 2, ys - t / 2, cx + w / 2 - t / 2, ys + t / 2)
+        if lit in ('l', 'r'):   # no seam over the solid button: it would carry the white past the middle
+            part = clip_half(capsule(cx, y0 + t, y1 - t, w - 2 * t), lambda p: p[1] - ys)
+            part = clip_half(part, (lambda p: cx - p[0]) if lit == 'l' else (lambda p: p[0] - cx))
+            polygon(pen, counter_clockwise(part))
+            return
+        wy0, wy1, ww, gap = ys + h * 0.07, y1 - h * 0.13, w * (0.2 if lit == 'm' else 0.15), t * 0.75
+        if lit != 'm':   # the seam above and below the wheel
+            bar(pen, cx - t / 2, ys, cx + t / 2, wy0 - gap)
+            bar(pen, cx - t / 2, wy1 + gap, cx + t / 2, y1 - t / 2)
+        polygon(pen, capsule(cx, wy0, wy1, ww, 16))
 
     def key_cap(pen, x0, y0, x1, y1, key):
         """A key: a rounded square with its label cut out; a mouse button draws the mouse."""
@@ -440,13 +496,6 @@ def pc_icons(g, adv, binds=PC_BINDS):
         label = PC_LABELS.get(key, key.upper())
         cap = h * (0.52 if len(label) == 1 else 0.36 if len(label) == 2 else 0.26)
         g.hole(pen, label, (x0 + x1) / 2, (y0 + y1) / 2, cap, w * 0.74, 'H')
-
-    def arrow(pen, cx, cy, d, s):
-        """A filled arrowhead pointing d, s its half size."""
-        polygon(pen, {'up': [(cx - s, cy - s * 0.6), (cx + s, cy - s * 0.6), (cx, cy + s * 0.8)],
-                      'down': [(cx + s, cy + s * 0.6), (cx - s, cy + s * 0.6), (cx, cy - s * 0.8)],
-                      'left': [(cx + s * 0.6, cy - s), (cx + s * 0.6, cy + s), (cx - s * 0.8, cy)],
-                      'right': [(cx - s * 0.6, cy + s), (cx - s * 0.6, cy - s), (cx + s * 0.8, cy)]}[d])
 
     def one(key, advance):
         def draw(pen):
@@ -466,14 +515,29 @@ def pc_icons(g, adv, binds=PC_BINDS):
         return advance, draw
 
     def mouse_move(advance, *dirs):
-        """The mouse, no button pressed, with an arrow for each direction the prompt means."""
+        """The mouse, no button pressed, and the directions the prompt means: none named (the camera), an arrow on each
+        side of it; one, a bold arrow at its lower right as the game's sticks have it; up and down or left and right,
+        one arrow with a head at both ends."""
         def draw(pen):
-            mouse_body(pen, advance / 2, Y0 + 30, Y1 - 30)
-            off = (Y1 - Y0 - 60) * 0.33 + 70
-            spots = {'up': (advance / 2 + off, CY + 110), 'down': (advance / 2 + off, CY - 110),
-                     'left': (advance / 2 - off, CY), 'right': (advance / 2 + off, CY)}
-            for d in dirs:
-                arrow(pen, *spots[d], d, 52)
+            if not dirs:
+                mh = (Y1 - Y0) * 0.62; mw, s, d = mh * 0.66, 135, 14
+                cx, my0 = advance / 2, (Y0 + Y1) / 2 - mh / 2
+                mouse_body(pen, cx, my0, my0 + mh)
+                bold_arrow(pen, cx, my0 + mh + d + s / 2 - 40, 'up', s)
+                bold_arrow(pen, cx, my0 - d - s / 2 + 40, 'down', s)
+                bold_arrow(pen, cx - mw / 2 - d - s / 2, (Y0 + Y1) / 2, 'left', s)
+                bold_arrow(pen, cx + mw / 2 + d + s / 2, (Y0 + Y1) / 2, 'right', s)
+                return
+            mh = Y1 - Y0; mw = mh * 0.66
+            cx = advance / 2 - mw * 0.42
+            mouse_body(pen, cx, Y0, Y1)
+            ax = cx + mw / 2 + 125
+            if set(dirs) == {'up', 'down'}:
+                bold_arrow(pen, ax + 22, Y0 + mh * 0.48, 'up', 300, double=True)
+            elif set(dirs) == {'left', 'right'}:
+                bold_arrow(pen, ax + 30, Y0 + mh * 0.3, 'right', 300, double=True)
+            else:
+                bold_arrow(pen, ax, Y0 + mh * 0.3, dirs[0], 230)
         return advance, draw
 
     b = binds
@@ -489,6 +553,7 @@ def pc_icons(g, adv, binds=PC_BINDS):
         0xE060: one(du, adv[0xE060]), 0xE061: one(dd, adv[0xE061]), 0xE062: one(dl, adv[0xE062]),
         0xE063: one(dr, adv[0xE063]), 0xE064: grid([(du, 0, 0), (dd, 0, 1)], adv[0xE064]),
         0xE065: grid([(dl, 0, 0), (dr, 1, 0)], adv[0xE065]),
+        **({0xE06A: grid([(dl, 0, 0), (dd, 1, 0), (dr, 2, 0)], adv[0xE06A])} if 0xE06A in adv else {}),   # OoT's font only
         # the left stick: its keys (W A S D)
         0xE05E: grid([(up, 1, 0), (left, 0, 1), (down, 1, 1), (right, 2, 1)], adv[0xE05E]),
         0xE052: one(up, adv[0xE052]), 0xE050: one(down, adv[0xE050]), 0xE05A: one(left, adv[0xE05A]),
@@ -507,7 +572,8 @@ def pc_icons(g, adv, binds=PC_BINDS):
 def redraw_font(otf, icons, swaps=()):
     """The OpenType font otf with the glyphs of each (code point, code point) pair of swaps trading places (outlines and
     horizontal metrics), then every code point of icons (code point -> (advance, draw)) drawn anew, written again by
-    fontTools. The timestamps stay, so the same input gives the same bytes."""
+    fontTools; a code point the font does not have is left out (U+E06A, the d-pad's left, down and right, is OoT's
+    alone). The timestamps stay, so the same input gives the same bytes."""
     font = TTFont(io.BytesIO(otf), recalcTimestamp=False)
     assert font['head'].unitsPerEm == 1000, f'em of {font["head"].unitsPerEm} units, the drawings assume 1000'
     cff = font['CFF '].cff
@@ -520,6 +586,7 @@ def redraw_font(otf, icons, swaps=()):
         outline_a, outline_b = charstrings[ga], charstrings[gb]
         charstrings[ga], charstrings[gb] = outline_b, outline_a
         hmtx[ga], hmtx[gb] = hmtx[gb], hmtx[ga]
+    icons = {cp: icon for cp, icon in icons.items() if cp in cmap}
     for cp, (advance, draw) in icons.items():
         pen = T2CharStringPen(advance - nominal, None); draw(pen)   # the width operand is relative to nominalWidthX
         charstrings[cmap[cp]] = pen.getCharString(private=private, globalSubrs=cff.GlobalSubrs)
@@ -578,6 +645,11 @@ def fonts_with_sets(otf, sets, keys=None):
     cps = sorted({cp for icons, swaps in sets.values() for cp in icons} | {cp for _, swaps in sets.values() for pair in swaps for cp in pair})
     assert all(cp in cmap for cp in cps), 'a button code point the font does not have'
     order = font.getGlyphOrder()
+
+    def add(gname):   # a CFF font's glyph order is its charset list (fontTools): one append, else both lists
+        order.append(gname)
+        if top.charset is not order:
+            top.charset.append(gname)
     block = {}
     for name, (icons, swaps) in sets.items():
         partner = {a: b for a, b in swaps} | {b: a for a, b in swaps}
@@ -594,8 +666,7 @@ def fonts_with_sets(otf, sets, keys=None):
             gname = f'rk.{name}.{cp:04X}'
             charstrings.charStringsIndex.append(pen.getCharString(private=private, globalSubrs=cff.GlobalSubrs))
             charstrings.charStrings[gname] = len(charstrings.charStringsIndex) - 1
-            top.charset.append(gname)
-            order.append(gname)
+            add(gname)
             hmtx[gname] = (advance, int(round(box.bounds[0])) if box.bounds else 0)
             block[name, cp] = gname
     key_glyph = {}
@@ -607,8 +678,7 @@ def fonts_with_sets(otf, sets, keys=None):
         gname = f'rk.key.{key}'
         charstrings.charStringsIndex.append(pen.getCharString(private=private, globalSubrs=cff.GlobalSubrs))
         charstrings.charStrings[gname] = len(charstrings.charStringsIndex) - 1
-        top.charset.append(gname)
-        order.append(gname)
+        add(gname)
         hmtx[gname] = (advance, int(round(box.bounds[0])) if box.bounds else 0)
         key_glyph[key] = gname
     font.setGlyphOrder(order)
@@ -635,7 +705,7 @@ def fonts_with_sets(otf, sets, keys=None):
 
 
 # ---- the keyboard prompts while the game runs: a glyph for every key the runtime can bind (runtime/input_map.c
-# key_names, the names totk.ini takes), and the buttons whose prompt is the one key bound to them.
+# key_names, the names rekarina.ini takes), and the buttons whose prompt is the one key bound to them.
 PC_KEYS = (list('abcdefghijklmnopqrstuvwxyz0123456789')
            + ['space', 'tab', 'lshift', 'lctrl', 'up', 'down', 'left', 'right', 'mouse_l', 'mouse_r', 'mouse_m',
               'mouse_x1', 'mouse_x2', 'enter', 'backspace', 'rshift', 'rctrl', 'lalt', 'capslock', 'insert', 'delete',
@@ -643,7 +713,7 @@ PC_KEYS = (list('abcdefghijklmnopqrstuvwxyz0123456789')
            + [f'num{i}' for i in range(10)]
            + ['num_add', 'num_sub', 'num_mul', 'num_div', 'num_decimal', 'minus', 'equals', 'lbracket', 'rbracket',
               'semicolon', 'apostrophe', 'comma', 'period', 'slash', 'backslash', 'grave'])
-# button code point -> the action (a bind_<action> line of totk.ini) whose first key it shows
+# button code point -> the action (a bind_<action> line of rekarina.ini) whose first key it shows
 PC_KEY_BUTTONS = {0xE040: 'A', 0xE041: 'B', 0xE042: 'X', 0xE043: 'Y', 0xE044: 'L', 0xE045: 'R', 0xE046: 'ZL',
                   0xE047: 'ZR', 0xE04B: 'PLUS', 0xE04C: 'MINUS', 0xE056: 'LCLICK', 0xE057: 'RCLICK',
                   0xE060: 'UP', 0xE061: 'DOWN', 0xE062: 'LEFT', 0xE063: 'RIGHT', 0xE052: 'LSTICK_UP',
@@ -679,14 +749,17 @@ def pc_key_icons(g, adv, advance):
 
 # ---- the button guide's images: square R8_UNORM masks (white key, black letter), one mip, block-linear, 72x72 up to
 # 1.2.1 and 108x108 in 1.4.3. Each is drawn from the icon of the same Switch button, fitted into the square.
-R8_UNORM, HUD_MARGIN, SUPERSAMPLE = 0x201, 4, 4
+R8_UNORM, BC4_UNORM, HUD_MARGIN, SUPERSAMPLE = 0x201, 0x1d01, 4, 4
 
 
-def gob_offset(x, y, width_gobs, block_height):
-    """Byte offset of (x, y) in a Tegra block-linear surface of 1 byte per pixel (GOBs of 64 bytes x 8 rows)."""
-    return ((y // (8 * block_height)) * 512 * block_height * width_gobs + (x // 64) * 512 * block_height
-            + ((y % (8 * block_height)) // 8) * 512 + ((x % 64) // 32) * 256 + ((y % 8) // 2) * 64
-            + ((x % 32) // 16) * 32 + (y % 2) * 16 + (x % 16))
+def gob_offset(x, y, width_gobs, block_height, ns2=False):
+    """Byte offset of (x, y) in a Tegra block-linear surface (GOBs of 64 bytes x 8 rows): x in bytes, y in rows (of
+    pixels, or of 4x4 blocks in a block-compressed format). ns2: the Switch 2's GOB, whose 16-byte pieces go x5 y2 x4 y1 y0
+    where the Tegra X1's go x5 y2 y1 x4 y0: offset bits 5 and 6 exchanged (runtime/tex_deswizzle.c gob_off)."""
+    o = ((y // (8 * block_height)) * 512 * block_height * width_gobs + (x // 64) * 512 * block_height
+         + ((y % (8 * block_height)) // 8) * 512 + ((x % 64) // 32) * 256 + ((y % 8) // 2) * 64
+         + ((x % 32) // 16) * 32 + (y % 2) * 16 + (x % 16))
+    return (o & ~0x60) | ((o & 0x20) << 1) | ((o & 0x40) >> 1) if ns2 else o
 
 
 class PolygonPen(BasePen):
@@ -733,13 +806,14 @@ def fill_mask(polygons, width, height):
     return bytes(min(255, c * 255 // (SUPERSAMPLE * SUPERSAMPLE)) for c in cover)
 
 
-def rasterize(draw, size):
-    """A size x size coverage mask (0..255, rows top down) of draw's outline, fitted into the square, nonzero winding."""
+def rasterize(draw, size, fit=None):
+    """A size x size coverage mask (0..255, rows top down) of draw's outline, nonzero winding, centred and scaled so its
+    larger side spans fit pixels (default: the square less HUD_MARGIN on each side)."""
     rec = RecordingPen(); draw(rec)
     box = BoundsPen(None); rec.replay(box); x0, y0, x1, y1 = box.bounds
-    inner = size - 2 * HUD_MARGIN; scale = inner / max(x1 - x0, y1 - y0)
-    ox = HUD_MARGIN + (inner - (x1 - x0) * scale) / 2 - x0 * scale
-    oy = HUD_MARGIN + (inner - (y1 - y0) * scale) / 2 - y0 * scale
+    inner = fit or size - 2 * HUD_MARGIN; scale = inner / max(x1 - x0, y1 - y0)
+    ox = (size - (x1 - x0) * scale) / 2 - x0 * scale
+    oy = (size - (y1 - y0) * scale) / 2 - y0 * scale
     flat = PolygonPen(); rec.replay(TransformPen(flat, (scale, 0, 0, -scale, ox, size - oy)))   # font y up -> rows down
     return fill_mask(flat.polygons, size, size)
 
@@ -782,34 +856,78 @@ def preview_strip(otf, cell, codes=PREVIEW_CODES, names=None, extent=None):
     return len(wanted), masks
 
 
-def bntx_redraw(data, base, textures, icons):
-    """Paint the icon of each texture of textures (name without the ^ suffix -> code point; icons: code point ->
-    (advance, draw)) over its image in the BNTX at data[base:] (a bytearray), in place. Returns the names painted."""
-    assert data[base:base + 4] == b'BNTX' and data[base + 0x20:base + 0x24] == b'NX  '
+def bntx_images(data, base):
+    """Name (without the ^ suffix) -> (shape, start, size, format, mips, width, height, block height) of every texture
+    of the BNTX at data[base:]. shape: its header from flags to layout and its image size, equal for two textures whose
+    image bytes can stand for each other. The platform word is "NX  " in a Switch file, "Ounc" in a Switch 2 one."""
+    assert data[base:base + 4] == b'BNTX' and data[base + 0x20:base + 0x24] in (b'NX  ', b'Ounc')
     count, table = struct.unpack_from('<IQ', data, base + 0x24)
-    done = []
+    out = {}
     for k in range(count):
         info = base + struct.unpack_from('<Q', data, base + table + 8 * k)[0]
         assert data[info:info + 4] == b'BRTI'
         at = base + struct.unpack_from('<Q', data, info + 0x60)[0]
         name = data[at + 2:at + 2 + struct.unpack_from('<H', data, at)[0]].decode().split('^')[0]
-        if name not in textures:
-            continue
         mips, fmt = struct.unpack_from('<H', data, info + 0x16)[0], struct.unpack_from('<I', data, info + 0x1c)[0]
         (w, h), layout = struct.unpack_from('<II', data, info + 0x24), struct.unpack_from('<I', data, info + 0x34)[0]
-        assert fmt == R8_UNORM and w == h and mips == 1, f'{name}: format {fmt:#x}, {w}x{h}, {mips} mips'
         start = base + struct.unpack_from('<Q', data, base + struct.unpack_from('<Q', data, info + 0x70)[0])[0]
-        size, block = struct.unpack_from('<I', data, info + 0x50)[0], 1 << (layout & 7)
-        mask = rasterize(icons[textures[name]][1], w)
-        for y in range(h):
-            for x in range(w):
-                at = gob_offset(x, y, (w + 63) // 64, block)
-                assert at < size, f'{name}: pixel ({x}, {y}) past the image'
-                data[start + at] = mask[y * w + x]
+        size = struct.unpack_from('<I', data, info + 0x50)[0]
+        shape = bytes(data[info + 0x10:info + 0x3c]) + bytes(data[info + 0x50:info + 0x54])
+        out[name] = (shape, start, size, fmt, mips, w, h, 1 << (layout & 7))
+    return out
+
+
+def bc4_block(px):
+    """The 8 bytes of a BC4 (one-channel) block of 16 values, rows top down: the largest and the smallest value as the
+    two ends, so the six steps between them are used, each value its nearest step."""
+    hi, lo = max(px), min(px)
+    if hi == lo:   # one value: the six-step mode with index 0 everywhere
+        return bytes((hi, lo)) + bytes(6)
+    steps = [hi, lo] + [((7 - i) * hi + i * lo + 3) // 7 for i in range(1, 7)]
+    bits = 0
+    for k, v in enumerate(px):
+        bits |= min(range(8), key=lambda j: abs(steps[j] - v)) << (3 * k)
+    return bytes((hi, lo)) + bits.to_bytes(6, 'little')
+
+
+def bntx_redraw(data, base, textures, icons, ns2=False, fit=None):
+    """Paint the icon of each texture of textures (name without the ^ suffix -> code point; icons: code point ->
+    (advance, draw)) over its image in the BNTX at data[base:] (a bytearray), in place, the size unchanged. R8 or BC4
+    images of one mip; ns2: the Switch 2's block-linear layout (gob_offset); fit: the icon's larger side in pixels
+    (rasterize). Returns the names painted."""
+    images, done = bntx_images(data, base), []
+    for name, code in textures.items():
+        assert name in images, f'not in the texture list: {name}'
+        _, start, size, fmt, mips, w, h, block = images[name]
+        assert fmt in (R8_UNORM, BC4_UNORM) and w == h and mips == 1, f'{name}: format {fmt:#x}, {w}x{h}, {mips} mips'
+        mask = rasterize(icons[code][1], w, fit)
+        if fmt == R8_UNORM:
+            for y in range(h):
+                for x in range(w):
+                    at = gob_offset(x, y, (w + 63) // 64, block, ns2)
+                    assert at < size, f'{name}: pixel ({x}, {y}) past the image'
+                    data[start + at] = mask[y * w + x]
+        else:   # 4x4 blocks of 8 bytes, laid out as the pixels of a surface a quarter as wide and high
+            bw = (w + 3) // 4
+            for by in range((h + 3) // 4):
+                for bx in range(bw):
+                    px = [mask[min(by * 4 + j // 4, h - 1) * w + min(bx * 4 + j % 4, w - 1)] for j in range(16)]
+                    at = gob_offset(bx * 8, by, (bw * 8 + 63) // 64, block, ns2)
+                    assert at + 8 <= size, f'{name}: block ({bx}, {by}) past the image'
+                    data[start + at:start + at + 8] = bc4_block(px)
         done.append(name)
-    missing = sorted(set(textures) - set(done))
-    assert not missing, f'not in the texture list: {", ".join(missing)}'
     return done
+
+
+def bntx_swap(data, base, pairs):
+    """Swap the image bytes of each (name, name) pair of textures in the BNTX at data[base:] (a bytearray), in place.
+    Both of a pair must have the same shape (bntx_images), so the bytes of one are a valid image of the other."""
+    images = bntx_images(data, base)
+    for a, b in pairs:
+        assert a in images and b in images, f'{a} or {b} missing from the texture list'
+        (shape_a, at_a, size, *_), (shape_b, at_b, *_) = images[a], images[b]
+        assert shape_a == shape_b, f'{a} and {b} differ in format, size or tiling'
+        data[at_a:at_a + size], data[at_b:at_b + size] = data[at_b:at_b + size], data[at_a:at_a + size]
 
 
 # ---- the resource size table: System/Resource/ResourceSizeTable.Product.<n>.Nin_NX_NVN.rsizetable.zs, a RESTBL whose

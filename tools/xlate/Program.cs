@@ -204,6 +204,11 @@ static class SwshXlate
         // "whole_indices": 1: a primitive's index vector is stored by one thread (patch 0041; runtime/vk_device.c asks for it off NVIDIA)
         int primVerts = m["prim_verts"] is JsonNode pv ? (int)pv : 3;
         if (primVerts < 1 || primVerts > 3) throw new NotSupportedException($"mesh shader with {primVerts} vertices a primitive");
+        // "as_compute": n: the stage as a compute kernel for a GPU without VK_EXT_mesh_shader (MeshStage.AsCompute): a task shader, or a
+        // mesh shader of triangles without per-primitive attributes (with a task or without); n is the runtime's revision of the layout
+        bool asCompute = Field("as_compute") != 0;
+        if (asCompute && stage == "ms" && (primVerts != 3 || primSph != 0))
+            throw new NotSupportedException("mesh shader as compute: only triangles without per-primitive attributes");
         int threads = job["local"] is JsonArray l && l.Count > 0 ? (int)l[0] : 1;
         bool task = stage == "ts";
         if (code.Length < 0x90 || (code.Length & 15) != 0) throw new ArgumentException($"{stage} code of {code.Length} bytes: no SPH and instructions");
@@ -216,7 +221,8 @@ static class SwshXlate
         if (task)
         {
             return new MeshStage { IsTask = true, Threads = threads, PayloadWords = (payload + 3) >> 2, VertexComponents = Array.Empty<int>(),
-                Offsets = new[] { 0, 0x10, output, output + payload }, Size = output + ((payload + 3) & ~3), FirstWorkgroupOffset = MeshFirstWorkgroupOffset };
+                Offsets = new[] { 0, 0x10, output, output + payload }, Size = output + ((payload + 3) & ~3), FirstWorkgroupOffset = MeshFirstWorkgroupOffset,
+                AsCompute = asCompute };
         }
         // The SPH's OMAP: the system values of byte 0x35 (bits 0..2 primitive id, layer and viewport index, which take a block and go
         // nowhere; bit 3 the point size), the position's components (bits 4..7), then generic attribute n's (bytes 0x36 on, a nibble
@@ -248,7 +254,8 @@ static class SwshXlate
         int prim = output + blocks * Math.Max(comps.Count + primComps.Count, 1) * MeshStage.Block * 4;
         return new MeshStage { IsTask = false, HasTask = Field("task") != 0, Threads = threads, PayloadWords = (payload + 3) >> 2, MaxVertices = maxV,
             MaxPrimitives = maxP, VertexComponents = comps.ToArray(), PrimitiveComponents = primComps.ToArray(), Offsets = new[] { 0, 0x10, output, prim },
-            Size = prim + ((4 + primVerts * maxP + 3) & ~3), FirstWorkgroupOffset = MeshFirstWorkgroupOffset, PrimitiveVertices = primVerts, WholeIndices = Field("whole_indices") != 0 };
+            Size = prim + ((4 + primVerts * maxP + 3) & ~3), FirstWorkgroupOffset = MeshFirstWorkgroupOffset, PrimitiveVertices = primVerts, WholeIndices = Field("whole_indices") != 0,
+            AsCompute = asCompute };
     }
 
     internal static string Translate(JsonObject job, string outDir)   // also called by the --service mode (Service.cs)
@@ -287,6 +294,18 @@ static class SwshXlate
                         ["per_primitive_outputs"] = new JsonArray(mesh.PrimitiveComponents.Select(c => c >> 2).Distinct().Select(x => (JsonNode)x).ToArray()),
                         ["stage_memory"] = mesh.Size,
                     };
+                if (mesh != null && mesh.AsCompute && mesh.IsTask)   // a task kernel (MeshStageWrapper.GenerateAsCompute)
+                {
+                    res["stage"] = "tsc";
+                    res["mesh"]["as_compute"] = new JsonObject { ["launches"] = MeshStage.EmuTaskLaunches, ["max_tasks"] = mesh.EmuMaxTasks() };
+                }
+                else if (mesh != null && mesh.AsCompute)   // the emulation buffer's layout for this shader (MeshStageWrapper.GenerateAsCompute)
+                {
+                    int[] locs = mesh.VertexComponents.Where(c => c >= 0).Select(c => c >> 2).Distinct().OrderBy(x => x).ToArray();
+                    res["stage"] = "msc";
+                    res["mesh"]["as_compute"] = new JsonObject { ["vec4s"] = 1 + locs.Length, ["max_meshlets"] = mesh.EmuMaxMeshlets(1 + locs.Length),
+                        ["locations"] = new JsonArray(locs.Select(x => (JsonNode)x).ToArray()), ["task"] = mesh.HasTask ? 1 : 0 };
+                }
                 foreach (var b in p.Info.CBuffers) res["cbufs"].AsArray().Add((JsonNode)new JsonObject { ["binding"] = b.Binding, ["slot"] = b.Slot });
                 foreach (var b in p.Info.SBuffers) res["sbufs"].AsArray().Add((JsonNode)new JsonObject { ["binding"] = b.Binding, ["slot"] = b.Slot, ["cb_slot"] = b.SbCbSlot, ["cb_offset"] = b.SbCbOffset, ["flags"] = (int)b.Flags });
                 foreach (var (list, name) in new[] { (p.Info.Textures, "textures"), (p.Info.Images, "images") })

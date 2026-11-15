@@ -269,7 +269,7 @@ Measured:
   compute failure stays); changed modules: 1,144 vertex, 977 pixel, 2,260 compute, 198 mesh, 1 task.
 - Maxwell: the 3,763 TotK jobs of "Verifying" give byte-identical SPIR-V and `res.json` (the patch is behind the Ampere
   flag).
-- In game (the coordinator, dev2 build through `TOTK_XLATE`): the title movie is recognisable (the field, the hero on
+- In game (the coordinator, dev2 build through `REKARINA_XLATE`): the title movie is recognisable (the field, the hero on
   The horse, the ranch). Left: horizontal blocks about 16 x 4 px at 1920 x 1080, brightened towards white; in the sky
   (top 12 %) 14 % of the pixels are pure white and 6 % pure black (`build/oot/shots_fix3`, `build/oot/fix3.log`).
   The first run compiled the network pipelines for 132 s (a pipeline cache miss on the changed modules, not growth; see
@@ -296,7 +296,7 @@ error, not a translator one; with the scale at 1 the passes above check out.
 ### Residual dashes: the upscaler lost its HMMAs (patch 0026)
 
 With 0025 the movie was recognisable but kept horizontal dashes, worst in a band across the top and where the frame is
-bright. A private game run with `TOTK_DUMP=1500` and `TOTK_DUMP_BUF=0x195eea000:0x27C9320` (the weights and the whole
+bright. A private game run with `REKARINA_DUMP=1500` and `REKARINA_DUMP_BUF=0x195eea000:0x27C9320` (the weights and the whole
 activation arena; `vk_dump.c buf_snap` copies the range only when it lies in one pool, so a range starting at
 `0x195e00000` gave nothing) put the arena after every pass in `C:\Rekarina-tmp\oottest\dump4`. Each of passes 1-11,
 replayed in the harness from the game's arena before it with the game's weights and frame (`gamecmp.py`), is
@@ -383,8 +383,8 @@ identity of patch 0039 (`SAME_AS`: the hash of today's sources maps to the earli
 change ends that by itself), and `gfx_shader.c build_code_hash` ends the hash of a mesh program with point output with
 a tag, which gives exactly these programs new input ids and cache keys. A player's prepared cache stays valid; the
 seven are translated when first drawn. Checked by translating every stored input of the test build with the
-translators before and after the patch into fresh caches under one made-up identity (`TOTK_XLATE`, `TOTK_XLATE_ID`,
-`TOTK_SHADER_CACHE` with the pack linked in; the prewarm translates what the cache lacks, ten minutes a run): 51,115
+translators before and after the patch into fresh caches under one made-up identity (`REKARINA_XLATE`, `REKARINA_XLATE_ID`,
+`REKARINA_SHADER_CACHE` with the pack linked in; the prewarm translates what the cache lacks, ten minutes a run): 51,115
 translations each, 102,230 files, and the ten that differ are mesh shaders of 32 vertices and 32 primitives, the
 variants of the seven. (One vertex shader's `res.json` differed in the provisional key it was first written under.)
 
@@ -398,14 +398,42 @@ game came out empty there, which was the missing tree crowns, bushes, ground pla
 (`MeshStage.WholeIndices`), and the same frame shows them. The compare-and-swap loop of the byte stores is not what
 was lost: it runs there as it is.
 
-The runtime asks for it on every device but NVIDIA's (`vk_device.c`, `TOTK_MESH_INDICES=auto|whole|split`), where
+The runtime asks for it on every device but NVIDIA's (`vk_device.c`, `REKARINA_MESH_INDICES=auto|whole|split`), where
 the split stores have run since the first mesh draw and stay, so no NVIDIA translation changes. Where it is on, the
 program hash of a mesh program ends with a tag (`gfx_shader.c build_code_hash`), so on those devices the mesh shaders
 get new cache keys and nothing else does; the translator identity stays (`tools/build_xlate.py SAME_AS`).
 
-Still wrong on that driver: a draw through a task shader (the short grass) stops the GPU or crashes the driver as
-soon as it emits a primitive, and the runtime leaves those draws out there (`vk_exec_draw.c mesh_task_draws`,
-`TOTK_MESH_TASK`). What was tried is in `tools/xlate/experiments/README.md`.
+A draw through a task shader (the short grass) stopped the GPU or crashed that driver as soon as it emitted a
+primitive, and the runtime left those draws out there until 2026-11-15. The trigger is the GPU render condition the
+game puts around them: drawn outside conditional rendering they work there (`vk_exec_draw.c mesh_task_cond`,
+`REKARINA_MESH_TASK_COND`; the integrated Radeon shows the grass and three runs, one of five minutes running through the
+forest, had no fault). The grass an occlusion query would cull is drawn anyway on that driver. What was tried before
+is in `tools/xlate/experiments/README.md`.
+
+## VOTEU's predicate is a uniform one (patch 0042, 2026-11-15)
+
+The whites of the hero's eyes were cyan (seen on the pause menu's equipment page, where the model stands close). The
+eye material is drawn forward, and its first light is the object's light probe: where the probe is not empty the
+shader scales the light per channel by the probe (the usual ratio of the first band to the constant term, a power of
+the cosine). The NVN2 compiler wrote the "probe is not empty" test as
+
+    VOTEU.ANY UR63, UP0, P0     ; UP0 = any lane's P0
+    PLOP3     P0 = UP0          ; (lut a & b & c with a = b = PT, c = UP0 by its uniform bit 67)
+
+and guards the red channel's instructions with P0 afterwards. `AVote` wrote the vote into the lane predicate of that
+number for VOTE and VOTEU alike, so UP0 kept what an earlier, unrelated test had left in it (false here), P0 became
+that, and the red factor stayed the register's old content: -0.29 on that page, a light of (-0.79, 4.19, 8.0) where
+the scene's is (2.72, 2.81, 2.96). Green and blue take the vote by other instructions and were right. Now a VOTEU's
+vote goes to the uniform predicate, as its ballot goes to a uniform register. The culling kernels' votes name UPT and
+are unchanged.
+
+How it was found: a frame dump of the page (`REKARINA_DUMP`), the eye draw's module decompiled with spirv-cross, and the
+module's colour output replaced by three values of choice at a time (`REKARINA_SPV_FILE=<hash>=<file>`, a copy of the
+dump's `sh_<hash>.spv` edited by a script; the pass target read back as floats with `REKARINA_DUMP_ONLY` and
+`REKARINA_DUMP_RAW4`): final colour, then its terms, the light loop's sum, the first light's colour, the factor, the two
+conditions. 393 of the corpus's 42,851 programs have a VOTEU with a predicate other than UPT. Their program hash ends
+with a tag (`gfx_shader.c build_code_hash`, `nvn_ctl.h nvn2_ctl_voteu_pred`), so they are translated anew and every
+other cache entry stays; the translator identity is kept (`tools/build_xlate.py SAME_AS`).
 
 ## Warp-aggregated atomics (patches 0028 and 0030, 2026-11-07)
 

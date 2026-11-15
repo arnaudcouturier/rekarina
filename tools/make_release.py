@@ -9,18 +9,18 @@ cached in toolchain/release-dl/ and checked against the sha256 in PINS; a mismat
     python/    python.org embeddable 3.14.9 + the packages of tools/requirements-installer.txt + tkinter (the Tcl/Tk 9.0
                files come out of the python.org installer's own component MSI, unpacked with msiexec /a and expand.exe;
                the installer is never run)
-    llvm/      llvm-mingw, x86_64 only, the files clang and lld need to compile and link totk.exe
-    runtime/   libtotkrt.a and libtotkrt-v2.a (build_game.py --make-runtime-lib with llvm/, x86-64-v3 and v2), the
+    llvm/      llvm-mingw, x86_64 only, the files clang and lld need to compile and link rekarina.exe
+    runtime/   librekarina.a and librekarina-v2.a (build_game.py --make-runtime-lib with llvm/, x86-64-v3 and v2), the
                runtime headers, romfs.c, patches.c and ov_zstd.c (compiled per install), deps/ (headers and import
                libraries of SDL3, Opus, libvpx, Vulkan and VMA)
     bin/       totk_xlate.exe (+ .id), hactool.exe, SDL3.dll (upstream), libopus-0.dll, ninja.exe
-    recomp/, tools/, data/, installer/, licenses/, THIRD_PARTY_NOTICES.md, totk.ini.example
+    recomp/, tools/, data/, installer/, licenses/, THIRD_PARTY_NOTICES.md, rekarina.ini.example
     data/pgo-<v>.profdata  build/pgo's execution profile of an update (tools/pgo.py) and its .json record: the
                install compiles that update's code and the runtime libraries with it
     VERSION    the repository's VERSION plus the commit, 0.1.0+973c626; the installer's release string
     TotK-Setup.exe  installer/launcher/launcher.c built with llvm/ (-mwindows): starts python/pythonw.exe -m installer.gui
 
---prove compiles the generated C and links build/release-check/totk.exe with nothing but the folder's python/, llvm/,
+--prove compiles the generated C and links build/release-check/rekarina.exe with nothing but the folder's python/, llvm/,
 runtime/ and bin/ (PATH holds the Windows system directory and those), then runs the four probes there.
 
 Both need one game version extracted and lifted first (tools/extract.py, recomp/gen.py): generated/v121 or, without
@@ -100,7 +100,7 @@ PINS = {
 TCLTK_PAYLOAD = ('a12', 'ac87609db3f715404dd41a989c2f1706ea1512f3d86217f938d11c63af8eb505')
 SDL3_DLL_SHA256 = '2b4b128d8d510cc2d442693cf848c050d700d43dc667afe9e5fd82b0570d667e'   # SDL3.dll inside the SDL zip
 
-# llvm-mingw: what clang and lld need to compile and link totk.exe for x86_64-w64-mingw32 (dynamic LLVM, libc++, compiler-rt).
+# llvm-mingw: what clang and lld need to compile and link rekarina.exe for x86_64-w64-mingw32 (dynamic LLVM, libc++, compiler-rt).
 LLVM_BIN = {'clang.exe', 'clang++.exe', 'clang-23.exe', 'ld.lld.exe', 'llvm-ar.exe', 'llvm-ranlib.exe', 'llvm-nm.exe',
             'llvm-objdump.exe', 'llvm-objcopy.exe', 'llvm-strip.exe', 'llvm-readobj.exe', 'llvm-dlltool.exe',
             'llvm-rc.exe', 'llvm-cvtres.exe', 'llvm-windres.exe', 'llvm-wrapper.exe', 'mingw32-common.cfg',
@@ -376,8 +376,9 @@ def collect_licenses(out):
 # ---- runtime/, recomp/, tools/, data/ ---------------------------------------------------------------------------------
 
 def lifted_version():
-    """The game version whose generated C the runtime library and --prove build against: v121, else v143."""
-    for version in ('v121', 'v143'):
+    """The game version whose generated C the runtime library and --prove build against: v121, else v143, else OoT's
+    (a Rekarina release on Linux: tools/make_release_linux.py)."""
+    for version in ('v121', 'v143', 'oot'):
         if (MAIN_ROOT / 'generated' / version / 'layout.json').is_file():
             return version
     sys.exit('neither generated/v121 nor generated/v143 exists: extract a game version and lift it first '
@@ -405,29 +406,31 @@ def profiles():
 
 
 def runtime_lib(out, llvm, pgo):
-    """Build libtotkrt.a (x86-64-v3) and libtotkrt-v2.a (x86-64-v2) with the folder's llvm/, and copy them, the headers
+    """Build librekarina.a (x86-64-v3) and librekarina-v2.a (x86-64-v2) with the folder's llvm/, and copy them, the headers
     and the install-side sources into runtime/. pgo: profiles() of the release."""
     version = lifted_version()
     gen = MAIN_ROOT / 'generated' / version
     rt = out / 'runtime'
     # the runtime is the same for every update: any update's profile covers it (the newest update's, as players run it)
     newest = sorted(pgo.items())[-1:]
-    for cpu, name in (('v3', 'libtotkrt.a'), ('v2', 'libtotkrt-v2.a')):
+    for cpu, name in (('v3', 'librekarina.a'), ('v2', 'librekarina-v2.a')):
         build = MAIN_ROOT / 'build' / 'release-check' / f'rtlib-{cpu}'
         run([sys.executable, ROOT / 'tools' / 'build_game.py', '--make-runtime-lib', '--toolchain', llvm, '--cpu', cpu,
              '--version', version, '--deps', out / 'runtime' / 'deps', '--ninja', out / 'bin' / 'ninja.exe',
              '--gen', gen, '--out', build, *(['--pgo', newest[0][1]] if newest else [])],
             env=clean_env(llvm / 'bin', out / 'bin'))
-        shutil.copy2(build / 'libtotkrt.a', rt / name)
+        shutil.copy2(build / 'librekarina.a', rt / name)
     for p in sorted((ROOT / 'runtime').rglob('*')):
         if p.suffix in RUNTIME_SUFFIXES and p.is_file():
             (rt / p.relative_to(ROOT / 'runtime')).parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(p, rt / p.relative_to(ROOT / 'runtime'))
-    for name in sorted(build_game.INSTALL_SIDE):   # compiled at install, so left out of libtotkrt.a
+    for name in sorted(build_game.INSTALL_SIDE):   # compiled at install, so left out of librekarina.a
         shutil.copy2(ROOT / 'runtime' / name, rt / name)
 
 
-def build_sources(out, pgo):
+def build_sources(out, pgo, shader_list_wanted=True):
+    """recomp/, tools/, data/ and installer/ of the folder. shader_list_wanted False (a toolchain folder for OoT's setup,
+    tools/make_release_linux.py --oot) leaves out the TotK shader list, which needs the refs/MacNativeGames checkout."""
     copy_tree(ROOT / 'recomp', out / 'recomp', lambda r: not r.endswith(('.py', '.txt')) or '__pycache__' in r)
     for f in TOOLS_FILES:
         (out / 'tools').mkdir(exist_ok=True)
@@ -435,14 +438,15 @@ def build_sources(out, pgo):
     for d in TOOLS_DIRS:
         copy_tree(ROOT / 'tools' / d, out / 'tools' / d, lambda r: '__pycache__' in r or r.endswith('.md'))
     (out / 'data').mkdir(exist_ok=True)
-    text = shader_list.history(MAIN_ROOT / 'refs' / 'MacNativeGames', MNG_COMMIT)
-    (out / 'data' / 'shader_list.tsv').write_text(text, encoding='utf-8', newline='\n')
+    if shader_list_wanted:
+        text = shader_list.history(MAIN_ROOT / 'refs' / 'MacNativeGames', MNG_COMMIT)
+        (out / 'data' / 'shader_list.tsv').write_text(text, encoding='utf-8', newline='\n')
     for p in pgo.values():
         for f in (p, p.with_suffix('.json')):
             if f.is_file():
                 shutil.copy2(f, out / 'data' / f.name)
     copy_tree(ROOT / 'installer', out / 'installer', lambda r: '__pycache__' in r or r.startswith('launcher/'))
-    shutil.copy2(ROOT / 'totk.ini.example', out / 'totk.ini.example')
+    shutil.copy2(ROOT / 'rekarina.ini.example', out / 'rekarina.ini.example')
     shutil.copy2(ROOT / 'THIRD_PARTY_NOTICES.md', out / 'THIRD_PARTY_NOTICES.md')
     (out / 'VERSION').write_text(version() + '\n', encoding='utf-8')
 
@@ -552,7 +556,7 @@ def write_zip(out, path):
 
 
 def prove(out, cpu='v3'):
-    """Compile the generated C and link totk.exe with the folder's tools only, then run the probes next to it."""
+    """Compile the generated C and link rekarina.exe with the folder's tools only, then run the probes next to it."""
     out = out.resolve()
     version = lifted_version()
     gen = MAIN_ROOT / 'generated' / version
@@ -563,7 +567,7 @@ def prove(out, cpu='v3'):
     t0 = time.time()
     run([out / 'python' / 'python.exe', out / 'tools' / 'build_game.py', '--toolchain', out / 'llvm', '--cpu', cpu,
          '--deps', out / 'runtime' / 'deps', '--runtime', out / 'runtime',
-         '--runtime-lib', out / 'runtime' / ('libtotkrt-v2.a' if cpu == 'v2' else 'libtotkrt.a'),
+         '--runtime-lib', out / 'runtime' / ('librekarina-v2.a' if cpu == 'v2' else 'librekarina.a'),
          '--ninja', out / 'bin' / 'ninja.exe', '--version', version, '--gen', gen, '--out', chk, '--exefs', ext / 'exefs',
          '--romfs', ext / 'romfs', '--profile', chk / 'profile', *(['--pgo', pgo] if pgo.is_file() else [])],
         env=env)
@@ -572,7 +576,7 @@ def prove(out, cpu='v3'):
         shutil.copy2(out / 'bin' / dll, chk / dll)
     failed = []
     for probe in PROBES:
-        r = subprocess.run([str(chk / 'totk.exe'), probe], cwd=chk, env=clean_env(chk), capture_output=True, text=True,
+        r = subprocess.run([str(chk / 'rekarina.exe'), probe], cwd=chk, env=clean_env(chk), capture_output=True, text=True,
                            timeout=900)
         tail = (r.stdout.strip().splitlines() or [''])[-1]
         print(f'{probe}: exit {r.returncode}: {tail}')

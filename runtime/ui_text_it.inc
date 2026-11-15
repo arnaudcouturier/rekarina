@@ -112,8 +112,8 @@
     [UI_MENU_UPSCALE_GROUP] = "Upscaling e generazione di fotogrammi",
     [UI_MENU_FSR_VERSION] = "Versione di FSR",
     [UI_MENU_FSR_VERSION_DESC] = "Quale upscaler AMD FSR viene usato quando l'upscaler temporale è AMD FSR. Automatico usa FSR 4.1 (apprendimento automatico) sulle schede Radeon che lo supportano e FSR 3.1 su tutte le altre. Si applica subito.",
-    [UI_MENU_TAA] = "Upscaler temporale",
-    [UI_MENU_TAA_DESC] = "L'upscaler usato dalla riga DLSS / DLAA: NVIDIA DLSS (GPU RTX) o AMD FSR (qualsiasi GPU). Dopo il riavvio.",
+    [UI_MENU_TAA] = "Upscaler",
+    [UI_MENU_TAA_DESC] = "L'upscaler usato dalla riga DLSS / DLAA: NVIDIA DLSS (GPU RTX), AMD FSR (qualsiasi GPU, temporale) o AMD FSR 1 (qualsiasi GPU, spaziale: il più leggero, per schede datate e PC portatili da gioco). Dopo il riavvio.",
     [UI_MENU_FRAMEGEN] = "Generazione fotogrammi",
     [UI_MENU_FRAMEGEN_DESC] = "Un fotogramma generato tra ogni coppia di fotogrammi disegnati dal gioco, lasciando fuori l'HUD: AMD FSR su qualsiasi GPU, NVIDIA DLSS sulle serie RTX 40 e 50. Dopo il riavvio.",
     [UI_MENU_FRAMEGEN_NEEDS] = "Richiede DLSS / DLAA attivo: ne usa i vettori di movimento.",
@@ -228,14 +228,16 @@
                              "la telecamera. Il gioco legge le icone all'avvio, quindi cambiano dopo il riavvio. Fanno "
                              "parte dei file del gioco, quindi un pulsante che rimappi in Comandi mantiene a schermo la "
                              "vecchia icona.",
-    [UI_MENU_PROMPTS_DESC_LIVE] = "Quali pulsanti mostrano le icone del gioco: Nintendo (quelli del gioco), Xbox, PlayStation, il set a contorno proprio di Rekarina o PC: tastiera e mouse, con i tasti che hai assegnato. La fila di pulsanti qui sopra è il set scelto, come lo disegna il gioco. I pulsanti frontali seguono la disposizione dei pulsanti qui sopra. Si applica subito.",
+    [UI_MENU_PROMPTS_DESC_LIVE] = "Quali pulsanti mostrano le icone del gioco. Automatiche segue il dispositivo su cui hai premuto un pulsante per ultimo: tastiera e mouse, oppure i pulsanti del controller stesso (Xbox, PlayStation, Nintendo; uno Steam Deck o un portatile Windows mostra Xbox). Oppure sempre un set: Nintendo (quelli del gioco), Xbox, PlayStation, Rekarina (nomi Xbox sulle forme dei pulsanti del gioco) o PC: tastiera e mouse, con i tasti che hai assegnato. La fila di pulsanti qui sopra è il set come lo disegna il gioco. I pulsanti frontali seguono la disposizione dei pulsanti qui sopra. Si applica subito.",
     [UI_MENU_PROMPTS_NINTENDO] = "Nintendo", [UI_MENU_PROMPTS_XBOX] = "Xbox", [UI_MENU_PROMPTS_PC] = "PC", [UI_MENU_PROMPTS_PS] = "PlayStation", [UI_MENU_PROMPTS_RK] = "Rekarina",
+    [UI_MENU_PROMPTS_AUTO] = "Automatiche",
     [UI_MENU_PROMPTS_MISSING] = "file delle icone mancanti: ripeti l'installazione",
     [UI_MENU_PROMPTS_FAILED] = "file delle icone danneggiati: ripeti l'installazione",
     [UI_MENU_PROMPTS_RESTART] = "le icone cambiano dopo il riavvio",
+    [UI_MENU_PROMPTS_LIVE_PARTIAL] = "Cambiato subito. I pulsanti già disegnati dal gioco e il suggerimento d'azione in basso mantengono l'aspetto precedente fino al riavvio.",
     [UI_MENU_PROMPTS_OFF_SHAPE] = "disattivate con risoluzione non 16:9",
     [UI_MENU_PROMPTS_OFF_MODS] = "disattivate: una mod RomFS sostituisce i loro file",
-    [UI_MENU_PROMPTS_OFF_PATCHES] = "disattivate finché TOTK_ROMFS_PATCHES è impostata",
+    [UI_MENU_PROMPTS_OFF_PATCHES] = "disattivate finché REKARINA_ROMFS_PATCHES è impostata",
     [UI_MENU_RESTART] = "Riavvia ora",
     [UI_MENU_RESTART_DESC] = "Chiude il gioco e lo riavvia con le nuove icone. I progressi successivi all'ultimo "
                              "salvataggio andranno persi.",
@@ -248,12 +250,25 @@
     [UI_MENU_STICK_DEADZONE_NOW] = "levetta ora: %.0f %%",
     [UI_MENU_MOUSE_MODE] = "Telecamera con mouse",
     [UI_MENU_MOUSE_MODE_DESC] = "Diretta: la telecamera ruota di quanto si sposta il mouse, come in un gioco per PC, senza zona morta né curva della levetta (gioco 1.4.3; le altre versioni usano l'emulazione levetta). Emulazione levetta: il mouse fa da levetta destra.",
+    [UI_MENU_FAST_TEXT] = "Dialoghi più veloci",
+    [UI_MENU_FAST_TEXT_DESC] = "Elimina le pause che i messaggi del gioco fanno tra le frasi, così il testo scorre senza fermarsi.",
+    [UI_MENU_MOUSE_MODE_DESC_OOT] = "Diretto: la telecamera ruota esattamente quanto si muove il mouse, a qualsiasi velocità, senza zona morta, curva o velocità massima dello stick. Emulazione dello stick: il mouse agisce come lo stick destro, con la sua curva e la sua velocità massima.",
     [UI_MENU_MOUSE_STICK] = "Emulazione levetta",
     [UI_MENU_MOUSE_DIRECT] = "Diretta",
     [UI_MENU_MENU_CURSOR] = "Mouse nei menu del gioco",
     [UI_MENU_MENU_CURSOR_DESC] = "Nei menu del gioco (titolo, inventario, negozi, scelte nei dialoghi) compare il puntatore: l'elemento sotto di esso viene selezionato, il clic sinistro conferma, il clic destro torna indietro. Solo se per ultimi sono stati usati il mouse o un tasto, così con un gamepad i menu restano invariati (gioco 1.4.3).",
     [UI_MENU_MOUSE_SENS] = "Sensibilità telecamera mouse",
     [UI_MENU_MOUSE_SENS_DESC] = "Quanto velocemente il mouse ruota la telecamera.",
+    [UI_MENU_MOUSE_SENS_Y] = "Velocità verticale del mouse",
+    [UI_MENU_MOUSE_SENS_Y_DESC] = "Quanto velocemente ruota la telecamera muovendo il mouse in alto e in basso, rispetto "
+                                  "a sinistra e destra: 0.50 è la metà, 1.00 uguale.",
+    [UI_MENU_MOUSE_INVERT_Y] = "Inverti asse verticale del mouse",
+    [UI_MENU_MOUSE_INVERT_Y_DESC] = "Scambia alto e basso per la telecamera col mouse. Solo il mouse: le opzioni della "
+                                    "telecamera del gioco restano valide.",
+    [UI_MENU_MOUSE_RAW] = "Input grezzo del mouse",
+    [UI_MENU_MOUSE_RAW_DESC] = "Attivo: la telecamera segue il movimento del mouse stesso, senza la velocità e "
+                               "l'accelerazione del puntatore di Windows. Disattivo: segue il puntatore, con entrambe, "
+                               "come sul desktop (con un touchpad, per esempio).",
     [UI_MENU_WALK_KEY] = "Tasto camminata",
     [UI_MENU_WALK_KEY_DESC] = "Tienilo premuto per inclinare solo in parte le levette della tastiera, così con la tastiera "
                               "si cammina invece di correre. Intensità camminata stabilisce di quanto. Controller e mouse "

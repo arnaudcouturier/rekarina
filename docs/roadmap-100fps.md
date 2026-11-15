@@ -7,15 +7,15 @@ the night of 2026-11-08, and what is worth building next, ordered by the frame t
 
 ## Where the frame goes
 
-Frame rate on the porch, unlocked (TOTK_FPS_LIMIT=240):
+Frame rate on the porch, unlocked (REKARINA_FPS_LIMIT=240):
 
-| build | present waits for its own frame (default, `c`) | one frame in flight (`TOTK_PRESENT_SYNC=1`) |
+| build | present waits for its own frame (default, `c`) | one frame in flight (`REKARINA_PRESENT_SYNC=1`) |
 |---|---|---|
 | 2026-11-07 evening | 35-37 fps | 39-41 fps |
 | 2026-11-08 night | 42 fps | 45-46 fps |
 | 2026-11-08, new default `c1` (all but the frame's last submission) | 45-47 fps, no flicker | |
 | 2026-11-08 morning: translator patch 0032, getenv off the report path | 57 fps (GPU 14.8 ms, 1 % low 33) | same (c1, c2 and 1 within 0.3 fps) |
-| same, measured with TOTK_REALTIME=1 (the rows above ran with 0: capped at 60, missed frames took two vsync steps) | porch 60-63 fps, lighter scenes 92-103 fps | |
+| same, measured with REKARINA_REALTIME=1 (the rows above ran with 0: capped at 60, missed frames took two vsync steps) | porch 60-63 fps, lighter scenes 92-103 fps | |
 
 Update of the morning (details in oot-notes.md, "The shaders as the driver compiles them"): the GPU frame went from
 19.8 to 14.8 ms, nearly all of it from translator patch 0032 (the raw global memory lookup, inlined ~500 times per
@@ -23,10 +23,10 @@ shader, without its unrolled binary search), and the replay thread lost ~20 % of
 report. Now GPU ~14.8 ms busy + ~2 ms idle, CPU interval ~16.7 ms: ~57-62 fps on the porch. Measured and left: the
 merges cost 2.9 ms of GPU time for ~20 MiB a frame (about 1.2 ms of it the shader's writes into host memory; the range
 search is not the cost; every merged range has pages the CPU wrote, so they cannot become plain copies safely); a
-deferred OP_WAIT_EVENT (TOTK_EVENT_DEFER=1) removes the replay's ~2.5 ms waits but draws another frame's shadows one
+deferred OP_WAIT_EVENT (REKARINA_EVENT_DEFER=1) removes the replay's ~2.5 ms waits but draws another frame's shadows one
 frame in 300; async replay is no faster (56.8 fps both).
 
-GPU, one frame in flight (vk_sync.c part timestamps, TOTK_GPU_PASSTIME):
+GPU, one frame in flight (vk_sync.c part timestamps, REKARINA_GPU_PASSTIME):
 
 - Busy ~19.6-20 ms a frame, idle ~2 ms (0.8 ms of it waiting for the CPU to submit).
 - The game's passes and dispatches take ~15.3 ms of it: queue 6 (main graphics, ~157 passes) 12.1 ms, queue 3
@@ -42,8 +42,8 @@ GPU, one frame in flight (vk_sync.c part timestamps, TOTK_GPU_PASSTIME):
   1536x864, while the depth pre-pass with the same draws takes 0.2 ms (the cost is in its vertex, mesh and fragment
   shaders, not in the draws or the pixels).
 
-Per draw (TOTK_DRAWTIME=<frame>, vk_exec_draw.c: a GPU timestamp before every draw and at every pass end, summed per
-shader pair; TOTK_DRAWTIME_DIR writes the dearest shaders' SPIR-V): ~10 ms of the frame is in draws, and the dearest
+Per draw (REKARINA_DRAWTIME=<frame>, vk_exec_draw.c: a GPU timestamp before every draw and at every pass end, summed per
+shader pair; REKARINA_DRAWTIME_DIR writes the dearest shaders' SPIR-V): ~10 ms of the frame is in draws, and the dearest
 are not the forest's 1,200 draws (0.2-1 ms per 200-draw part) but single full-screen draws of 0.2-1.0 ms each: the
 material passes. Each draws one screen-sized triangle depth-tested against a material-ID depth (func LEQUAL, no depth
 write), so it shades the pixels of its material only; they have no discard, no depth write and no stores (early depth
@@ -55,7 +55,7 @@ test applies). Their fragment shaders (fs 97bc6d48176e1bc7 0.98 ms, 811b27df778b
 Whether that body compiles to something much larger than the console's original shader needs the driver's view
 (Nsight Graphics shader profiler: SASS size, registers, occupancy, stall reasons); it is not installed here.
 
-CPU (render thread, TOTK_PROFILE_RENDER=1, frames in flight):
+CPU (render thread, REKARINA_PROFILE_RENDER=1, frames in flight):
 
 - Replay ~15-20 ms a frame of recording, 5-6 us per draw. Of the render thread's time: ~19 % asleep in OP_WAIT_EVENT
   (the game's last submission waits for constants another thread writes late; on the console the GPU waits there, here
@@ -70,19 +70,19 @@ So 100 fps (10 ms) needs both halves roughly halved. Neither single fix gets the
 | change | result | kept |
 |---|---|---|
 | float sums written back as additions (wb_merge.comp) | auto exposure stable with frames in flight | yes |
-| dispatch after dispatch ordered by the game's barriers only | GPU -0.6 ms | yes (`TOTK_DISPATCH_BARRIER=full` to undo) |
-| the game's fragment-only barriers relaxed (~65 a frame) | no measurable change, picture same | yes (`TOTK_GAME_BARRIER=full`) |
-| indirect mesh draw counts copied once per stretch | 60 -> 28 barriers a frame | yes (`TOTK_MESH_BATCH=0`) |
-| parts submitted inside long passes (every 200 draws) | GPU wait for submission 2.9 -> 0.8 ms; 41.7 -> 45.2 fps | yes (`TOTK_SPLIT_IN_PASS`) |
-| graphics scale tier 1 / 2 (the game draws 4/5, 2/3 of the window) | GPU -1.2 / -2 ms | option, off (`TOTK_GRAPHICS_SCALE`) |
+| dispatch after dispatch ordered by the game's barriers only | GPU -0.6 ms | yes (`REKARINA_DISPATCH_BARRIER=full` to undo) |
+| the game's fragment-only barriers relaxed (~65 a frame) | no measurable change, picture same | yes (`REKARINA_GAME_BARRIER=full`) |
+| indirect mesh draw counts copied once per stretch | 60 -> 28 barriers a frame | yes (`REKARINA_MESH_BATCH=0`) |
+| parts submitted inside long passes (every 200 draws) | GPU wait for submission 2.9 -> 0.8 ms; 41.7 -> 45.2 fps | yes (`REKARINA_SPLIT_IN_PASS`) |
+| graphics scale tier 1 / 2 (the game draws 4/5, 2/3 of the window) | GPU -1.2 / -2 ms | option, off (`REKARINA_GRAPHICS_SCALE`) |
 | debug code off the hot path | a few % of the render thread | yes |
 | every one of our barriers removed | picture white | no (measurement) |
 | UpdateUniformBuffer dropped entirely | GPU -0.4 ms | no (measurement) |
 | big write-backs skipped | foliage flicker, uploads 113 MiB | no (measurement) |
-| replay on its own thread (`TOTK_REPLAY_ASYNC=1`) | same fps, more flicker | no |
+| replay on its own thread (`REKARINA_REPLAY_ASYNC=1`) | same fps, more flicker | no |
 | "the CPU's word wins" in the merge | foliage flicker every 8th frame | no |
 | present waits for all but the last submission (`c1`) + late copies for shader-written pools | 45-47 fps, 1,200 frames without flicker | yes, default |
-| result guard (`TOTK_RESULT_GUARD=1`) | foliage flicker gone, 13-20 fps (~47 waits a frame) | off |
+| result guard (`REKARINA_RESULT_GUARD=1`) | foliage flicker gone, 13-20 fps (~47 waits a frame) | off |
 | result guard on reads only | 53 waits a frame, 13 fps, flicker | no |
 | write-back of the 46 MiB of big ranges skipped (pages kept as the mirror's) | GPU -1 ms, one stale read (flash) | no (measurement) |
 
@@ -95,14 +95,14 @@ still ~108 instructions inlined per access; heavy compute shaders have 200+ of t
 VK_KHR_cooperative_matrix (the driver has it, compute only): the game's agl upscaler network (dmsh_hmma16816_f16,
 1,220 instructions, 176 calls, 0.63 ms a frame); (d) the CPU side below (the replay ~10 ms of the game thread's
 16.7 ms); (e) the late-signal wait without stalls: find what the replay reads at record time besides uniform blocks and
-mirrors (TOTK_EVENT_DEFER's shadow frame).
+mirrors (REKARINA_EVENT_DEFER's shadow frame).
 
 GPU (from ~20 ms):
 
 1. Write-back off the graphics queue (~3 ms). Measured with marks around the mirror prologue, the merge dispatches and
    the write-back copies (GPU_PASSTIME, VK_MARK_PROLOGUE / MERGE / WBCOPY): per frame ~1.0 ms of prologues, ~1.0 ms of
    plain write-back copies (46 MiB) and ~3 ms of "merge" time, all in queue 3's submission; with the merge off
-   (TOTK_WB_MERGE=0, a measurement: it breaks the exposure) the GPU frame drops 19.5 -> 17.5 ms. The merge itself
+   (REKARINA_WB_MERGE=0, a measurement: it breaks the exposure) the GPU frame drops 19.5 -> 17.5 ms. The merge itself
    moves only ~4.5 MiB (100 ranges, most in the 88 MiB pool 0x15af30000); the cost is the serialisation around it (full
    barriers before and after, the next submission's prologue waiting for it). Relaxing those barriers is not safe on
    one queue: the next prologue uploads the CPU's bytes into the same pools the merge reads. Plan: the merges and

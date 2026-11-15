@@ -1,4 +1,4 @@
-// Binding tables (keyboard/mouse and gamepad), their totk.ini overrides, the pure mapping functions and the Buttons
+// Binding tables (keyboard/mouse and gamepad), their rekarina.ini overrides, the pure mapping functions and the Buttons
 // tab's edits (input_map.h). No Win32 or SDL here.
 #include <ctype.h>
 #include <math.h>
@@ -123,7 +123,7 @@ static void pads_put(InputMap *m, int layout, int action, const uint8_t *list, i
 int input_prompt_key(int action) {
     if (action < 0 || action >= ACTION_COUNT) return KEY_NONE;
     char name[40], buf[256];
-    snprintf(name, sizeof name, "TOTK_BIND_%s", action_names[action]);
+    snprintf(name, sizeof name, "REKARINA_BIND_%s", action_names[action]);
     const char *line = cfg_get(name);
     snprintf(buf, sizeof buf, "%s", line ? line : "");
     for (char *save = NULL, *tok = strtok_r(buf, ",", &save); tok; tok = strtok_r(NULL, ",", &save)) {
@@ -190,9 +190,9 @@ void input_map_configure(void) {
     input_map_reset();
     for (int a = 0; a < ACTION_COUNT; a++) {
         char var[32];
-        snprintf(var, sizeof var, "TOTK_BIND_%s", action_names[a]);
+        snprintf(var, sizeof var, "REKARINA_BIND_%s", action_names[a]);
         const char *v = cfg_get(var);
-        if (v && *v && input_map_bind(action_names[a], v)) rt_log("input: %s = %s", var + 5, v);
+        if (v && *v && input_map_bind(action_names[a], v)) rt_log("input: %s = %s", var + strlen("REKARINA_"), v);
     }
 }
 
@@ -314,7 +314,8 @@ int input_prompts_pick(const char *prompts, const char *pad_layout) {
     if (prompts && *prompts)
         return !strcasecmp(prompts, "xbox") ? PROMPTS_XBOX : !strcasecmp(prompts, "pc") ? PROMPTS_PC
                : !strcasecmp(prompts, "playstation") || !strcasecmp(prompts, "ps") ? PROMPTS_PS
-               : !strcasecmp(prompts, "rekarina") ? PROMPTS_RK : PROMPTS_NINTENDO;
+               : !strcasecmp(prompts, "rekarina") ? PROMPTS_RK : !strcasecmp(prompts, "auto") ? PROMPTS_AUTO
+               : PROMPTS_NINTENDO;
     return pad_layout && !strcasecmp(pad_layout, "xbox_prompts") ? PROMPTS_XBOX : PROMPTS_NINTENDO;
 }
 
@@ -330,10 +331,28 @@ const char *input_prompts_folder(int prompts, const char *pad_layout) {
     if (prompts == PROMPTS_RK)
         return input_pad_layout_pick(pad_layout, 0) == PAD_LAYOUT_NINTENDO ? "romfs-patches-rekarina"
                                                                          : "romfs-patches-rekarina-label";
-    if (prompts != PROMPTS_XBOX) return NULL;
+    if (prompts != PROMPTS_XBOX && prompts != PROMPTS_AUTO) return NULL;
     // The folders are read at start, before a pad is open: auto counts as Xbox, as for a pad without Nintendo labels.
     // A Nintendo-labelled pad under auto plays by label too (its A is on the button labelled A), so it matches as well.
     return input_pad_layout_pick(pad_layout, 0) == PAD_LAYOUT_NINTENDO ? "romfs-patches-xbox" : "romfs-patches-xbox-label";
+}
+
+const char *input_prompts_device_folder(int kind, int layout) {
+    int by_position = layout == PAD_LAYOUT_NINTENDO;
+    switch (kind) {
+    case PROMPTS_PC: return "romfs-patches-pc";
+    case PROMPTS_PS: return by_position ? "romfs-patches-playstation" : "romfs-patches-playstation-label";
+    // A Switch pad's letters sit where the game's prompts expect them: by position it is the console. Under the Xbox
+    // layout its bottom button (B) does A and its left one (Y) does X, which the swapped Xbox folder names.
+    case PROMPTS_NINTENDO: return by_position ? NULL : "romfs-patches-xbox";
+    }
+    return by_position ? "romfs-patches-xbox" : "romfs-patches-xbox-label";
+}
+
+int input_prompts_of_folder(const char *folder) {
+    if (!folder) return PROMPTS_NINTENDO;
+    return strstr(folder, "-pc") ? PROMPTS_PC : strstr(folder, "-playstation") ? PROMPTS_PS
+           : strstr(folder, "-rekarina") ? PROMPTS_RK : PROMPTS_XBOX;
 }
 
 uint64_t input_map_pad_buttons(const uint8_t down[PAD_COUNT], int layout) {
@@ -379,6 +398,17 @@ void input_mouse_stick(int32_t dx, int32_t dy, double dt_s, float sens, int32_t 
     out[1] = (int32_t)lrint(y);
 }
 
+void input_mouse_stick_curved(int32_t dx, int32_t dy, double dt_s, float sens, double deg_per_count, double full_deg_s,
+                              int32_t out[2]) {
+    out[0] = out[1] = 0;
+    if (!(dt_s > 0) || !(sens > 0) || !(full_deg_s > 0) || (!dx && !dy)) return;
+    double vx = dx * deg_per_count * sens / dt_s, vy = -dy * deg_per_count * sens / dt_s, v = sqrt(vx * vx + vy * vy);
+    double share = v / full_deg_s, m = 0.005 + 0.99 * sqrt(share > 1 ? 1 : share);
+    if (m > 1) m = 1;
+    out[0] = (int32_t)lrint(vx / v * m * STICK_MAX);
+    out[1] = (int32_t)lrint(vy / v * m * STICK_MAX);
+}
+
 void input_pad_stick(int32_t x, int32_t y, float dead, int32_t out[2]) {
     double fx = x / (double)STICK_MAX, fy = y / (double)STICK_MAX, m = sqrt(fx * fx + fy * fy);
     out[0] = out[1] = 0;
@@ -389,8 +419,8 @@ void input_pad_stick(int32_t x, int32_t y, float dead, int32_t out[2]) {
 }
 
 float input_pad_deadzone(int stick) {
-    const char *own = stick ? "TOTK_RSTICK_DEADZONE" : "TOTK_LSTICK_DEADZONE", *set = cfg_get(own);
-    double v = cfg_double(set && *set ? own : "TOTK_STICK_DEADZONE");
+    const char *own = stick ? "REKARINA_RSTICK_DEADZONE" : "REKARINA_LSTICK_DEADZONE", *set = cfg_get(own);
+    double v = cfg_double(set && *set ? own : "REKARINA_STICK_DEADZONE");
     return (float)(v < 0 ? 0 : v > 50 ? 50 : v) / 100.f;
 }
 

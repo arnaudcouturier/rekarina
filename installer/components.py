@@ -324,7 +324,11 @@ def gpu_key(gpu):
 # ---- what a card gets ---------------------------------------------------------------------------------------------
 
 def groups_for(gpu):
-    """The groups this card can use. An unknown card gets FSR 3.1 only: it runs on any Vulkan card."""
+    """The groups this card can use. An unknown card gets FSR 3.1 only: it runs on any Vulkan card. Off Windows none:
+    every file here is a Windows library (AMD's FSR SDK, NVIDIA's DLSS and Streamline), which the game cannot load there
+    (a Linux setup downloaded 100 MB of them; DLSS on Linux goes through the driver's own NGX library, runtime/vk_dlaa.c)."""
+    if os.name != 'nt':
+        return []
     groups = ['fsr']
     rtx = gpu.rtx if gpu else None
     if rtx and rtx >= 20:
@@ -361,11 +365,11 @@ def preset(gpu, have=GROUPS):
     writes them into a NEW rekarina.ini only: a settings file that exists is the player's and is never touched. `have`
     names the component groups that are in the game folder; a preset never switches on what is not there.
 
-        id            card                                      dlaa  taa    dlss      framegen
-        rtx_framegen  NVIDIA RTX 40 or newer, 12 GB or more      1     dlss   quality   dlss
-        rtx_dlss      NVIDIA RTX 20 or newer                     1     dlss   quality   off
-        base          AMD, Intel, NVIDIA GTX, unknown            0     fsr3   -         off
-        handheld      a processor's own graphics (handhelds,     0     fsr3   -         off    render_scale = 50
+        id            card                                      dlaa  taa    dlss         framegen
+        rtx_framegen  NVIDIA RTX 40 or newer, 12 GB or more      1     dlss   quality      dlss
+        rtx_dlss      NVIDIA RTX 20 or newer                     1     dlss   quality      off
+        base          AMD, Intel, NVIDIA GTX, unknown            0     fsr3   -            off
+        handheld      a processor's own graphics (handhelds,     1     fsr1   performance  off
                       laptops without a card)
 
       - rtx_framegen: DLSS Quality with DLSS Frame Generation. Under 12 GB frame generation stays off: its extra
@@ -374,16 +378,18 @@ def preset(gpu, have=GROUPS):
         rates it adds more latency than smoothness; the menu has it).
       - base: the game's own sharp picture with FSR 1, no temporal upscaler. taa = fsr3 only chooses what the menu's
         DLSS / DLAA row would switch on (FSR 3.1, which runs on every card); it stays off.
-      - handheld: base with the 3D scene at half of the game's 2560x1440 picture, 1280x720: about the panel of a Steam
-        Deck (1280x800) and what a ROG Ally's graphics carry at 1080p through FSR 1. A first setting only, chosen by
-        the scene's pixel count; not measured on those machines (2026-11-14).
+      - handheld: the 3D scene at half of the game's 2560x1440 picture, 1280x720, scaled up by FSR 1 on the scene
+        (taa = fsr1 at the performance mode's 50 %): about the panel of a Steam Deck (1280x800) and what a ROG Ally's
+        graphics carry at 1080p. Until 2026-11-15 render_scale = 50 lowered the scene the same way and the game's own
+        scaler, softer, brought it back. A first setting only, chosen by the scene's pixel count; not measured on those
+        machines.
 
     Video memory, on top of any of them (unknown memory changes nothing):
 
         tex   memory          tex_quality   and
         auto  8 GB or more    auto
         half  under 8 GB      half
-        quarter  4 GB or less quarter       base: render_scale = 75; DLSS presets: dlss = balanced
+        quarter  4 GB or less quarter       base: FSR 1 at the quality mode (67 %); DLSS presets: dlss = balanced
     """
     rtx = gpu.rtx if gpu else None
     gb = gpu.vram / GIB if gpu and gpu.vram else None
@@ -394,12 +400,12 @@ def preset(gpu, have=GROUPS):
     else:
         ident, settings = 'base', {'dlaa': '0', 'taa': 'fsr3', 'framegen': 'off'}
         if gpu and gpu.integrated:
-            ident, settings['render_scale'] = 'handheld', '50'
+            ident, settings = 'handheld', {'dlaa': '1', 'taa': 'fsr1', 'dlss': 'performance', 'framegen': 'off'}
     tex = 'auto'
     if gb is not None and gb <= 4.5:      # a "4 GB" card reports a little under or over 4 GiB
         tex = 'quarter'
-        if ident == 'base':
-            settings['render_scale'] = '75'
+        if ident == 'base':               # FSR 1 on a scene of 67 %: the quality mode
+            settings.update({'dlaa': '1', 'taa': 'fsr1', 'dlss': 'quality'})
         elif ident == 'handheld':
             pass                          # already at 50
         else:

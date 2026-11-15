@@ -1,6 +1,6 @@
-# totk.ini: settings for totk.exe. Copy this file to totk.ini next to totk.exe and remove the '#' of a line to change it.
-# Each line shows the default; on a Steam Deck the device profile ([display]) changes a few of them. A TOTK_*
-# environment variable of the same name (TOTK_FPS_LIMIT for fps_limit) overrides the file. Keys are case-insensitive;
+# rekarina.ini: settings for rekarina.exe. Copy this file to rekarina.ini next to rekarina.exe and remove the '#' of a line to change it.
+# Each line shows the default; on a Steam Deck the device profile ([display]) changes a few of them. A REKARINA_*
+# environment variable of the same name (REKARINA_FPS_LIMIT for fps_limit) overrides the file. Keys are case-insensitive;
 # '#' and ';' start a comment; [sections] only group lines.
 
 [frame rate]
@@ -211,7 +211,7 @@
 # pcss = 0
 
 # NVIDIA DLSS / DLAA for the 3D scene, on NVIDIA RTX GPUs with the DLSS model from NVIDIA's DLSS SDK next to the
-# executable (Windows: nvngx_dlss.dll next to totk.exe; Linux: libnvidia-ngx-dlss.so.<version> next to totk, with the
+# executable (Windows: nvngx_dlss.dll next to rekarina.exe; Linux: libnvidia-ngx-dlss.so.<version> next to totk, with the
 # NVIDIA driver's libnvidia-ngx.so.1 installed); elsewhere the setting does nothing. The HUD is drawn after it and is not touched.
 # Read at start.
 # dlaa = 0
@@ -256,6 +256,8 @@
 # lang = en-US
 # System mode reported to the game: docked or handheld.
 # operation_mode = docked
+# OoT: 1 = faster dialogue, the game's messages without the pauses between phrases (romfs-patches-fasttext, at start).
+# fast_text = 0
 # Language of the settings menu and the overlay: en, de, es, fr, it, nl, pt, pt-BR, ru, ja, ko, zh-Hans or zh-Hant.
 # Default: the Windows display language, English if it is none of them.
 # menu_lang = en
@@ -315,7 +317,7 @@
 # lstick_deadzone = 8
 # rstick_deadzone = 8
 # Mouse camera mode: direct (default) or stick. Direct turns the camera by the raw mouse motion, the same on both axes,
-# with no stick dead zone or response curve (game 1.4.3; other game versions use stick emulation). Stick makes the
+# with no stick dead zone, response curve or top speed (TotK 1.4.3 and OoT; other TotK versions use stick emulation). Stick makes the
 # mouse a right stick. Neither changes the gamepad. The Controls tab changes this while the game runs.
 # mouse_mode = direct
 # The mouse in the game's menus, 1.4.3 only (title, inventory, System tab, Options, shops, dialogue choices): while a
@@ -324,6 +326,12 @@
 # menu_cursor = 1
 # Mouse camera sensitivity (0 to 10; 0 = no mouse camera and no cursor capture).
 # mouse_sens = 1
+# The mouse camera's vertical speed against the horizontal (0.1 to 3) and its inversion. Both change while the game runs.
+# mouse_sens_y = 1
+# mouse_invert_y = 0
+# Windows: 1 takes the mouse's raw motion (no pointer speed or acceleration); 0 takes the hidden pointer's motion, with
+# the desktop's pointer speed and acceleration (a touchpad, say). Changes while the game runs.
+# mouse_raw = 1
 # The keyboard's sticks are all or nothing, so the game only sees a full tilt from them; while this key is held the
 # keyboard-driven stick values shrink and the keyboard can walk instead of run. Key names as in the bind_ lines below,
 # none turns it off. 0.2 to 0.9, the default holds for anything else. Only the keyboard is scaled: the mouse camera and
@@ -355,7 +363,7 @@
 
 [mods]
 # Folder with the player's mods, one subfolder per mod (<name>/romfs, <name>/exefs, <name>/cheats). Default: mods next
-# to totk.exe.
+# to rekarina.exe.
 # mods_dir =
 # Load order, top first, names separated by |. The in-game menu (Mods) writes it; a mod not listed goes to the bottom.
 # mods_order =
@@ -371,7 +379,7 @@
 # their mods into the mods folder instead ([mods]). Default: none.
 # romfs_mods =
 # Folder with the Switch shared fonts (BFTTF files, tools/extract_fonts.py output), for Chinese and Korean text.
-# Default: shared-fonts next to totk.exe. TOTK_SHARED_FONTS overrides it.
+# Default: shared-fonts next to rekarina.exe. REKARINA_SHARED_FONTS overrides it.
 # shared_fonts =
 
 [cheats]
@@ -384,7 +392,7 @@
 # Extra lines in the log, comma separated: svc, host, ipc, fs, gfx, perf, sched, audio, present or all. The menu's
 # Performance log sets perf (frame timings). Default: none.
 # trace = perf
-# Flight recorder: keeps the last frames and saves them to a flight folder next to the folder of totk.exe when a frame
+# Flight recorder: keeps the last frames and saves them to a flight folder next to the folder of rekarina.exe when a frame
 # takes longer than flight_spike_ms (0 to 60000).
 # flight = 0
 # flight_spike_ms = 100

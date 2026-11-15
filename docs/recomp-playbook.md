@@ -80,8 +80,8 @@ Numbers to expect from this scheme (OoT, 2560x1440, six threads): replay thread 
 
 - Keep the executor's memos and per-command-buffer state in a context struct (or thread-local), never in file-level
   statics. Retrofitting cost sixty variables in one file and a class of races.
-- Every cache gets a check mode that recomputes on a hit and stops on a difference (`TOTK_BIND_SKIP=check`,
-  `TOTK_TEX_MEMO=check`). They found real bugs each time. Run all of them together after every change to the
+- Every cache gets a check mode that recomputes on a hit and stops on a difference (`REKARINA_BIND_SKIP=check`,
+  `REKARINA_TEX_MEMO=check`). They found real bugs each time. Run all of them together after every change to the
   executor's threading, before any stability loop: a night of two-minute runs counted crashes that one minute of
   check modes explained (a function-level `static` scratch array shared by the recording threads).
 - A function-level `static` buffer is a file-level static: the same rule. Grep for them in everything a draw calls.
@@ -153,13 +153,13 @@ already gone: handles are reused by the driver.
 
 | Question | Instrument |
 |---|---|
-| Where does the frame go | `TOTK_SECTIONS` rows per frame, summed by `secsum` (replay, GPU busy, each stage) |
-| Which line | sampling profiler of one thread (`TOTK_PROFILE*`), samples per source line through DWARF |
-| What are the helper threads doing | the same profiler filtered to them (`TOTK_PROFILE_PAR`) |
+| Where does the frame go | `REKARINA_SECTIONS` rows per frame, summed by `secsum` (replay, GPU busy, each stage) |
+| Which line | sampling profiler of one thread (`REKARINA_PROFILE*`), samples per source line through DWARF |
+| What are the helper threads doing | the same profiler filtered to them (`REKARINA_PROFILE_PAR`) |
 | Why does the replay thread wait | a histogram of who asked for the wait, in the perf log |
 | Is the picture the same | frame dump compare; screenshots at a frame number; the flash watch for one-frame faults |
 | What died on the GPU | device fault report: address ranges of every image and buffer with labels |
-| Why did the frames stop | a watch in the sampler: no present for N seconds, then every thread's call chains for 3 s and what the last driver call was given (`TOTK_PROFILE_HANG`) |
+| Why did the frames stop | a watch in the sampler: no present for N seconds, then every thread's call chains for 3 s and what the last driver call was given (`REKARINA_PROFILE_HANG`) |
 | Is a cache right | its check mode; a check that can race with another thread's registration reads the token again before it reports |
 | Does the picture flash | a clip recorded frame by frame while the player moves by script: the mean of the picture and of its halves against both neighbours; a still camera hides it, a 30 fps clip of a moving camera invents it |
 | What is different in the bad frame | the flight recorder's counters and thumbnails beside the text pass log of a few hundred frames |

@@ -1,6 +1,6 @@
 // Map changes on request, for the performance runs and their videos (OoT 1.1.1, main build e0f3ccfa).
 //
-// TOTK_WARP_AT=<seconds>:<place>[;<seconds>:<place>...] sends the hero to each place when the game has run that many
+// REKARINA_WARP_AT=<seconds>:<place>[;<seconds>:<place>...] sends the hero to each place when the game has run that many
 // seconds (counted from the first pad read). Places: forest, field, market, castle, village, or one spelled out as
 // <map>/<start position>/<arrival event> with the game's own names (<map>_Child/<a start of that map>/
 // Dm_SY_BancChangeArrive; the arrival event may be left out). A request the game is not ready for (an event playing,
@@ -177,7 +177,7 @@ void oot_warp_tick(Cpu *c) {
     static uint64_t t0, retry_at, tries;
     if (n < 0) {   // the plan, once
         n = 0;
-        const char *e = cfg_get("TOTK_WARP_AT");
+        const char *e = cfg_get("REKARINA_WARP_AT");
         char *buf = spelled_text;
         snprintf(buf, sizeof spelled_text, "%s", e ? e : "");
         for (char *save = NULL, *tok = strtok_r(buf, ";", &save); tok && n < MAX; tok = strtok_r(NULL, ";", &save)) {
@@ -197,7 +197,7 @@ void oot_warp_tick(Cpu *c) {
             for (size_t i = 0; i < sizeof places / sizeof *places; i++)
                 if (!strcmp(colon + 1, places[i].name)) plan[n].at = atof(tok), plan[n++].place = &places[i];
         }
-        if (e && *e) rt_log("warp: %d map changes planned (TOTK_WARP_AT=%s)", n, e);
+        if (e && *e) rt_log("warp: %d map changes planned (REKARINA_WARP_AT=%s)", n, e);
     }
     if (next >= n) return;
     uint64_t now = plat_now_ns();

@@ -1,7 +1,7 @@
 # Code patches for OoT (Switch 2) 1.1.1 main (recomp/patches.py). The patch page holds the floats the
 # runtime writes at every present (runtime/frame_rate.c): +0 seconds * 30, +4 the frame step in seconds.
 
-set realtime TOTK_REALTIME 1
+set realtime REKARINA_REALTIME 1
 
 # Real-time step. Each frame the scene update (main+0x6e6be0) turns the frame controller's frame rate (framework+0x2c8,
 # 40..60 from the VRR controller main+0x4dbda0 or 60 / interval from the fixed one main+0x3b4ef60) into the game's step
@@ -12,7 +12,7 @@ set realtime TOTK_REALTIME 1
 # 15 s at 120 Hz). With the set: ratio = base * the measured step (x10 is free here: the ldclr before consumed it).
 site realtime main 6e6cc4 1e201828 @page:x10 bd400548 1e280828   # fdiv s8, s1, s0 -> adrp x10, page; ldr s8, [x10, #4]; fmul s8, s1, s8
 
-set ripple TOTK_RIPPLE_STEPS 1
+set ripple REKARINA_RIPPLE_STEPS 1
 
 # Water simulation steps. The interactive water surface (the ripple around the hero, main+0x472e0) runs its compute passes
 # param * (int)ratio times a frame (param 5, ratio the VFR manager's step in 60 Hz frames, 1.0 at 60 fps). Above 60 fps
@@ -21,7 +21,7 @@ set ripple TOTK_RIPPLE_STEPS 1
 # passes run every frame and the same number of them per second of game time as at 60 fps.
 site ripple main 4760c 1b097d08 1e220101 1e210800 1e240008   # mul w8, w8, w9 -> scvtf s1, w8; fmul s0, s0, s1; fcvtas w8, s0
 
-set pickup TOTK_PICKUP_COUNT 1
+set pickup REKARINA_PICKUP_COUNT 1
 
 # The count above the hero after a pick-up (rupees, sticks and the other stacking items; the update is main+0xa67e50).
 # Each frame the shown count (+0x35c is the total, +0x360 the count shown) moves toward the total by
@@ -33,7 +33,7 @@ set pickup TOTK_PICKUP_COUNT 1
 # (github.com/NotRexed/Hookshot, GPL-3.0; read for what the game does, its fix carries the fraction in host code).
 site pickup main a68300 1e38000c 1e28000c   # fcvtzs w12, s0 -> fcvtps w12, s0
 
-set solver TOTK_SOLVER_STEPS 1
+set solver REKARINA_SOLVER_STEPS 1
 
 # Physics solver steps. Each update the game sets the solver's step count (two copies of the code, in main+0x38aeb80
 # and main+0x38afc10) to (int)(step * steps + 0.001): step the frame's step in 60 Hz frames, steps the count of a 60 Hz
@@ -51,7 +51,7 @@ set solver TOTK_SOLVER_STEPS 1
 site solver main 38aebf4 1e380001 529999a1 72a7b981 1e270022 1e223802 1e24c042 1e215842 1e25c001 1e224821 1e380021
 site solver main 38afd20 1e380001 529999a1 72a7b981 1e270022 1e223802 1e24c042 1e215842 1e25c001 1e224821 1e380021
 
-set resguard TOTK_RES_GUARD 1
+set resguard REKARINA_RES_GUARD 1
 
 # Resource lookup by handle (main+0xc938d0): a type-0 handle's id indexes the resource manager's table
 # ([[main+0x4e22540]+0x120], count +0x840, entries +0x848); a negative id, one past the table or an empty entry went on
@@ -62,14 +62,14 @@ site resguard main c93918 37f80148 37f80808   # tbnz w8, #31 -> the invalid-hand
 site resguard main c93924 540000ed 540007ad   # b.le -> the invalid-handle path
 site resguard main c93930 b4000093 b4000753   # cbz x19 -> the invalid-handle path
 
-set gpuload TOTK_GPU_LOAD_ZERO 0
+set gpuload REKARINA_GPU_LOAD_ZERO 0
 
 # The GPU time the frame controller measures (main+0x346cb20): the end-of-frame timestamp report minus the CPU frame
 # start (framework+0x108), stored at framework+0x150 and folded into framework+0x140 = max(CPU work, GPU time). Here the
 # replay's latency is part of it. With the set the GPU time is 0 (test: whether the load the game adapts to moves).
 site gpuload main 346cbb0 cb080008 aa1f03e8   # sub x8, x0, x8 -> mov x8, xzr
 
-set res_fixed TOTK_PATCH_RES_FIXED 0
+set res_fixed REKARINA_PATCH_RES_FIXED 0
 
 # Render scale: the game sizes its 3D scene by a dynamic-resolution controller that follows its GPU-time reports. Bit 0
 # of an engine config word at +0x94 picks it (main+0x805bd0); the other path takes a fixed scale of 1.0 (main+0x806420).
@@ -89,11 +89,11 @@ site res_fixed main 806420 52a7f009 @page:x9 b940f129   # mov w9, #0x3f800000 ->
 # tolerance, as floats; +144 the UI's full-screen orthographic projection, +160..+175 and +208..+223 the screens that keep
 # it, +176 the UI's horizontal squeeze in four lanes, +192 the movie's margin. The matrix-update, UI and movie sites:
 # Copyright (c) 2026 Ivan0xFF (MIT; see THIRD_PARTY_NOTICES.md).
-set wide_out    TOTK_PATCH_WIDE_OUT    0
-set wide_scene  TOTK_PATCH_WIDE_SCENE  0
-set wide_aspect TOTK_PATCH_WIDE_ASPECT 0
-set wide_hud    TOTK_PATCH_WIDE_HUD    0
-set wide_movie  TOTK_PATCH_WIDE_MOVIE  0
+set wide_out    REKARINA_PATCH_WIDE_OUT    0
+set wide_scene  REKARINA_PATCH_WIDE_SCENE  0
+set wide_aspect REKARINA_PATCH_WIDE_ASPECT 0
+set wide_hud    REKARINA_PATCH_WIDE_HUD    0
+set wide_movie  REKARINA_PATCH_WIDE_MOVIE  0
 site wide_out main 1202ee0 d2814008 @page:x8   # mov x8, #0xa00 -> adrp x8, page
 site wide_out main 1202ee4 f2c0b408 f9403108   # movk x8, #0x5a0, lsl #32 -> ldr x8, [x8, #96]
 site wide_out main 31f39f4 d2814008 @page:x8   # mov x8, #0xa00 -> adrp x8, page
@@ -115,11 +115,26 @@ site wide_movie main 3b5c758 a941a269 d100a3b0 bd400a10 bd401211 1e303a32 @page:
 # chain of small functions and was the hottest game code while a scene loads. Each caller resets a decoding context
 # inline before the call, two of them (main+0xbf72e0, main+0xf50164) as a static context of 0x271f8 bytes: in TotK
 # one such caller relied on the game's decoder rejecting frames the host decodes, so the set went on only
-# after a run with TOTK_ZSTD_NATIVE=1 TOTK_ZSTD_CHECK=1 through a load had shown no difference (the check decodes both
+# after a run with REKARINA_ZSTD_NATIVE=1 REKARINA_ZSTD_CHECK=1 through a load had shown no difference (the check decodes both
 # ways, keeps the game's result and logs each call where the two differ): 4,096 calls into the village, 394 MiB in and
 # 830 MiB out, none differing, 958 ms on the host against 2,377 ms in the lifted decoder (2026-11-11). runtime/cfg.c
 # holds the default the game runs with (ZSTD_NATIVE).
-set zstd     TOTK_ZSTD_NATIVE    1
+set zstd     REKARINA_ZSTD_NATIVE    1
 site zstd   main e910c 9400089d 9536dfb9    # bl ZSTD_decompressMultiFrame -> page+0xff0 (with a ZSTD_DDict in x7)
 site zstd   main bf72e0 97d3d028 950aa744   # bl ZSTD_decompressMultiFrame -> page+0xff0
 site zstd   main f50164 97c66c87 94fd43a3   # bl ZSTD_decompressMultiFrame -> page+0xff0
+
+# The mouse camera, raw (runtime/mouse_direct.c oot_camera_input). The camera's stick update (main+0x37c300, a virtual
+# method; this in x20, the options' camera flags in w21: bit 0 no input, bits 1 and 2 invert x and y) takes the right
+# stick through a radial dead zone and the curve powf(length, exponent) (2 here), zeroes it while the lock timer at
+# +0x5e0 runs, and stores x at +0x538 and y at +0x53c: the input the camera turns by, at most about 107 degrees a
+# second. The camera's own yaw and pitch are floats in degrees at +0xdb4 and +0xd9c of the camera +0xa80 points to (a
+# write there stays; checked 2026-11-15). The host call replaces the store of x, performs it, and adds the mouse's counts
+# to those angles, so a mouse turns the camera by its own distance, at any speed and without the stick's curve. Off with
+# REKARINA_MOUSE_MODE=stick (the mouse then drives the right stick, as before).
+set mouse_direct REKARINA_MOUSE_DIRECT_PATCH 1
+site mouse_direct main 37c45c bd053a81 952c92c9   # str s1, [x20, #0x538] -> bl page+0xf80
+# The update's flags (+0x530: bit 0 the raw stick past its threshold, bit 3 any input, bit 4 the curved stick below
+# it) decide whether the camera eases back to its rest pitch; the second call marks a frame the mouse moved the camera
+# as input, so a mouse-held pitch stays as a stick-held one does.
+site mouse_direct main 37c4f4 b9053288 952c929f   # str w8, [x20, #0x530] -> bl page+0xf70

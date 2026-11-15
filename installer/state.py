@@ -1,4 +1,5 @@
-"""totk-install.json in the install folder: what built it and which steps finished.
+"""rekarina-install.json in the install folder: what built it and which steps finished. A folder set up before the
+rename (2026-11-15) has totk-install.json: it is read, and the next save writes the new name and removes the old file.
 
     {"format": 1, "release": "...", "lang": "en-US",
      "inputs": {"base": {"name", "size", "sha256"}, "update": {...}},
@@ -13,7 +14,8 @@ import json
 import os
 from pathlib import Path
 
-NAME = 'totk-install.json'
+NAME = 'rekarina-install.json'
+OLD_NAME = 'totk-install.json'
 FORMAT = 1
 
 
@@ -30,6 +32,8 @@ def empty(release):
 def load(dest):
     """The state of dest, or None when the folder has none. StateError for an unreadable or newer file."""
     path = Path(dest) / NAME
+    if not path.is_file():
+        path = Path(dest) / OLD_NAME
     if not path.is_file():
         return None
     try:
@@ -52,3 +56,6 @@ def save(dest, data):
         f.flush()
         os.fsync(f.fileno())
     os.replace(tmp, path)
+    old = Path(dest) / OLD_NAME
+    if old.is_file():
+        old.unlink()

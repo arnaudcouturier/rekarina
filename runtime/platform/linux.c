@@ -1317,6 +1317,15 @@ int plat_os_version(char *out, size_t cap) {
 
 int plat_is_wine(void) { return 0; }
 
+int plat_machine_name(char *out, size_t cap) {
+    FILE *f = fopen("/sys/class/dmi/id/product_name", "r");
+    if (!f || !cap) return f ? fclose(f), 0 : 0;
+    int ok = fgets(out, (int)cap, f) != NULL;
+    fclose(f);
+    if (ok) out[strcspn(out, "\r\n")] = 0;
+    return ok && *out;
+}
+
 int plat_stderr_path(char *out, size_t cap) {
     struct stat st;
     if (fstat(2, &st) || !S_ISREG(st.st_mode)) return 0;
@@ -1328,14 +1337,14 @@ int plat_stderr_path(char *out, size_t cap) {
 
 // ---- process
 
-#ifdef TOTK_PGO_GEN
+#ifdef REKARINA_PGO_GEN
 // compiler-rt's profile runtime (an instrumented build, tools/build_game.py --pgo gen). It writes its counters from an
 // atexit handler, which _exit skips; __llvm_profile_dump writes them once and makes later writes no-ops.
 int __llvm_profile_dump(void);
 #endif
 
 void plat_exit(int code) {
-#ifdef TOTK_PGO_GEN
+#ifdef REKARINA_PGO_GEN
     __llvm_profile_dump();
 #endif
     fflush(stdout);
@@ -1785,12 +1794,12 @@ void plat_ipc_close(PlatIpc *p) {
 
 
 // ---- restart
-// TOTK_RESTART_WAIT names the process that called plat_restart, as its id and start time (field 22 of /proc/<pid>/stat,
+// REKARINA_RESTART_WAIT names the process that called plat_restart, as its id and start time (field 22 of /proc/<pid>/stat,
 // clock ticks after boot): a process that has only reused the id is not waited for. Waiting keeps the new process off
 // the old one's files (the log it moves at start, the saves) until the old one is gone. The new process gets no
 // descriptor past stderr (glibc 2.34's closefrom file action), and the default signal mask and dispositions, whatever
 // the calling thread had.
-#define RESTART_WAIT "TOTK_RESTART_WAIT"
+#define RESTART_WAIT "REKARINA_RESTART_WAIT"
 
 // The start time of process pid (field 22 of its /proc stat line), 0 when it is gone.
 static unsigned long long process_start(int pid) {

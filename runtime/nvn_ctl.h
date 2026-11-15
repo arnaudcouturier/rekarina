@@ -102,6 +102,18 @@ static inline uint32_t nvn2_ctl_shared(const uint8_t *c) { return nvn2_ctl(c) ? 
 static inline int nvn2_ctl_mesh_points(const uint8_t *c, const uint8_t *code, uint64_t code_size) {
     return nvn2_ctl(c) && code_size > 0x35 && (c[0x5f] != 3 || (code[0x35] & 0x0f));
 }
+// An NVN2 program with a VOTEU whose vote goes to a uniform predicate other than UPT (bits 81..83 of the 16-byte
+// instruction): what translator patch 0042 translates otherwise than before (gfx_shader.c build_code_hash). A word of
+// the program header that reads as one only gives that program a key of its own.
+static inline int nvn2_ctl_voteu_pred(const uint8_t *c, const uint8_t *code, uint64_t code_size) {
+    if (!nvn2_ctl(c)) return 0;
+    for (uint64_t o = 0; o + 16 <= code_size; o += 16) {
+        uint64_t lo, hi;
+        memcpy(&lo, code + o, 8), memcpy(&hi, code + o + 8, 8);
+        if ((lo & 0xfff) == 0x886 && ((hi >> 17) & 7) != 7) return 1;
+    }
+    return 0;
+}
 // An NVN2 task or mesh shader's workgroup threads (control +0x58, u16).
 static inline uint32_t nvn2_ctl_mesh_threads(const uint8_t *c) {
     uint16_t t;

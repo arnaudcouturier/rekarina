@@ -237,8 +237,8 @@ static const char *script_path;
 static uint64_t test_tick;
 static int64_t test_world=-1;
 const char *cfg_get(const char *key) {
-    if (!strcmp(key,"TOTK_INPUT_SCRIPT")) return script_path;
-    if (!strcmp(key,"TOTK_INPUT")) return "none";
+    if (!strcmp(key,"REKARINA_INPUT_SCRIPT")) return script_path;
+    if (!strcmp(key,"REKARINA_INPUT")) return "none";
     return NULL;
 }
 unsigned cfg_version(void) { return 0; }

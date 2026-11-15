@@ -122,7 +122,9 @@ of `Rekarina.exe` and say what the SmartScreen page is.
    refuses a folder that is not a signed release of the project's keys, uploads the four files to the bucket, reads
    them back from `dl.rekarina.dev`, and only then writes the record, the `/download` redirect and the page's
    download block into `website/public` and deploys the site. A version that is already on the download host is not
-   replaced: publish a new version instead.
+   replaced: publish a new version instead. A run that stopped after the upload goes on from there when run again:
+   the host's `SHA256SUMS` is the folder's, so the files are read back, not sent again. Every request says
+   `User-Agent: Rekarina-Publish`; the site's protection answers urllib's own with 403.
 6. Optionally publish the same files as the GitHub release `v<version>` with the notes as its text.
 7. From an installed older version: open the launcher, take the update, start the game.
 
@@ -133,6 +135,11 @@ Wrangler needs a login that may deploy the site and write to R2 (`npx wrangler l
 
 `python -m unittest installer.launcher_test` covers the feed, the fallback to GitHub and every refusal of the
 signature check with a local server.
+
+## Source repository
+
+The sources' home is the project's own Forgejo at `https://git.rekarina.dev`, with GitHub as a push mirror; how
+the server is set up and run: [deploy/forgejo/README.md](../deploy/forgejo/README.md).
 
 ## Community links
 

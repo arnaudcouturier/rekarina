@@ -1,7 +1,7 @@
 // Shader service client: turns an NVN program (control section, code, c1 constants and the
 // translator's answers) into SPIR-V plus reflection through `totk_xlate.exe --serve` children, started lazily with
-// pipes and kept for the life of the process (a pool: TOTK_XLATE_PROCS at run time, more for the boot prewarm).
-// Results are cached in memory and on disk (shader-cache/<key>.spv and <key>.res.json next to totk.exe), so a shader
+// pipes and kept for the life of the process (a pool: REKARINA_XLATE_PROCS at run time, more for the boot prewarm).
+// Results are cached in memory and on disk (shader-cache/<key>.spv and <key>.res.json next to rekarina.exe), so a shader
 // is translated once per machine and translator.
 //
 // Keys. The code hash is sha256 over stage (u32), the 0x880-byte control section, code_size (u64), the code, the c1
@@ -14,7 +14,7 @@
 // translated under a provisional key ("TKSP", full answers); its files are renamed to the cache key and the mask stored.
 //
 // Translator identity: build/xlate/totk_xlate.id, sha256 hex that tools/build_xlate.py writes over the sources it
-// builds from (Program.cs, the csproj, the patches, the vendor tree); without it the sha256 of the exe. TOTK_XLATE_ID
+// builds from (Program.cs, the csproj, the patches, the vendor tree); without it the sha256 of the exe. REKARINA_XLATE_ID
 // (64 hex digits) overrides it. A translator change therefore changes every cache key without a hand-made KEY_VERSION
 // bump; KEY_VERSION is for changes on this side (key layout, how the output is used).
 //
@@ -95,6 +95,10 @@ struct GfxShader {
     uint8_t pool_kind[8];
     int npool;
     uint32_t pool_mask;
+    // GFX_STAGE_MSC (.res.json "mesh": {"as_compute": ...}): the emulation buffer's vertex layout, and its vertex shader
+    uint32_t emu_vec4s, emu_max, emu_nloc;
+    uint8_t emu_loc[32];
+    const GfxShader *emu_vs;
 };
 
 static PlatMutex cache_lock = PLAT_MUTEX_INIT;                  // memory cache
@@ -255,12 +259,12 @@ static int hex32(const char *h, uint8_t out[32]) {        // 64 hex digits, then
     return 1;
 }
 
-// TOTK_XLATE_ID (64 hex digits, or any other text, which is hashed), else <translator>.id next to the exe
+// REKARINA_XLATE_ID (64 hex digits, or any other text, which is hashed), else <translator>.id next to the exe
 // (tools/build_xlate.py), else the sha256 of the exe.
 static void xlate_identity(void) {
     char text[256] = "";
-    const char *how = "TOTK_XLATE_ID";
-    const char *id_env = cfg_get("TOTK_XLATE_ID");
+    const char *how = "REKARINA_XLATE_ID";
+    const char *id_env = cfg_get("REKARINA_XLATE_ID");
     if (id_env && *id_env && strlen(id_env) < sizeof text) {
         strcpy(text, id_env);
         if (!hex32(text, xlate_id)) rt_sha256(text, strlen(text), xlate_id);
@@ -285,8 +289,8 @@ static void xlate_identity(void) {
            xlate_id[3], xlate_id[4], xlate_id[5], xlate_id[6], xlate_id[7], how);
 }
 
-// The repository root is the nearest parent of totk.exe that holds build/xlate/totk_xlate.exe. The shader cache lives
-// next to totk.exe, so every build dir has its own (as the pipeline cache, vk_pipeline.c cache_path_init).
+// The repository root is the nearest parent of rekarina.exe that holds build/xlate/totk_xlate.exe. The shader cache lives
+// next to rekarina.exe, so every build dir has its own (as the pipeline cache, vk_pipeline.c cache_path_init).
 static void use_preload_start(void);
 
 static void init_paths(void *param) {
@@ -305,7 +309,7 @@ static void init_paths(void *param) {
             }
         }
     }
-    const char *xlate_cfg = cfg_get("TOTK_XLATE"), *cache_cfg = cfg_get("TOTK_SHADER_CACHE");
+    const char *xlate_cfg = cfg_get("REKARINA_XLATE"), *cache_cfg = cfg_get("REKARINA_SHADER_CACHE");
     char beside[PATH_CAP + 32];   // a packaged folder (tools/package_build.py, package_oot.py) keeps the translator next to the exe
     if (exe_dir[0]) snprintf(beside, sizeof beside, "%s/" RT_FILE_STEM "_xlate" PLAT_EXE_SUFFIX, exe_dir);
 #ifdef RT_OLD_FILE_STEM   // a folder packaged before the file was renamed. The identity is the .id file's content
@@ -373,7 +377,7 @@ static void child_stop(Svc *v) {
 static int child_start(Svc *v) {
     paths();
     if (!xlate_exe[0] || !file_exists(xlate_exe)) {
-        rt_log("gfx_shader: translator not found (%s); set TOTK_XLATE", xlate_exe[0] ? xlate_exe : "<none>");
+        rt_log("gfx_shader: translator not found (%s); set REKARINA_XLATE", xlate_exe[0] ? xlate_exe : "<none>");
         return 0;
     }
     uint32_t err = 0;
@@ -412,17 +416,17 @@ static int child_exchange_raw(Svc *v, const char *line, char *reply, size_t repl
 }
 
 static int child_exchange(Svc *v, const char *line, char *reply, size_t reply_size) {
-    uint64_t p0 = perf_begin();   // TOTK_TRACE=perf: render-thread time spent translating
+    uint64_t p0 = perf_begin();   // REKARINA_TRACE=perf: render-thread time spent translating
     int ok = child_exchange_raw(v, line, reply, reply_size);
     perf_end(PERF_XLATE, p0);
     return ok;
 }
 
-// Children allowed at run time: TOTK_XLATE_PROCS, default 2.
+// Children allowed at run time: REKARINA_XLATE_PROCS, default 2.
 static int svc_runtime_limit(void) {
     static volatile int32_t n;
     if (!n) {
-        const char *e = cfg_get("TOTK_XLATE_PROCS");
+        const char *e = cfg_get("REKARINA_XLATE_PROCS");
         int v = e && *e ? atoi(e) : 2;
         plat_xchg32(&n, v < 1 ? 1 : v > MAX_SVC ? MAX_SVC : v);
     }
@@ -577,7 +581,9 @@ static int reflection_valid(const char *res, uint64_t size) {
     st = strchr(st + 7, '"');
     if (!st) return 0;
 #ifdef GAME_NS2   // NVN2 task, mesh and geometry stages (docs/oot-xlate.md)
-    if (!strncmp(st, "\"ts\"", 4) || !strncmp(st, "\"ms\"", 4) || !strncmp(st, "\"gs\"", 4)) return 1;
+    if (!strncmp(st, "\"ts\"", 4) || !strncmp(st, "\"ms\"", 4) || !strncmp(st, "\"gs\"", 4) || !strncmp(st, "\"msc\"", 5) ||
+        !strncmp(st, "\"tsc\"", 5))
+        return 1;
 #endif
     return !strncmp(st, "\"vs\"", 4) || !strncmp(st, "\"ps\"", 4) || !strncmp(st, "\"cs\"", 4);
 }
@@ -647,6 +653,79 @@ const GfxShader *gfx_shader_own(const uint32_t *spirv, uint64_t words, const cha
     s->words = words, s->reflection_size = rn;
     reflect(s);
     return s;
+}
+
+int gfx_shader_meshc(const GfxShader *s, uint32_t *vec4s, uint32_t *max_meshlets, const uint8_t **locs) {
+    if (!s || s->stage != GFX_STAGE_MSC || !s->emu_vec4s || !s->emu_max) return 0;
+    *vec4s = s->emu_vec4s, *max_meshlets = s->emu_max, *locs = s->emu_loc;
+    return (int)s->emu_nloc;
+}
+
+// The vertex shader of an emulated mesh draw (vk_exec_draw.c mesh_emulate): vertex input i (a vec4 of the emulation
+// buffer's vertex, binding 0) goes out as the position (i 0) or as the i-th generic attribute at its location; the
+// fragment shader reads them as it read the mesh shader's outputs. Written as SPIR-V words here (no compiler on the
+// development machine); gfx_shader_own reflects it like any other module (no resources).
+static const GfxShader *meshc_vs_make(const GfxShader *msc) {
+    uint32_t n = msc->emu_vec4s, w[1024], k = 0, id = 1;
+    if (n < 1 || n > 33 || msc->emu_nloc != n - 1) return NULL;
+    enum { T_VOID = 1, T_FN, T_F32, T_V4, T_PIN, T_POUT, T_PV, T_PPV, T_I32, C_0, V_PV, F_MAIN, L_MAIN, FIRST };
+    id = FIRST;
+    uint32_t in[33], out[33], ld[33];
+    for (uint32_t i = 0; i < n; i++) in[i] = id++;
+    for (uint32_t i = 1; i < n; i++) out[i] = id++;
+    for (uint32_t i = 0; i < n; i++) ld[i] = id++;
+    uint32_t ac = id++;
+#define OP(op, len) (w[k++] = (uint32_t)(len) << 16 | (op))
+    w[k++] = 0x07230203, w[k++] = 0x00010000, w[k++] = 0, w[k++] = 0 /* bound, below */, w[k++] = 0;
+    OP(17, 2), w[k++] = 1;                                        // OpCapability Shader
+    OP(14, 3), w[k++] = 0, w[k++] = 1;                            // OpMemoryModel Logical GLSL450
+    OP(15, 3 + 2 + 2 * n), w[k++] = 0, w[k++] = F_MAIN, w[k++] = 0x6e69616d, w[k++] = 0;   // OpEntryPoint Vertex "main"
+    for (uint32_t i = 0; i < n; i++) w[k++] = in[i];
+    for (uint32_t i = 1; i < n; i++) w[k++] = out[i];
+    w[k++] = V_PV;
+    for (uint32_t i = 0; i < n; i++) OP(71, 4), w[k++] = in[i], w[k++] = 30, w[k++] = i;                  // Location i
+    for (uint32_t i = 1; i < n; i++) OP(71, 4), w[k++] = out[i], w[k++] = 30, w[k++] = msc->emu_loc[i - 1];
+    OP(72, 5), w[k++] = T_PV, w[k++] = 0, w[k++] = 11, w[k++] = 0;                                     // BuiltIn Position
+    OP(71, 3), w[k++] = T_PV, w[k++] = 2;                                                              // Block
+    OP(19, 2), w[k++] = T_VOID;
+    OP(33, 3), w[k++] = T_FN, w[k++] = T_VOID;
+    OP(22, 3), w[k++] = T_F32, w[k++] = 32;
+    OP(23, 4), w[k++] = T_V4, w[k++] = T_F32, w[k++] = 4;
+    OP(32, 4), w[k++] = T_PIN, w[k++] = 1, w[k++] = T_V4;
+    OP(32, 4), w[k++] = T_POUT, w[k++] = 3, w[k++] = T_V4;
+    OP(30, 3), w[k++] = T_PV, w[k++] = T_V4;
+    OP(32, 4), w[k++] = T_PPV, w[k++] = 3, w[k++] = T_PV;
+    OP(21, 4), w[k++] = T_I32, w[k++] = 32, w[k++] = 1;
+    OP(43, 4), w[k++] = T_I32, w[k++] = C_0, w[k++] = 0;
+    OP(59, 4), w[k++] = T_PPV, w[k++] = V_PV, w[k++] = 3;
+    for (uint32_t i = 0; i < n; i++) OP(59, 4), w[k++] = T_PIN, w[k++] = in[i], w[k++] = 1;
+    for (uint32_t i = 1; i < n; i++) OP(59, 4), w[k++] = T_POUT, w[k++] = out[i], w[k++] = 3;
+    OP(54, 5), w[k++] = T_VOID, w[k++] = F_MAIN, w[k++] = 0, w[k++] = T_FN;
+    OP(248, 2), w[k++] = L_MAIN;
+    for (uint32_t i = 0; i < n; i++) OP(61, 4), w[k++] = T_V4, w[k++] = ld[i], w[k++] = in[i];
+    OP(65, 5), w[k++] = T_POUT, w[k++] = ac, w[k++] = V_PV, w[k++] = C_0;
+    OP(62, 3), w[k++] = ac, w[k++] = ld[0];
+    for (uint32_t i = 1; i < n; i++) OP(62, 3), w[k++] = out[i], w[k++] = ld[i];
+    OP(253, 1);
+    OP(56, 1);
+#undef OP
+    w[3] = id;
+    return gfx_shader_own(w, k, "{\"stage\":\"vs\",\"cbufs\":[],\"sbufs\":[],\"textures\":[],\"images\":[]}");
+}
+
+const GfxShader *gfx_shader_meshc_vs(const GfxShader *s) {
+    if (!s || s->stage != GFX_STAGE_MSC) return NULL;
+    const GfxShader *v = __atomic_load_n(&s->emu_vs, __ATOMIC_ACQUIRE);
+    if (v) return v;
+    static PlatMutex lock = PLAT_MUTEX_INIT;
+    plat_mutex_lock(&lock);
+    if (!(v = s->emu_vs)) {
+        v = meshc_vs_make(s);
+        if (v) __atomic_store_n(&((GfxShader *)s)->emu_vs, v, __ATOMIC_RELEASE);
+        else rt_log("gfx_shader: the vertex shader of an emulated mesh draw (%u vec4s) could not be made", s->emu_vec4s);
+    }
+    plat_mutex_unlock(&lock);
+    return v;
 }
 
 // The pack, then the loose files (a newer translation of a key the pack holds a bad copy of); NULL when neither has a
@@ -885,7 +964,7 @@ out:
 // it. TotK's shaders fill a TXD's gradient registers per coordinate (du/dx, du/dy, dv/dx, dv/dy), and the translator
 // (Ryujinx, InstEmitTexture EmitTxd) builds dx = (first two registers), dy = (last two) = (du/dx, du/dy) and
 // (dv/dx, dv/dy): a mip level chosen from the wrong derivatives, too sharp on terrain faces turned across the screen,
-// which crawled in patches that followed the faces (1.4.3, the Depths). TOTK_TXD_TRANSPOSE=0 turns it off.
+// which crawled in patches that followed the faces (1.4.3, the Depths). REKARINA_TXD_TRANSPOSE=0 turns it off.
 // Applied to the SPIR-V after it is loaded, so the shader cache is untouched.
 enum { OP_COMPOSITE_CONSTRUCT = 80, OP_SAMPLE_EXPLICIT = 88, IO_GRAD = 4 };
 
@@ -893,7 +972,7 @@ static void patch_txd_transpose(GfxShader *s) {
     static int on = -1;
     static volatile int32_t n_logged;
     if (on < 0) {
-        const char *e = cfg_get("TOTK_TXD_TRANSPOSE");
+        const char *e = cfg_get("REKARINA_TXD_TRANSPOSE");
         on = !(e && *e == '0');
     }
     uint32_t *w = s->spirv;
@@ -1102,6 +1181,20 @@ static void reflect(GfxShader *s) {
     if (!strcmp(stage, "gs")) s->stage = GFX_STAGE_GS;
     else if (!strcmp(stage, "ts")) s->stage = GFX_STAGE_TS;
     else if (!strcmp(stage, "ms")) s->stage = GFX_STAGE_MS;
+    else if (!strcmp(stage, "tsc")) s->stage = GFX_STAGE_TSC;   // the task shader as compute (Program.cs)
+    else if (!strcmp(stage, "msc")) {   // tools/xlate Program.cs: the mesh shader as compute, and its vertex layout
+        s->stage = GFX_STAGE_MSC;
+        const char *e = js + strlen(js), *p = json_key(js, e, "locations");
+        s->emu_vec4s = (uint32_t)json_int(js, e, "vec4s", 0);
+        s->emu_max = (uint32_t)json_int(js, e, "max_meshlets", 0);
+        for (p = p && *p == '[' ? p + 1 : NULL; p && p < e && *p != ']' && s->emu_nloc < 32;) {
+            char *q;
+            long v = strtol(p, &q, 10);
+            if (q == p) { p++; continue; }
+            s->emu_loc[s->emu_nloc++] = (uint8_t)v;
+            p = q;
+        }
+    }
 #endif
     s->mvprev_banks = (uint32_t)json_int(js, js + strlen(js), "mvprev_banks", 0);
     for (int k = 0; k < GFX_RES_KINDS; k++) {
@@ -1123,8 +1216,8 @@ static void reflect(GfxShader *s) {
         json_objects(js, "textures", add_res, s, GFX_RES_TEX);
         no_pool = 0;
     }
-    {   // DEBUG-NODISCARD: TOTK_NO_DISCARD=<hash>[,...]: those fragment shaders (SPIR-V FNV-1a, as the dump names them) never discard
-        const char *e = getenv("TOTK_NO_DISCARD");
+    {   // DEBUG-NODISCARD: REKARINA_NO_DISCARD=<hash>[,...]: those fragment shaders (SPIR-V FNV-1a, as the dump names them) never discard
+        const char *e = cfg_env("REKARINA_NO_DISCARD");
         uint64_t h = 0xcbf29ce484222325ull;
         const uint8_t *w8 = (const uint8_t *)s->spirv;
         for (uint64_t i = 0; e && s->stage == GFX_STAGE_FS && i < s->words * 4; i++) h = (h ^ w8[i]) * 0x100000001b3ull;
@@ -1144,13 +1237,13 @@ static void reflect(GfxShader *s) {
             i += n;
         }
         if (hit) rt_log("NO_DISCARD: fragment shader %016llx never discards", (unsigned long long)h);
-        // DEBUG-FORCE: TOTK_SPV_NOT=<hash>:<operand id>:<new id>[,...]: in that module, every OpLogicalNot of the operand
+        // DEBUG-FORCE: REKARINA_SPV_NOT=<hash>:<operand id>:<new id>[,...]: in that module, every OpLogicalNot of the operand
         // takes the new id instead (a culling kernel's "culled" flag replaced by a constant false appends everything)
         // The ground fog sheet (fs 4838c412d5329961) lights a pixel from froxels when a point raised from its hit lands in front of the
         // scene and per pixel otherwise. The two disagree here, so that test drew the seam at the screen edges and around characters
-        // (brown layer, white silhouettes, a ghost of the hero on rocks). Default: always per pixel. TOTK_SPV_NOT= (empty) restores the test.
+        // (brown layer, white silhouettes, a ghost of the hero on rocks). Default: always per pixel. REKARINA_SPV_NOT= (empty) restores the test.
         // The hash and ids belong to this translator build; another build leaves the shader unpatched and logs nothing.
-        const char *fe = getenv("TOTK_SPV_NOT");
+        const char *fe = cfg_env("REKARINA_SPV_NOT");
         if (!fe) fe = "4838c412d5329961:4442:3446";
         if (fe && *fe) {
             uint64_t h3 = 0xcbf29ce484222325ull;
@@ -1174,12 +1267,12 @@ static void reflect(GfxShader *s) {
                 if (q == fe && *fe && !(*fe >= '0' && *fe <= '9') && !(*fe >= 'a' && *fe <= 'f')) break;
             }
         }
-        // DEBUG-UVDEBUG: TOTK_FS_UVDEBUG=1: the leaf alpha test c04246304e60b175 never discards and writes (u, v, alpha)
+        // DEBUG-UVDEBUG: REKARINA_FS_UVDEBUG=1: the leaf alpha test c04246304e60b175 never discards and writes (u, v, alpha)
         // instead of 1 (ids of that module, as spvdis.py lists them)
-        if (s->stage == GFX_STAGE_FS && getenv("TOTK_FS_UVDEBUG") && (e = "c04246304e60b175", 1)) {
+        if (s->stage == GFX_STAGE_FS && cfg_env("REKARINA_FS_UVDEBUG") && (e = "c04246304e60b175", 1)) {
             uint64_t h2 = 0xcbf29ce484222325ull;
             for (uint64_t i = 0; i < s->words * 4; i++) h2 = (h2 ^ w8[i]) * 0x100000001b3ull;
-            const char *mode = getenv("TOTK_FS_UVDEBUG");
+            const char *mode = cfg_env("REKARINA_FS_UVDEBUG");
             if (h2 == strtoull(e, NULL, 16) && (*mode == 'u' || *mode == 'v')) {   // =u / =v: the alpha test compares u / v
                 for (uint64_t i = 5; i < s->words;) {                              // with the threshold instead of alpha
                     uint32_t n = w[i] >> 16, op = w[i] & 0xffff;
@@ -1207,6 +1300,38 @@ static void reflect(GfxShader *s) {
                 }
                 s->dbg = 1;
                 rt_log("FS_UVDEBUG: %016llx patched (%#x of 0xf)", (unsigned long long)h2, done);
+            }
+        }
+    }
+    {   // DEBUG-SPVFILE: REKARINA_SPV_FILE=<hash>=<path>[;...]: the module with that hash (as the frame dump names it) is
+        // replaced by the file's words, for probing what a shader computes (a copy of sh_<hash>.spv edited elsewhere)
+        const char *e = cfg_env("REKARINA_SPV_FILE");
+        if (e && *e) {
+            uint64_t h = 0xcbf29ce484222325ull;
+            const uint8_t *w8 = (const uint8_t *)s->spirv;
+            for (uint64_t i = 0; i < s->words * 4; i++) h = (h ^ w8[i]) * 0x100000001b3ull;
+            while (*e) {
+                char *q;
+                uint64_t want = strtoull(e, &q, 16);
+                const char *path = *q == '=' ? q + 1 : q;
+                size_t len = strcspn(path, ";");
+                if (want == h && len && len < 600) {
+                    char p[600];
+                    memcpy(p, path, len), p[len] = 0;
+                    FILE *f = fopen(p, "rb");
+                    long sz = 0;
+                    if (f && !fseek(f, 0, SEEK_END) && (sz = ftell(f)) > 20 && !(sz & 3) && !fseek(f, 0, SEEK_SET)) {
+                        uint32_t *o = malloc((size_t)sz);
+                        if (o && fread(o, 1, (size_t)sz, f) == (size_t)sz) {
+                            free(s->spirv);
+                            s->spirv = o, s->words = (uint64_t)sz / 4, s->dbg = 1;
+                            rt_log("SPV_FILE: %016llx replaced by %s (%ld words)", (unsigned long long)h, p, sz / 4);
+                        } else free(o);
+                    } else rt_log("SPV_FILE: %s cannot be read", p);
+                    if (f) fclose(f);
+                }
+                e = path + len;
+                if (*e == ';') e++;
             }
         }
     }
@@ -1425,10 +1550,16 @@ static size_t pack_answers(uint8_t *o, const GfxShaderAnswers *a) {
 // same). Until translator patch 0040 those were translated as triangles of position and attributes; the patch changes
 // no other translation and keeps the translator identity (tools/build_xlate.py SAME_AS), so every player's cache stays
 // valid, and the tag gives exactly these programs new ids: what the cache holds for them from before is never found.
+// 2: a triangle naming a vertex past the meshlet's last is dropped, as the mesh stage drops it; 3: the buffer's layout
+// with room for the tasks (vertices from 8 MiB), and the task kernels
+#define MESHC_REVISION 3u
 static int build_code_hash(int stage, const uint8_t *control, const uint8_t *code, uint64_t code_size,
                            const uint8_t *c1, uint32_t c1_len, uint8_t hash[32]) {
-    static const char tag[8] = "TKMP\1", tag_whole[8] = "TKMW\1";
+    static const char tag[8] = "TKMP\1", tag_whole[8] = "TKMW\1", tag_voteu[8] = "TKVU\1";
     int tagged = stage == GFX_STAGE_MS && nvn2_ctl_mesh_points(control, code, code_size);
+    // A program whose VOTEU writes a uniform predicate is another translation since patch 0042 (the eye shaders'
+    // probe light): a tag keeps the earlier translator identity for every other program
+    int voteu = nvn2_ctl_voteu_pred(control, code, code_size);
     // Where mesh shaders are asked for with whole index vectors (gfx_shader_mesh_whole, patch 0041: every device but
     // NVIDIA's) they are other translations of the same programs: a second tag, there only, keeps the two apart
     // without another translator identity for everything else the device has cached.
@@ -1436,17 +1567,21 @@ static int build_code_hash(int stage, const uint8_t *control, const uint8_t *cod
 #ifdef GAME_NS2
     whole = gfx_shader_mesh_whole && stage == GFX_STAGE_MS && nvn2_ctl(control);
 #endif
-    size_t total = 4 + CONTROL_SIZE + 8 + (size_t)code_size + 4 + c1_len + (tagged ? sizeof tag : 0) + (whole ? sizeof tag_whole : 0);
+    size_t total = 4 + CONTROL_SIZE + 8 + (size_t)code_size + 4 + c1_len + (tagged ? sizeof tag : 0) + (whole ? sizeof tag_whole : 0) +
+                   (voteu ? sizeof tag_voteu : 0);
     uint8_t *buf = malloc(total), *p = buf;
     if (!buf) return 0;
-    put_u32(&p, (uint32_t)stage);
+    // a mesh emulation kernel carries its layout's revision: a change of the kernel (tools/xlate MeshStageWrapper
+    // GenerateAsCompute) raises MESHC_REVISION, and kernels cached from an earlier one are not found
+    put_u32(&p, (uint32_t)stage | (stage == GFX_STAGE_MSC || stage == GFX_STAGE_TSC ? MESHC_REVISION << 16 : 0));
     memcpy(p, control, CONTROL_SIZE), p += CONTROL_SIZE;
     memcpy(p, &code_size, 8), p += 8;
     memcpy(p, code, (size_t)code_size), p += code_size;
     put_u32(&p, c1_len);
     if (c1_len) memcpy(p, c1, c1_len), p += c1_len;
     if (tagged) memcpy(p, tag, sizeof tag), p += sizeof tag;
-    if (whole) memcpy(p, tag_whole, sizeof tag_whole);
+    if (whole) memcpy(p, tag_whole, sizeof tag_whole), p += sizeof tag_whole;
+    if (voteu) memcpy(p, tag_voteu, sizeof tag_voteu);
     rt_sha256(buf, total, hash);
     free(buf);
     return 1;
@@ -1543,15 +1678,16 @@ static char *ns2_request(char *o, const char *stage, const uint8_t *control) {
         memcpy(&c0, control + 0xba, 2);
         o += sprintf(o, ",\"nvn2_cs\":[%u,%u,%u,%u,%u]", control[0xb1], control[0xb2], control[0xb3], c0,
                      control[0xa9] * 4u);
-    } else if (!strcmp(stage, "ts") || !strcmp(stage, "ms")) {
+    } else if (!strcmp(stage, "ts") || !strcmp(stage, "ms") || !strcmp(stage, "msc") || !strcmp(stage, "tsc")) {
         uint16_t f[6];
         memcpy(f, control + 0x58, sizeof f);   // threads, payload, (pad), task, max vertices, max primitives
         uint32_t psph;
         memcpy(&psph, control + 0x64, 4);
         o += sprintf(o, ",\"local\":[%u,1,1],\"mesh\":{\"payload\":%u,\"task\":%u,\"max_vertices\":%u,"
-                        "\"max_primitives\":%u,\"primitive_sph\":%u,\"prim_verts\":%u,\"whole_indices\":%d}",
+                        "\"max_primitives\":%u,\"primitive_sph\":%u,\"prim_verts\":%u,\"whole_indices\":%d%s}",
                      nvn2_ctl_mesh_threads(control), f[1], control[0x5e], f[4], f[5], control[0x68] & 0x80 ? psph : 0,
-                     control[0x5f] ? control[0x5f] : 3u, gfx_shader_mesh_whole);
+                     control[0x5f] ? control[0x5f] : 3u, gfx_shader_mesh_whole,
+                     !strcmp(stage, "msc") || !strcmp(stage, "tsc") ? ",\"as_compute\":1" : "");
     }
     return o;
 }
@@ -1564,7 +1700,7 @@ static size_t build_request(char *o0, const char *hex, const char *stage, const 
     char *o = o0;
     o += sprintf(o, "{\"job\":{\"key\":\"");
     json_esc(&o, hex);
-    o += sprintf(o, "\",\"stage\":\"%s\",\"debug\":false,\"code\":\"", stage);
+    o += sprintf(o, "\",\"stage\":\"%s\",\"debug\":false,\"code\":\"", !strcmp(stage, "msc") ? "ms" : !strcmp(stage, "tsc") ? "ts" : stage);
     json_esc(&o, code_path);
     o += sprintf(o, "\",\"c1\":\"");
     for (uint32_t i = 0; i < c1_len; i++) o += sprintf(o, "%02x", c1[i]);
@@ -1613,7 +1749,8 @@ static size_t build_request(char *o0, const char *hex, const char *stage, const 
     if (a && a->mvprev && !strcmp(stage, "vs")) o += sprintf(o, ",\"mvprev\":true");
     if (host_sbuf) o += sprintf(o, ",\"sbuf_align\":%u", host_sbuf);
     uint32_t lanes = host_sg[si];
-    if (gfx_shader_mesh_subgroup && (!strcmp(stage, "ts") || !strcmp(stage, "ms"))) lanes = gfx_shader_mesh_subgroup;
+    if (gfx_shader_mesh_subgroup && (!strcmp(stage, "ts") || !strcmp(stage, "ms") || !strcmp(stage, "msc") || !strcmp(stage, "tsc")))
+        lanes = gfx_shader_mesh_subgroup;
     if (lanes != 32) o += sprintf(o, ",\"subgroup\":%u", lanes);
     if (host_gather) o += sprintf(o, ",\"gather_bias\":%u", host_gather);
     if (host_zero_locals) o += sprintf(o, ",\"zero_locals\":true");
@@ -1693,6 +1830,8 @@ static int req_init(Req *r, int stage, const uint8_t *control, const uint8_t *co
     if (stage == GFX_STAGE_GS) r->stage_name = "gs";
     else if (stage == GFX_STAGE_TS) r->stage_name = "ts";
     else if (stage == GFX_STAGE_MS) r->stage_name = "ms";
+    else if (stage == GFX_STAGE_MSC) r->stage_name = "msc";
+    else if (stage == GFX_STAGE_TSC) r->stage_name = "tsc";
 #endif
     if (!r->stage_name) return fail("stage is not translated", NULL), 0;
 #ifdef GAME_NS2
@@ -1877,7 +2016,7 @@ static const GfxShader *translate_one(const Req *r, int stage, const uint8_t *co
     if (!req) return plat_file_delete(code_path), fail("out of memory", hex);
     build_request(req, hex, r->stage_name, code_path, r->c1, r->c1_len, a, control);
     int ok = svc_request(req, reply, sizeof reply);
-    // TOTK_XLATE_KEEP=1: a last-frame variant's job stays as <key>.job (one request line) with its code, to run the
+    // REKARINA_XLATE_KEEP=1: a last-frame variant's job stays as <key>.job (one request line) with its code, to run the
     // translator on by hand (totk_xlate --serve < <key>.job)
     static int keep = -1;
     if (keep < 0) keep = rt_knob("XLATE_KEEP", "0");
@@ -2022,7 +2161,7 @@ static const GfxShader *get_async_one(Req r, int stage, const uint8_t *control, 
             if (plat_thread_spawn(xlate_worker, NULL, "xlate", 0)) n++;
         }
         X.started = n ? 1 : -1;
-        if (n) rt_log("gfx_shader: graphics shaders are translated by %d background workers (TOTK_XLATE_PROCS)", n);
+        if (n) rt_log("gfx_shader: graphics shaders are translated by %d background workers (REKARINA_XLATE_PROCS)", n);
         else rt_log("gfx_shader: cannot start the translation workers; translating synchronously");
     }
     XWait **slot = wait_slot(r.key);
@@ -2257,7 +2396,7 @@ void gfx_shader_local_size(const GfxShader *s, uint32_t local[3]) { memcpy(local
 // ---- answers met in play
 // The translated-shader key includes the answers a draw's state implies, so a translation made without play (the
 // census) does not match the keys play asks for. Every (program, answers) that a gfx_shader_get* call resolves is
-// recorded next to pipeline-keys.bin, so the first-start preparation (Task 2.6, here the TOTK_TEST_PREPARE_SHADERS hook)
+// recorded next to pipeline-keys.bin, so the first-start preparation (Task 2.6, here the REKARINA_TEST_PREPARE_SHADERS hook)
 // translates exactly the variants play needs, from these files alone:
 //   shader-answers.bin  "TOTKSANS", version, record size; records: stage (u32), code hash, input id, pack_answers bytes
 //                       of the full answers, zero padding. One record per input id: answers outside the shader's use
@@ -2468,8 +2607,8 @@ void gfx_shader_record_flush(int force) {
     free(ans.p), free(prg.p);
 }
 
-// ---- preparation from record files: the answers met in play (TOTK_TEST_PREPARE_SHADERS=1) or the seed that
-// tools/prepare_shaders.py writes from the MacNativeGames shader list (totk.exe --prepare-shaders). Both use the record
+// ---- preparation from record files: the answers met in play (REKARINA_TEST_PREPARE_SHADERS=1) or the seed that
+// tools/prepare_shaders.py writes from the MacNativeGames shader list (rekarina.exe --prepare-shaders). Both use the record
 // layouts above; a seed record has a zero input id (the use mask, hence the id, is the translator's to find) and its
 // pad byte holds the list priority (0 title, 1 warm-up, 2 rest) and SEED_DEFAULT for a default variant, which
 // gfx_shader_guess_refine may correct after its first translation.

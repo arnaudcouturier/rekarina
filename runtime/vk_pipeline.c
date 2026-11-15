@@ -33,7 +33,7 @@
 // binding strides only); and, where VK_EXT_extended_dynamic_state3 offers them, depth clamp, polygon mode, blend enables,
 // equations, write masks and alpha to coverage. The key holds the rest: shaders, target formats, sample count, topology
 // class, depth clip mode, logic op and what is not dynamic on the GPU. The VkPipelineCache persists to
-// pipeline-cache.bin next to totk.exe (TOTK_PIPELINE_CACHE overrides the path).
+// pipeline-cache.bin next to rekarina.exe (REKARINA_PIPELINE_CACHE overrides the path).
 //
 // Provenance: the NVN -> Vulkan enum mappings (blend factors and equations, compare functions, stencil ops), the vertex
 // format table with its 3-component fallback and the pipeline cache file handling follow LAS Recomp
@@ -78,7 +78,7 @@ static struct {
     int push_stage;                    // GFX_STAGE_* whose set is pushed with independent layouts
     int gpl;                           // draws whose pipeline is building get a fast-linked one (vk_caps.gpl)
     struct { uint64_t links, wlinks, dlinks, requeued, link_fail, defer, lib_n[4], lib_fail, swaps, slow, pre_used[4]; double link_ms, link_max, lib_ms[4], lib_max[4], dlink_ms, dlink_max; } g;
-    int vs_outs_all;                   // TOTK_VS_OUTS: 0 union of paired fragment inputs, 1 (all) all 32 output locations
+    int vs_outs_all;                   // REKARINA_VS_OUTS: 0 union of paired fragment inputs, 1 (all) all 32 output locations
     int dyn_vi, dyn_clamp, dyn_poly, dyn_blend_en, dyn_blend_eq, dyn_wmask, dyn_a2c;
     int f_logic_op, f_depth_clamp, f_fill_non_solid, f_dual_src;
     int f_full_subgroups;              // computeFullSubgroups: compute pipelines can ask for full subgroups
@@ -149,10 +149,10 @@ static uint64_t fnv(uint64_t h, const void *p, size_t n) {
 // than the lookup. Only the in-memory table uses it; the key file keeps fnv.
 static uint64_t key_hash(const void *k, size_t n) { return nvn_hm_hash(k, (uint32_t)n); }
 
-// The cache file lives next to totk.exe, so every build dir (the main build and each private fork) has its own:
+// The cache file lives next to rekarina.exe, so every build dir (the main build and each private fork) has its own:
 // forks that shared build\v121's cache broke each other's runs (2026-10-22).
 static void cache_path_init(void) {
-    const char *cfg_path = cfg_get("TOTK_PIPELINE_CACHE");
+    const char *cfg_path = cfg_get("REKARINA_PIPELINE_CACHE");
     if (cfg_path && *cfg_path && strlen(cfg_path) < sizeof P.cache_path) {
         strcpy(P.cache_path, cfg_path);
         return;
@@ -220,7 +220,7 @@ static int ensure_init(void) {
     rt_log(P.gpl ? "vk_pipeline: graphics pipeline library on: a draw whose pipeline is building gets a fast-linked one, "
                    "the optimised build replaces it when done"
                  : "vk_pipeline: graphics pipeline library off: draws wait for or skip pipelines that are building");
-    const char *ps = cfg_get("TOTK_PUSH_STAGE"), *vo = cfg_get("TOTK_VS_OUTS");
+    const char *ps = cfg_get("REKARINA_PUSH_STAGE"), *vo = cfg_get("REKARINA_VS_OUTS");
     P.push_stage = ps && !strcmp(ps, "fs") ? GFX_STAGE_FS : GFX_STAGE_VS;
     P.vs_outs_all = vo && !strcmp(vo, "all");
     if (P.indep) rt_log("vk_pipeline: stage-independent layouts: vertex set 0, fragment set 1, %s set pushed; vertex outputs: %s",
@@ -241,7 +241,7 @@ static int ensure_init(void) {
         VkPhysicalDeviceVulkan13Properties p13 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_PROPERTIES};
         VkPhysicalDeviceProperties2 q2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &p13};
         vkGetPhysicalDeviceProperties2(c->phys, &q2);
-        P.sg32_stages = vk_caps.sg_pin_stages;   // vk_caps.c: 32 unless TOTK_VK_SUBGROUP; 0 without the pin
+        P.sg32_stages = vk_caps.sg_pin_stages;   // vk_caps.c: 32 unless REKARINA_VK_SUBGROUP; 0 without the pin
         rt_log("vk_pipeline: subgroup size %u-%u, requiredSubgroupSizeStages %#x, pinning %u on %#x", p13.minSubgroupSize,
                p13.maxSubgroupSize, (unsigned)p13.requiredSubgroupSizeStages, vk_caps.sg_size, (unsigned)P.sg32_stages);
     }
@@ -253,9 +253,9 @@ static int ensure_init(void) {
     PROC(push, "vkCmdPushDescriptorSetKHR");
     // Descriptor update templates (core 1.1; the push variant comes with VK_KHR_push_descriptor on 1.1): the driver
     // walks a layout prepared when the layout is made instead of parsing write structs every draw (DXVK does so for the
-    // same reason). TOTK_DESC_TEMPLATE=0 keeps the write structs.
-    if (!cfg_bool("TOTK_DESC_TEMPLATE")) {
-        rt_log("vk_pipeline: descriptor update templates off (TOTK_DESC_TEMPLATE=0)");
+    // same reason). REKARINA_DESC_TEMPLATE=0 keeps the write structs.
+    if (!cfg_bool("REKARINA_DESC_TEMPLATE")) {
+        rt_log("vk_pipeline: descriptor update templates off (REKARINA_DESC_TEMPLATE=0)");
     } else if (c->props.apiVersion >= VK_API_VERSION_1_1 && PROC(tpl_create, "vkCreateDescriptorUpdateTemplate") &&
                PROC(tpl_destroy, "vkDestroyDescriptorUpdateTemplate") && PROC(tpl_update, "vkUpdateDescriptorSetWithTemplate")) {
         P.tpl = 1;
@@ -264,15 +264,15 @@ static int ensure_init(void) {
     } else {
         rt_log("vk_pipeline: descriptor update templates unavailable: sets are written with write structs");
     }
-    // TOTK_VK_DYN_VERTEX=0/1 forces dynamic vertex input off or on. Default off on Intel's frozen Windows driver for its
+    // REKARINA_VK_DYN_VERTEX=0/1 forces dynamic vertex input off or on. Default off on Intel's frozen Windows driver for its
     // older integrated GPUs (UHD 630, Ice Lake: Vulkan 1.3.215 and older), which draws nothing with it; LAS Recomp
     // turns it off there for the same reason.
-    const char *dv = cfg_get("TOTK_VK_DYN_VERTEX");   // no fixed default: it depends on the GPU, see above
+    const char *dv = cfg_get("REKARINA_VK_DYN_VERTEX");   // no fixed default: it depends on the GPU, see above
     int intel_legacy = c->props.vendorID == 0x8086 && c->props.apiVersion <= VK_MAKE_API_VERSION(0, 1, 3, 215);
     int dv_on = dv && *dv ? strcmp(dv, "0") != 0 : !intel_legacy;
     P.dyn_vi = dv_on && c->has_vertex_input_dynamic_state && PROC(set_vi, "vkCmdSetVertexInputEXT");
     if (!dv_on && c->has_vertex_input_dynamic_state)
-        rt_log("vk_pipeline: dynamic vertex input off (%s)", dv && *dv ? "TOTK_VK_DYN_VERTEX=0" : "Intel's older Windows driver draws nothing with it");
+        rt_log("vk_pipeline: dynamic vertex input off (%s)", dv && *dv ? "REKARINA_VK_DYN_VERTEX=0" : "Intel's older Windows driver draws nothing with it");
     if (c->has_eds3) {
         P.dyn_clamp = e3.extendedDynamicState3DepthClampEnable && P.f_depth_clamp && PROC(set_clamp, "vkCmdSetDepthClampEnableEXT");
         P.dyn_poly = e3.extendedDynamicState3PolygonMode && PROC(set_poly, "vkCmdSetPolygonModeEXT");
@@ -281,16 +281,16 @@ static int ensure_init(void) {
         P.dyn_wmask = e3.extendedDynamicState3ColorWriteMask && PROC(set_wmask, "vkCmdSetColorWriteMaskEXT");
         P.dyn_a2c = e3.extendedDynamicState3AlphaToCoverageEnable && PROC(set_a2c, "vkCmdSetAlphaToCoverageEnableEXT");
     }
-    // TOTK_VK_DYN_A2C=0/1 forces dynamic alpha to coverage off or on. Default off on AMD's Windows driver branch for
+    // REKARINA_VK_DYN_A2C=0/1 forces dynamic alpha to coverage off or on. Default off on AMD's Windows driver branch for
     // RDNA 2 and older (vk_caps.amd_sc), which applies alpha to coverage while the dynamic state says off: on an RX 590
     // (24.9.1) TotK, which never turns it on, drew the hero and the NPCs with depth but no colour (black silhouettes) and
     // dithered other surfaces into checkerboards (issue #67, RX 470/570/580). Taken out of the dynamic state, it goes
     // into the pipeline key and the characters draw.
-    const char *da = cfg_get("TOTK_VK_DYN_A2C");   // no fixed default: it depends on the driver, see above
+    const char *da = cfg_get("REKARINA_VK_DYN_A2C");   // no fixed default: it depends on the driver, see above
     int da_on = da && *da ? strcmp(da, "0") != 0 : !vk_caps.amd_sc;
     if (!da_on && P.dyn_a2c) {
         P.dyn_a2c = 0;
-        rt_log("vk_pipeline: dynamic alpha to coverage off (%s)", da && *da ? "TOTK_VK_DYN_A2C=0" : "AMD's driver for RDNA 2 and older");
+        rt_log("vk_pipeline: dynamic alpha to coverage off (%s)", da && *da ? "REKARINA_VK_DYN_A2C=0" : "AMD's driver for RDNA 2 and older");
     }
 #undef PROC
     static const VkDynamicState core[] = {
@@ -926,8 +926,8 @@ static VkShaderModule make_module(const uint32_t *w, uint64_t words) {
     uint32_t *fixed = spirv_fixup(w, words, &fixed_n);
     if (fixed) w = fixed, words = fixed_n;
     uint32_t *dbg = NULL;
-    {   // DEBUG-SPVFMT: TOTK_SPVFMT=<bytes>:<format>: a module of that size declares its format-less storage images with SPIR-V ImageFormat <format>
-        const char *e = getenv("TOTK_SPVFMT");
+    {   // DEBUG-SPVFMT: REKARINA_SPVFMT=<bytes>:<format>: a module of that size declares its format-less storage images with SPIR-V ImageFormat <format>
+        const char *e = cfg_env("REKARINA_SPVFMT");
         unsigned bytes = 0, fmt = 0;
         if (e && sscanf(e, "%u:%u", &bytes, &fmt) == 2 && words * 4 == bytes && (dbg = malloc(words * 4))) {
             memcpy(dbg, w, words * 4);
@@ -973,12 +973,12 @@ static VkDescriptorType descriptor_type(int kind, const GfxShaderRes *r) {
     }
 }
 
-// ---- DEBUG-PIPESTATS: TOTK_PIPESTATS=1: each new pipeline's statistics as the driver reports them
+// ---- DEBUG-PIPESTATS: REKARINA_PIPESTATS=1: each new pipeline's statistics as the driver reports them
 // (VK_KHR_pipeline_executable_properties, enabled by vk_device.c), one line per stage, keyed by the FNV-1a hash of the
-// stage's SPIR-V (the hash TOTK_DRAWTIME prints), each shader once.
+// stage's SPIR-V (the hash REKARINA_DRAWTIME prints), each shader once.
 static int pipestats_on(void) {
     static int on = -1;
-    if (on < 0) on = cfg_get("TOTK_PIPESTATS") != NULL;
+    if (on < 0) on = cfg_get("REKARINA_PIPESTATS") != NULL;
     return on;
 }
 static uint64_t pipestats_fnv(const GfxShader *s) {
@@ -1306,7 +1306,7 @@ static Layout *layout_pair(Bindings *B, Bindings *F) {
 
 // Vertex outputs with independent layouts: each vertex shader declares the union of the inputs of every fragment
 // shader met with it (pipeline-keys.bin at the prewarm, then each pipeline built), so its module does not depend on the
-// fragment shader of one pipeline. Unwritten ones read (0, 0, 0, 1) as before. TOTK_VS_OUTS=all declares all 32.
+// fragment shader of one pipeline. Unwritten ones read (0, 0, 0, 1) as before. REKARINA_VS_OUTS=all declares all 32.
 #define VS_OUTS_CAP 8192
 static struct {
     PlatMutex lock;
@@ -1823,7 +1823,7 @@ static struct {
     LibJob *head, *tail;
     int idle;                          // workers asleep on work_cv
     int running;                       // jobs workers are building
-    int on;                            // TOTK_PIPE_WAIT: 1 workers (default), 0 the drawing thread builds them (draw);
+    int on;                            // REKARINA_PIPE_WAIT: 1 workers (default), 0 the drawing thread builds them (draw);
                                        // set by vk_pipeline_async_enable, before the replay runs
     uint64_t waits, queued, by_worker, stolen, timeouts;
 } U;
@@ -2027,7 +2027,7 @@ static struct {
 // Every graphics pipeline built in a game run appends a KeyRec: the VkPipeState it was built from with the shader
 // pointers zeroed and the shaders named by their gfx_shader input ids instead, which do not depend on the translator,
 // so the record rebuilds the pipeline without guest memory. At the next boot vk_pipeline_prewarm (rt_boot, before the
-// guest runs; TOTK_PIPE_PREBUILD=0 skips it) loads each record's shaders, translating the ones not cached under the
+// guest runs; REKARINA_PIPE_PREBUILD=0 skips it) loads each record's shaders, translating the ones not cached under the
 // current translator from their stored inputs (gfx_shader_prewarm; a record whose shader has neither is dropped),
 // enters each Pipe as building under the key a draw would compute, queues it to the low queue and builds the queue on
 // every core. Records are deduplicated by a hash of their bytes; they are collected under P.lock by the worker that
@@ -2228,7 +2228,7 @@ static void pipe_worker(void *arg) {
     plat_mutex_lock(&P.lock);
     for (;;) {
         // With 3 or more workers one never takes low-queue work, so a waiting draw's library starts at once
-        // (not with TOTK_PIPE_WAIT=draw).
+        // (not with REKARINA_PIPE_WAIT=draw).
         while (!U.head && !A.head && !(A.low && (A.threads < 3 || !U.on || A.low_running < A.threads - 1))) {
             U.idle++;
             plat_cond_wait(&work_cv, &P.lock);
@@ -2347,8 +2347,8 @@ static void workers_drain(void) {
 }
 
 void vk_pipeline_async_enable(void) {
-    U.on = strcmp(cfg_value("TOTK_PIPE_WAIT"), "draw") != 0;
-    const char *e = cfg_get("TOTK_PIPE_SYNC");
+    U.on = strcmp(cfg_value("REKARINA_PIPE_WAIT"), "draw") != 0;
+    const char *e = cfg_get("REKARINA_PIPE_SYNC");
     if (e && *e && strcmp(e, "0")) return;
     A.on = 1;
 }
@@ -2522,15 +2522,15 @@ static VkPipeline graphics(const VkPipeState *s, const VkPipeInfo **info, int as
     // parallel on idle workers (lib_wait; about 0.12 ms per library from the driver's disk cache, 5-180 ms cold), and
     // links them here: its own job may queue behind optimised builds of earlier pipelines. The job then only does the
     // optimised build, from the low queue. Other draws leave the libraries to the job and are skipped meanwhile.
-    // TOTK_PIPE_WAIT=draw builds them on this thread one after the other instead, as before; TOTK_GPL_DRAW_BUILD=0
+    // REKARINA_PIPE_WAIT=draw builds them on this thread one after the other instead, as before; REKARINA_GPL_DRAW_BUILD=0
     // leaves them to the job.
     static int draw_build = -1;
     if (draw_build < 0) {
-        const char *e = cfg_get("TOTK_GPL_DRAW_BUILD");
+        const char *e = cfg_get("REKARINA_GPL_DRAW_BUILD");
         draw_build = !(e && !strcmp(e, "0"));
         rt_log("vk_pipeline: a draw that waits for its pipeline %s", !draw_build ? "leaves its libraries to its job"
                : U.on ? "has its libraries built in parallel on the workers, ahead of other jobs"
-                      : "builds its libraries itself (TOTK_PIPE_WAIT=draw)");
+                      : "builds its libraries itself (REKARINA_PIPE_WAIT=draw)");
     }
     double end = wait_ms ? now_ms() + wait_ms : 0;
     if (p && p->building && P.gpl && !p->info.pipeline && !p->fast_tried && p->lay) {
@@ -2635,7 +2635,7 @@ void vk_pipeline_prewarm(void) {
     const char *gpu = rt_config()->gpu;
     uint32_t pr_hist[16] = {0}, fs_hist[4] = {0};   // library state of the recorded pipelines (lb_start)
     if (!A.on || (gpu && !strcmp(gpu, "null"))) return;
-    if (!cfg_bool("TOTK_PIPE_PREBUILD")) {   // prebuild_start logs the off case
+    if (!cfg_bool("REKARINA_PIPE_PREBUILD")) {   // prebuild_start logs the off case
         if (ensure_init()) lb_start(pr_hist, fs_hist);
         return;
     }
@@ -2663,7 +2663,7 @@ void vk_pipeline_prewarm(void) {
     for (size_t i = 0; i < m; i++)
         if (!u || memcmp(ids[u - 1], ids[i], 32)) memcpy(ids[u++], ids[i], 32);
     int cpus = (int)plat_cpu_usable();
-    const char *pe = cfg_get("TOTK_PREWARM_XLATE");   // no fixed default: half the CPUs, at most 16, when unset
+    const char *pe = cfg_get("REKARINA_PREWARM_XLATE");   // no fixed default: half the CPUs, at most 16, when unset
     int procs = pe && *pe ? atoi(pe) : cpus / 2 > 16 ? 16 : cpus / 2;
     gfx_shader_prewarm((const uint8_t(*)[32])ids, u, sh, cpus, procs < 1 ? 1 : procs);
     double t1 = now_ms();
@@ -2728,13 +2728,13 @@ void vk_pipeline_prewarm(void) {
     lb_start(pr_hist, fs_hist);
 }
 
-// ensure_init's hook: without a prewarm (TOTK_PIPE_PREBUILD=0, or the device came up first elsewhere) the records
+// ensure_init's hook: without a prewarm (REKARINA_PIPE_PREBUILD=0, or the device came up first elsewhere) the records
 // are not built. Caller holds no lock.
 static void prebuild_start(void) {
     plat_mutex_lock(&P.lock);
     if (K.file && !K.warm) {
         rt_log("vk_pipeline: prebuild off%s; %zu records not built",
-               !cfg_bool("TOTK_PIPE_PREBUILD") ? " (TOTK_PIPE_PREBUILD=0)" : " (no boot prewarm)", K.file_n);
+               !cfg_bool("REKARINA_PIPE_PREBUILD") ? " (REKARINA_PIPE_PREBUILD=0)" : " (no boot prewarm)", K.file_n);
         free(K.file);
         K.file = NULL;
     }
@@ -2743,10 +2743,36 @@ static void prebuild_start(void) {
 
 
 // A compute pipeline for cs in layout l; VK_NULL_HANDLE on failure. No lock needed (P.cache is driver-synchronised).
+// A mesh shader as compute (GFX_STAGE_MSC) names the emulation buffer by two marker constants (tools/xlate MeshStage
+// EmuAddressLo, EmuAddressHi): a copy of its module with the buffer's address in their place. NULL without the buffer.
+static uint32_t *meshc_module(const uint32_t *code, uint64_t words) {
+    uint64_t a = vk_mesh_emu_address();
+    uint32_t *c = a ? malloc(words * 4) : NULL;
+    if (!c) return NULL;
+    memcpy(c, code, words * 4);
+    int found = 0;
+    for (uint64_t i = 5; i < words;) {
+        uint32_t n = c[i] >> 16, op = c[i] & 0xffff;
+        if (!n || i + n > words) break;
+        if (op == 43 && n == 4) {   // OpConstant type id value
+            if (c[i + 3] == VK_MESH_EMU_ADDRESS_LO) c[i + 3] = (uint32_t)a, found |= 1;
+            else if (c[i + 3] == VK_MESH_EMU_ADDRESS_HI) c[i + 3] = (uint32_t)(a >> 32), found |= 2;
+        }
+        i += n;
+    }
+    if (found != 3) free(c), c = NULL;
+    return c;
+}
+
 static VkPipeline compute_create(const GfxShader *cs, const Layout *l) {
     uint64_t words;
     const uint32_t *code = gfx_shader_spirv(cs, &words);
+    int emu = gfx_shader_stage(cs) == GFX_STAGE_MSC || gfx_shader_stage(cs) == GFX_STAGE_TSC;   // task kernels name it too
+    uint32_t *patched = emu ? meshc_module(code, words) : NULL;
+    if (emu && !patched) return VK_NULL_HANDLE;
+    if (patched) code = patched;
     VkShaderModule m = make_module(code, words);
+    free(patched);
     if (!m) return VK_NULL_HANDLE;
     VkPipelineShaderStageRequiredSubgroupSizeCreateInfo rqc;
     VkComputePipelineCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
@@ -2756,7 +2782,7 @@ static VkPipeline compute_create(const GfxShader *cs, const Layout *l) {
     pin_subgroup32(&ci.stage, &rqc, code, words);
     // A warp on the console always has its 32 lanes. Without this the driver may run partial subgroups in a workgroup that
     // is a whole number of them, and the ballots the foliage culling reserves its list slots with count differently from
-    // one frame to the next (TOTK_FULL_SUBGROUPS=0 turns it off).
+    // one frame to the next (REKARINA_FULL_SUBGROUPS=0 turns it off).
     {
         static int on = -1;
         if (on < 0) on = rt_knob("FULL_SUBGROUPS", "1");
@@ -2776,7 +2802,8 @@ static VkPipeline compute_create(const GfxShader *cs, const Layout *l) {
 // The layout of a compute shader in *B; NULL with *why on failure. Caller holds P.lock.
 static Layout *compute_layout(const GfxShader *cs, Bindings *B, const char **why) {
     Layout *l = NULL;
-    if (gfx_shader_stage(cs) != GFX_STAGE_CS) *why = "not a compute shader";
+    if (gfx_shader_stage(cs) != GFX_STAGE_CS && gfx_shader_stage(cs) != GFX_STAGE_MSC && gfx_shader_stage(cs) != GFX_STAGE_TSC)
+        *why = "not a compute shader";
     else if (!add_stage(B, cs, 0)) *why = "too many bindings";
     else if (!(l = layout_get(B))) *why = "descriptor layout creation failed";
     return l;
@@ -2786,7 +2813,7 @@ static Layout *compute_layout(const GfxShader *cs, Bindings *B, const char **why
 #ifdef GAME_NS2
 // ---- NVN2 geometry and mesh pipelines (GAME_NS2)
 // A program with a geometry stage, or NVN2's task and mesh shaders, gets a pipeline built whole: no stage libraries, no
-// background build, no vertex output fix-up. Its layout is one set as for TOTK_GPL=0: binding 0 the support buffer,
+// background build, no vertex output fix-up. Its layout is one set as for REKARINA_GPL=0: binding 0 the support buffer,
 // each stage's bindings after the previous stage's (its SPIR-V renumbered as the fragment stage's is). The mesh path
 // takes no vertex input or input assembly state, and its dynamic state list leaves out what a mesh pipeline may not
 // have (vertex input, topology, primitive restart). Built on the calling thread under P.lock, as compute pipelines.
@@ -2821,9 +2848,13 @@ void vk_pipeline_draw_mesh_indirect(VkCommandBuffer cb, VkBuffer b, VkDeviceSize
     rec_draw_mesh_indirect(MESH.draw_ind, cb, b, off, 1, sizeof(VkDrawMeshTasksIndirectCommandEXT));
 }
 
+// mesh: 0 a geometry pipeline (vertex, geometry, fragment), 1 a mesh pipeline (task, mesh, fragment), 2 an emulated mesh
+// draw (vk_exec_draw.c mesh_emulate): gfx_shader_meshc_vs's vertex shader and the fragment shader, the vertices from
+// the emulation buffer (binding 0: vec4s of 16 bytes, one a vertex input) as a triangle list.
 static VkPipeline stages_create(const VkPipeState *s, const GfxShader *const sh[3], int mesh, const GKey *k,
                                 const Layout *l, const uint32_t off[3]) {
-    static const int gst[2][3] = {{GFX_STAGE_VS, GFX_STAGE_GS, GFX_STAGE_FS}, {GFX_STAGE_TS, GFX_STAGE_MS, GFX_STAGE_FS}};
+    static const int gst[3][3] = {{GFX_STAGE_VS, GFX_STAGE_GS, GFX_STAGE_FS}, {GFX_STAGE_TS, GFX_STAGE_MS, GFX_STAGE_FS},
+                                  {GFX_STAGE_VS, GFX_STAGE_GS, GFX_STAGE_FS}};
     VkShaderModule m[3] = {VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE};
     VkPipelineShaderStageCreateInfo st[3];
     VkPipelineShaderStageRequiredSubgroupSizeCreateInfo rq[3];
@@ -2842,7 +2873,7 @@ static VkPipeline stages_create(const VkPipeState *s, const GfxShader *const sh[
                                                   .stage = (VkShaderStageFlagBits)stage_bit(gst[mesh][i]), .module = m[i],
                                                   .pName = "main"};
         // a mesh pipeline's task and mesh stages only where vk_caps.c pins them (not on a device of 32-lane subgroups)
-        if (!mesh || (vk_caps.sg_pin_mesh && i < 2)) pin_subgroup32(&st[n], &rq[n], code, w);
+        if (mesh != 1 || (vk_caps.sg_pin_mesh && i < 2)) pin_subgroup32(&st[n], &rq[n], code, w);
         n++;
     }
     VkVertexInputAttributeDescription va[32];
@@ -2853,6 +2884,12 @@ static VkPipeline stages_create(const VkPipeState *s, const GfxShader *const sh[
         vertex_input(s, &v);
         for (uint32_t i = 0; i < v.n_attr; i++) va[na++] = (VkVertexInputAttributeDescription){v.a[i].location, v.a[i].binding, v.a[i].format, v.a[i].offset};
         for (uint32_t i = 0; i < v.n_bind; i++) vb[nb++] = (VkVertexInputBindingDescription){v.b[i].binding, v.b[i].stride, v.b[i].inputRate};
+    } else if (mesh == 2) {
+        GfxShaderIo io[32];
+        uint32_t in = gfx_shader_inputs(sh[0], io);
+        for (uint32_t i = 0; i < 32; i++)
+            if (in >> i & 1) va[na++] = (VkVertexInputAttributeDescription){i, 0, VK_FORMAT_R32G32B32A32_SFLOAT, 16 * i};
+        vb[nb++] = (VkVertexInputBindingDescription){0, 16 * na, VK_VERTEX_INPUT_RATE_VERTEX};
     }
     VkPipelineVertexInputStateCreateInfo vi = {.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
                                                .vertexBindingDescriptionCount = nb, .pVertexBindingDescriptions = vb,
@@ -2860,7 +2897,7 @@ static VkPipeline stages_create(const VkPipeState *s, const GfxShader *const sh[
     static const VkPrimitiveTopology class_base[4] = {VK_PRIMITIVE_TOPOLOGY_POINT_LIST, VK_PRIMITIVE_TOPOLOGY_LINE_LIST,
                                                       VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, VK_PRIMITIVE_TOPOLOGY_PATCH_LIST};
     VkPipelineInputAssemblyStateCreateInfo ia = {.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
-                                                 .topology = class_base[k->topo_class]};
+                                                 .topology = mesh == 2 ? VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST : class_base[k->topo_class]};
     VkPipelineViewportDepthClipControlCreateInfoEXT clip = {.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_DEPTH_CLIP_CONTROL_CREATE_INFO_EXT,
                                                             .negativeOneToOne = k->minus_w};
     VkPipelineViewportStateCreateInfo vp = {.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO, .pNext = &clip};
@@ -2896,15 +2933,15 @@ static VkPipeline stages_create(const VkPipeState *s, const GfxShader *const sh[
         if (!mesh || (P.dyn[i] != VK_DYNAMIC_STATE_VERTEX_INPUT_EXT && P.dyn[i] != VK_DYNAMIC_STATE_VERTEX_INPUT_BINDING_STRIDE &&
                       P.dyn[i] != VK_DYNAMIC_STATE_PRIMITIVE_TOPOLOGY && P.dyn[i] != VK_DYNAMIC_STATE_PRIMITIVE_RESTART_ENABLE))
             dyn[ndyn++] = P.dyn[i];
-    if (mesh && vk_ctx()->has_vrs) dyn[ndyn++] = VK_DYNAMIC_STATE_FRAGMENT_SHADING_RATE_KHR;   // vk_exec_draw.c mesh_shading_rate
+    if (mesh == 1 && vk_ctx()->has_vrs) dyn[ndyn++] = VK_DYNAMIC_STATE_FRAGMENT_SHADING_RATE_KHR;   // vk_exec_draw.c mesh_shading_rate
     VkPipelineDynamicStateCreateInfo dy = {.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
                                            .dynamicStateCount = ndyn, .pDynamicStates = dyn};
     VkPipelineRenderingCreateInfo ri = {.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO, .colorAttachmentCount = k->n_color,
                                         .pColorAttachmentFormats = (const VkFormat *)k->color,
                                         .depthAttachmentFormat = (VkFormat)k->depth, .stencilAttachmentFormat = (VkFormat)k->stencil};
     VkGraphicsPipelineCreateInfo pi = {.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO, .pNext = &ri,
-                                       .stageCount = n, .pStages = st, .pVertexInputState = mesh ? NULL : &vi,
-                                       .pInputAssemblyState = mesh ? NULL : &ia, .pViewportState = &vp, .pRasterizationState = &rs,
+                                       .stageCount = n, .pStages = st, .pVertexInputState = mesh == 1 ? NULL : &vi,
+                                       .pInputAssemblyState = mesh == 1 ? NULL : &ia, .pViewportState = &vp, .pRasterizationState = &rs,
                                        .pMultisampleState = &ms, .pDepthStencilState = &ds, .pColorBlendState = &cb,
                                        .pDynamicState = &dy, .layout = l->layout};
     uint64_t p0 = perf_begin();
@@ -2933,7 +2970,7 @@ out:
 // game stopped that long at each new scene. A miss now enters the Pipe as building and queues the build to threads
 // of their own (MESH_THREADS: the driver compiles pipelines in parallel, and a new scene asks for a dozen at once);
 // draws with it are skipped until the handle is published, as background graphics builds skip theirs.
-// TOTK_MESH_ASYNC=0 builds them on the drawing thread as before. Jobs copy the state and the key; shaders live for
+// REKARINA_MESH_ASYNC=0 builds them on the drawing thread as before. Jobs copy the state and the key; shaders live for
 // the process and layouts until vk_pipeline_shutdown, which waits for the queue first (mesh_drain).
 typedef struct MeshJob {
     struct MeshJob *next;
@@ -3033,14 +3070,14 @@ static void mesh_drain(void) {
 
 VkPipeline vk_pipeline_stages(const VkPipeState *s, const GfxShader *const sh[3], int mesh, const VkPipeInfo **info) {
     if (info) *info = NULL;
-    if (!sh[1] || !ensure_init() || (mesh && !vk_pipeline_mesh_on())) return VK_NULL_HANDLE;
+    if ((mesh == 2 ? !sh[0] : !sh[1]) || !ensure_init() || (mesh == 1 && !vk_pipeline_mesh_on())) return VK_NULL_HANDLE;
     struct { char tag[8]; const GfxShader *sh[3]; uint32_t mesh; GKey k; } key;
     memset(&key, 0, sizeof key);
     memcpy(key.tag, "stages", 6);
     for (int i = 0; i < 3; i++) key.sh[i] = sh[i];
     key.mesh = (uint32_t)mesh;
     VkPipeState t = *s;
-    t.vs = mesh ? NULL : sh[0], t.fs = sh[2];
+    t.vs = mesh == 1 ? NULL : sh[0], t.fs = sh[2];
     gkey_fill(&t, &key.k);
     key.k.indep = 0;
     if (mesh) memset(key.k.attr_fmt, 0, sizeof key.k.attr_fmt + sizeof key.k.attr_off + sizeof key.k.attr_bind + sizeof key.k.rate);
@@ -3093,7 +3130,7 @@ VkPipeline vk_pipeline_stages(const VkPipeState *s, const GfxShader *const sh[3]
 
 // ---- stage library prebuild
 // Two places build what a draw would otherwise build while the game waits:
-// - totk.exe --prepare-shaders (lb_warm_prepared), after the translation, on every core: for each prepared variant
+// - rekarina.exe --prepare-shaders (lb_warm_prepared), after the translation, on every core: for each prepared variant
 //   (shader-prepared.bin) the pre-rasterization library of a vertex shader, the fragment-shader library of a fragment
 //   shader and the pipeline of a compute shader, each built from a private shader copy and destroyed at once. What
 //   stays is the driver's own disk cache: on AMD a library built again in a later process takes 0.1 ms instead of
@@ -3102,15 +3139,15 @@ VkPipeline vk_pipeline_stages(const VkPipeState *s, const GfxShader *const sh[3]
 // - boot (lb_worker), after the pipeline-key prewarm, on cpus/4 threads at PLAT_PRIO_IDLE (the short P.lock
 //   sections and shader loads at normal priority, so a preempted thread never holds the lock the replay needs):
 //   compute pipelines of every recorded and prepared compute shader, kept (vk_pipeline_compute builds compute
-//   synchronously on the replay thread; 163 prepared), and the libraries of the first TOTK_LIB_PREBUILD_KEEP variants
+//   synchronously on the replay thread; 163 prepared), and the libraries of the first REKARINA_LIB_PREBUILD_KEEP variants
 //   play recorded (priority 0), kept in libs[] with their shaders. KEEP defaults to 0: a kept library costs 140-460 KB
 //   of process memory (10,000 kept took 9 GB in run 1) to save a rebuild the driver cache makes 0.1 ms.
 // Library state: the vertex output union known now (vs_union_peek; the prewarm fills it from pipeline-keys.bin, the
 // preparation has none), the clamp, polygon mode and depth mode most recorded pipelines use (defaults without a key
 // file: clamp 0, fill, -w..w), single-sampled, no dual source; the state dynamic on this GPU is 0 in every key.
 // A draw that meets such a variant in a new pipeline then gets its libraries from libs[] or the driver cache and
-// fast-links (gpl_link). TOTK_LIB_PREBUILD=0 turns the boot part off, =N stops it after N variants;
-// TOTK_LIB_PREBUILD_THREADS sets its thread count.
+// fast-links (gpl_link). REKARINA_LIB_PREBUILD=0 turns the boot part off, =N stops it after N variants;
+// REKARINA_LIB_PREBUILD_THREADS sets its thread count.
 #define LB_MAX_THREADS 16
 
 static struct {
@@ -3280,7 +3317,7 @@ static void journal_mark(int slot, const GfxWarmEnt *e) {
 //   keeps the memory for what it allocates next); not building them is what gives the memory back.
 // One that was left out or dropped is built at its first dispatch, on the replay thread, from the driver's cache
 // (0.2 to 0.6 ms on average in the prebuild's own count, 0.16 ms for the one the tour met; the log names any over
-// 8 ms). TOTK_CS_KEEP=all keeps every one as before, =used keeps the listed ones on any card.
+// 8 ms). REKARINA_CS_KEEP=all keeps every one as before, =used keeps the listed ones on any card.
 #define CS_KEEP_ALL (8ull << 30)
 #define CS_KEEP_ALL_RAM_MB 20480   // the shaders' SPIR-V is half a gigabyte of memory, which a machine of 16 GiB misses
 #define CS_USED_MIN 64
@@ -3352,7 +3389,7 @@ static int lb_prebuild_idle(void);
 // those on the replay thread is the hitch the prebuild is there to spare.
 uint32_t vk_pipeline_compute_trim(void) {
     static const char *keep;
-    if (!keep) keep = cfg_get("TOTK_CS_KEEP") ? cfg_get("TOTK_CS_KEEP") : "";
+    if (!keep) keep = cfg_get("REKARINA_CS_KEEP") ? cfg_get("REKARINA_CS_KEEP") : "";
     if (!strcmp(keep, "all") || !ensure_init() || !lb_prebuild_idle()) return 0;
     uint32_t n = 0;
     plat_mutex_lock(&P.lock);
@@ -3389,8 +3426,8 @@ uint32_t vk_pipeline_compute_trim(void) {
 // a new shader answer record). No prebuild can hold a variant nobody has met, so the build goes to a thread of its
 // own: the dispatch waits for it up to CS_WAIT_MS, which a cached build always makes, and after that the dispatches
 // of that shader go without it until the pipeline is there (what they write stays as it was for those frames, as a
-// draw whose pipeline is still being built is left out). TOTK_CS_ASYNC=0 builds on the replay thread as before;
-// TOTK_CS_BUILD_DELAY_MS=<ms> makes every such build that much longer, for a test.
+// draw whose pipeline is still being built is left out). REKARINA_CS_ASYNC=0 builds on the replay thread as before;
+// REKARINA_CS_BUILD_DELAY_MS=<ms> makes every such build that much longer, for a test.
 #define CS_WAIT_MS 4
 typedef struct { const GfxShader *cs; const Layout *l; Pipe *p; double t0; } CsJob;
 static struct { uint64_t built, late, skipped; double late_ms; } CSA;   // P.lock
@@ -3401,7 +3438,7 @@ int vk_pipeline_compute_pending(void) { return cs_pending; }
 static void cs_build_thread(void *arg) {
     CsJob *j = arg;
     static int delay = -1;
-    if (delay < 0) { const char *e = cfg_get("TOTK_CS_BUILD_DELAY_MS"); delay = e && atoi(e) > 0 ? atoi(e) : 0; }
+    if (delay < 0) { const char *e = cfg_get("REKARINA_CS_BUILD_DELAY_MS"); delay = e && atoi(e) > 0 ? atoi(e) : 0; }
     if (delay) plat_sleep_ns((uint64_t)delay * 1000000ull);
     VkPipeline pipe = compute_create(j->cs, j->l);
     double ms = now_ms() - j->t0;
@@ -3761,9 +3798,9 @@ static void lb_state(const uint32_t pr_hist[16], const uint32_t fs_hist[4]) {
 
 // Boot: compute shaders of the warm list (recorded and prepared), then the first KEEP recorded graphics variants.
 static void lb_start(const uint32_t pr_hist[16], const uint32_t fs_hist[4]) {
-    const char *e = cfg_value("TOTK_LIB_PREBUILD"), *ke = cfg_get("TOTK_LIB_PREBUILD_KEEP");
-    const char *te = cfg_get("TOTK_LIB_PREBUILD_THREADS");   // no fixed default: a quarter of the CPUs when unset
-    if (!A.on || !cfg_bool("TOTK_LIB_PREBUILD")) return;
+    const char *e = cfg_value("REKARINA_LIB_PREBUILD"), *ke = cfg_get("REKARINA_LIB_PREBUILD_KEEP");
+    const char *te = cfg_get("REKARINA_LIB_PREBUILD_THREADS");   // no fixed default: a quarter of the CPUs when unset
+    if (!A.on || !cfg_bool("REKARINA_LIB_PREBUILD")) return;
     char dir[PLAT_PATH_MAX * 2];
     if (cache_dir(dir, sizeof dir)) skip_init(dir);
     GfxWarmEnt *all = NULL;
@@ -3771,7 +3808,7 @@ static void lb_start(const uint32_t pr_hist[16], const uint32_t fs_hist[4]) {
     LB.keep_n = ke && *ke ? atoi(ke) : 0;
     LB.e = malloc((total + 1) * sizeof *LB.e);
     // the compute shaders kept: all of them, or where video memory is short the ones a dispatch has used (compute-used.bin)
-    const char *ck = cfg_get("TOTK_CS_KEEP");
+    const char *ck = cfg_get("REKARINA_CS_KEEP");
     uint64_t vused = 0, vbudget = 0;
     int vexact = 0, used_only = ck && !strcmp(ck, "used");
     float ram_used, ram_total, ram_proc;
@@ -3785,7 +3822,7 @@ static void lb_start(const uint32_t pr_hist[16], const uint32_t fs_hist[4]) {
     for (size_t i = 0; LB.e && i < total; i++)
         if (all[i].stage == GFX_STAGE_CS) {
             n_all_cs++;
-            // DEBUG-CSNONE: TOTK_CS_KEEP=none prebuilds no compute pipeline: every one is built at its first dispatch,
+            // DEBUG-CSNONE: REKARINA_CS_KEEP=none prebuilds no compute pipeline: every one is built at its first dispatch,
             // the path of a shader variant never met ("a compute pipeline no prebuild made")
             if (ck && !strcmp(ck, "none")) continue;
             if (!used_only || cu_has(all[i].iid)) LB.e[n++] = all[i];
@@ -3794,7 +3831,7 @@ static void lb_start(const uint32_t pr_hist[16], const uint32_t fs_hist[4]) {
     n_cs = n;
     if (used_only)
         rt_log("vk_pipeline: compute pipelines kept at boot: the %zu a dispatch has used of %zu (video memory budget %.1f GiB, "
-               "memory %.0f GiB; TOTK_CS_KEEP=all keeps every one)", n_cs, n_all_cs, (double)vbudget / 1073741824.0,
+               "memory %.0f GiB; REKARINA_CS_KEEP=all keeps every one)", n_cs, n_all_cs, (double)vbudget / 1073741824.0,
                ram_total / 1024.0);
     for (size_t i = 0; LB.e && i < total && (int32_t)(n - n_cs) < LB.keep_n; i++)
         if (all[i].stage != GFX_STAGE_CS && all[i].prio == 0) LB.e[n++] = all[i];
@@ -3820,7 +3857,7 @@ static void lb_start(const uint32_t pr_hist[16], const uint32_t fs_hist[4]) {
     LB.threads = started;
     if (started) LB.watch = plat_thread_new(lb_watch, NULL, "lib prebuild watch");
     rt_log("vk_pipeline: stage library prebuild: %zu compute pipelines and %zu recorded variants' libraries "
-           "(TOTK_LIB_PREBUILD_KEEP %d) on %d idle-priority threads; library state clamp %u, polygon mode %u, depth "
+           "(REKARINA_LIB_PREBUILD_KEEP %d) on %d idle-priority threads; library state clamp %u, polygon mode %u, depth "
            "-w..w %u, samples %u", n_cs < n ? n_cs : n, n > n_cs ? n - n_cs : 0, LB.keep_n, started, LB.clamp, LB.poly,
            LB.minus_w, LB.samples);
 }
@@ -3917,8 +3954,8 @@ static void lb_warm_prepared(const char *dir) {
     free(LB.e), LB.e = NULL, LB.n = 0, LB.next = 0, LB.done = 0, LB.skipped = 0;
 }
 
-// totk.exe --prepare-shaders (tools/prepare_shaders.py): the device sets the translator's host answers (they are in every
-// cache key), the seed next to totk.exe is translated on every core, then every prepared variant's stage library or
+// rekarina.exe --prepare-shaders (tools/prepare_shaders.py): the device sets the translator's host answers (they are in every
+// cache key), the seed next to rekarina.exe is translated on every core, then every prepared variant's stage library or
 // compute pipeline is built once into the driver's disk cache (lb_warm_prepared). No game runs.
 int vk_pipeline_prepare_shaders(void) {
     if (!ensure_init()) {
@@ -3928,14 +3965,14 @@ int vk_pipeline_prepare_shaders(void) {
     char dir[PLAT_PATH_MAX * 2];
     if (!cache_dir(dir, sizeof dir)) return 1;
     int cpus = (int)plat_cpu_usable();
-    const char *pe = cfg_get("TOTK_PREWARM_XLATE");   // no fixed default: half the CPUs, at most 16, when unset
+    const char *pe = cfg_get("REKARINA_PREWARM_XLATE");   // no fixed default: half the CPUs, at most 16, when unset
     int procs = pe && *pe ? atoi(pe) : cpus / 2 > 16 ? 16 : cpus / 2;
     int rc = gfx_shader_prepare_seed(dir, cpus, procs < 1 ? 1 : procs);
     if (!rc) lb_warm_prepared(dir);
     return rc;
 }
 
-// totk.exe --warm-shaders: every variant of shader-prepared.bin built into the driver's disk cache again from the shader
+// rekarina.exe --warm-shaders: every variant of shader-prepared.bin built into the driver's disk cache again from the shader
 // cache, without translating the seed. The AMD cache is keyed to the exe path (a relink keeps it: 29,587 variants in
 // 1.8 s) and holds a limited amount: preparing another build dir evicted this one's libraries, and a library a draw
 // needed then took 40-220 ms in play instead of 0.2 ms. Seconds when the libraries are still there.
@@ -3963,7 +4000,7 @@ int vk_pipeline_warm_shaders(void) {
 // again: 12,800 of the frame's 36,600 Vulkan calls, most of them with the value already there (2026-11-12). A state is
 // now set when its value differs or the command buffer began anew (vk_sync_cb_serial). Nothing else sets these states,
 // and every graphics pipeline bound into a replay command buffer has them dynamic, so a set value stays.
-// TOTK_DYN_SHADOW=0: every state at every change, as before.
+// REKARINA_DYN_SHADOW=0: every state at every change, as before.
 typedef struct {
     VkCommandBuffer cb;
     uint64_t serial;
@@ -3987,6 +4024,9 @@ enum { DY_CULL, DY_FF, DY_TOPO, DY_DT, DY_DW, DY_DOP, DY_ST, DY_SOPF, DY_SOPB, D
 // 1: the state is to be set (and is noted as v).
 #define DY_NEW(bit, field, v) (!(DS.have & (1u << (bit))) || DS.field != (v) ? (DS.have |= 1u << (bit), DS.field = (v), 1) : 0)
 
+// A pipeline with this state static was bound (vk_exec_draw.c mesh_emulate): the next draw sets every dynamic state.
+void vk_pipeline_dynamic_forget(void) { DS.have = 0; }
+
 void vk_pipeline_set_dynamic(VkCommandBuffer cb, const VkPipeState *s) {
     if (!ensure_init()) return;
     static int shadow = -1;
@@ -4006,20 +4046,20 @@ void vk_pipeline_set_dynamic(VkCommandBuffer cb, const VkPipeState *s) {
     if (DY_NEW(DY_TOPO, topo, topo)) vkCmdSetPrimitiveTopology(cb, topo);
     VkBool32 dt = d->dt, dw = d->dw;
     if (DY_NEW(DY_DT, dt, dt)) vkCmdSetDepthTestEnable(cb, dt);
-    {   // TOTK_DEPTH_EQ=le|ge|always (diagnostic): what an EQUAL depth test becomes. OoT shades its scene with EQUAL
+    {   // REKARINA_DEPTH_EQ=le|ge|always (diagnostic): what an EQUAL depth test becomes. OoT shades its scene with EQUAL
         // against its depth prepass; =always shows whether a pass's draws are there but fail the test.
         static int eq = -1;
         if (eq < 0) {
-            const char *e = cfg_get("TOTK_DEPTH_EQ");
+            const char *e = cfg_get("REKARINA_DEPTH_EQ");
             eq = !e ? 0 : !strcmp(e, "le") ? 1 : !strcmp(e, "ge") ? 2 : !strcmp(e, "always") ? 3 : 0;
         }
         VkCompareOp op = compare_op(d->df);
-        static int alt = -1;   // TOTK_DEPTH_EQ_ALT=1: the EQ replacement only on odd frames, for side-by-side shots
-        if (alt < 0) alt = getenv("TOTK_DEPTH_EQ_ALT") != NULL;
+        static int alt = -1;   // REKARINA_DEPTH_EQ_ALT=1: the EQ replacement only on odd frames, for side-by-side shots
+        if (alt < 0) alt = cfg_env("REKARINA_DEPTH_EQ_ALT") != NULL;
         int eq_now = eq && (!alt || (__atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED) & 1));
         if (op == VK_COMPARE_OP_EQUAL && eq_now) op = eq == 1 ? VK_COMPARE_OP_LESS_OR_EQUAL : eq == 2 ? VK_COMPARE_OP_GREATER_OR_EQUAL : VK_COMPARE_OP_ALWAYS;
         static int probe = -1;   // DEBUG-PROBE (vk_exec_xfer.c copy_t2t): EQUAL draws write their own depth, nearest first
-        if (probe < 0) probe = getenv("TOTK_DEPTH_PROBE") != NULL;
+        if (probe < 0) probe = cfg_env("REKARINA_DEPTH_PROBE") != NULL;
         if (probe && op == VK_COMPARE_OP_EQUAL) op = VK_COMPARE_OP_LESS, dw = VK_TRUE;
         if (DY_NEW(DY_DW, dw, dw)) vkCmdSetDepthWriteEnable(cb, dw);
         if (DY_NEW(DY_DOP, dop, op)) vkCmdSetDepthCompareOp(cb, op);

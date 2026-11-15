@@ -46,9 +46,10 @@ static const char *g_disable_note;
 struct Desc { char text[UI_DESC_BYTES]; char label[160]; char key[64]; };
 static Desc g_hover, g_focus, g_first, g_shown;
 
-// disabled: the note of a row opt_disable_next greyed out, else NULL.
+// disabled: the note of a row opt_disable_next greyed out, else NULL. note: the row's own note (a longer one is
+// left out of the row's strip, so the pane is where it is read), else NULL.
 static void desc_set(Desc &d, const char *desc, const char *key, const CfgMeta *m, const char *disabled,
-                     const char *label = "") {
+                     const char *label = "", const char *note = NULL) {
     snprintf(d.label, sizeof d.label, "%s", label);
     snprintf(d.key, sizeof d.key, "%s", key ? key : "");
     int n = snprintf(d.text, sizeof d.text, "%s", desc);
@@ -57,6 +58,8 @@ static void desc_set(Desc &d, const char *desc, const char *key, const CfgMeta *
         snprintf(d.text + n, sizeof d.text - n, "\n\n%s", disabled);
     else if (cfg_from_env(key))
         snprintf(d.text + n, sizeof d.text - n, "\n\n%s %s", menu_text(UI_MENU_SET_BY_ENV), key);
+    else if (note && *note)
+        snprintf(d.text + n, sizeof d.text - n, "\n\n%s", note);
     else if (m && !m->live)
         snprintf(d.text + n, sizeof d.text - n, "\n\n%s", menu_text(UI_MENU_AFTER_RESTART));
 }
@@ -183,18 +186,18 @@ static int row_text(const char *key, const char *label, const char *desc, const 
         }
         if (movable) {
             bool ctrl = ImGui::GetIO().KeyCtrl;
-            if (ImGui::IsKeyPressed(ImGuiKey_GamepadFaceUp, false) || (ctrl && ImGui::IsKeyPressed(ImGuiKey_UpArrow)))
+            if (ImGui::IsKeyPressed(MENU_PAD_X, false) || (ctrl && ImGui::IsKeyPressed(ImGuiKey_UpArrow)))
                 step = 3;
-            if (ImGui::IsKeyPressed(ImGuiKey_GamepadFaceLeft, false) || (ctrl && ImGui::IsKeyPressed(ImGuiKey_DownArrow)))
+            if (ImGui::IsKeyPressed(MENU_PAD_Y, false) || (ctrl && ImGui::IsKeyPressed(ImGuiKey_DownArrow)))
                 step = 4;
         }
     }
-    if (foc) desc_set(g_focus, desc, key, m, disabled, label);
-    if (hov) desc_set(g_hover, desc, key, m, disabled, label);
-    if (!g_first.text[0]) desc_set(g_first, desc, key, m, disabled, label);
-    // Back to the default: the left face button (the game's own "Default" button), Delete or Backspace on a setting's row
+    if (foc) desc_set(g_focus, desc, key, m, disabled, label, v.note);
+    if (hov) desc_set(g_hover, desc, key, m, disabled, label, v.note);
+    if (!g_first.text[0]) desc_set(g_first, desc, key, m, disabled, label, v.note);
+    // Back to the default: Y (the game's own "Default" button), Delete or Backspace on a setting's row
     if (foc && !off && !movable && m && v.setting &&
-        (ImGui::IsKeyPressed(ImGuiKey_GamepadFaceLeft, false) || ImGui::IsKeyPressed(ImGuiKey_Delete, false) ||
+        (ImGui::IsKeyPressed(MENU_PAD_Y, false) || ImGui::IsKeyPressed(ImGuiKey_Delete, false) ||
          ImGui::IsKeyPressed(ImGuiKey_Backspace, false))) {
         const char *k = key;
         cfg_reset(&k, 1);
@@ -301,14 +304,14 @@ int opt_text_row(const char *id, const char *label, const char *value, const cha
     return row_text(id, label, desc, v, movable);
 }
 
-// ---- writing a setting: at once in memory (live settings follow), to totk.ini a moment later (opt_save_tick)
+// ---- writing a setting: at once in memory (live settings follow), to rekarina.ini a moment later (opt_save_tick)
 static uint64_t g_save_at;   // plat_now_ns deadline of the pending write; 0 none
 static bool g_save_logged;
 
 static void apply(const char *key, const char *value) {
     if (*value) {
         cfg_set(key, value);
-    } else {   // the automatic choice: the key unset, its line removed from totk.ini
+    } else {   // the automatic choice: the key unset, its line removed from rekarina.ini
         const char *k = key;
         cfg_reset(&k, 1);
     }
@@ -444,7 +447,7 @@ bool opt_slider(const char *key, UiTextId label, float lo, float hi, UiTextId de
     char out[32];
     if (step >= 1) snprintf(out, sizeof out, "%d", (int)lround(n));
     else snprintf(out, sizeof out, "%g", round(n / step) * step);
-    // Landing on the fallback's value unsets the key (its line leaves totk.ini), so the row follows the fallback again.
+    // Landing on the fallback's value unsets the key (its line leaves rekarina.ini), so the row follows the fallback again.
     apply(key, fallback && fabs(n - cfg_double(fallback)) < step * 0.01 ? "" : out);
     return true;
 }
@@ -534,7 +537,7 @@ int opt_bind_row(const char *key, const char *label, UiTextId desc, const char *
         row_hov |= hov;
         if (clicked) result = c;
         if (foc && (ImGui::IsKeyPressed(ImGuiKey_Delete, false) || ImGui::IsKeyPressed(ImGuiKey_Backspace, false) ||
-                    ImGui::IsKeyPressed(ImGuiKey_GamepadFaceUp, false)))
+                    ImGui::IsKeyPressed(MENU_PAD_X, false)))
             result = 10 + c;
         dl->AddRectFilled(a, b, kInset);
         fit_text(dl, a.x + pad, b.x - pad, a.y, b.y - a.y, kCream, t, true);
@@ -542,7 +545,7 @@ int opt_bind_row(const char *key, const char *label, UiTextId desc, const char *
         ImGui::PopID();
     }
     char k[64];
-    snprintf(k, sizeof k, "TOTK_%s", key);
+    snprintf(k, sizeof k, "REKARINA_%s", key);
     if (row_foc) desc_set(g_focus, menu_text(desc), k, NULL, NULL);
     if (row_hov) desc_set(g_hover, menu_text(desc), k, NULL, NULL);
     if (!g_first.text[0]) desc_set(g_first, menu_text(desc), k, NULL, NULL);

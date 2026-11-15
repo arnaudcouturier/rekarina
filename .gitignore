@@ -7,14 +7,24 @@
 /.venv-py314/
 __pycache__/
 
-# Personal paths to game files and keys
+# Personal paths to game files and keys, and anything secret: private keys (the release signing key lives outside the
+# tree), environment files, the Cloudflare tool's local state
 /config.local.toml
+*.key
+*.pem
+*.p12
+*.pfx
+.env
+.env.*
+.wrangler/
+node_modules/
 
 # Game inputs and everything derived from them. Never commit these.
 # tools/check_content.py enforces the same rule in CI and the pre-commit hook.
 /game/
 /build/
 /generated/
+*.nup
 *.xci
 *.xcz
 *.nsp

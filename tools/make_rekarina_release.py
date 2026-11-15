@@ -24,6 +24,13 @@ folders below, nothing else.
     data/pgo-oot.profdata   the execution profile the exe is compiled with (build/pgo; counts per lifted function, no
                             game bytes), when there is one
 
+On Linux (--from the folder tools/make_release_linux.py makes, which has python/bin/python3) the folder is the same
+for that platform: python/ (python-build-standalone 3.14 with tkinter), llvm/ with llvm/sysroot (the Steam Runtime
+sniper SDK files the game compiles and links against), bin/ninja, bin/rekarina_xlate (the release's own Linux build of
+the translator) and bin/libSDL3.so.0, runtime/deps from that folder; the launcher is the AppImage entry, AppRun,
+which starts python3 -m installer.gui_oot, with rekarina.desktop and rekarina.png beside it. --appimage packs the
+folder (tools/make_release_linux.py write_appimage).
+
 Nothing of the game is in it: tools/check_content.py runs over the folder at the end, as for the TotK
 release. Nothing of NVIDIA's or AMD's either: the DLSS, Streamline and FidelityFX libraries are downloaded by the
 setup's components step from their vendors (installer/components.py), and a copy that got into a source folder is
@@ -59,6 +66,82 @@ SKIP_SUFFIXES = {'.pyc', '.orig', '.rej', '.tmp', '.obj', '.o'}
 # NVIDIA's and AMD's libraries: theirs to distribute, not ours (installer/components.py downloads them at install)
 VENDOR_DLLS = ('nvngx_*.dll', 'sl.*.dll', 'NvLowLatencyVk.dll', 'amd_fidelityfx*.dll')
 ROOT_FILES = ('Rekarina-Launcher.exe', 'LICENSE', 'THIRD_PARTY_NOTICES.md', 'VERSION')
+LINUX_ROOT_FILES = ('AppRun', 'rekarina.desktop', 'rekarina.png', '.DirIcon', 'LICENSE', 'THIRD_PARTY_NOTICES.md', 'VERSION')
+APPRUN = '''#!/bin/sh
+# The AppImage entry: Rekarina's launcher window, run by the bundled Python from the read-only mount.
+HERE="$(dirname "$(readlink -f "$0")")"
+export PYTHONDONTWRITEBYTECODE=1
+export TCL_LIBRARY="$HERE/python/lib/tcl9.0"
+export TK_LIBRARY="$HERE/python/lib/tk9.0"
+exec "$HERE/python/bin/python3" -m installer.gui_oot "$@"
+'''
+DESKTOP = '''[Desktop Entry]
+Type=Application
+Name=Rekarina
+Comment=Builds the game for this PC from your own game files and starts it
+Exec=AppRun
+Icon=rekarina
+Categories=Game;
+Terminal=false
+'''
+
+
+def linux_release(base, out, appimage=None):
+    """The Linux folder (see the module text), from the folder tools/make_release_linux.py made. 0 when complete."""
+    need = [base / 'python' / 'bin' / 'python3', base / 'llvm' / 'bin' / 'clang', base / 'llvm' / 'sysroot',
+            base / 'bin' / 'ninja', base / 'bin' / 'totk_xlate', base / 'bin' / 'libSDL3.so.0', base / 'runtime' / 'deps' / 'include',
+            ROOT / 'runtime' / 'rekarina.png']
+    missing = [str(x) for x in need if not x.exists()]
+    if missing:
+        sys.exit('make_rekarina_release: missing: ' + ', '.join(missing))
+    if out.exists():
+        if not (out / 'VERSION').is_file() or not (out / 'installer' / 'gui_oot.py').is_file():
+            sys.exit(f'make_rekarina_release: {out} exists and is not a Rekarina setup folder: not replaced')
+        for x in out.iterdir():
+            if x.name in ROOT_FOLDERS:
+                shutil.rmtree(x)
+    out.mkdir(parents=True, exist_ok=True)
+    counts = {'python': copy_tree(base / 'python', out / 'python', whole=True),
+              'llvm': copy_tree(base / 'llvm', out / 'llvm', whole=True)}
+    (out / 'bin').mkdir(exist_ok=True)
+    for src, dst in (('ninja', 'ninja'), ('totk_xlate', 'rekarina_xlate'), ('totk_xlate.id', 'rekarina_xlate.id'),
+                     ('libSDL3.so.0', 'libSDL3.so.0')):
+        if (base / 'bin' / src).is_file():
+            shutil.copy2(base / 'bin' / src, out / 'bin' / dst)
+    counts['runtime'] = copy_tree(ROOT / 'runtime', out / 'runtime')
+    counts['deps'] = copy_tree(base / 'runtime' / 'deps', out / 'runtime' / 'deps', whole=True)
+    counts['recomp'] = copy_tree(ROOT / 'recomp', out / 'recomp')
+    counts['tools'] = copy_tree(ROOT / 'tools', out / 'tools', skip=('xlate',))
+    counts['installer'] = copy_tree(ROOT / 'installer', out / 'installer')
+    if (base / 'licenses').is_dir():
+        counts['licenses'] = copy_tree(base / 'licenses', out / 'licenses')
+    for name in ('THIRD_PARTY_NOTICES.md', 'LICENSE', 'VERSION'):
+        if (ROOT / name).is_file():
+            shutil.copy2(ROOT / name, out / name)
+    pgo = ROOT / 'build' / 'pgo' / 'pgo-oot.profdata'
+    if pgo.is_file():
+        (out / 'data').mkdir(exist_ok=True)
+        shutil.copy2(pgo, out / 'data' / pgo.name)
+    (out / 'AppRun').write_text(APPRUN, encoding='utf-8')
+    (out / 'AppRun').chmod(0o755)
+    (out / 'rekarina.desktop').write_text(DESKTOP, encoding='utf-8')
+    shutil.copy2(ROOT / 'runtime' / 'rekarina.png', out / 'rekarina.png')
+    if not (out / '.DirIcon').exists():
+        (out / '.DirIcon').symlink_to('rekarina.png')
+    stray = sorted(x.name for x in out.iterdir() if x.name not in LINUX_ROOT_FILES + ROOT_FOLDERS and not players(x.name))
+    bad = []
+    for f in sorted(out.rglob('*')):
+        if f.is_file() and not f.is_symlink() and not players(f.relative_to(out).parts[0]):
+            bad += [f'{f.relative_to(out)}: {problem}' for problem in check_content.problems_for(f, allow_large=True)]
+    size = sum(f.stat().st_size for f in out.rglob('*') if f.is_file() and not f.is_symlink())
+    print(f'make_rekarina_release: {out}: {size / 2**20:.0f} MiB; files: ' + ', '.join(f'{k} {v}' for k, v in counts.items()))
+    print('make_rekarina_release: content check: ' + ('no hit' if not bad else f'{len(bad)} hits: ' + '; '.join(bad[:20])))
+    if stray:
+        print('make_rekarina_release: not part of a release, in its root: ' + ', '.join(stray))
+    if appimage and not bad:
+        import make_release_linux
+        make_release_linux.write_appimage(out, appimage)
+    return 1 if bad or stray else 0
 ROOT_FOLDERS = ('python', 'llvm', 'bin', 'runtime', 'recomp', 'tools', 'installer', 'data', 'licenses')
 # what a player's use adds to the folder: never packed, never counted as a stray
 PLAYER = ('temp', 'update-staging')
@@ -170,6 +253,7 @@ def main():
                     help='an unpacked TotK-Setup release: its python/, llvm/ and bin/ninja.exe are taken')
     ap.add_argument('--out', type=Path, required=True, help='the folder to make (replaced when it holds a VERSION of ours)')
     ap.add_argument('--zip', type=Path, help='also write the folder as this zip')
+    ap.add_argument('--appimage', type=Path, help='Linux: also pack the folder as this AppImage')
     ap.add_argument('--dist', type=Path, help='also write Rekarina-Setup-<version>-windows.zip and SHA256SUMS into this '
                                               'folder: the assets of a GitHub release')
     ap.add_argument('--single', type=Path, help='also write the folder as one program, e.g. Rekarina.exe: at its first '
@@ -183,6 +267,8 @@ def main():
                                               'signs SHA256SUMS')
     a = ap.parse_args()
     base, out = a.base.resolve(), a.out.resolve()
+    if (base / 'python' / 'bin' / 'python3').is_file():   # the Linux toolchain folder
+        return linux_release(base, out, a.appimage.resolve() if a.appimage else None)
     if a.only_single:
         if not a.single or not (out / 'Rekarina-Launcher.exe').is_file():
             sys.exit('--only-single needs --single and a finished --out folder')

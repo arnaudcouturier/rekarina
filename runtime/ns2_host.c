@@ -117,13 +117,13 @@ static void nmouse_types(Cpu *c) {   // void GetNmouseTypeSet(BitFlagSet<32, Nmo
 // draws its frame at 4/(4 + tier) of the window texture (1, 4/5, 2/3; its 3D scene at 3/4 of that) and leaves
 // the rest to the system. Tier 0 (default) draws at the window's full size. With tier 1 or 2 the present takes the
 // top-left part the game drew and enlarges it to the window as the compositor would (nvn_api_obj.c), with the
-// upscaler (TOTK_UPSCALER): 64 % or 44 % of the pixels to shade. On the forest porch (RTX 5070) the GPU time drops
-// only from 19.9 to 18.4 and 17.9 ms: the frame is not bound by its pixels. TOTK_GRAPHICS_SCALE=0|1|2
+// upscaler (REKARINA_UPSCALER): 64 % or 44 % of the pixels to shade. On the forest porch (RTX 5070) the GPU time drops
+// only from 19.9 to 18.4 and 17.9 ms: the frame is not bound by its pixels. REKARINA_GRAPHICS_SCALE=0|1|2
 // (OOT_GRAPHICS_SCALE, the old name, still read).
 int host_graphics_tier(void) {
     static int t = -1;
     if (t < 0) {
-        const char *e = cfg_get("TOTK_GRAPHICS_SCALE");
+        const char *e = cfg_get("REKARINA_GRAPHICS_SCALE");
         if (!e || !*e) e = getenv("OOT_GRAPHICS_SCALE");
         t = e && *e >= '0' && *e <= '2' ? *e - '0' : 0;
         if (t) rt_log("oe: graphics scale tier %d: the game draws %s of the window, the present enlarges it", t, t == 1 ? "4/5" : "2/3");
