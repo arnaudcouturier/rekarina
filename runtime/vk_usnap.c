@@ -43,13 +43,16 @@ typedef struct Arena {
 } Arena;
 
 typedef struct { uint64_t lo, hi; } Rng;
-typedef struct { uint64_t lo, hi, off; int dropped; } Reg;
+// dropped: bit 0 a GPU write in the replay's order made the copy stale; bit 1 an inline uniform update did
+// (vk_usnap_drop_update), at update serial useq: a chunk of a stretch handed out before that update still reads the copy
+typedef struct { uint64_t lo, hi, off; int dropped; uint32_t useq; } Reg;
 typedef struct { uint64_t lo, hi, fence; } Wrote;
 
 static struct {
     int mode;                   // rt_knob: 0 off, 1 on, 2 ab
     int on;                     // this submission has a snapshot
     uint64_t fence, gen;
+    uint32_t useq;              // inline uniform updates that dropped regions (vk_usnap_drop_update)
     Arena *arena;
     Arena *retired;             // earlier snapshots of this submission (vk_usnap_resnap): the draws recorded before read them
     Rng *col;                   // collected ranges
@@ -234,7 +237,7 @@ static void collect(const op_hdr *h, int depth) {
                             continue;
                         ok |= 1 << (k + 1);
                     }
-                    if (U.ncol == U.ccol) U.col = grow(U.col, &U.ccol, sizeof *U.col);
+                    if (U.ncol == U.ccol) U.col = grow(U.col, &U.ccol, sizeof *U.col), rt_heap_note("usnap col", U.col, U.ccol * sizeof *U.col);
                     U.col[U.ncol++] = (Rng){at & ~(uint64_t)(ALIGN - 1), at + n};
                 }
                 if (step && !known) nc[ci].addr = b->addr, nc[ci].size = n, nc[ci].gen = gen, nc[ci].ok = ok;
@@ -384,7 +387,7 @@ static void take(uint64_t t0) {
             }
             if (gw_mode == 1) continue;
         }
-        if (U.nreg == U.creg) U.reg = grow(U.reg, &U.creg, sizeof *U.reg);
+        if (U.nreg == U.creg) U.reg = grow(U.reg, &U.creg, sizeof *U.reg), rt_heap_note("usnap reg", U.reg, U.creg * sizeof *U.reg);
         U.reg[U.nreg++] = (Reg){lo, hi, total, 0};
         total += (hi - lo + ALIGN - 1) & ~(uint64_t)(ALIGN - 1);
     }
@@ -440,20 +443,36 @@ void *vk_usnap_hold(void) {
     return h;
 }
 
-static void held_exchange(UsnapHeld *h) {
+// The exchange is made under vk_par_lock: vk_exec.c held_resume does not wait for the chunks of a draw stretch, and a
+// chunk drops regions of U under that lock (vk_usnap_drop, for a binding its draw writes). Without it a drop could pair
+// one snapshot's region array with the other's count and the enter's U_other, and write past the end of the held copy
+// (malloc'd to its exact count in vk_usnap_hold): a broken heap.
+extern PlatMutex vk_par_lock;   // vk_exec.c
+static int held_lock(void) {   // REKARINA_USNAP_HELD_LOCK=0: no lock and an immediate free, as before (a test switch)
+    static int on = -1;
+    if (on < 0) on = rt_knob("USNAP_HELD_LOCK", "1") != 0;
+    return on;
+}
+static void held_exchange(UsnapHeld *h, UsnapHeld *other) {
+    int lk = held_lock();
+    if (lk) plat_mutex_lock(&vk_par_lock);
     Arena *a = U.arena; Reg *r = U.reg; int n = U.nreg, c = U.creg, on = U.on;
     U.arena = h->arena, U.reg = h->reg, U.nreg = h->nreg, U.creg = h->creg, U.on = h->on;
     h->arena = a, h->reg = r, h->nreg = n, h->creg = c, h->on = on;
     U.gen++;
+    U_other = other;
+    if (lk) plat_mutex_unlock(&vk_par_lock);
 }
-void vk_usnap_held_enter(void *held) { held_exchange(held); U_other = held; }   // now U is the held one's, held the running one's
-void vk_usnap_held_leave(void *held) { U_other = NULL; held_exchange(held); }
+void vk_usnap_held_enter(void *held) { held_exchange(held, held); }   // now U is the held one's, held the running one's
+void vk_usnap_held_leave(void *held) { held_exchange(held, NULL); }
 
 void vk_usnap_held_done(void *held, uint64_t fence) {
     UsnapHeld *h = held;
     if (h->arena) vk_completion_add(fence, arena_done, h->arena);
-    free(h->reg);
-    free(h);
+    // the chunks of the rest's last stretch may still read these regions through their view (vk_usnap_par_view): freed
+    // once the GPU is past the submission being recorded, after every chunk of it
+    if (held_lock()) vk_defer_free(h->reg), vk_defer_free(h);
+    else free(h->reg), free(h);
 }
 
 void vk_usnap_end(uint64_t fence) {
@@ -484,6 +503,13 @@ void vk_usnap_par_view(void) {
     PV.arena = U.arena, PV.reg = U.reg, PV.nreg = U.nreg, PV.on = U.on, PV.gen++;
 }
 
+// The update serial a chunk's lookups count drops up to (vk_usnap_view_limit): set from its stretch's handout, so the
+// inline uniform updates the replay thread records meanwhile (it no longer waits for the chunks at one) do not take
+// the copy from draws that come before them.
+static _Thread_local uint32_t view_useq = UINT32_MAX;
+uint32_t vk_usnap_update_serial(void) { return U.useq; }
+void vk_usnap_view_limit(uint32_t useq) { view_useq = useq; }
+
 static int find_view(uint64_t addr, uint64_t n, uint64_t align, VkDescriptorBufferInfo *out) {
     if (!PV.on || !n) return 0;
     static _Thread_local struct { uint64_t addr, gen; int i; } vc[256];
@@ -501,7 +527,8 @@ static int find_view(uint64_t addr, uint64_t n, uint64_t align, VkDescriptorBuff
     }
     if (i >= PV.nreg) return 0;
     const Reg *r = &PV.reg[i];
-    if (r->dropped || addr < r->lo || addr + n > r->hi) return 0;
+    int dropped = __atomic_load_n(&r->dropped, __ATOMIC_ACQUIRE);
+    if ((dropped & 1) || ((dropped & 2) && r->useq <= view_useq) || addr < r->lo || addr + n > r->hi) return 0;
     uint64_t off = r->off + (addr - r->lo);
     if (off % align) return 0;
     *out = (VkDescriptorBufferInfo){PV.arena->buf, off, n};
@@ -532,15 +559,42 @@ int vk_usnap_find(uint64_t addr, uint64_t n, uint64_t align, VkDescriptorBufferI
 void vk_usnap_drop(uint64_t addr, uint64_t n) {
     vk_usnap_gpuw(addr, n);   // DEBUG-USNAP-GPUW
     if (!U.mode || !n) return;
-    if (U.nwr == U.cwr) U.wr = grow(U.wr, &U.cwr, sizeof *U.wr);
+    if (U.nwr == U.cwr) U.wr = grow(U.wr, &U.cwr, sizeof *U.wr), rt_heap_note("usnap wr", U.wr, U.cwr * sizeof *U.wr);
     U.wr[U.nwr++] = (Wrote){addr, addr + n, U.fence};
     if (U_other && U_other->on)   // a held rest writes: the running submission's copies of the range go too
         for (int i = 0; i < U_other->nreg; i++)
-            if (U_other->reg[i].lo < addr + n && addr < U_other->reg[i].hi && !U_other->reg[i].dropped)
-                U_other->reg[i].dropped = 1, U.drops++, U.gen++;
+            if (U_other->reg[i].lo < addr + n && addr < U_other->reg[i].hi && !(U_other->reg[i].dropped & 1))
+                __atomic_store_n(&U_other->reg[i].dropped, U_other->reg[i].dropped | 1, __ATOMIC_RELEASE), U.drops++, U.gen++;
     if (!U.on) return;
     for (int i = first_above(addr); i < U.nreg && U.reg[i].lo < addr + n; i++)
-        if (!U.reg[i].dropped) U.reg[i].dropped = 1, U.drops++, U.gen++;
+        if (!(U.reg[i].dropped & 1)) __atomic_store_n(&U.reg[i].dropped, U.reg[i].dropped | 1, __ATOMIC_RELEASE), U.drops++, U.gen++;
+}
+
+// An inline uniform update (vk_exec_draw.c op_update_ub) as vk_usnap_drop, except that the running submission's
+// regions are marked with the update's serial: chunks of stretches handed out before it keep reading the copy, as the
+// draws before the update do in the replay's order. A held rest's regions go as by a GPU write.
+void vk_usnap_drop_update(uint64_t addr, uint64_t n) {
+    if (!U.mode || !n || !U.on) {
+        vk_usnap_drop(addr, n);
+        return;
+    }
+    if (U_other && U_other->on) {
+        int on = U.on;
+        U.on = 0;   // the held rest's regions and the write record, through the plain path
+        vk_usnap_drop(addr, n);
+        U.on = on;
+    } else {
+        vk_usnap_gpuw(addr, n);
+        if (U.nwr == U.cwr) U.wr = grow(U.wr, &U.cwr, sizeof *U.wr), rt_heap_note("usnap wr", U.wr, U.cwr * sizeof *U.wr);
+        U.wr[U.nwr++] = (Wrote){addr, addr + n, U.fence};
+    }
+    uint32_t s = ++U.useq;
+    for (int i = first_above(addr); i < U.nreg && U.reg[i].lo < addr + n; i++)
+        if (!U.reg[i].dropped) {
+            U.reg[i].useq = s;
+            __atomic_store_n(&U.reg[i].dropped, 2, __ATOMIC_RELEASE);
+            U.drops++, U.gen++;
+        }
 }
 
 uint64_t vk_usnap_gen(void) { return U.gen; }

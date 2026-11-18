@@ -41,10 +41,12 @@ DLLS = ('SDL3.dll', 'libopus-0.dll', 'libiconv-2.dll', 'nvngx_dlss.dll', 'amd_fi
         'amd_fidelityfx_loader_vk.dll', 'amd_fidelityfx_upscaler_vk.dll', 'amd_fidelityfx_framegeneration_vk.dll',
         'sl.interposer.dll', 'sl.common.dll', 'sl.dlss_g.dll', 'sl.reflex.dll', 'sl.pcl.dll', 'nvngx_dlssg.dll', 'NvLowLatencyVk.dll')
 SEED_KEYS = ROOT / 'tools' / 'data' / 'pipeline-keys-oot.bin.gz'   # tools/make_seed_keys.py writes it
+SEED_MESH_KEYS = ROOT / 'tools' / 'data' / 'pipeline-keys-mesh-oot.bin.gz'   # and the mesh pipelines' (vk_pipeline.c mk_open)
+SEED_COMPUTE = ROOT / 'tools' / 'data' / 'compute-used-oot.bin.gz'   # and the compute shaders dispatched (vk_pipeline.c cu_load)
 RENAMED = {'totk_dlssg.dll': 'rekarina_dlssg.dll'}   # build name -> the name in the package
 OLD_NAMES = ('totk_xlate.exe', 'totk_xlate.id', 'totk_dlssg.dll')
-STATE = ('pipeline-cache.bin', 'pipeline-keys.bin', 'shader-answers.bin', 'shader-programs.bin', 'shader-prepared.bin',
-         'shader-prepare-skip.txt')   # the last: variants the driver does not finish building (runtime/vk_pipeline.c)
+STATE = ('pipeline-cache.bin', 'pipeline-keys.bin', 'pipeline-keys-mesh.bin', 'shader-answers.bin', 'shader-programs.bin',
+         'shader-prepared.bin', 'shader-prepare-skip.txt')   # the last: variants the driver does not finish building (runtime/vk_pipeline.c)
 # Every overlay folder tools/make_oot_prompts.py writes, and the files beside them that runtime/romfs.c reads: the sets'
 # cmap tables for changing prompts in the running game (prompts-live.bin), the settings menu's previews
 # (prompt-previews.bin) and the keyboard set's bound keys (prompts-keys.bin). Until 2026-11-15 the keyboard set's
@@ -102,8 +104,10 @@ romfs = {nup.as_posix()}
 fullscreen = 1
 
 [frame rate]
-# 30, 40, 45, 60, 90, 120, 144, any whole rate from 30 to 240, or display.
-fps_limit = display
+# 30, 40, 45, 60, 90, 120, 144, any whole rate from 30 to 240, or display. Unset (the line commented): display, the
+# monitor's rate, or a handheld's own limit (the Steam Deck's profile: 40, Windows handhelds: 60), which a line here
+# would override.
+# fps_limit = display
 # Real-time frame step: game speed follows the clock down to 30 fps (steps of at most 1/30 s, as the console's own
 # 30 fps mode); below 30 fps the game slows down.
 realtime = 1
@@ -176,6 +180,10 @@ def main():
     # The game builds them at its start, so a first run does not build each at its first draw.
     if SEED_KEYS.is_file():
         (out / 'pipeline-keys-seed.bin').write_bytes(gzip.decompress(SEED_KEYS.read_bytes()))
+    if SEED_MESH_KEYS.is_file():
+        (out / 'pipeline-keys-mesh-seed.bin').write_bytes(gzip.decompress(SEED_MESH_KEYS.read_bytes()))
+    if SEED_COMPUTE.is_file():
+        (out / 'compute-used-seed.bin').write_bytes(gzip.decompress(SEED_COMPUTE.read_bytes()))
     n = 0
     for d in FOLDERS:
         n += copy_tree(build / d, out / d)

@@ -13,6 +13,7 @@
 #include <string.h>
 
 #include "cfg.h"
+#include "frame_start.h"
 #include "ftrace.h"   // DEBUG-SVCTRACE
 #include "host.h"
 #include "kernel.h"
@@ -95,6 +96,11 @@ struct RtThread {
     uint64_t lw_ns, lw_n, lw_max, lg_ns, lg_n, lg_max, sl_n, sl_req, sl_act;   // those latencies; SleepThread asked/took
     uint64_t sp_n, sp_ho, sp_site;   // spin wait passes and core handoffs, the last loop head (the thread writes them)
     int bs_score, bs_skip;     // REKARINA_BLOCK_SPIN_US (holding G): recent spins that ended in time minus those that did not
+    uint64_t wt_ns, wt_end;    // kern_wait_meas: time in kernel waits and sleeps so far, and when the last one ended
+                               // (core taken back); the thread itself writes them (frame_start.c)
+    uint64_t wt_gpu, wt_gpu_end;   // kern_wait_meas, the main thread: of those, the waits the presenting thread ended
+                                   // (with REKARINA_FRAME_START_HOSTWAKE=1 also a host thread's), and when the last one ended
+    uint32_t waker_tid;        // the host thread id of the thread whose signal ended the last wait (0: a host thread)
     RtThread *target;          // as a core waiter: the owner core_kick asked to give its core up for it (holding G)
     // REKARINA_ASYNC_PREEMPT (holding G)
     PlatIntr *hthr;            // the host thread, for plat_intr_stop / resume; open while it may own a core
@@ -108,9 +114,11 @@ struct RtThread {
     uint64_t dg_host_end;      // as an owner: the return from the host call or SVC it was in at the request
     uint64_t dg_pc, dg_lr;     // as an owner: guest pc and lr at the checkpoint that gave the core up
     int dg_host_kick;          // as an owner: in a host call or SVC at the request
-    uint32_t dg_svc;           // the thread's latest SVC (REKARINA_CORE_DIAG: what an owner in a host call is in)
-    struct DgRel { uint64_t kick, host_end, pc, lr; int host, pre, prio; uint32_t h; } dg_rel;   // as a waiter: the
-                                                                                                 // owner that released
+    uint64_t dg_hpc;           // as an owner: its pc at the request when in a host call (the host function's address)
+    uint32_t dg_svc;           // the thread's latest SVC, not necessarily the call it is in now (a host call sets none)
+    struct DgRel { uint64_t kick, host_end, pc, lr, hpc; int host, pre, prio; uint32_t h; } dg_rel;   // as a waiter:
+                                                                                                      // the owner that
+                                                                                                      // released
 };
 
 static PlatMutex G = PLAT_MUTEX_INIT;
@@ -135,8 +143,56 @@ static RtThread *g_all, *g_wait, *g_main;
 static uint64_t g_next_id = 0x51, g_wseq, g_created;
 static uint64_t g_main_stack;
 
+// Wakes after the lock (REKARINA_KWAKE, on unless 0). A thread that wakes another under G used to signal the other's
+// condition variable while still holding G: the woken thread then ran at once into G and slept again until the waker
+// left the kernel, so every hand-off of the game's frame (~500 wakes a frame at the Market's square) paid a second
+// sleep and wake and the lock was held through a host signal. Now a wake made under G is noted on the waking host
+// thread and signalled right after it releases G (unlock), or just before it sleeps on a condition variable itself
+// with G (kwait: that sleep releases G without unlock, and a wake held over it could be lost). Safe because every waiter
+// re-checks its own flag under G before it sleeps (block_inner, core_take, thread_main). A thread object is never freed
+// while kwake is on (thr_free), so a signal sent after the lock never meets freed memory: thread objects are a few
+// hundred bytes and the game makes few threads.
+static int g_kwake = -1;
+static _Thread_local RtThread *kw_pend[32];
+static _Thread_local int kw_n;
+
+static int kwake_on(void) {
+    if (__builtin_expect(g_kwake < 0, 0)) {
+        const char *e = cfg_get("REKARINA_KWAKE");
+        g_kwake = !(e && *e == '0');
+        if (!g_kwake) rt_log("kernel: wakes are signalled under the kernel lock (REKARINA_KWAKE=0)");
+    }
+    return g_kwake;
+}
+
+// Holding G: wake t's sleep on its condition variable, now or after the lock.
+static void kw_signal(RtThread *t) {
+    if (kwake_on() && kw_n < (int)(sizeof kw_pend / sizeof kw_pend[0])) {
+        for (int i = 0; i < kw_n; i++)
+            if (kw_pend[i] == t) return;
+        kw_pend[kw_n++] = t;
+        return;
+    }
+    plat_cond_signal(&t->cv);
+}
+
+static void kw_flush(void) {
+    int n = kw_n;
+    kw_n = 0;
+    for (int i = 0; i < n; i++) plat_cond_signal(&kw_pend[i]->cv);
+}
+
 static void lock(void) { plat_mutex_lock(&G); }
-static void unlock(void) { plat_mutex_unlock(&G); }
+static void unlock(void) {
+    plat_mutex_unlock(&G);
+    if (kw_n) kw_flush();
+}
+// Holding G: sleep on t's condition variable (ms 0: until signalled), after signalling the wakes this thread owes.
+static void kwait(RtThread *t, uint32_t ms) {
+    if (kw_n) kw_flush();
+    if (ms) plat_cond_wait_ms(&t->cv, &G, ms);
+    else plat_cond_wait(&t->cv, &G);
+}
 
 uint64_t kern_now_ns(void) { return plat_now_ns(); }
 
@@ -227,10 +283,35 @@ static RtThread *cur(uint32_t svc) {
 }
 
 // ---- wait primitives (holding G)
+// Threads on the wait list waiting for a guest mutex (W_LOCK). eff_prio, which every prio_of runs while asynchronous
+// preemption is on (core_grant and core_kick call it per waiting thread), walks the whole wait list for them; with none
+// waiting, which is the usual case, it is the thread's own priority at once.
+static int g_nlockw;
+
+// Address waits per address bucket (REKARINA_KSIG_FAST, on unless 0): a WaitForAddress counts itself in its bucket
+// BEFORE it reads the word and until it no longer waits; a SignalToAddress that finds the bucket empty skips the kernel
+// lock: no thread waits on that address, and one that starts to wait now reads the word after this signal's change, as
+// if the signal had come first (the order Horizon allows). A signal that changes the word does so first and looks at
+// the bucket after, and takes the locked path to wake should a waiter have counted itself meanwhile. ~420 signals a
+// frame went through the lock, most with nobody waiting.
+#define AW_BUCKETS 256
+static int g_aw[AW_BUCKETS];
+static int g_ksig = -1;
+static uint64_t g_ksig_fast, g_ksig_slow;
+static int *aw_bucket(uint64_t addr) { return &g_aw[(addr >> 2) * 0x9E3779B97F4A7C15ull >> 56]; }
+static int ksig_on(void) {
+    if (__builtin_expect(g_ksig < 0, 0)) {
+        const char *e = cfg_get("REKARINA_KSIG_FAST");
+        g_ksig = !(e && *e == '0');
+    }
+    return g_ksig;
+}
+
 static void wait_unlink(RtThread *t) {
     for (RtThread **p = &g_wait; *p; p = &(*p)->next)
         if (*p == t) {
             *p = t->next;
+            g_nlockw -= t->wkind == W_LOCK;
             break;
         }
     t->next = NULL;
@@ -253,10 +334,11 @@ static void wake(RtThread *t, uint32_t res) {
     t->woke = 1;
     t->wres = res;
     t->waker = tcur ? tcur->handle : 0;
+    t->waker_tid = tcur ? tcur->tid : 0;
     if (rt_trace & RT_TRACE_SCHED) t->wake_at = kern_now_ns();
     if (g_crit_on) crit_add(CRIT_WAKE, t->handle, t->waker, 0, 0, t->wake_at);
     if (__builtin_expect(ftrace_on, 0)) FT(FT_NOTE, 64, t->tid, tcur ? 1 : 0);   // DEBUG-SVCTRACE: this thread wakes host thread b
-    plat_cond_signal(&t->cv);
+    kw_signal(t);
 }
 
 static void wake_sync_waiters(void) {
@@ -339,6 +421,7 @@ static uint32_t block_inner(RtThread *t, int kind, int64_t ns) {
     t->wseq = ++g_wseq;
     t->next = g_wait;
     g_wait = t;
+    g_nlockw += kind == W_LOCK;
     if (ns == 0) {
         wait_unlink(t);
         t->wkind = W_NONE;
@@ -351,7 +434,7 @@ static uint32_t block_inner(RtThread *t, int kind, int64_t ns) {
     if (spin && !t->woke && bspin_try(t)) bspin(t, &t->woke, 0, forever || (uint64_t)ns > spin ? spin : (uint64_t)ns);
     while (!t->woke) {
         if (forever) {
-            plat_cond_wait(&t->cv, &G);
+            kwait(t, 0);
             continue;
         }
         now = kern_now_ns();
@@ -361,7 +444,7 @@ static uint32_t block_inner(RtThread *t, int kind, int64_t ns) {
             return R_TIMEOUT;
         }
         uint64_t ms = (deadline - now + 999999) / 1000000;
-        plat_cond_wait_ms(&t->cv, &G, ms > 0xFFFFFFF0u ? 0xFFFFFFF0u : (uint32_t)ms);
+        kwait(t, ms > 0xFFFFFFF0u ? 0xFFFFFFF0u : ms ? (uint32_t)ms : 1);
     }
     if (t->wake_at) {
         uint64_t d = kern_now_ns() - t->wake_at;
@@ -401,6 +484,7 @@ static int cores_enabled(void) {
                    RT_INI_FILE " to play");
         diag_init();
         ap_init();
+        kern_wait_off_core();   // its start line
     }
     return g_cores_on;
 }
@@ -482,6 +566,7 @@ static void ap_init(void) {
 // owner is read from the mutex word, so it follows hand-offs). Holding G.
 static int eff_prio(const RtThread *o) {
     int p = o->prio;
+    if (!g_nlockw) return p;
     for (const RtThread *w = g_wait; w; w = w->next)
         if (w->wkind == W_LOCK && w->prio < p && w->waddr &&
             (__atomic_load_n((const uint32_t *)(uintptr_t)w->waddr, __ATOMIC_RELAXED) & ~WAITERS_BIT) == o->handle)
@@ -745,13 +830,49 @@ static int ap_try(RtThread *w) {
     return r;
 }
 
+// ---- host waits off the virtual core (REKARINA_WAIT_OFF_CORE, on unless 0)
+// Horizon runs another thread on a core whose thread blocks, so a host call that waits for another host thread holds
+// no virtual core meanwhile (NVN_BLOCKING and the other kern_core_away callers). Some calls wait only now and then and
+// kept their core: the front end's texture registration and release take the back end's texture lock, which the
+// texture pool's update holds for its time budget during a submission's replay (vk_texpool.c update: 4 ms, 50 ms with
+// a large backlog), and the synchronous release waits for the present thread too. In live play (2026-11-17,
+// REKARINA_CORE_DIAG) a priority-55 thread that registers textures held its core through that wait in 316 of the 385
+// long core waits, while the game's job workers pinned to that core (priority 44) waited 2 to 50 ms for it, in most of
+// the frames of 25 ms or more; the game's other texture registrars did the same. The "last svc 0x34" of those samples
+// was the thread's previous SVC: SVC waits give the core up (block, SleepThread).
+// kern_lock_off_core: try the lock, poll it for OFF_CORE_SPIN_NS (most holds end within microseconds, and a core handed
+// over costs two passes through G and a host wake), then give the core up, wait until the lock is free, take a core
+// back holding no host lock and try again. A thread never waits for a core while holding the lock: the replay, which
+// needs it, would wait for a low-priority thread's turn on a core, and a core owner that blocks on it with its core
+// would never let that turn come. After OFF_CORE_TRIES rounds the caller takes the lock as before (core kept). Callers
+// hold no other host lock (a thread that waits for a core holding one could stop its holders' owners the same way).
+// REKARINA_WAIT_OFF_CORE=0: the old behaviour, the core kept through every such wait.
+#define OFF_CORE_SPIN_NS 20000ull
+#define OFF_CORE_TRIES 4
+static int g_woc = -1;
+static uint64_t g_woc_n, g_woc_ns, g_woc_spin, g_woc_fall;   // waits off the core, their time; ended in the spin; fell back
+
+int kern_wait_off_core(void) {
+    if (__builtin_expect(g_woc < 0, 0)) {
+        const char *e = cfg_get("REKARINA_WAIT_OFF_CORE");
+        int on = !(e && !strcmp(e, "0"));
+        if (__atomic_exchange_n(&g_woc, on, __ATOMIC_RELAXED) < 0)
+            rt_log("kernel: a host call that finds the texture lock or the present thread busy waits without its virtual "
+                   "core: %s (REKARINA_WAIT_OFF_CORE=0 keeps the core)", on ? "on" : "off");
+    }
+    return g_woc;
+}
+
 // ---- REKARINA_CORE_DIAG=1: why ready threads wait for a virtual core, and for how long
 // Each core wait is split into classes: the owner asked to give the core up ran game code (DG_GAME, the part an
 // asynchronous preemption would remove), was in a host call or SVC that kept the core (DG_HOST), every owner the waiter
 // may displace was of better or equal priority (DG_EQ: Horizon waits too), or the worse owners were claimed by better
 // waiters (DG_NOCORE). Per 60 presents: time per frame and a wait-length histogram per class, the owners that cost
 // most; a line per present over 25 ms; a line per wait with over 2 ms of DG_GAME (where the owner reached its
-// checkpoint), and one host RIP sample of the owner per such wait (exe RVA, for rekarina.map).
+// checkpoint), and one host RIP sample of the owner per such wait (exe RVA, for rekarina.map). The DG_HOST time is also
+// summed by the host function the owner was in when it was asked (its pc then: a host call runs with the Cpu's pc at
+// the function's synthetic address), and a wait of over 4 ms of DG_EQ samples the owner of the waiter's core too: an
+// owner of equal priority that waits in a host call holds the core as a worse one does.
 enum { DG_GAME, DG_HOST, DG_EQ, DG_NOCORE, DG_N };
 static const char *const dg_name[DG_N] = {"game", "host", "eq", "nocore"};
 #define DG_NB 8   // wait lengths: < 0.05, 0.25, 1, 2, 4, 8, 16 ms, longer
@@ -759,16 +880,18 @@ static const uint64_t dg_edge[DG_NB - 1] = {50000, 250000, 1000000, 2000000, 400
 #define DG_LONG_LINES 400
 #define DG_SAMPLES 600
 #define DG_OWN 32
+#define DG_HF 16
 int kern_host_track;
 static int g_diag = -1;
 typedef struct {
     uint64_t ns[DG_N], n[DG_N], hist[DG_N][DG_NB];                    // this window
     struct { uint32_t h; int prio, cls; uint64_t ns; } own[DG_OWN];   // this window: owners by class
+    struct { uint64_t pc, ns; } hf[DG_HF];                            // this window: DG_HOST time by the owner's pc
     uint64_t long_frames, long_game_frames;
 } DgWindow;
 static DgWindow g_dgw;
 static uint64_t g_dgf[DG_N], g_dgfr[DG_N];   // this frame: all threads, the render thread
-static uint64_t g_dg_samples, g_dg_lines, g_sync36, g_sync36_flag;
+static uint64_t g_dg_samples, g_dg_eq_samples, g_dg_lines, g_sync36, g_sync36_flag;
 
 static void diag_init(void) {
     if (g_diag >= 0) return;
@@ -841,40 +964,83 @@ static void dg_done(RtThread *t) {
         dg_add(t, c, part[c], oh, oprio);
         if (part[c] > part[top]) top = c;
     }
+    if (part[DG_HOST]) {   // by the host function the releasing owner was in (0: not known)
+        uint64_t pc = r->pre ? r->hpc : 0;
+        for (int i = 0; i < DG_HF; i++)
+            if (!g_dgw.hf[i].ns || g_dgw.hf[i].pc == pc) {
+                g_dgw.hf[i].pc = pc;
+                g_dgw.hf[i].ns += part[DG_HOST];
+                break;
+            }
+    }
     int b = 0;
     while (b < DG_NB - 1 && w >= dg_edge[b]) b++;
     g_dgw.n[top]++;
     g_dgw.hist[top][b]++;
     if ((part[DG_GAME] >= 2000000 || part[DG_HOST] >= 2000000) && g_dg_lines < DG_LONG_LINES) {
         g_dg_lines++;
-        char a[128], l[128];
-        rt_log("core-diag: wait %.2f ms (game %.2f host %.2f): %#x p%d mask %llx; released by %#x p%d%s at %s lr %s",
-               w / 1e6, part[DG_GAME] / 1e6, part[DG_HOST] / 1e6, t->handle, t->prio, (unsigned long long)t->mask, r->h,
-               r->prio, r->pre ? " (preempted)" : "", r->pc ? ldr_describe(r->pc, a, sizeof a) : "-",
-               r->lr ? ldr_describe(r->lr, l, sizeof l) : "-");
+        char a[128], l[128], hf[128];
+        rt_log("core-diag: wait %.2f ms (game %.2f host %.2f): %#x p%d mask %llx; released by %#x p%d%s at %s lr %s; "
+               "asked in %s", w / 1e6, part[DG_GAME] / 1e6, part[DG_HOST] / 1e6, t->handle, t->prio,
+               (unsigned long long)t->mask, r->h, r->prio, r->pre ? " (preempted)" : "",
+               r->pc ? ldr_describe(r->pc, a, sizeof a) : "-", r->lr ? ldr_describe(r->lr, l, sizeof l) : "-",
+               r->pre && r->hpc ? ldr_describe(r->hpc, hf, sizeof hf) : "game code");
     }
     t->target = NULL;
     memset(&t->dg_rel, 0, sizeof t->dg_rel);
+}
+
+// The SDK's name and thread function of t, from its nn::os ThreadType (TLR+0x1F8): the name pointer at +0x1A0 (what
+// the sdk's nn::os::GetThreadNamePointer reads), the function at +0x68, trusted only when the handle field at +0x1B0
+// (ipc.c) is t's own, so a layout that differs reads nothing. Returns the function, 0 if unknown; name "?" then. A
+// diagnostic: every guest thread enters at the SDK's trampoline, so the kernel's entry point does not tell the threads
+// apart (and the game's threads all run through one function of its own).
+static uint64_t dg_thread_name(const RtThread *t, char *name, int n) {
+    snprintf(name, (size_t)n, "?");
+    uint64_t tt = *(const uint64_t *)(t->tlr + 0x1F8);
+    if (!tt || tt == (uint64_t)(uintptr_t)(t->tlr + TLR_SIZE) || (tt & 7)) return 0;
+    if (*(const uint32_t *)(uintptr_t)(tt + 0x1B0) != t->handle) return 0;
+    const char *p = *(const char *const *)(uintptr_t)(tt + 0x1A0);
+    if (p) {
+        int i = 0;
+        for (; i < n - 1 && p[i] >= 0x20 && p[i] < 0x7f; i++) name[i] = p[i];
+        name[i] = 0;
+    }
+    return *(const uint64_t *)(uintptr_t)(tt + 0x68);
+}
+
+// The calling guest thread's name ("?" unknown, "" on a host thread): DEBUG-PADCENSUS (frame_start.c).
+void kern_self_name(char *name, int n) {
+    RtThread *t = tcur_now();
+    if (t) dg_thread_name(t, name, n);
+    else if (n > 0) name[0] = 0;
 }
 
 // Once per long DG_GAME or DG_HOST wait: where the owner's host thread runs (module and offset), its latest SVC and
 // its guest lr. Holding G; the owner is resumed before anything that could take a lock it holds.
 static void dg_sample(RtThread *t) {
     RtThread *o = t->target;
-    if (!o || o->cur_core < 0 || !o->hthr || g_dg_samples >= DG_SAMPLES) return;
+    if (!o)   // DG_EQ: the worst owner of a core the waiter may run on (its own core's when pinned)
+        for (int i = 0; i < NCORE; i++)
+            if (core_allowed(t, i) && g_core_owner[i] && (!o || g_core_owner[i]->prio > o->prio)) o = g_core_owner[i];
+    uint64_t *cnt = t->dg_cls == DG_EQ ? &g_dg_eq_samples : &g_dg_samples;   // each class its own share of lines
+    if (!o || o->cur_core < 0 || !o->hthr || *cnt >= DG_SAMPLES) return;
     uint64_t rip, rsp;
     if (!plat_intr_stop(o->hthr, &rip, &rsp)) return;
     int depth = __atomic_load_n(&o->host_depth, __ATOMIC_RELAXED);
+    uint64_t pc = o->cur ? o->cur->pc : 0, glr = o->cur ? o->cur->x[30] : 0;
     plat_intr_resume(o->hthr, 0);
-    g_dg_samples++;
+    (*cnt)++;
     char mn[256] = "?";
     uintptr_t m = 0;
     plat_module_of((uintptr_t)rip, mn, sizeof mn, &m);
-    char lr[128];
-    rt_log("core-diag: sample owner %#x p%d depth %d rip %s+%#llx, last svc %#x, guest lr %s (waiter %#x p%d, %s, "
-           "%.2f ms)", o->handle, o->prio, depth, mn, (unsigned long long)(rip - m), o->dg_svc,
-           o->cur ? ldr_describe(o->cur->x[30], lr, sizeof lr) : "-", t->handle, t->prio,
-           t->dg_cls == DG_HOST ? "host" : "game", (kern_now_ns() - t->dg_since) / 1e6);
+    char lr[128], in[128], en[128], nm[40];
+    uint64_t fn = dg_thread_name(o, nm, sizeof nm);
+    rt_log("core-diag: sample owner %#x p%d mask %llx \"%s\" depth %d rip %s+%#llx, in %s, last svc %#x, guest lr %s, "
+           "function %s (waiter %#x p%d, %s, %.2f ms)", o->handle, o->prio, (unsigned long long)o->mask, nm, depth, mn,
+           (unsigned long long)(rip - m), pc ? ldr_describe(pc, in, sizeof in) : "-", o->dg_svc,
+           glr ? ldr_describe(glr, lr, sizeof lr) : "-", fn ? ldr_describe(fn, en, sizeof en) : "-", t->handle, t->prio,
+           dg_name[t->dg_cls], (kern_now_ns() - t->dg_since) / 1e6);
 }
 
 
@@ -891,6 +1057,13 @@ void kern_core_diag_frame(uint64_t frame, uint64_t interval_ns) {
                (unsigned long long)v[3], (unsigned long long)v[4], (unsigned long long)v[5], (unsigned long long)v[6],
                (unsigned long long)v[7]);
     }
+    if (g_woc > 0 && frame && frame % 600 == 0)   // REKARINA_WAIT_OFF_CORE counters since the start
+        rt_log("kernel: frame %llu: %llu host waits without the virtual core (%.1f ms of lock waits), %llu locks taken in "
+               "the first spin, %llu waits kept the core after %d rounds", (unsigned long long)frame,
+               (unsigned long long)__atomic_load_n(&g_woc_n, __ATOMIC_RELAXED),
+               __atomic_load_n(&g_woc_ns, __ATOMIC_RELAXED) / 1e6,
+               (unsigned long long)__atomic_load_n(&g_woc_spin, __ATOMIC_RELAXED),
+               (unsigned long long)__atomic_load_n(&g_woc_fall, __ATOMIC_RELAXED), OFF_CORE_TRIES);
     if (g_diag <= 0) return;
     DgWindow w;
     uint64_t f[DG_N], fr[DG_N], s36, s36f;
@@ -942,6 +1115,18 @@ void kern_core_diag_frame(uint64_t frame, uint64_t interval_ns) {
         w.own[bi].ns = 0;
     }
     if (o) rt_log("core-diag: owners (ms/frame):%s", s);
+    o = 0;
+    for (int k = 0; k < 4; k++) {
+        int bi = -1;
+        for (int i = 0; i < DG_HF; i++)
+            if (w.hf[i].ns && (bi < 0 || w.hf[i].ns > w.hf[bi].ns)) bi = i;
+        if (bi < 0) break;
+        char d[128];
+        o += snprintf(s + o, sizeof s - o, " %s %.3f;", w.hf[bi].pc ? ldr_describe(w.hf[bi].pc, d, sizeof d) : "?",
+                      w.hf[bi].ns / 60e6);
+        w.hf[bi].ns = 0;
+    }
+    if (o) rt_log("core-diag: host waits by the owner's call (ms/frame):%s", s);
 }
 
 static void core_count(void) {
@@ -972,7 +1157,7 @@ static void core_grant(int c) {
     core_count();
     if (g_diag > 0) b->dg_rel = g_dg_rel;
     if (rt_trace & RT_TRACE_SCHED) b->grant_at = kern_now_ns();
-    plat_cond_signal(&b->cv);
+    kw_signal(b);
 }
 
 static void core_put(RtThread *t) {
@@ -988,8 +1173,9 @@ static void core_put(RtThread *t) {
     t->pre_since = 0;
     if (g_diag > 0) {
         g_dg_rel = (struct DgRel){.kick = t->dg_kick, .host_end = t->dg_host_end, .pc = t->dg_pc, .lr = t->dg_lr,
-                                  .host = t->dg_host_kick, .pre = t->preempt, .prio = t->prio, .h = t->handle};
-        t->dg_kick = t->dg_host_end = t->dg_pc = t->dg_lr = 0;
+                                  .hpc = t->dg_hpc, .host = t->dg_host_kick, .pre = t->preempt, .prio = t->prio,
+                                  .h = t->handle};
+        t->dg_kick = t->dg_host_end = t->dg_pc = t->dg_lr = t->dg_hpc = 0;
         t->dg_host_kick = 0;
     }
     t->cur_core = -1;
@@ -1044,6 +1230,7 @@ static void core_kick(void) {
             o->dg_kick = kern_now_ns();
             o->dg_host_kick = dg_in_host(o);
             o->dg_host_end = 0;
+            o->dg_hpc = o->dg_host_kick && o->cur ? o->cur->pc : 0;   // a racy read of a running thread: a diagnostic
         }
         __atomic_store_n(&o->preempt, 1, __ATOMIC_RELEASE);
     }
@@ -1092,11 +1279,10 @@ static void core_take(RtThread *t) {
     while (t->cur_core < 0) {
         uint32_t ms = 0;   // 0: until signalled
         if (g_ap_int && ap_try(t) != AP_NONE) ms = 1;   // the owner keeps its core: again in a millisecond
-        int sample = g_diag > 0 && !sampled && (t->dg_cls == DG_GAME || t->dg_cls == DG_HOST);
+        int sample = g_diag > 0 && !sampled && t->dg_cls != DG_NOCORE;
         if (sample && !ms) ms = 2;
-        if (ms) plat_cond_wait_ms(&t->cv, &G, ms);
-        else plat_cond_wait(&t->cv, &G);
-        if (sample && t->cur_core < 0 && kern_now_ns() - t->dg_since >= 2000000) {
+        kwait(t, ms);
+        if (sample && t->cur_core < 0 && kern_now_ns() - t->dg_since >= (t->dg_cls == DG_EQ ? 4000000u : 2000000u)) {
             sampled = 1;
             dg_sample(t);
         }
@@ -1113,15 +1299,43 @@ static void core_take(RtThread *t) {
     acct(t, S_RUN);
 }
 
+// frame_start.c: 1 while the frame start or the pacing log reads the main thread's wait times (kern_self_wait_ns): two
+// clock reads per kernel wait or sleep of the main thread, and frame_start_kwait after the address waits and signals of
+// the main and the presenting thread; the other threads only compare their id.
+int kern_wait_meas;
+volatile uint32_t kern_fs_main_tid, kern_fs_present_tid;   // frame_start.c: the main and the presenting thread
+
 static uint32_t block(RtThread *t, int kind, int64_t ns) {
     t->waker = 0;
     if (ns == 0) return block_inner(t, kind, ns);
+    uint64_t w0 = kern_wait_meas && t->tid == kern_fs_main_tid ? kern_now_ns() : 0;   // frame_start.c: the main thread only
     core_put(t);
     acct(t, st_of(kind));
     t->nblk++;
     uint32_t r = block_inner(t, kind, ns);
     core_take(t);
+    if (w0) {
+        t->wt_end = kern_now_ns(), t->wt_ns += t->wt_end - w0;
+        // Only the presenting thread's wakes count as the frame's wait for the GPU through it; a host thread's wake
+        // (the 60 Hz vsync event, the completion thread's signals) is the game pacing itself, as at the title, where
+        // counting them gave holds of up to 17 ms (frame_start.c). REKARINA_FRAME_START_HOSTWAKE=1: they count, as before.
+        static int hostwake = -1;
+        if (hostwake < 0) hostwake = rt_knob("FRAME_START_HOSTWAKE", "0");
+        if (r != R_TIMEOUT && t->woke && ((hostwake && !t->waker) || (t->waker && t->waker_tid == kern_fs_present_tid)))
+            t->wt_gpu += t->wt_end - w0, t->wt_gpu_end = t->wt_end;
+    }
     return r;
+}
+
+uint64_t kern_self_wait_ns(uint64_t *last_end) {
+    RtThread *t = tcur_now();
+    if (last_end) *last_end = t ? t->wt_end : 0;
+    return t ? t->wt_ns : 0;
+}
+uint64_t kern_self_gpu_wait_ns(uint64_t *last_end) {   // the waits a host thread or the presenting thread ended
+    RtThread *t = tcur_now();
+    if (last_end) *last_end = t ? t->wt_gpu_end : 0;
+    return t ? t->wt_gpu : 0;
 }
 
 int kern_core_away(void) {
@@ -1143,6 +1357,39 @@ void kern_core_back(int *away) {
     core_take(t);
     unlock();
     *away = 0;
+}
+
+// A host lock taken without keeping the virtual core through a wait for it (the host waits section above).
+int kern_lock_off_core(int (*try_lock)(void *), void (*wait_free)(void *), void *m) {
+    if (try_lock(m)) return 1;
+    RtThread *t = tcur;
+    if (!t || t->cur_core < 0 || !kern_wait_off_core()) return 0;
+    uint64_t t0 = kern_now_ns(), end = t0 + OFF_CORE_SPIN_NS;
+    do {
+        for (int i = 0; i < 16; i++) plat_pause();
+        if (try_lock(m)) {
+            __atomic_fetch_add(&g_woc_spin, 1, __ATOMIC_RELAXED);
+            return 1;
+        }
+    } while (kern_now_ns() < end);
+    for (int k = 0; k < OFF_CORE_TRIES; k++) {
+        int away = kern_core_away();
+        if (!away) return 0;
+        uint64_t w0 = kern_now_ns();
+        wait_free(m);
+        __atomic_fetch_add(&g_woc_n, 1, __ATOMIC_RELAXED);
+        __atomic_fetch_add(&g_woc_ns, kern_now_ns() - w0, __ATOMIC_RELAXED);
+        kern_core_back(&away);
+        if (try_lock(m)) return 1;
+    }
+    __atomic_fetch_add(&g_woc_fall, 1, __ATOMIC_RELAXED);
+    return 0;
+}
+
+int kern_core_away_counted(void) {
+    int away = kern_wait_off_core() ? kern_core_away() : 0;
+    if (away) __atomic_fetch_add(&g_woc_n, 1, __ATOMIC_RELAXED);
+    return away;
 }
 
 // ---- spin waits (recomp/patches.py `spin` lines, found by tools/spin_waits.py)
@@ -1210,7 +1457,7 @@ void kern_checkpoint(void) {
     } else {
         t->preempt = 0;
         t->pre_since = 0;
-        t->dg_kick = t->dg_host_end = 0;
+        t->dg_kick = t->dg_host_end = t->dg_hpc = 0;
         t->dg_host_kick = 0;
         g_pre_stale++;
     }
@@ -1486,6 +1733,7 @@ static void lock_acquire_for(RtThread *t, uint64_t addr, uint32_t tag) {
     }
     acct(t, S_LOCK);
     t->wobj = v & ~WAITERS_BIT;
+    g_nlockw += t->wkind != W_LOCK;   // a condvar waiter, still on the wait list, becomes a lock waiter
     t->wkind = W_LOCK;
     t->waddr = addr;
     t->wtag = tag;
@@ -1538,7 +1786,7 @@ static void thr_free(RtThread *t) {   // holding G; t has exited and its handle 
     mem_kernel_free(t->tlr, TLR_SIZE + THREAD_OBJ_SIZE);
     mem_kernel_free(t->tls, TLS_SIZE);
     plat_aligned_free(t->cpu);
-    free(t);
+    if (!kwake_on()) free(t);   // kept with REKARINA_KWAKE: a wake signalled after the lock may still name it
 }
 
 // The end of every guest thread, on its own host context after the unwind: give the core up, signal the thread
@@ -1578,7 +1826,7 @@ static void thread_main(void *p) {
     PlatIntr *self = ap_open_self();
     lock();
     t->hthr = self;
-    while (!t->started) plat_cond_wait(&t->cv, &G);
+    while (!t->started) kwait(t, 0);
     core_take(t);
     unlock();
     Cpu *c = t->cpu;
@@ -1793,7 +2041,7 @@ static int kern_svc_(Cpu *c, uint32_t imm) {
         RtThread *t = h_get((uint32_t)x[0], O_THREAD);
         if (t) {
             t->started = 1;
-            plat_cond_signal(&t->cv);
+            kw_signal(t);
         }
         unlock();
         x[0] = t ? R_OK : R_BAD_HANDLE;
@@ -1841,6 +2089,7 @@ static int kern_svc_(Cpu *c, uint32_t imm) {
             t->sl_act += took;
             core_take(t);
             unlock();
+            if (kern_wait_meas && t->tid == kern_fs_main_tid) t->wt_end = kern_now_ns(), t->wt_ns += t->wt_end - t0;
             return 1;
         }
         // Yield: hand the core to a waiting thread of equal or better priority. With no thread waiting for a core
@@ -2009,6 +2258,8 @@ static int kern_svc_(Cpu *c, uint32_t imm) {
         // Type 3, WaitIfEqual64 (later Horizon, Switch 2 SDKs): a 64-bit compare, used by nn::os::WaitForAddress
         // behind libc++'s atomic wait (OoT aborted with 0xF001 on it). SignalToAddress type 0 wakes it.
         if (type == 3) {
+            int *aw = aw_bucket(addr);
+            __atomic_fetch_add(aw, 1, __ATOMIC_SEQ_CST);
             lock();
             uint32_t r = __atomic_load_n((uint64_t *)(uintptr_t)addr, __ATOMIC_SEQ_CST) == x[2] ? 0 : R_BAD_STATE;
             if (!r) {
@@ -2017,6 +2268,7 @@ static int kern_svc_(Cpu *c, uint32_t imm) {
                 r = block(t, W_ADDRESS, (int64_t)x[3]);
             }
             unlock();
+            __atomic_fetch_sub(aw, 1, __ATOMIC_SEQ_CST);
             x[0] = r;
             return 1;
         }
@@ -2025,6 +2277,8 @@ static int kern_svc_(Cpu *c, uint32_t imm) {
             x[0] = R_INVALID_ENUM;
             return 1;
         }
+        int *aw = aw_bucket(addr);
+        __atomic_fetch_add(aw, 1, __ATOMIC_SEQ_CST);
         lock();
         uint32_t r, v = ld32(addr);
         int ok = type == 2 ? (int32_t)v == val : (int32_t)v < val;
@@ -2034,6 +2288,7 @@ static int kern_svc_(Cpu *c, uint32_t imm) {
                     ok = 0;
                     break;
                 }
+        uint64_t wt0 = t->wt_ns;
         if (!ok) r = R_BAD_STATE;
         else {
             t->waddr = addr;
@@ -2041,7 +2296,10 @@ static int kern_svc_(Cpu *c, uint32_t imm) {
             r = block(t, W_ADDRESS, (int64_t)x[3]);
         }
         unlock();
+        __atomic_fetch_sub(aw, 1, __ATOMIC_SEQ_CST);
         x[0] = r;
+        if (kern_wait_meas && (t->tid == kern_fs_main_tid || t->tid == kern_fs_present_tid))   // frame_start.c: the
+            frame_start_kwait(0x34, addr, t->wt_ns - wt0);   // main thread's hand-over may hold here
         return 1;
     }
     case 0x35: {   // SignalToAddress(x0 address, w1 type, w2 value, w3 count): 0 wake, 1 increment if equal,
@@ -2053,10 +2311,38 @@ static int kern_svc_(Cpu *c, uint32_t imm) {
             x[0] = R_INVALID_ENUM;
             return 1;
         }
+        if (ksig_on()) {
+            int *aw = aw_bucket(addr);
+            if (!__atomic_load_n(aw, __ATOMIC_SEQ_CST)) {
+                uint32_t r = R_OK;
+                if (type != 0) {   // nobody waits: type 2 modifies as with no waiters, type 1 the same
+                    uint32_t e = (uint32_t)val;
+                    if (!__atomic_compare_exchange_n((uint32_t *)(uintptr_t)addr, &e, (uint32_t)(val + 1), 0,
+                                                     __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST))
+                        r = R_BAD_STATE;
+                }
+                if (r || type == 0 || !__atomic_load_n(aw, __ATOMIC_SEQ_CST)) {
+                    __atomic_fetch_add(&g_ksig_fast, 1, __ATOMIC_RELAXED);
+                    x[0] = r;
+                    return 1;
+                }
+                // the word changed and a waiter counted itself meanwhile: wake as a plain signal, under the lock
+                __atomic_fetch_add(&g_ksig_slow, 1, __ATOMIC_RELAXED);
+                lock();
+                for (int n = 0; cnt <= 0 || n < cnt; n++) {
+                    RtThread *w = pick(W_ADDRESS, addr);
+                    if (!w) break;
+                    wake(w, 0);
+                }
+                unlock();
+                x[0] = R_OK;
+                return 1;
+            }
+        }
         lock();
         int nw = 0;
         for (RtThread *w = g_wait; w; w = w->next) nw += w->wkind == W_ADDRESS && w->waddr == addr;
-        uint32_t r = R_OK;
+        uint32_t r = R_OK, woke_tid = 0;
         if (type != 0) {
             int32_t nv = val + 1;
             if (type == 2) {
@@ -2072,10 +2358,13 @@ static int kern_svc_(Cpu *c, uint32_t imm) {
             for (int n = 0; cnt <= 0 || n < cnt; n++) {
                 RtThread *w = pick(W_ADDRESS, addr);
                 if (!w) break;
+                if (!woke_tid) woke_tid = w->tid;
                 wake(w, 0);
             }
         unlock();
         x[0] = r;
+        if (kern_wait_meas && tcur && (tcur->tid == kern_fs_main_tid || tcur->tid == kern_fs_present_tid))
+            frame_start_kwait(0x35, addr, woke_tid);   // frame_start.c: the main thread's hand-over may hold here
         return 1;
     }
 

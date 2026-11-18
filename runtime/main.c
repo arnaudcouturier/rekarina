@@ -26,6 +26,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "report.h"
 #include "cfg.h"
 #include "host.h"
 #include "platform/platform.h"
@@ -284,6 +285,7 @@ static void crash_handler(const PlatCrash *x) {
     }
     kern_free_cores_note();
     fflush(stderr);
+    report_crash_notice();   // the player is told where the log is and how to make a report (report.c)
     plat_exit(71);
 }
 
@@ -494,7 +496,7 @@ static int usage(const char *argv0) {
                     "--probe-cfg | --probe-dpi | --probe-mods | --probe-kernel | --probe-ipc | --probe-services | --probe-fs | --probe-gfx-abi | "
                     "--probe-nvn | --probe-nvn-tex | --probe-window | --probe-shader | --probe-vkmem | "
                     "--probe-vkexec | --probe-astc | --probe-movie | --probe-codec FILE | --probe-crash-call | --probe-crash-null | --probe-discord | "
-                    "--prepare-shaders | --warm-shaders | --boot |--seconds S [--shot PNG]]\n", argv0);
+                    "--prepare-shaders | --warm-shaders | --prepare-textures | --boot |--seconds S [--shot PNG]]\n", argv0);
     return 2;
 }
 
@@ -589,17 +591,27 @@ int main(int argc, char **argv) {
     if (cfg.shot && !cfg.seconds) return usage(argv[0]);
     if (cfg.seconds && mode) return usage(argv[0]);
     log_open(!mode);
+    if (mode && !strcmp(mode, "--make-report")) return report_main();   // the launcher's "Problem report" (report.c)
+    if (mode && !strcmp(mode, "--memory-test")) {   // Linux: can the GPU share the game's memory? (memtest.c)
+        int memtest_main(void);
+        return memtest_main();
+    }
     if (!mode) {
+        report_last_run_failed();   // read now, while logs/rekarina.1.log is the run before this one
         {   // The game above the desktop's other programs (process_priority = normal | above | high; above by default).
             // Its frame is some twelve busy threads on the machine's cores: with a sensor monitor, a browser and a
             // download client taking a quarter of an 8-core CPU at normal priority, the camera spin fell from 94 to
             // 53-74 fps (2026-11-11), each of them getting its share of every core the replay was on. Above normal,
             // Windows runs the game's threads first and the others in what is left. Not for the shader preparation,
-            // which runs beside the player's other work.
+            // which runs beside the player's other work, and not for the entry step of a start either: its builds
+            // fill every logical CPU for about a second, and above normal that second made the other programs'
+            // sound stutter (a normal-priority thread woke 22-124 ms late at every start, 16 ms at normal priority;
+            // 2026-11-16). So the level is taken when the guest starts (boot.c rt_boot).
             const char *e = cfg_value("REKARINA_PROCESS_PRIORITY");
             int level = !strcmp(e, "normal") ? 0 : !strcmp(e, "high") ? 2 : 1;
-            if (level) plat_process_priority(level);
-            rt_log("main: process priority %s (process_priority)", level == 2 ? "high" : level ? "above normal" : "normal");
+            rt_boot_process_priority(level);
+            rt_log("main: process priority %s once the game starts (process_priority)",
+                   level == 2 ? "high" : level ? "above normal" : "normal");
         }
         cfg.boot = cfg.seconds > 0;   // --seconds starts the game like --boot, with its checkpoints
         discord_init();   // the Rich Presence thread (discord_rpc.c); it reads rekarina.ini itself and idles while off
@@ -640,6 +652,7 @@ int main(int argc, char **argv) {
 #endif
     if (!strcmp(mode, "--prepare-shaders")) return vk_pipeline_prepare_shaders();
     if (!strcmp(mode, "--warm-shaders")) return vk_pipeline_warm_shaders();
+    if (!strcmp(mode, "--prepare-textures")) return tex_prepare_main();
     if (!strcmp(mode, "--boot")) { cfg.boot = 1; rt_boot(); return 0; }
     return usage(argv[0]);
 }

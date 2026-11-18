@@ -8,7 +8,8 @@
 //   decoder again (it writes its own error code; a frame libzstd rejects may still be one the game's version accepts).
 // - A guest ZSTD_DDict (zstd's struct: dictBuffer, dictContent, dictSize first) becomes a host ZSTD_DDict made from a
 //   copy of its content, cached by guest address, content address, size and a fingerprint of the content.
-// - Inputs of at least AWAY_BYTES give the virtual core up while they decode (other guest threads run on it).
+// - Inputs of at least AWAY_BYTES, or outputs of at least AWAY_OUT_BYTES, give the virtual core up while they decode
+//   (other guest threads run on it; decode_is_long).
 // REKARINA_ZSTD_NATIVE=0 keeps the guest decoder (the patch set switch); REKARINA_ZSTD_CHECK=1 decodes each call both ways,
 // keeps the guest's result and logs every call where the two differ.
 #include <stdint.h>
@@ -141,12 +142,27 @@ static size_t host_decode(uint64_t dst, uint64_t cap, uint64_t src, uint64_t siz
               : ZSTD_decompressDCtx(dctx, gp(dst), (size_t)cap, gp(src), (size_t)size);
 }
 
+// Whether a decode gives the virtual core up: one that takes more than a few tens of microseconds. Its time follows
+// its output (libzstd decodes 1-2 GB/s on one core), and an input under AWAY_BYTES can still decode megabytes: the
+// game's priority-47 loader threads held their cores through 2.7 to 4.7 ms decodes of such inputs while priority-32 and
+// -44 threads waited for those cores (REKARINA_CORE_DIAG, 2026-11-17). So the first frame's content size (the output
+// capacity when the header does not say) of AWAY_OUT_BYTES or more gives it up too, about 40 us of decoding, against a
+// handover of a few microseconds. REKARINA_WAIT_OFF_CORE=0: the input size alone, as before.
+#define AWAY_OUT_BYTES (64u << 10)
+static int decode_is_long(uint64_t src, uint64_t size, uint64_t cap) {
+    if (size >= AWAY_BYTES) return 1;
+    if (!kern_wait_off_core() || !src || src + size > RT_ADDRESS_LIMIT) return 0;
+    unsigned long long out = ZSTD_getFrameContentSize(gp(src), (size_t)size);
+    if (out == ZSTD_CONTENTSIZE_UNKNOWN || out == ZSTD_CONTENTSIZE_ERROR) out = cap;
+    return out >= AWAY_OUT_BYTES;
+}
+
 // The host call inside the thread's host depth, as hostfn.c counts it for asynchronous preemption.
 static size_t tracked_decode(Cpu *c, uint64_t dst, uint64_t cap, uint64_t src, uint64_t size, uint64_t dict,
                              uint64_t dict_size, uint64_t ddict, int *ok) {
     int *d = kern_host_track && c->thread ? kern_host_depth(c->thread) : NULL;
     if (d) __atomic_store_n(d, *d + 1, __ATOMIC_RELAXED);
-    int away = size >= AWAY_BYTES ? kern_core_away() : 0;
+    int away = decode_is_long(src, size, cap) ? kern_core_away() : 0;
     if (away) __atomic_add_fetch(&S.away, 1, __ATOMIC_RELAXED);
     size_t r = host_decode(dst, cap, src, size, dict, dict_size, ddict, ok);
     kern_core_back(&away);
@@ -245,9 +261,255 @@ static void decode(Cpu *c, uint64_t dict, uint64_t dict_size, uint64_t ddict, ui
 static void host_multiframe(Cpu *c) { decode(c, c->x[5], c->x[6], c->x[7], GUEST_MULTIFRAME, 8); }
 static void host_using_ddict(Cpu *c) { decode(c, 0, 0, c->x[5], GUEST_USING_DDICT, 6); }
 
+#ifdef GAME_OOT
+// ---- The game's parallel block decompression on the host (REKARINA_ZSTD_JOBS, OoT)
+// While a scene loads, the threads "ParallelDecompThread" (priority 47, pinned to virtual cores 4 and 5) decode the
+// archive's zstd frames in jobs, and the decoder they run is the game's own, lifted: 348 of 428 samples of those
+// threads in the user's logs were in its sequence loop (main+0xf0370), against libzstd's speed of a few times that.
+// A job (main+0xf5bf0, reached only by an indirect call) feeds the next piece of the compressed file to a streaming
+// decoder of the game's (main+0xf5c80): the pieces come from two read buffers in turn, and each call decodes what the
+// piece completes into the output buffer. Those calls also held their virtual core for milliseconds at a time, and
+// the threads pinned behind them (the ones that draw the loading picture among them) waited: the loading picture's
+// frames of 60-116 ms.
+// Here the job runs as the game's does, and the decoding step goes to a host stream with the same results: the
+// wrapper's fields the game reads (state byte, output cursor, the two counters, the frame's content size) move as the
+// game's step moves them, and the decode itself runs with the virtual core given up. A wrapper is the host's from
+// its first piece (state 1) to its end; one the host cannot take (a dictionary it cannot read, the table full) stays
+// the game's for its whole frame. REKARINA_ZSTD_CHECK=1 runs the game's step on the real wrapper and the host stream on
+// a copy of its output beside it, and logs every piece where the two differ: the save's load decoded 416 pieces of
+// 64+ frames (982 MiB) the same way. Measured on the save's load (2026-11-18, one exe, ABBA): from the first frame to
+// the arrival 12.35 / 11.63 s against 13.12 / 13.36 s with three busy cores and a disk loop beside the game, 11.50
+// against 12.09 s on a quiet machine; the game's own decoder took about 2 s for what the host decodes in 1.2 s.
+// The wrapper, at the job + 0x10: +0 state (1 new, 2 decoding, 3 failed, 4 done), +0x8 output cursor, +0x10 output
+// room (int32), +0x14 content bytes still to come (uint32, the return value), +0x18 the game's context memory, +0x20 /
+// +0x28 / +0x2c its staging buffer, capacity and fill, +0x30 its context.
+void f_70000f5bf0(Cpu *c);   // lifted: the job
+void f_70000f5c80(Cpu *c);   // lifted: the streaming step (wrapper, piece, piece size, ZSTD_DDict or 0)
+void f_7003c42cd0(Cpu *c);   // lifted: what the job calls with job + 0x68 and job + 0x98 (its signals)
+#define GUEST_JOB 0x70000f5bf0ull
+#define JW_N 64
+typedef struct {
+    uint64_t w;                 // the wrapper's guest address, 0 free
+    int host;                   // 1: the host decodes this frame; 0: the game's step does
+    ZSTD_DCtx *dctx;
+    uint8_t *shadow;            // check mode: the host's output
+    uint64_t shadow_cap, shadow_pos, guest_start;
+} JobWrap;
+static JobWrap jw[JW_N];
+static PlatMutex jw_lock = PLAT_MUTEX_INIT;
+static struct { uint64_t pieces, frames, in, out, ns, guest_frames, errors, diffs, away; } JS;
+
+static int jobs_on(void) {
+    static int v = -1;
+    if (v < 0) {
+        const char *e = cfg_get("REKARINA_ZSTD_JOBS");   // on by default (0: the game's decoder)
+        v = e && *e ? atoi(e) != 0 : 1;
+        rt_log("zstd: the game's block decompression jobs decode %s (REKARINA_ZSTD_JOBS)", v ? "on the host" : "in the game's decoder");
+    }
+    return v;
+}
+
+static uint64_t ld64(uint64_t a) { uint64_t v; memcpy(&v, gp(a), 8); return v; }
+static uint32_t ld32(uint64_t a) { uint32_t v; memcpy(&v, gp(a), 4); return v; }
+static void st64(uint64_t a, uint64_t v) { memcpy(gp(a), &v, 8); }
+static void st32(uint64_t a, uint32_t v) { memcpy(gp(a), &v, 4); }
+
+static JobWrap *jw_find(uint64_t w, int make) {   // jw_lock held
+    JobWrap *free_one = NULL;
+    for (int i = 0; i < JW_N; i++) {
+        if (jw[i].w == w) return &jw[i];
+        if (!jw[i].w && !free_one) free_one = &jw[i];
+    }
+    if (!make || !free_one) return NULL;
+    free_one->w = w, free_one->host = 0;
+    return free_one;
+}
+
+static void jw_release(JobWrap *e) {   // the frame ended: the entry (and its context) serves the next one
+    plat_mutex_lock(&jw_lock);
+    e->w = 0;
+    plat_mutex_unlock(&jw_lock);
+}
+
+static void log_jobs(void) {
+    uint64_t n = __atomic_add_fetch(&JS.frames, 1, __ATOMIC_RELAXED);
+    if (n == 1 || n == 64 || !(n & 1023))
+        rt_log("zstd jobs: %llu frames on the host (%llu pieces, %.1f MiB in, %.1f MiB out, %.0f ms, %llu with the core "
+               "given up), %llu frames left to the game's decoder, %llu failed%s", (unsigned long long)n,
+               (unsigned long long)JS.pieces, JS.in / 1048576.0, JS.out / 1048576.0, JS.ns / 1e6, (unsigned long long)JS.away,
+               (unsigned long long)JS.guest_frames, (unsigned long long)JS.errors, check_mode() ? " (check mode)" : "");
+}
+
+// One piece through the host stream of e: out is where it writes (the guest's cursor, or the shadow in check mode).
+// Returns libzstd's last result; *made the bytes written, *left the piece's bytes not taken.
+static size_t stream_piece(Cpu *c, JobWrap *e, uint64_t src, uint32_t size, uint8_t *out, uint64_t room, uint64_t *made,
+                           uint64_t *left) {
+    ZSTD_inBuffer in = {gp(src), size, 0};
+    ZSTD_outBuffer o = {out, (size_t)room, 0};
+    int *d = kern_host_track && c->thread ? kern_host_depth(c->thread) : NULL;
+    if (d) __atomic_store_n(d, *d + 1, __ATOMIC_RELAXED);
+    int away = size >= (16u << 10) ? kern_core_away() : 0;
+    if (away) __atomic_add_fetch(&JS.away, 1, __ATOMIC_RELAXED);
+    size_t r = 0;
+    for (;;) {   // until the piece is taken, the frame ends, or a call makes no progress (no room left)
+        size_t ip = in.pos, op = o.pos;
+        r = ZSTD_decompressStream(e->dctx, &o, &in);
+        if (ZSTD_isError(r) || !r || in.pos == in.size || (in.pos == ip && o.pos == op)) break;
+    }
+    kern_core_back(&away);
+    if (d) {
+        int n = *d - 1;
+        __atomic_store_n(d, n, __ATOMIC_RELAXED);
+        if (!n && kern_preempt_pending(c->thread)) kern_host_left(c->thread);
+    }
+    *made = o.pos, *left = in.size - in.pos;
+    return r;
+}
+
+// The game's streaming step on the wrapper w for one piece, done by the host when the wrapper is the host's.
+// Returns x0 as the game's step would.
+static uint64_t job_step(Cpu *c, uint64_t w, uint64_t src, uint32_t size, uint64_t ddict) {
+    uint8_t state = *(uint8_t *)gp(w);
+    int check = check_mode();
+    plat_mutex_lock(&jw_lock);
+    JobWrap *e = jw_find(w, state == 1);
+    if (e && state == 1) {   // a new frame: the host's when it can read the dictionary (if any)
+        ZSTD_DDict *dd = NULL;
+        e->host = 0;
+        if (ddict && ddict < RT_ADDRESS_LIMIT - 24) {
+            uint64_t f[3];
+            memcpy(f, gp(ddict), sizeof f);
+            dd = dict_for(ddict, f[1], f[2]);
+        }
+        if ((!ddict || dd) && (e->dctx || (e->dctx = ZSTD_createDCtx()))) {
+            ZSTD_DCtx_reset(e->dctx, ZSTD_reset_session_and_parameters);
+            if (!dd || !ZSTD_isError(ZSTD_DCtx_refDDict(e->dctx, dd))) e->host = 1;
+        }
+        if (!e->host) {   // the game's frame: no entry stands for that
+            __atomic_add_fetch(&JS.guest_frames, 1, __ATOMIC_RELAXED);
+            e->w = 0;
+        }
+    } else if (!e && state == 1) {
+        static int logged;
+        if (!logged++) rt_log("zstd jobs: more than %d frames decoding at once: further ones in the game's decoder", JW_N);
+    }
+    int host = e && e->host;
+    plat_mutex_unlock(&jw_lock);
+    if (!host || (!check && state != 1 && state != 2)) {   // the game's (and its own answers for states 3 and 4)
+        c->x[0] = w, c->x[1] = src, c->x[2] = size, c->x[3] = ddict;
+        f_70000f5c80(c);
+        return c->x[0];
+    }
+    __atomic_add_fetch(&JS.pieces, 1, __ATOMIC_RELAXED);
+    __atomic_add_fetch(&JS.in, size, __ATOMIC_RELAXED);
+    uint64_t t0 = kern_now_ns();
+    if (check) {   // the game's step on the real wrapper, the host stream on the shadow
+        uint64_t cur0 = ld64(w + 8);
+        if (state == 1) {
+            ZSTD_frameHeader zfh;
+            free(e->shadow);
+            e->shadow = NULL, e->shadow_cap = e->shadow_pos = 0, e->guest_start = cur0;
+            if (!ZSTD_getFrameHeader(&zfh, gp(src), size) && zfh.frameContentSize != ZSTD_CONTENTSIZE_UNKNOWN &&
+                zfh.frameContentSize < (1ull << 31))
+                e->shadow_cap = zfh.frameType == ZSTD_skippableFrame ? 0 : zfh.frameContentSize,
+                e->shadow = malloc(e->shadow_cap ? (size_t)e->shadow_cap : 1);
+        }
+        c->x[0] = w, c->x[1] = src, c->x[2] = size, c->x[3] = ddict;
+        f_70000f5c80(c);
+        uint64_t g = c->x[0], cur1 = ld64(w + 8);
+        uint64_t made = 0, left = 0;
+        size_t r = 0;
+        if (e->shadow && (state == 1 || state == 2))
+            r = stream_piece(c, e, src, size, e->shadow + e->shadow_pos, e->shadow_cap - e->shadow_pos, &made, &left);
+        int bad = !e->shadow ? 1 : ZSTD_isError(r) ? 2 : cur1 - cur0 != made ? 3 :
+                  memcmp(e->shadow + e->shadow_pos, gp(cur0), (size_t)made) ? 4 : (r == 0) != (*(uint8_t *)gp(w) == 4) ? 5 : 0;
+        if ((state == 1 || state == 2) && bad && __atomic_add_fetch(&JS.diffs, 1, __ATOMIC_RELAXED) <= 12)
+            rt_log("zstd jobs check: DIFFERENCE %d at a piece of %u bytes (wrapper %#llx, state %u -> %u, game wrote %llu, "
+                   "host %llu, host left %llu, host result %s, game result %#llx)", bad, size, (unsigned long long)w, state,
+                   *(uint8_t *)gp(w), (unsigned long long)(cur1 - cur0), (unsigned long long)made, (unsigned long long)left,
+                   ZSTD_isError(r) ? ZSTD_getErrorName(r) : r ? "frame goes on" : "frame done", (unsigned long long)g);
+        e->shadow_pos += made;
+        __atomic_add_fetch(&JS.out, made, __ATOMIC_RELAXED);
+        __atomic_add_fetch(&JS.ns, kern_now_ns() - t0, __ATOMIC_RELAXED);
+        if (*(uint8_t *)gp(w) == 4 || *(uint8_t *)gp(w) == 3) {
+            free(e->shadow);
+            e->shadow = NULL;
+            jw_release(e);
+            log_jobs();
+        }
+        return g;
+    }
+    if (state == 1) {   // the game reads the frame's content size first: unknown or unreadable fails the frame
+        ZSTD_frameHeader zfh;
+        if (ZSTD_getFrameHeader(&zfh, gp(src), size) ||
+            (zfh.frameType != ZSTD_skippableFrame && zfh.frameContentSize == ZSTD_CONTENTSIZE_UNKNOWN)) {
+            *(uint8_t *)gp(w) = 3;
+            __atomic_add_fetch(&JS.errors, 1, __ATOMIC_RELAXED);
+            return 0xffffffffull;
+        }
+        st32(w + 0x14, zfh.frameType == ZSTD_skippableFrame ? 0 : (uint32_t)zfh.frameContentSize);
+        *(uint8_t *)gp(w) = 2;
+    }
+    uint64_t dst = ld64(w + 8);
+    int32_t room = (int32_t)ld32(w + 0x10);
+    uint64_t made = 0, left = 0;
+    size_t r = dst && room >= 0 && dst + (uint64_t)room <= RT_ADDRESS_LIMIT
+                   ? stream_piece(c, e, src, size, gp(dst), (uint64_t)room, &made, &left)
+                   : (size_t)-1;
+    st64(w + 8, dst + made);
+    st32(w + 0x10, (uint32_t)(room - (int32_t)made));
+    st32(w + 0x14, ld32(w + 0x14) - (uint32_t)made);
+    __atomic_add_fetch(&JS.out, made, __ATOMIC_RELAXED);
+    __atomic_add_fetch(&JS.ns, kern_now_ns() - t0, __ATOMIC_RELAXED);
+    if (ZSTD_isError(r) || (r && left) || (!r && left)) {   // a damaged frame, no room, or bytes past the frame's end
+        static int logged;
+        if (logged++ < 8)
+            rt_log("zstd jobs: a frame failed on the host (%s; piece of %u bytes, %llu not taken, room %d)",
+                   ZSTD_isError(r) ? ZSTD_getErrorName(r) : r ? "no room for the output" : "bytes past the frame's end", size,
+                   (unsigned long long)left, room);
+        *(uint8_t *)gp(w) = 3;
+        __atomic_add_fetch(&JS.errors, 1, __ATOMIC_RELAXED);
+        jw_release(e);
+        log_jobs();
+        return r && !ZSTD_isError(r) ? 0xffffffecull : !r ? 0xfffffffdull : 0xffffffffull;
+    }
+    if (!r) {
+        *(uint8_t *)gp(w) = 4;
+        jw_release(e);
+        log_jobs();
+    }
+    return ld32(w + 0x14);
+}
+
+// The job, as main+0xf5bf0 runs it, with the decoding step above.
+static void host_job(Cpu *c) {
+    if (!jobs_on()) {
+        f_70000f5bf0(c);
+        return;
+    }
+    uint64_t job = c->x[0];
+    if ((int32_t)ld32(job + 0xbc) < 0) return;   // a failed job: nothing more
+    uint64_t base = ld64(job + 0xa8);
+    uint32_t off = ld32(job + 0xb0), turn = ld32(job + 0xb4), size = ld32(job + 0xb8);
+    uint64_t r = job_step(c, job + 0x10, (turn & 1) ? base + off : base, size, ld64(job + 0xc0));
+    st32(job + 0xb4, ld32(job + 0xb4) + 1);
+    uint32_t r32 = (uint32_t)r;
+    if (!r32 || (r32 >> 31)) {
+        if (r32) st32(job + 0xbc, r32);
+        c->x[0] = job + 0x68;
+        f_7003c42cd0(c);
+    }
+    c->x[0] = job + 0x98;
+    f_7003c42cd0(c);
+}
+#endif
+
 __attribute__((constructor)) static void zstd_register(void) {
     rt_register_host(HOST_MULTIFRAME, host_multiframe);
     rt_register_host(HOST_USING_DDICT, host_using_ddict);
+#ifdef GAME_OOT
+    rt_dispatch_replace(GUEST_JOB, host_job);
+#endif
 }
 
 #endif

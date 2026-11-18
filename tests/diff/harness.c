@@ -42,7 +42,12 @@ static uint64_t mix(uint64_t h, uint64_t w) { return (h ^ w) * 0x100000001B3ull;
 // and the call count go to the top of the scratch buffer, which the memory check covers.
 static void rt_stub(Cpu *c, uint64_t target) {
     uint64_t h = mix(g_stub_h, target);
-    for (int i = 0; i < 31; i++) h = mix(h, c->x[i]);
+    for (int i = 0; i < 31; i++) {
+#ifdef STUB_SKIP_TEMPS   // func.py --temps-unsaved: X9-X15 are not stored before a call, a callee may not read them
+        if (i >= 9 && i <= 15) continue;
+#endif
+        h = mix(h, c->x[i]);
+    }
     h = mix(h, c->sp);
     for (int i = 0; i < 8; i++) h = mix(mix(h, (uint64_t)c->v[i]), (uint64_t)(c->v[i] >> 64));
     g_stub_h = h;
@@ -61,6 +66,9 @@ static void rt_stub(Cpu *c, uint64_t target) {
 void rt_dispatch(Cpu *c) {
     if (g_stubs) rt_stub(c, c->pc);
 }
+// runtime/cpu.h rt_dispatch_call: an empty table, so every call site goes to the stub above through rt_dispatch
+RtDispatchTable rt_dispatch_table;
+int rt_dispatch_inline_on;
 void rt_stub_call(Cpu *c, uint64_t target) { rt_stub(c, target); }
 void rt_spin_gate(Cpu *c, uint64_t head) { (void)c; (void)head; }
 void rt_svc(Cpu *c, uint32_t imm, uint64_t pc) { (void)c; (void)imm; (void)pc; }

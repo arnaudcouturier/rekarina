@@ -21,6 +21,7 @@
 #include "vk.h"
 #include "platform/platform.h"
 #include "cfg.h"
+#include "prep.h"
 uint64_t vk_listlog_addr(void), vk_listlog_hash(void);   // DEBUG-LISTLOG
 double vk_listlog_ms(void);
 
@@ -780,6 +781,7 @@ typedef struct {
     uint32_t n;
     uint64_t fence;
     volatile int32_t *ended;   // NULL, or the flag the recorder sets once it ended the part's command buffer (rec_end_async)
+    VkFence vkfence;           // an upload batch's fence (vk_sync_submit_upload), else VK_NULL_HANDLE
 } SubJob;
 // The flags of the parts that ended without a wait, taken in turn: a part's flag is read before 256 more parts end.
 static volatile int32_t part_ended[256];
@@ -811,7 +813,9 @@ static void sq_main(void *arg) {
         plat_mutex_unlock(&sq_lock);
         wait_ended(j->ended);
         vk_queue_lock();
-        VkResult r = vkQueueSubmit2(c->gfx_queue, j->n, j->si, VK_NULL_HANDLE);
+        vk_drv_urgent(1);   // queue work first in the driver (gfx_present.c "driver turns")
+        VkResult r = vkQueueSubmit2(c->gfx_queue, j->n, j->si, j->vkfence);
+        vk_drv_urgent(-1);
         vk_queue_unlock();
         if (r != VK_SUCCESS) {
             vk_device_fault_report(r);
@@ -853,14 +857,16 @@ static VkResult submit_batches(VkCtx *c, uint32_t n, const VkSubmitInfo2 *si, ui
     if (!sq_enabled()) {
         wait_ended(ended);
         vk_queue_lock();
+        vk_drv_urgent(1);
         VkResult r = vkQueueSubmit2(c->gfx_queue, n, si, VK_NULL_HANDLE);
+        vk_drv_urgent(-1);
         vk_queue_unlock();
         return r;
     }
     plat_mutex_lock(&sq_lock);
     while (sq_put - sq_done == SQ_N) plat_cond_wait(&sq_work, &sq_lock);
     SubJob *j = &sq[sq_put % SQ_N];
-    j->n = n, j->fence = fence, j->ended = ended;
+    j->n = n, j->fence = fence, j->ended = ended, j->vkfence = VK_NULL_HANDLE;
     for (uint32_t k = 0; k < n; k++) {
         j->si[k] = si[k];
         if (si[k].waitSemaphoreInfoCount > 4 || si[k].signalSemaphoreInfoCount > 4 || si[k].commandBufferInfoCount > CHAIN_MAX + 1)
@@ -875,6 +881,27 @@ static VkResult submit_batches(VkCtx *c, uint32_t n, const VkSubmitInfo2 *si, ui
     plat_cond_broadcast(&sq_work);
     plat_mutex_unlock(&sq_lock);
     return VK_SUCCESS;
+}
+
+// The upload batch (vk_memory.c vk_upload_flush) through the submitter too, in queue order before every batch queued
+// after it: the replay thread's flush before a part was a vkQueueSubmit of its own behind vk_queue_lock, which first
+// waits until the submitter has handed every queued part to the driver (+1.4 ms in the forest's slowest frames, the
+// replay thread off the processor inside its submission). 0: not queued (no submitter thread, or
+// REKARINA_UPLOAD_QUEUED=0): the caller submits it itself.
+int vk_sync_submit_upload(VkCommandBuffer cb, VkFence vkfence) {
+    static int on = -1;
+    if (on < 0) on = rt_knob("UPLOAD_QUEUED", "1");
+    if (!on || !sq_enabled() || sq_me) return 0;
+    plat_mutex_lock(&sq_lock);
+    while (sq_put - sq_done == SQ_N) plat_cond_wait(&sq_work, &sq_lock);
+    SubJob *j = &sq[sq_put % SQ_N];
+    j->n = 1, j->fence = 0, j->ended = NULL, j->vkfence = vkfence;
+    j->cbi[0][0] = (VkCommandBufferSubmitInfo){.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO, .commandBuffer = cb};
+    j->si[0] = (VkSubmitInfo2){.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2, .commandBufferInfoCount = 1, .pCommandBufferInfos = j->cbi[0]};
+    sq_put++;
+    plat_cond_broadcast(&sq_work);
+    plat_mutex_unlock(&sq_lock);
+    return 1;
 }
 
 // ---- A part of several command buffers (vk_exec.c "Draw stretches on worker threads")
@@ -1064,11 +1091,37 @@ int vk_sync_epoch_early(void) {
     return v;
 }
 
+// DEBUG-STALL (a test): REKARINA_TEST_STALL=<presents>:<ms>: once per map change (prep.c prep_map_frame), the first
+// submission recorded that many presents after it sleeps <ms> inside the replay's recording, with the submit lock held.
+// It makes on demand the long replay frame a slow or paging machine has at an arrival (dv12, 2026-11-16: a 9.5 s
+// frame five presents after the village's map change, then a read of a render target destroyed during it), while
+// the game's threads go on loading and finalizing what the old map left.
+static void test_stall(void) {
+    static int after = -2, ms;
+    static uint64_t done_for;
+    if (__builtin_expect(after == -2, 0)) {
+        const char *e = cfg_get("REKARINA_TEST_STALL"), *colon = e ? strchr(e, ':') : NULL;
+        after = e && *e && colon ? atoi(e) : -1;
+        ms = colon ? atoi(colon + 1) : 0;
+        if (ms <= 0) after = -1;
+        if (after >= 0) rt_log("vk: TEST STALL: the replay sleeps %d ms %d presents after each map change (REKARINA_TEST_STALL)", ms, after);
+    }
+    if (after < 0) return;
+    uint64_t mf = prep_map_frame(), now = __atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED) + 1;
+    if (!mf || mf == done_for || now < mf + (uint64_t)after) return;
+    done_for = mf;
+    rt_log("vk: TEST STALL: frame %llu (map change at %llu): the replay sleeps %d ms", (unsigned long long)now,
+           (unsigned long long)mf, ms);
+    plat_sleep_ms((uint32_t)ms);
+    rt_log("vk: TEST STALL: frame %llu: the replay goes on", (unsigned long long)now);
+}
+
 VkSpike vk_spike;
 volatile uint64_t vk_spike_sub_t0;   // DEBUG-SLOWSUB: when the submission being recorded began (0: none), for the sampler
 uint64_t vk_sync_submit(const uint64_t *handles, int n) {
     vk_sync_start();
     uint64_t spk_t0 = plat_now_ns();   // DEBUG-SPIKE
+    uint64_t cyc0 = __builtin_expect(sec_on, 0) ? plat_thread_cycles() : 0, tsc0 = cyc0 ? sec_clock() : 0;   // SUB_OFFCPU
     __atomic_store_n(&vk_spike_sub_t0, spk_t0, __ATOMIC_RELAXED);
     uint64_t ll_h0 = vk_listlog_hash();   // DEBUG-LISTLOG
     double ll_ms0 = vk_listlog_ms();
@@ -1109,6 +1162,7 @@ uint64_t vk_sync_submit(const uint64_t *handles, int n) {
     VkCommandBufferBeginInfo bi = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
                                    .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT};
     uint64_t t0 = perf_begin();
+    test_stall();   // DEBUG-STALL
     vkBeginCommandBuffer(s->cb, &bi);
     vk_crumb(s->cb, VK_CRUMB_SUBMIT, fence);
     ts_begin(s->cb);
@@ -1205,6 +1259,10 @@ uint64_t vk_sync_submit(const uint64_t *handles, int n) {
         sec_add_ns(SEC_SUB_GMEM, vk_spike.gmem), sec_add_ns(SEC_SUB_TEX, vk_spike.tex), sec_add_ns(SEC_SUB_REC, spk_rec);
         sec_add_ns(SEC_SUB_UPL, spk_upl), sec_add_ns(SEC_SUB_PRO, spk_pro), sec_add_ns(SEC_SUB_QUE, spk_que);
         sec_add_ns(SEC_SUB_REST, tot > k ? tot - k : 0);
+        if (cyc0) {   // wall ticks minus the thread's own: the time it did not run
+            uint64_t cyc = plat_thread_cycles() - cyc0, tsc = sec_clock() - tsc0;
+            if (tsc > cyc) sec_add(SEC_SUB_OFFCPU, tsc - cyc);
+        }
         if (vk_spike_on > 0) {
             static int8_t cls[96];
             for (uint32_t i = 0; i < 96; i++) {
@@ -1358,6 +1416,11 @@ int vk_sync_results_wait(uint64_t value, uint64_t timeout_ns) {
 uint64_t vk_sync_fence_issued(void) { return __atomic_load_n(&issued, __ATOMIC_ACQUIRE); }
 
 uint64_t vk_sync_issued(void) { return __atomic_load_n(&issued, __ATOMIC_ACQUIRE); }
+// The newest value handed out: submitted, or reserved by the asynchronous replay for a submission it records later.
+uint64_t vk_sync_reserved(void) {
+    uint64_t i = __atomic_load_n(&issued, __ATOMIC_ACQUIRE), r = __atomic_load_n(&reserved, __ATOMIC_ACQUIRE);
+    return r > i ? r : i;
+}
 
 void vk_sync_finish(void) {
     vk_sync_start();

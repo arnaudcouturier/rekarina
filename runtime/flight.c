@@ -31,8 +31,8 @@ static const char *const count_names[C_N] = {
     // PERF_CNT_* order (host.h)
     "pipe_bg_used", "draws_skip_pipe", "tex_up", "tex_reup", "draws_skip_shader", "pipe_waited", "oneshot_waited",
     "pipe_built", "tex_new", "tex_alias", "wb_done", "wb_skip", "cond_gpu", "cond_unknown", "cond_mem_true",
-    "cond_mem_false"};
-_Static_assert(PERF_CNT_N == 16, "count_names follows the PERF_CNT_* list");
+    "cond_mem_false", "mesh_skip", "cs_skip"};
+_Static_assert(PERF_CNT_N == 18, "count_names follows the PERF_CNT_* list");
 
 typedef struct {
     uint64_t frame, t_ns;
@@ -49,6 +49,7 @@ typedef struct {
 } DumpJob;
 
 int flight_on;
+uint32_t flight_thumb_w = 320, flight_thumb_h = 180;
 static int ring_n, thumbs_on;
 static Rec *ring;
 static uint64_t recorded;          // records written so far
@@ -107,13 +108,18 @@ void flight_init(void) {
         else snprintf(tmp, sizeof tmp, "flight");
     }
     if (!plat_full_path(tmp, base_dir, sizeof base_dir)) snprintf(base_dir, sizeof base_dir, "%s", tmp);
+    {
+        unsigned w = 0, h = 0;
+        const char *t = cfg_get("REKARINA_FLIGHT_THUMB");
+        if (t && sscanf(t, "%ux%u", &w, &h) == 2 && w >= 64 && h >= 36 && w <= 1280 && h <= 720) flight_thumb_w = w & ~3u, flight_thumb_h = h;
+    }
     thumbs_on = env_u("REKARINA_FLIGHT_THUMBS", 1) != 0;
     if (thumbs_on) vk_thumbs_enable(ring_n);
     flash_on = thumbs_on && env_u("REKARINA_FLIGHT_FLASH", 1) != 0 &&
                (flash_px = malloc((size_t)FLIGHT_THUMB_W * FLIGHT_THUMB_H * 4)) != NULL;
     flight_on = 1;
     rt_log("flight: on: last %d frames, %s; dump on F8, on a frame over %llu ms (one per 10 s)%s, to %s", ring_n,
-           thumbs_on ? "thumbnails 320x180" : "no thumbnails", (unsigned long long)(spike_ns / 1000000),
+           thumbs_on ? "thumbnails" : "no thumbnails", (unsigned long long)(spike_ns / 1000000),
            spike_ns ? "" : " (spike trigger off)", base_dir);
     if (thumbs_on)
         rt_log("flight: memory: records %llu KB, thumbnail ring %llu MB (host-visible)",

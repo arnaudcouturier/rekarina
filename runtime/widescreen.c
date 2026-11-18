@@ -55,10 +55,12 @@ static double wanted_ratio(void) {
     return (double)w / h;
 }
 
-// REKARINA_GAME_RES: the picture's height, 1080 up to 4320 ("window": the window's height, or the monitor's in
-// fullscreen, never below the game's 1440). 1080 is the one height below the game's own: a lighter picture for slower
-// GPUs, its scene and the DLSS modes shares of it as of any other picture (scale_k).
-#define PICTURE_MIN_H 1080
+// REKARINA_GAME_RES: the picture's height, 720 up to 4320 ("window": the window's height, or the monitor's in
+// fullscreen, never below the game's 1440). 720, 900 and 1080 are below the game's own: lighter pictures for slower
+// GPUs, their scenes and the DLSS modes' shares of them as of any other picture (scale_k). On a small GPU much of the
+// frame's cost follows the picture, not the scene (post-processing, the UI, the scaler): a Steam Deck shows a 16:9
+// picture in 1280x720 of its screen, so the game's 2560x1440 drew four times the pixels it can show.
+#define PICTURE_MIN_H 720
 static unsigned picture_height(void) {
     const char *s = cfg_value("REKARINA_GAME_RES");
     int w = 0, h = GAME_H, min = PICTURE_MIN_H;

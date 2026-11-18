@@ -3,8 +3,11 @@
 #pragma once
 #include <stdint.h>
 
-#define FLIGHT_THUMB_W 320
-#define FLIGHT_THUMB_H 180
+// The thumbnail size: 320x180, or REKARINA_FLIGHT_THUMB=<w>x<h> (up to 1280x720; read by flight_init) to look at a
+// small part of the picture frame by frame, as the water by the drawbridge.
+extern uint32_t flight_thumb_w, flight_thumb_h;
+#define FLIGHT_THUMB_W flight_thumb_w
+#define FLIGHT_THUMB_H flight_thumb_h
 
 extern int flight_on;   // REKARINA_FLIGHT=1, set once by flight_init before the first present
 

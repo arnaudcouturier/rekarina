@@ -10,6 +10,7 @@
 // destruction) @ da35b83a (MIT, Copyright (c) 2026 Peiikai). MNG aliases host VM (mach_vm_remap) and protects pages
 // (fault handler); here virtual pools are a GPU-side page table over device-local memory and dirty pages come from
 // GetWriteWatch (mem_written_pages), so neither is needed.
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -61,7 +62,8 @@ typedef struct PoolRec {
     // VRAM mirror (POOL_IMPORT, "VRAM mirror" below). mstate and mbuf change on the replay thread only.
     uint8_t mstate;                    // MS_NONE until the first buffer use, then MS_ON or MS_REFUSED
     uint8_t mwhy;                      // MS_REFUSED: MR_* (MR_DEMOTED: gave its mirror up, gmem_demote_pending)
-    uint32_t mtry;                     // MR_BUDGET: the frame of the refusal (vk_mem_use asks again 300 frames later)
+    uint16_t mrefused;                 // refusals for room so far (MR_BUDGET, MR_ALLOC; for the log lines)
+    uint32_t mtry;                     // MR_BUDGET, MR_ALLOC: the frame of the refusal (vk_mem_use asks again later)
     uint64_t up_bytes;                 // replay: CPU -> mirror bytes copied since the last mirror log (REKARINA_TRACE=perf)
     uint64_t hot_bytes;                // replay: CPU -> mirror bytes this frame (hot pools, vk_mem_census)
     uint32_t hot_frames;               // frames in a row it was copied (nearly) whole
@@ -98,6 +100,11 @@ static void shadow_touch(PoolRec *r);
 static void shadow_forget(PoolRec *r);
 static void slz_pool_gone(PoolRec *r);   // shadow storage's write-back on demand: the pool's closed pages come in first
 static void mirror_retiring(PoolRec *r);  // vk_pool_fini: kept until mirror_retire (or vk_mem_shutdown)
+static void pool_free_later(void *arg);   // vk_pool_fini: an unmirrored pool's record, past its last submission
+static void defer(int kind, uint64_t handle, VmaAllocation alloc);
+// from DEAD_HOST on: no Vulkan object. DEAD_POOL: a finalized pool's record (vk_pool_fini), freed past every submission
+// that can still name it, with the grace of the images (collect_locked).
+enum { DEAD_IMAGE = 1, DEAD_IMAGE_VMA, DEAD_VIEW, DEAD_BUFFER_VMA, DEAD_HOST, DEAD_CALL, DEAD_POOL };
 static void mirror_retire(void *arg);    // completion thread: destroys a finalized mirrored pool's record
 static void grow(void **arr, int *cap, size_t elem);
 
@@ -230,6 +237,7 @@ static int alloc_physical(VkCtx *c, PoolRec *r) {
         r->alloc = NULL;
         return 0;
     }
+    vk_vma_name(r->alloc, "pool:physical");   // DEBUG-VMANAME
     if (vk_fix_zero()) {   // Switch pool memory starts zeroed; once per pool, not per image placed in it
         VkCommandBuffer cb = vk_upload_begin();
         vkCmdFillBuffer(cb, r->buf, 0, VK_WHOLE_SIZE, 0);
@@ -267,7 +275,7 @@ static PoolRec *phys_find(const pool_t *key) {
 // vk_mem_gmem_table), so the report says which of them holds the address or held it: the buffers alive now, and the
 // last GONE_N destroyed with the time of their end (vk_mem_fault_report, called by vk_device_fault_report). An address
 // in none of them is an image's or another buffer's.
-#define GONE_N 1024
+#define GONE_N 16384   // a map change frees pools by the hundred: 1024 could cover only its last seconds
 static struct { uint64_t a, n, lo, at_ns; uint8_t which, kind; } gone[GONE_N];
 static uint32_t ngone;   // pool_lock
 
@@ -313,10 +321,109 @@ void vk_mem_fault_report(uint64_t addr, uint64_t precision) {
     if (locked) plat_mutex_unlock_shared(&pool_lock);
 }
 
-static void destroy_rec(VkCtx *c, PoolRec *r) {
+// ---- images bound into a pool's memory, held after their texture went (REKARINA_POOL_IMAGE_HOLD_MS, default 30000;
+// 0: deferred at once, as before)
+// On NVIDIA an image bound into a pool's block gets a GPU address mapping of its own, made at the bind and removed when
+// the image is destroyed (VK_EXT_device_address_binding_report shows both). Device losses after map changes and
+// under memory pressure read such a mapping seconds after the image was destroyed, while no table of the runtime still
+// named the image (dv12, 2026-11-16: a 640x360 depth target bound into a pool, destroyed 10.4 s before the read; B's
+// install tour the same day, at the same arrival). Destroying such an image frees no memory: its bytes are the pool's
+// and stay allocated while the pool lives. So it is kept, mapped, for the hold or until its pool's memory goes
+// (ph_release_mem in destroy_rec_now): a late reader then reads the pool's bytes, a stale texel at worst, instead of
+// losing the device. The live check counts a held image as destroyed (lc_dead), so a recording that still takes it
+// during the hold is reported with its path. Held images own no memory; their number is capped (PH_N, the oldest goes).
+// Depth images have a hold of their own (REKARINA_POOL_IMAGE_HOLD_DEPTH_MS, default 500): NVIDIA's driver keeps about
+// 0.25 MiB outside the allocations for every depth image that exists, and the game makes a new pool-bound target at a
+// new address every frame or few, half of them depth: 30 s of them held were 3,700-4,700 depth images and 0.5-0.8 GiB
+// of driver memory in two minutes of the forest, 1.7 GiB late in a session (2026-11-17, docs/oot-notes.md). Colour
+// images cost the driver nothing to keep, so they keep the 30 s. Plan A (eight maps, grown-up), one run each, all
+// without a device loss: the driver's memory outside VMA grew +963 MiB over the run with the 30 s hold, +343 with no
+// hold, +409 with 5 s, +207 with depth images held 500 ms (at most 249 of them held); 500 ms is a margin past the
+// submissions that may still name an image, which the deferral's stamp covers already.
+#define PH_N 16384
+typedef struct {
+    struct { VkImage img; VmaAllocation mem; uint64_t ns; } *e;
+    int n, head;          // a ring: head the oldest
+    uint64_t hold_ns, held;
+    int peak;
+} PhRing;
+static PhRing ph[2];      // 0: colour and the rest, 1: depth
+static PlatMutex ph_lock = PLAT_MUTEX_INIT;
+static int ph_init_done;
+static void lc_dead(uint64_t handle);   // DEBUG-LIVECHECK (below)
+void vk_dd_born(uint64_t h);   // DEBUG-DOUBLEDEFER (below)
+static void dd_defer(int kind, uint64_t h, const void *site);
+
+static void ph_init(void) {   // ph_lock held
+    if (ph_init_done) return;
+    ph_init_done = 1;
+    const char *e = cfg_get("REKARINA_POOL_IMAGE_HOLD_MS"), *d = cfg_get("REKARINA_POOL_IMAGE_HOLD_DEPTH_MS");
+    long long ms = e && *e ? atoll(e) : 30000, dms = d && *d ? atoll(d) : 500;
+    ph[0].hold_ns = ms > 0 ? (uint64_t)ms * 1000000ull : 0;
+    ph[1].hold_ns = dms > 0 ? (uint64_t)dms * 1000000ull : 0;
+    rt_log("vk: images bound into pool memory are held %lld ms after their texture goes, depth images %lld ms "
+           "(REKARINA_POOL_IMAGE_HOLD_MS, REKARINA_POOL_IMAGE_HOLD_DEPTH_MS)", ms > 0 ? ms : 0, dms > 0 ? dms : 0);
+}
+
+int vk_mem_pool_image_hold(VkImage img, VmaAllocation mem, int depth) {
+    if (!img || !mem) return 0;
+    VkImage out = VK_NULL_HANDLE;
+    plat_mutex_lock(&ph_lock);
+    ph_init();
+    PhRing *r = &ph[depth ? 1 : 0];
+    if (!r->hold_ns || (!r->e && !(r->e = calloc(PH_N, sizeof *r->e)))) {
+        plat_mutex_unlock(&ph_lock);
+        return 0;
+    }
+    if (r->n == PH_N) out = r->e[r->head].img, r->head = (r->head + 1) % PH_N, r->n--;   // full: the oldest goes now
+    r->e[(r->head + r->n++) % PH_N] = (typeof(*r->e)){img, mem, plat_now_ns()};
+    r->held++;
+    int say = r->n >= r->peak + 256 ? (r->peak = r->n) : 0;
+    plat_mutex_unlock(&ph_lock);
+    if (say)
+        rt_log("vk: %d %s images bound into pool memory held at most so far (%llu held in all)", say, depth ? "depth" : "colour",
+               (unsigned long long)r->held);
+    if (vk_live_check_on()) lc_dead((uint64_t)(uintptr_t)img);
+    if (out) vk_defer_image(out, NULL);
+    return 1;
+}
+
+// The held images whose hold ended (mem NULL), or every one bound into mem (its memory goes).
+static uint64_t ph_released_with_pools;   // held images that went with their pool's memory (quar_drain's line)
+static void ph_release(VmaAllocation mem) {
+    if (!__atomic_load_n(&ph[0].n, __ATOMIC_RELAXED) && !__atomic_load_n(&ph[1].n, __ATOMIC_RELAXED)) return;
+    VkImage go[256];
+    int n = 0, more = 0;
+    uint64_t now = plat_now_ns();
+    plat_mutex_lock(&ph_lock);
+    for (int k = 0; k < 2; k++) {
+        PhRing *r = &ph[k];
+        if (!mem) {
+            while (r->n && n < 256 && now - r->e[r->head].ns >= r->hold_ns)
+                go[n++] = r->e[r->head].img, r->head = (r->head + 1) % PH_N, r->n--;
+        } else {   // the ring keeps its order: the others close up
+            int w = 0;
+            for (int j = 0; j < r->n; j++) {
+                int i = (r->head + j) % PH_N;
+                if (r->e[i].mem == mem && n < 256) go[n++] = r->e[i].img;
+                else r->e[(r->head + w++) % PH_N] = r->e[i];
+            }
+            r->n = w;
+        }
+    }
+    more = n == 256;   // matches past the 256th stayed: another round
+    plat_mutex_unlock(&ph_lock);
+    for (int i = 0; i < n; i++) vk_defer_image(go[i], NULL);
+    if (mem) ph_released_with_pools += (uint64_t)n;
+    if (more) ph_release(mem);
+}
+
+static void destroy_rec_now(VkCtx *c, PoolRec *r) {
+    if (r->alloc) ph_release(r->alloc);         // held images bound into this memory go before it
+    if (r->alloc_tw) ph_release(r->alloc_tw);
     for (int w = 0; w < 2; w++)
         if (r->da_of[w] && r->da_of[w] == (w ? r->mbuf : r->buf)) {
-            uint32_t i = ngone++ % GONE_N;
+            uint32_t i = __atomic_fetch_add(&ngone, 1, __ATOMIC_RELAXED) % GONE_N;   // the free thread too (qf_main)
             gone[i].a = r->da[w], gone[i].n = rec_span(r, w), gone[i].lo = r->lo, gone[i].at_ns = plat_now_ns();
             gone[i].which = (uint8_t)w, gone[i].kind = (uint8_t)r->kind;
         }
@@ -328,6 +435,173 @@ static void destroy_rec(VkCtx *c, PoolRec *r) {
     if (r->alloc_tw) vmaFreeMemory(c->vma, r->alloc_tw);
     free(r->pt);
     free(r);
+}
+
+// ---- a finalized pool's memory, held a while (REKARINA_POOL_QUARANTINE, default 1; 0 frees at once)
+// The game frees a pool on its own thread once its fence says the GPU is done with it (vk_pool_fini). The pool's images
+// go through the deferral, stamped with the submission being recorded, but the memory was freed at once, after a
+// vkQueueWaitIdle that covers only what was submitted: a submission of the replay's not submitted yet (held by the
+// queue interleave until its wait is met, parts recorded on the chunk threads, the early results point letting the
+// game go on) still named the pool, and its draws read memory that was no longer allocated. The device was lost that
+// way after map changes and where the game streams (2026-11-14, 2026-11-15: the memory of a render target of the freed
+// pool in both reports). So a pool's memory and buffers go back to the driver only once the scene has drawn
+// QUAR_ROUNDS submissions since (vk_texture.c's scene clock: loading screens do not count) and QUAR_MIN_MS passed, or
+// QUAR_MAX_MS passed. The cost is the old map's pools (385 to 641 MiB at a map change) held for a few seconds.
+#define QUAR_ROUNDS 240
+#define QUAR_MIN_MS 2000
+#define QUAR_MAX_MS 20000
+typedef struct { PoolRec *r; uint32_t round; uint64_t ns; } Quar;
+static Quar *quar;
+static int nquar, cquar, quar_closed;
+static uint64_t quar_bytes, quar_peak;
+static PlatMutex quar_lock = PLAT_MUTEX_INIT;
+uint32_t vk_texture_scene_rounds(void);   // vk_texture.c: submissions that drew a scene so far
+
+static int quar_on(void) {
+    static int on = -1;
+    if (on < 0) on = rt_knob("POOL_QUARANTINE", "1") != 0;
+    return on;
+}
+
+static void destroy_rec(VkCtx *c, PoolRec *r) {
+    if (!quar_on() || !(r->alloc || r->mem || r->alloc_tw || r->mbuf)) {
+        destroy_rec_now(c, r);
+        return;
+    }
+    plat_mutex_lock(&quar_lock);
+    if (quar_closed) {
+        plat_mutex_unlock(&quar_lock);
+        destroy_rec_now(c, r);
+        return;
+    }
+    if (nquar == cquar) grow((void **)&quar, &cquar, sizeof *quar), rt_heap_note("pool quarantine", quar, cquar * sizeof *quar);
+    quar[nquar++] = (Quar){r, vk_texture_scene_rounds(), plat_now_ns()};
+    quar_bytes += r->size;
+    if (quar_bytes > quar_peak) quar_peak = quar_bytes;
+    plat_mutex_unlock(&quar_lock);
+}
+
+// REKARINA_QUAR_THREAD (default 1; 0: the completion thread frees, as before): a pool whose time came is freed by a thread of its own at
+// a low priority, not by the completion thread that found it due. A step of 288-324 MiB (one pool: one allocation)
+// took the completion thread 13-24 ms, and the fence the render thread waited for next was published only after it:
+// the frame 241 frames after an arrival still took 26-62 ms (2026-11-17; with the thread 17-27 ms in two runs, 15
+// arrivals; 64 tiny pools took it 10-15 ms a step as well). The pool's time is the same; it is freed
+// later, never earlier. A full queue, or the end (all), frees on the caller's thread as before; the end also waits
+// until the thread has freed what it took.
+#define QF_N 1024
+static PoolRec *qf_ring[QF_N];
+static uint32_t qf_head, qf_tail;
+static volatile int32_t qf_busy, qf_started;
+static PlatMutex qf_lock = PLAT_MUTEX_INIT;
+static PlatEvent qf_ev;
+static void qf_main(void *arg) {
+    VkCtx *c = arg;
+    plat_thread_background();
+    for (;;) {
+        plat_event_wait(&qf_ev);
+        for (;;) {
+            PoolRec *r = NULL;
+            plat_mutex_lock(&qf_lock);
+            if (qf_head != qf_tail) r = qf_ring[qf_head++ % QF_N], __atomic_store_n(&qf_busy, 1, __ATOMIC_RELEASE);
+            plat_mutex_unlock(&qf_lock);
+            if (!r) break;
+            destroy_rec_now(c, r);
+            __atomic_store_n(&qf_busy, 0, __ATOMIC_RELEASE);
+        }
+    }
+}
+static int qf_push(VkCtx *c, PoolRec *r) {
+    static int on = -1;
+    if (on < 0) on = rt_knob("QUAR_THREAD", "1") != 0;
+    if (!on) return 0;
+    if (!__atomic_load_n(&qf_started, __ATOMIC_ACQUIRE)) {
+        plat_mutex_lock(&qf_lock);
+        if (!qf_started) {
+            plat_event_init(&qf_ev, 0, 0);
+            __atomic_store_n(&qf_started, plat_thread_spawn(qf_main, c, "vk pool free", 0) ? 1 : -1, __ATOMIC_RELEASE);
+        }
+        plat_mutex_unlock(&qf_lock);
+    }
+    if (qf_started <= 0) return 0;
+    int ok = 0;
+    plat_mutex_lock(&qf_lock);
+    if (qf_tail - qf_head < QF_N) qf_ring[qf_tail++ % QF_N] = r, ok = 1;
+    plat_mutex_unlock(&qf_lock);
+    if (ok) plat_event_set(&qf_ev);
+    return ok;
+}
+static void qf_finish(VkCtx *c) {   // the end: what the thread has not taken is freed here, and its last one awaited
+    if (__atomic_load_n(&qf_started, __ATOMIC_ACQUIRE) <= 0) return;
+    for (;;) {
+        PoolRec *r = NULL;
+        plat_mutex_lock(&qf_lock);
+        if (qf_head != qf_tail) r = qf_ring[qf_head++ % QF_N];
+        plat_mutex_unlock(&qf_lock);
+        if (!r) break;
+        destroy_rec_now(c, r);
+    }
+    while (__atomic_load_n(&qf_busy, __ATOMIC_ACQUIRE)) plat_sleep_ms(1);
+}
+
+// Frees the held pools whose time came (all: every one, the device idle).
+// The old map's pools all came due at once, QUAR_ROUNDS scene submissions after the arrival, and freeing 385-641 MiB
+// of memory and buffers in one go made the next frame wait 100-160 ms for the GPU, at every map change and in every
+// run (the frame 241 frames after the scene started: the field, the woods, the Market, the first dungeon, 2026-11-17).
+// So in play the pools that came due go REKARINA_QUAR_STEP_MB at a time (default 32; at least one pool), one such
+// step a frame; a step comes due again the next frame. 0: all at once, as before. Over the cap below (a small card)
+// and at the end (all) they go at once.
+static void quar_drain(VkCtx *c, int all) {
+    if (!__atomic_load_n(&nquar, __ATOMIC_RELAXED)) return;
+    static int64_t step = -1;
+    static uint64_t step_frame;
+    if (step < 0) {
+        const char *e = cfg_get("REKARINA_QUAR_STEP_MB");
+        step = (int64_t)(e && *e ? atoll(e) : 32) << 20;
+    }
+    uint32_t round = vk_texture_scene_rounds();
+    uint64_t now = plat_now_ns(), frame = __atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED);
+    PoolRec *go[64];
+    int n = 0;
+    // On a small card the held pools give way first: over an eighth of the video memory budget (at least 256 MiB),
+    // the oldest ones go at once.
+    uint64_t used = 0, budget = 0, cap = ~0ull, freed = 0;
+    int exact = 0, limited = !all && step > 0;
+    if (!all && vk_mem_vram(&used, &budget, &exact) && budget) cap = budget / 8 > (256ull << 20) ? budget / 8 : 256ull << 20;
+    plat_mutex_lock(&quar_lock);
+    for (int i = 0; i < nquar && n < 64;) {
+        uint64_t ms = (now - quar[i].ns) / 1000000;
+        int over = quar_bytes > cap && i == 0;
+        int due = all || ms >= QUAR_MAX_MS || (ms >= QUAR_MIN_MS && round - quar[i].round >= QUAR_ROUNDS);
+        if (due && !over && limited && (frame == step_frame || freed >= (uint64_t)step)) due = 0;   // a later frame
+        if (due || over) {
+            go[n++] = quar[i].r;
+            freed += quar[i].r->size;
+            quar_bytes -= quar[i].r->size;
+            memmove(quar + i, quar + i + 1, (size_t)(--nquar - i) * sizeof *quar);   // oldest first stays first
+        } else {
+            i++;
+        }
+    }
+    if (all) quar_closed = 1;
+    if (limited && n) step_frame = frame;
+    plat_mutex_unlock(&quar_lock);
+    uint64_t t0 = plat_now_ns(), imgs0 = ph_released_with_pools;
+    if (all) qf_finish(c);
+    for (int i = 0; i < n; i++)
+        if (all || !qf_push(c, go[i])) destroy_rec_now(c, go[i]);
+    if (n && (rt_trace & RT_TRACE_PERF)) {   // what each step freed and what it cost this thread
+        static int nl;
+        if (nl++ < 400)
+            rt_log("vk: frame %llu: %d held pools freed (%.1f MiB) with %llu images bound into them, in %.2f ms, %d held still",
+                   (unsigned long long)frame, n, freed / 1048576.0, (unsigned long long)(ph_released_with_pools - imgs0),
+                   (plat_now_ns() - t0) / 1e6, nquar);
+    }
+    if (n == 64 && !limited) quar_drain(c, all);
+    static uint64_t logged_peak;
+    if (quar_peak >= logged_peak + (256ull << 20)) {
+        logged_peak = quar_peak;
+        rt_log("vk: finalized pools held before their memory goes back: at most %.0f MiB so far", quar_peak / 1048576.0);
+    }
 }
 
 // The twin of a physical pool's memory (vk_texture.c bind_pool_memory): a second block of the same size and memory type,
@@ -351,6 +625,7 @@ VmaAllocation vk_mem_phys_twin(VmaAllocation main) {
             VmaAllocationCreateInfo ai = {.flags = VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT,
                                           .memoryTypeBits = 1u << info.memoryType};
             if (vmaAllocateMemory(c->vma, &req, &ai, &r->alloc_tw, NULL) != VK_SUCCESS) r->alloc_tw = NULL;
+            vk_vma_name(r->alloc_tw, "pool:twin");   // DEBUG-VMANAME
             rt_log("vk: physical pool %#llx: a twin block of %llu MiB for images at odd offsets%s", (unsigned long long)r->lo,
                    (unsigned long long)(info.size >> 20), r->alloc_tw ? "" : " could not be allocated");
         }
@@ -361,9 +636,18 @@ VmaAllocation vk_mem_phys_twin(VmaAllocation main) {
     return tw;
 }
 
+#ifndef _WIN32
+static void guest_memory_log(void);   // below, at mirror_mode
+#endif
 int vk_pool_init(pool_t *p) {
     VkCtx *c = vk_ctx();
     if (!c) { rt_log("vk: MemoryPoolInitialize before vk_init"); return 0; }
+#ifndef _WIN32
+    // At the first pool, not in mirror_mode: that runs while the device is being set up, before vk_ctx() answers (it
+    // read the device through a null context and every Linux start ended there, found in WSL 2026-11-16).
+    static int32_t said;
+    if (!plat_xchg32(&said, 1)) guest_memory_log();
+#endif
     // The GPU never sees a GPU_NO_ACCESS pool, except a physical one (0x189; 1.4.3 also 0x18c, CPU-visible) through the
     // virtual pools that map it. Either gets device-local memory: 1.4.3's CPU never writes its 0x18c pool's storage
     // (unchanged over 3600 frames of the intro), so the guest storage and the GPU copy need no sync.
@@ -450,10 +734,14 @@ void vk_pool_fini(pool_t *p) {
         vk_queue_unlock();
     }
     vk_mem_collect();
-    // A mirrored pool's record and buffers outlive the submission being recorded, whose sync copies and write-backs may
-    // name them (the game frees a pool only once the GPU is done with it, but its CPU writes may still be queued).
-    if (r->mbuf) mirror_retiring(r), vk_completion_add(vk_sync_issued() + 1, mirror_retire, r);
-    else destroy_rec(c, r);
+    // The record, its buffers and its memory outlive every submission that can still name them: the one being recorded
+    // (its sync copies, write-backs and draws may name them; the game frees a pool once its own fence says the GPU is
+    // done, but the replay may not have submitted all of that work yet: held rests, chunk-thread parts, the early
+    // results point) and any value handed out before it, plus the images' grace (DEAD_POOL). Freed at once after the
+    // queue wait above, the memory was read by such a submission and the device was lost (2026-11-15). The quarantine
+    // (destroy_rec) then holds the memory a little longer still.
+    if (r->mbuf) mirror_retiring(r), defer(DEAD_POOL, (uint64_t)(uintptr_t)mirror_retire, (VmaAllocation)r);
+    else defer(DEAD_POOL, (uint64_t)(uintptr_t)pool_free_later, (VmaAllocation)r);
 }
 
 // Requests were checked by the front end (nvn_api_core.c, MNG totk_vpool.c); apply them in order.
@@ -549,7 +837,13 @@ int vk_mem_resolve(uint64_t addr, uint64_t size, VkMemSpan *out) {
 // The pool index lookup under the lock; a non-overlapped import or physical pool goes into the address's cache slot.
 static int resolve_locked(uint64_t addr, uint64_t size, VkMemSpan *out) {
     memset(out, 0, sizeof *out);
-    plat_mutex_lock_shared(&pool_lock);
+    if (!__builtin_expect(sec_on, 0)) {
+        plat_mutex_lock_shared(&pool_lock);
+    } else if (!plat_mutex_trylock_shared(&pool_lock)) {   // RL_POOL: a writer held it
+        uint64_t t0 = sec_clock();
+        plat_mutex_lock_shared(&pool_lock);
+        if (sec_replay_thread()) sec_add(SEC_RL_POOL, sec_clock() - t0);
+    }
     const pidx_ent *e = pidx_find(&pool_index, (uintptr_t)addr, size);
     PoolRec *r = e ? e->buf : NULL;
     int ok = 0;
@@ -652,7 +946,9 @@ void vk_mem_census(uint64_t frame) {
     mirror_frame = frame;
     if (vk_mirror_on) hot_census();
     static uint64_t window_start;
-    if ((rt_trace & RT_TRACE_PERF) && frame % 600 == 0) vram_log(frame);
+    static int every = -1;   // DEBUG-VRAMEVERY: REKARINA_VRAM_LOG_EVERY=<frames> (default 600) between the vram lines
+    if (every < 0) { const char *e = cfg_get("REKARINA_VRAM_LOG_EVERY"); every = e && atoi(e) >= 60 ? atoi(e) : 600; }
+    if ((rt_trace & RT_TRACE_PERF) && frame % (uint64_t)every == 0) vram_log(frame);
     if (frame % 600 == 0) mem_result_log(frame);   // REKARINA_RESULT_WATCH
     if ((rt_trace & RT_TRACE_PERF) && !vk_mirror_on) dirty_frame(frame);
     if ((rt_trace & RT_TRACE_PERF) ? frame % 60 == 0 : frame == 600 || frame == 1800)
@@ -707,7 +1003,16 @@ void vk_mem_census(uint64_t frame) {
 // is what is left of the card once other programs took theirs (VK_EXT_memory_budget). Over it, Windows moves the game's images to
 // system memory and the frame rate falls to a fraction: with After Effects holding 7 GiB of a 12 GiB card the village
 // ran at 13 fps against 104 (6.5 GiB in use, 5.4 GiB of budget; 2026-11-11). The menu layer shows a notice then
-// (ui/menu.cpp vram_notice_draw). Asked once a second, from the present path only; three answers in a row decide.
+// (ui/menu.cpp vram_notice_draw). Asked once a second, from the present path only.
+// The budget keeps 15 % of the card free besides the other programs' share (room_main below), and the game may stand
+// in that margin with nothing slow: compared with the budget the notice came up at 8.6 GiB held against 8.3 with every
+// stop of the tour at 5-7 ms of GPU time (2026-11-16). So it compares with the card's real room (the heaps less what
+// the other programs hold, vk_mem_vram_real) and needs SHORT_SECS answers in a row over it. Without the adapter counter
+// (no real room known) the rule is the budget's, as before: over it, or at it with under a twentieth to spare while the
+// budget is under 7 GiB (a card another program fills), three answers in a row.
+// TODO(user): the notice's text (ui/menu.cpp vram_notice_draw) is the user's to word; it is left as it is.
+#define SHORT_SECS 6
+uint64_t vk_mem_vram_real(void);
 int vk_mem_vram_short(double *used_gb, double *budget_gb) {
     static uint64_t next_ns;
     static int over, state;
@@ -717,15 +1022,16 @@ int vk_mem_vram_short(double *used_gb, double *budget_gb) {
         uint64_t used, budget;
         int exact;
         next_ns = now + 1000000000ull;
-        // over the budget, or at it with under a twentieth to spare while the budget is under 7 GiB (a card another
-        // program fills: the budget then follows what the game holds, and every new image pushes one out)
+        uint64_t real = vk_mem_vram_real();
         int o = vk_mem_vram(&used, &budget, &exact) && exact &&
-                (used > budget + (192ull << 20) || (budget < (7ull << 30) && used + budget / 20 > budget));
+                (real ? used > real
+                      : used > budget + (192ull << 20) || (budget < (7ull << 30) && used + budget / 20 > budget));
         over = o ? over + 1 : 0;
-        if (over == 3 && !state)
+        int need = real ? SHORT_SECS : 3;
+        if (over == need && !state)
             rt_log("mem: video memory is short: %.0f MiB in use, %.0f MiB of budget (another program holds the rest of the card)",
                    used / 1048576.0, budget / 1048576.0);
-        state = over >= 3;
+        state = over >= need;
         u = used / 1073741824.0, b = budget / 1073741824.0;
     }
     *used_gb = u, *budget_gb = b;
@@ -746,6 +1052,21 @@ uint64_t vk_mem_vma_free(void) {
     return n;
 }
 
+// The allocator's device-local blocks (dedicated allocations count as blocks in VMA's statistics): their count and bytes,
+// and the bytes allocated in them. A caller that frees in bulk (a loading screen's cleaning) takes it before and after
+// to say how much went back to the driver (blocks emptied) and how much only left holes.
+void vk_mem_vma_blocks(uint64_t *blocks, uint64_t *block_bytes, uint64_t *alloc_bytes) {
+    *blocks = *block_bytes = *alloc_bytes = 0;
+    VkCtx *c = vk_ctx();
+    if (!c || !c->vma) return;
+    VmaBudget vb[VK_MAX_MEMORY_HEAPS];
+    vmaGetHeapBudgets(c->vma, vb);
+    for (uint32_t h = 0; h < c->mem_props.memoryHeapCount && h < VK_MAX_MEMORY_HEAPS; h++)
+        if (c->mem_props.memoryHeaps[h].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT)
+            *blocks += vb[h].statistics.blockCount, *block_bytes += vb[h].statistics.blockBytes,
+                *alloc_bytes += vb[h].statistics.allocationBytes;
+}
+
 // DEBUG-VRAMCAP: REKARINA_VRAM_BUDGET_MB=<n>: the budget every caller sees is at most n MiB, to watch on a large card
 // what the eviction and the texture quality do on a small one (the memory itself is still there, so the frame rate
 // of such a run says nothing about the small card's). 0: no cap.
@@ -758,6 +1079,101 @@ uint64_t vk_mem_vram_cap(void) {
     return (uint64_t)cap;
 }
 
+// The device-local heaps' usage and budget as VK_EXT_memory_budget gives them (any thread).
+static void heap_budget(VkCtx *c, uint64_t *used, uint64_t *budget, uint64_t *size) {
+    VkPhysicalDeviceMemoryBudgetPropertiesEXT b = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_BUDGET_PROPERTIES_EXT};
+    VkPhysicalDeviceMemoryProperties2 p2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_PROPERTIES_2, .pNext = &b};
+    vkGetPhysicalDeviceMemoryProperties2(c->phys, &p2);
+    *used = *budget = *size = 0;
+    for (uint32_t h = 0; h < p2.memoryProperties.memoryHeapCount && h < VK_MAX_MEMORY_HEAPS; h++)
+        if (p2.memoryProperties.memoryHeaps[h].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT)
+            *used += b.heapUsage[h], *budget += b.heapBudget[h], *size += p2.memoryProperties.memoryHeaps[h].size;
+}
+
+// ---- the room other programs leave on the card (Windows: the adapter memory counter Task Manager reads)
+// heapBudget did not follow the desktop. On 2026-11-16 the 22-map tour read a budget of 10,386 MiB at 10:09 (lt0h) and
+// 10,391 at 22:40 (kw1), yet in the evening other programs held 1.5-2.3 GiB of the 12 GiB card (the adapter counter at
+// 10.3-11.3 GiB while the game held 8.7-9.0). Under that budget the game filled the card: at the tour's last stop kw1
+// held 9,853 MiB (95 % of its budget) and drew a frame in 36 ms of GPU time, against 7-8 ms in lt0h (9,558 MiB) and kt1
+// (9,402) with the same work per frame (uploads, images made, pressure drops): Windows had moved allocations to system
+// memory. So the budget every caller sees is also kept under the heaps' size minus what the other processes hold
+// resident (the adapter's dedicated usage minus ours). A thread of its own samples it once a second (the counter query
+// costs milliseconds and must not run on the replay); the result is lowered at once and raised slowly (a program that
+// closes gives its room back over seconds), and never goes below 60 % of heapBudget, so a misreading cannot starve the
+// game. REKARINA_VRAM_BUDGET_MB still caps it; without the counter (Linux, a failed query) heapBudget stands as before.
+// REKARINA_VRAM_OTHERS=0 turns it off.
+// The card is not usable to the last byte: a fresh start at the tour's last stop drew in 5-7 ms with the adapter at
+// 9.4 GiB in all (gt_rc), and with the game capped at 9.2 GiB (kv1) the stops where the adapter stood near 10.9 GiB ran
+// at 7-9 ms but the last one, at about 11.1 GiB, took 52-75 ms a frame. So REKARINA_VRAM_MARGIN_PCT (default
+// MARGIN_PCT_DEFAULT) percent of the heaps is kept free besides what the other programs hold.
+#define MARGIN_PCT_DEFAULT 15
+static volatile uint64_t real_bytes;   // the heaps' size minus the other programs' share, no margin; 0: not known
+#ifdef _WIN32
+static volatile uint64_t room_bytes;   // 0: not known
+static PlatOnce room_once = PLAT_ONCE_INIT;
+
+static void room_main(void *arg) {
+    VkCtx *c = arg;
+    VkPhysicalDeviceIDProperties id = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ID_PROPERTIES};
+    VkPhysicalDeviceProperties2 p2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &id};
+    vkGetPhysicalDeviceProperties2(c->phys, &p2);
+    PlatLoad *l = plat_load_open(id.deviceLUIDValid ? id.deviceLUID : NULL, -1);
+    if (!l) return;
+    uint64_t room = 0, logged = 0;
+    int misses = 0;
+    static int margin_pct = -1;
+    if (margin_pct < 0) {
+        const char *e = cfg_get("REKARINA_VRAM_MARGIN_PCT");
+        margin_pct = e && *e ? atoi(e) : MARGIN_PCT_DEFAULT;
+        if (margin_pct < 0 || margin_pct > 50) margin_pct = MARGIN_PCT_DEFAULT;
+    }
+    for (;;) {
+        plat_sleep_ms(1000);
+        float load = -1, adapter_mb = -1;
+        plat_gpu_load(l, &load, &adapter_mb);
+        uint64_t used, budget, size;
+        heap_budget(c, &used, &budget, &size);
+        if (adapter_mb < 0 || !budget) {
+            if (++misses == 10 && !room) {   // no counter on this machine: heapBudget alone, as before
+                rt_log("mem: the adapter memory counter is not readable; the budget is the driver's alone");
+                break;
+            }
+            continue;
+        }
+        double others = adapter_mb * 1048576.0 - (double)used;
+        uint64_t keep = size / 100 * (uint64_t)margin_pct;   // what the card needs free besides (see above)
+        uint64_t held = others > 0 ? (uint64_t)others : 0;
+        uint64_t want = held + keep < size ? size - held - keep : 0;
+        uint64_t floor = budget / 10 * 6;
+        if (want < floor) want = floor;
+        room = !room || want < room ? want : room + (want - room) / 8;   // down at once, up over ~8 s
+        __atomic_store_n(&room_bytes, room, __ATOMIC_RELEASE);
+        __atomic_store_n(&real_bytes, held < size ? size - held : size / 2, __ATOMIC_RELEASE);
+        if (room + (128ull << 20) < logged || room > logged + (128ull << 20)) {
+            logged = room;
+            rt_log("mem: other programs hold %.0f MiB of the card: the game's video memory budget is %.0f MiB (the "
+                   "driver's %.0f MiB, the game holds %.0f MiB)", others > 0 ? others / 1048576.0 : 0.0,
+                   (room < budget ? room : budget) / 1048576.0, budget / 1048576.0, used / 1048576.0);
+        }
+    }
+    plat_load_close(l);
+}
+
+static void room_start(void *arg) {
+    if (!rt_knob("VRAM_OTHERS", "1")) return;
+    PlatThread *t = plat_thread_new(room_main, arg, "vram room");
+    if (t) plat_thread_detach(t);
+}
+#endif
+
+// The card's real room for the game: the device-local heaps less what the other programs hold, without the margin the
+// budget keeps (vk_mem_vram); 0 when it is not known (no adapter counter). REKARINA_VRAM_BUDGET_MB caps it as it caps
+// the budget. What the "video memory is short" notice compares with (vk_mem_vram_short).
+uint64_t vk_mem_vram_real(void) {
+    uint64_t r = __atomic_load_n(&real_bytes, __ATOMIC_ACQUIRE), cap = vk_mem_vram_cap();
+    return cap && r > cap ? cap : r;
+}
+
 int vk_mem_vram(uint64_t *used, uint64_t *budget, int *exact) {
     VkCtx *c = vk_ctx();
     *used = *budget = 0, *exact = 0;
@@ -765,13 +1181,14 @@ int vk_mem_vram(uint64_t *used, uint64_t *budget, int *exact) {
     uint64_t cap = vk_mem_vram_cap();
     const VkPhysicalDeviceMemoryProperties *mp = &c->mem_props;
     if (c->has_memory_budget) {
-        VkPhysicalDeviceMemoryBudgetPropertiesEXT b = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_BUDGET_PROPERTIES_EXT};
-        VkPhysicalDeviceMemoryProperties2 p2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_PROPERTIES_2, .pNext = &b};
-        vkGetPhysicalDeviceMemoryProperties2(c->phys, &p2);
-        for (uint32_t h = 0; h < p2.memoryProperties.memoryHeapCount && h < VK_MAX_MEMORY_HEAPS; h++)
-            if (p2.memoryProperties.memoryHeaps[h].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT)
-                *used += b.heapUsage[h], *budget += b.heapBudget[h];
+        uint64_t size;
+        heap_budget(c, used, budget, &size);
         *exact = 1;
+#ifdef _WIN32
+        plat_once(&room_once, room_start, c);
+        uint64_t room = __atomic_load_n(&room_bytes, __ATOMIC_ACQUIRE);
+        if (room && *budget > room) *budget = room;
+#endif
         if (cap && *budget > cap) *budget = cap;
         return *budget != 0;
     }
@@ -782,6 +1199,41 @@ int vk_mem_vram(uint64_t *used, uint64_t *budget, int *exact) {
             *used += vb[h].statistics.blockBytes, *budget += mp->memoryHeaps[h].size;
     if (cap && *budget > cap) *budget = cap;
     return *budget != 0;
+}
+
+// DEBUG-VMANAME: with REKARINA_VMA_DUMP set, an allocation gets a name in VMA's map ("kind:..."), so the dump can be
+// summed by what holds the memory (textures by kind and format, mirrors, the physical pool and its twin).
+void vk_vma_name(VmaAllocation a, const char *fmt, ...) {
+    static int on = -1;
+    if (on < 0) { const char *d = cfg_get("REKARINA_VMA_DUMP"); on = d && *d; }
+    VkCtx *c = vk_ctx();
+    if (!on || !a || !c || !c->vma) return;
+    char s[160];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(s, sizeof s, fmt, ap);
+    va_end(ap);
+    vmaSetAllocationName(c->vma, a, s);
+}
+
+// One line of what the process holds in video memory at a named moment of the start (the device made, the entry step's
+// builds, the library prebuild): the driver's count for the device-local heaps, VMA's blocks and allocations there,
+// and the difference, the driver's own part (pipelines, shader code, descriptor, query and command memory).
+void vk_mem_footprint_log(const char *when) {
+    VkCtx *c = vk_ctx();
+    if (!c || !c->vma) return;
+    uint64_t used = 0, budget = 0;
+    int exact = 0;
+    vk_mem_vram(&used, &budget, &exact);
+    VmaBudget vb[VK_MAX_MEMORY_HEAPS];
+    vmaGetHeapBudgets(c->vma, vb);
+    uint64_t blocks = 0, allocs = 0;
+    for (uint32_t h = 0; h < c->mem_props.memoryHeapCount && h < VK_MAX_MEMORY_HEAPS; h++)
+        if (c->mem_props.memoryHeaps[h].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT)
+            blocks += vb[h].statistics.blockBytes, allocs += vb[h].statistics.allocationBytes;
+    const double M = 1048576.0;
+    rt_log("mem: footprint %s: driver %.0f MiB%s, vma blocks %.0f MiB (allocations %.0f), outside vma %.0f MiB", when,
+           used / M, exact ? "" : " (estimated)", blocks / M, allocs / M, used > blocks ? (used - blocks) / M : 0.0);
 }
 
 // ---------------------------------------------------------------- page write generations
@@ -1096,8 +1548,16 @@ static int query_stamp(uint64_t lo, uint64_t hi, uint32_t g) {
 // pre: the shadow's bytes when the write was recorded; fadd: a shader adds into it with float atomics (a float sum)
 // gtag: a global-memory write that may come (vk_mem_shadow_gmem_record): the submission whose write log reports it
 // g0: gen_now when it was recorded (a record without `pre`: shadow_plain)
-typedef struct { uint64_t lo, hi; uint8_t *pre; int fadd; uint64_t gtag; uint32_t g0; } SRange;
+// pm: NULL when `pre` holds every page of the range; else one byte a page (pages from lo & ~0xfff), 1 where `pre`
+// holds the page (the CPU wrote it lately) and 0 where it does not (that page goes back plainly, shadow_plain)
+typedef struct { uint64_t lo, hi; uint8_t *pre; int fadd; uint64_t gtag; uint32_t g0; uint8_t *pm; } SRange;
+static void shadow_merge_pm(PoolRec *r, uint64_t a, uint64_t b, const SRange *s, int at);
+static int srange_has(const SRange *s, uint64_t w) {   // `pre` holds the byte at w
+    return s->pre && (!s->pm || s->pm[(w >> 12) - (s->lo >> 12)]);
+}
 static void shadow_pend(uint64_t addr, uint64_t size, uint64_t gtag);
+static int shadow_pages_pm = 1;   // REKARINA_SHADOW_PAGE_PRE (default 1; 0: a range's snapshot is all or nothing, as before)
+static uint64_t s_pm_ranges, s_pm_saved;   // shadow_lock: ranges snapshotted by page, bytes not copied
 static void shadow_sync_copy(PoolRec *r, int tracked);
 static void scpu_mark(uint64_t page);
 static void shadow_merge(PoolRec *r, uint64_t addr, uint64_t size, const uint8_t *pre, int fadd, int at);
@@ -1178,6 +1638,11 @@ static void shadow_copy_pending(PoolRec *r, uint64_t a, uint64_t b, int i) {
     for (int j = i; j < nspend; j++)
         if (spend[j].lo < b && spend[j].hi > a) {
             if (!spend[j].pre || nj == 16) return;   // no `pre` to tell the GPU's words by: left for the fence, as before
+            if (spend[j].pm) {   // a page of [a, b) without its `pre`: the same
+                uint64_t x0 = (a > spend[j].lo ? a : spend[j].lo) >> 12, x1 = ((b < spend[j].hi ? b : spend[j].hi) - 1) >> 12;
+                for (uint64_t x = x0; x <= x1; x++)
+                    if (!spend[j].pm[x - (spend[j].lo >> 12)]) return;
+            }
             js[nj++] = j;
             aligned &= !(spend[j].lo & 3) && !(spend[j].hi & 3);
         }
@@ -1416,33 +1881,71 @@ void vk_mem_gpu_pending(uint64_t addr, uint64_t size) {
 // REKARINA_SHADOW_PLAIN_FRAMES (default 600, 0 = never plain): frames a range must go without a CPU write to go back
 // plainly. The CPU fills nearly every pool at a load, so "ever written" left no range plain. A CPU write after that
 // window is caught at the fence page by page (shadow_plain).
-static int shadow_cpu_wrote(uint64_t addr, uint64_t size) {
+
+// A global-memory piece (gtag) takes its snapshot like a range the CPU wrote, whether it did or not: the hot pieces
+// (up to 12 MiB) are copied into `pre` at every submission that binds a write log. DEBUG-GMEMPRE:
+// REKARINA_SHADOW_GMEM_PRE=0 lets a piece the CPU has not written lately go back page by page as any such range does
+// (shadow_plain). Measured on the integrated Radeon under shadow storage (2026-11-16): no gain in the replay (20.7
+// against 21.4 ms), so the snapshot stays the default until a frame compare says the plain path is as right.
+// The pages of [addr, addr + size) the CPU wrote within the window shadow_cpu_wrote uses: mark[i] 1 or 0 for page i
+// (from addr's page); returns the count marked.
+static uint64_t shadow_cpu_pages(uint64_t addr, uint64_t size, uint8_t *mark) {
     static int win = -1;
     if (win < 0) { const char *e = cfg_get("REKARINA_SHADOW_PLAIN_FRAMES"); win = e && *e ? atoi(e) : 600; }
-    if (win <= 0) return 1;
+    uint64_t np = ((addr + size - 1) >> 12) - (addr >> 12) + 1, n = 0;
     uint32_t now = (uint32_t)__atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED) + 1;
-    for (uint64_t pg = addr & ~((1ull << GEN_PAGE_SHIFT) - 1); pg < addr + size; pg += 1ull << GEN_PAGE_SHIFT) {
-        uint64_t ci = pg >> GEN_CHUNK_SHIFT;
-        if (ci >= GEN_CHUNKS) return 1;
-        const uint32_t *c = __atomic_load_n(&scpu_chunk[ci], __ATOMIC_ACQUIRE);
-        uint32_t f = c ? c[(pg >> GEN_PAGE_SHIFT) & (GEN_PER_CHUNK - 1)] : 0;
-        if (f && now - f < (uint32_t)win) return 1;
+    for (uint64_t x = 0; x < np; x++) {
+        uint64_t pg = ((addr >> 12) + x) << 12, ci = pg >> GEN_CHUNK_SHIFT;
+        int m = 1;
+        if (win > 0 && ci < GEN_CHUNKS) {
+            const uint32_t *c = __atomic_load_n(&scpu_chunk[ci], __ATOMIC_ACQUIRE);
+            uint32_t f = c ? c[(pg >> GEN_PAGE_SHIFT) & (GEN_PER_CHUNK - 1)] : 0;
+            m = f && now - f < (uint32_t)win;
+        }
+        mark[x] = (uint8_t)m, n += (uint64_t)m;
     }
-    return 0;
+    return n;
 }
 
 static void shadow_pend(uint64_t addr, uint64_t size, uint64_t gtag) {
-    static int merge = -1;
+    static int merge = -1, gpre = -1, pm_read;
+    if (!pm_read) pm_read = 1, shadow_pages_pm = rt_knob("SHADOW_PAGE_PRE", "1") != 0;
     if (merge < 0) merge = rt_knob("SHADOW_MERGE", "1") != 0;
-    uint8_t *pre = NULL;
+    if (gpre < 0) gpre = rt_knob("SHADOW_GMEM_PRE", "1") != 0;
+    uint8_t *pre = NULL, *pm = NULL;
     plat_mutex_lock_shared(&pool_lock);
-    const pidx_ent *e = merge && (gtag || shadow_cpu_wrote(addr, size)) ? pidx_find(&pool_index, addr, size) : NULL;
+    // the pages the CPU wrote lately: only they need the snapshot (shadow_cpu_pages); a range none of whose pages it
+    // wrote takes none, as before, and goes back page by page at its fence
+    uint64_t np = ((addr + size - 1) >> 12) - (addr >> 12) + 1, marked = 0;
+    uint8_t mark_one[64], *mark = np <= sizeof mark_one ? mark_one : NULL;
+    int whole = gtag && gpre;
+    if (merge && !whole) {
+        if (!mark) mark = malloc(np);
+        if (mark) marked = shadow_cpu_pages(addr, size, mark);
+        else whole = 1;
+    }
+    const pidx_ent *e = merge && (whole || marked) ? pidx_find(&pool_index, addr, size) : NULL;
     PoolRec *r = e ? e->buf : NULL;
     plat_mutex_lock(&shadow_lock);
-    if (r && r->smap && addr >= r->import_lo && addr + size <= r->import_hi && (pre = malloc(size)))
-        memcpy(pre, r->smap + (addr - r->import_lo), size);
+    if (r && r->smap && addr >= r->import_lo && addr + size <= r->import_hi && (pre = malloc(size))) {
+        const uint8_t *src = r->smap + (addr - r->import_lo);
+        if (whole || marked == np || !shadow_pages_pm || !(pm = malloc(np))) {
+            memcpy(pre, src, size);
+        } else {   // the marked pages alone: the replay notes ~80 MiB of such ranges a frame, most pages never the CPU's
+            memcpy(pm, mark, np);
+            for (uint64_t x = 0; x < np; x++) {
+                if (!pm[x]) continue;
+                uint64_t a = ((addr >> 12) + x) << 12, z = a + 0x1000;
+                if (a < addr) a = addr;
+                if (z > addr + size) z = addr + size;
+                memcpy(pre + (a - addr), src + (a - addr), z - a);
+            }
+            s_pm_ranges++, s_pm_saved += (np - marked) << 12;
+        }
+    }
+    if (mark && mark != mark_one) free(mark);
     if (nspend == cspend) grow((void **)&spend, &cspend, sizeof *spend);
-    spend[nspend++] = (SRange){addr, addr + size, pre, 0, gtag, __atomic_load_n(&gen_now, __ATOMIC_RELAXED)};
+    spend[nspend++] = (SRange){addr, addr + size, pre, 0, gtag, __atomic_load_n(&gen_now, __ATOMIC_RELAXED), pm};
     plat_mutex_unlock(&shadow_lock);
     plat_mutex_unlock_shared(&pool_lock);
 }
@@ -1516,9 +2019,9 @@ void vk_mem_shadow_gmem_done(uint64_t fence) {
         PoolRec *r = e ? e->buf : NULL;
         if (spend[i].pre && r && r->smap && addr >= r->import_lo && addr + size <= r->import_hi) {
             mem_thaw(addr, size);
-            shadow_merge(r, addr, size, spend[i].pre, spend[i].fadd, i);
+            shadow_merge_pm(r, addr, addr + size, &spend[i], i);
         }
-        free(spend[i].pre);
+        free(spend[i].pre), free(spend[i].pm);
         spend[i] = spend[--nspend];
     }
     plat_mutex_unlock(&shadow_lock);
@@ -1531,7 +2034,25 @@ void vk_mem_shadow_fadd(uint64_t addr, uint64_t size) {
     if (!shadow_on) return;
     plat_mutex_lock(&shadow_lock);
     for (int i = nspend - 1; i >= 0; i--)
-        if (spend[i].lo == addr && spend[i].hi == addr + size && !spend[i].gtag) { spend[i].fadd = 1; break; }
+        if (spend[i].lo == addr && spend[i].hi == addr + size && !spend[i].gtag) {
+            spend[i].fadd = 1;
+            if (spend[i].pm) {   // a float sum's merge reads every word's `pre`: the missing pages now (the same note)
+                plat_mutex_lock_shared(&pool_lock);
+                const pidx_ent *e = pidx_find(&pool_index, addr, size);
+                PoolRec *r = e ? e->buf : NULL;
+                if (r && r->smap && addr >= r->import_lo && addr + size <= r->import_hi)
+                    for (uint64_t x = 0; x <= ((addr + size - 1) >> 12) - (addr >> 12); x++) {
+                        if (spend[i].pm[x]) continue;
+                        uint64_t a = ((addr >> 12) + x) << 12, z = a + 0x1000;
+                        if (a < addr) a = addr;
+                        if (z > addr + size) z = addr + size;
+                        memcpy(spend[i].pre + (a - addr), r->smap + (a - r->import_lo), z - a);
+                    }
+                plat_mutex_unlock_shared(&pool_lock);
+                free(spend[i].pm), spend[i].pm = NULL;
+            }
+            break;
+        }
     plat_mutex_unlock(&shadow_lock);
 }
 
@@ -1562,7 +2083,7 @@ static void shadow_merge(PoolRec *r, uint64_t addr, uint64_t size, const uint8_t
             memcpy(g + i, &n, 4), gpu += 4;
             uint64_t w = addr + i;
             for (int j = 0; j < nspend; j++)
-                if (j != at && spend[j].pre && w >= spend[j].lo && w + 4 <= spend[j].hi) {
+                if (j != at && w >= spend[j].lo && w + 4 <= spend[j].hi && srange_has(&spend[j], w)) {
                     uint8_t *q = spend[j].pre + (w - spend[j].lo);
                     if (!memcmp(q, &pu, 4)) memcpy(q, &su, 4);
                 }
@@ -1692,13 +2213,28 @@ static void shadow_plain(PoolRec *r, uint64_t addr, uint64_t size, uint32_t g0) 
     plat_mutex_unlock(&gen_lock);
 }
 
+// shadow_lock held: [a, b) of the recorded write s (spend[at]) goes into guest memory: word by word against `pre`
+// where it holds the page, page by page as without a snapshot where it does not (s->pm).
+static void shadow_merge_pm(PoolRec *r, uint64_t a, uint64_t b, const SRange *s, int at) {
+    while (a < b) {
+        uint64_t z = ((a >> 12) + 1) << 12;
+        int has = srange_has(s, a);
+        while (z < b && srange_has(s, z) == has) z += 0x1000;
+        if (z > b) z = b;
+        if (has) shadow_merge(r, a, z - a, s->pre + (a - s->lo), s->fadd, at);
+        else shadow_plain(r, a, z - a, s->g0);
+        a = z;
+    }
+}
+
 // shadow_lock held: [a, b) of a GPU write recorded for [base, ...) (pre from base) goes into guest memory now: merged
 // against its snapshot, copied page by page without one, or plainly for a write never recorded.
 static void shadow_wb_run(PoolRec *r, uint64_t a, uint64_t b, uint64_t base, const uint8_t *pre, int fadd, int at,
                           uint32_t g0) {
     if (a >= b) return;
     mem_thaw(a, b - a);
-    if (pre) shadow_merge(r, a, b - a, pre + (a - base), fadd, at), s_merge_bytes += b - a;
+    if (pre && at >= 0 && spend[at].pm) shadow_merge_pm(r, a, b, &spend[at], at), s_merge_bytes += b - a;
+    else if (pre) shadow_merge(r, a, b - a, pre + (a - base), fadd, at), s_merge_bytes += b - a;
     else if (at >= 0) shadow_plain(r, a, b - a, g0), s_plain_bytes += b - a;
     else memcpy((void *)(uintptr_t)a, r->smap + (a - r->import_lo), b - a), s_wb_bytes += b - a;
     uint64_t t = qpc();   // DEBUG-SHFT
@@ -1714,7 +2250,8 @@ static void shadow_wb_run(PoolRec *r, uint64_t a, uint64_t b, uint64_t base, con
 // bytes stay in the shadow, and its first access copies them in (slz_touch) and keeps it open for SLZ_HOT_FRAMES
 // frames, during which the fences write it as before. The CPU's words never wait behind a closed page: a page the CPU
 // wrote goes the old way, and a closed page cannot be written without its access copying it in first. Float sums and
-// global-memory writes are never closed. The access hook exists in the Windows build (Windows, Wine, Proton) only.
+// global-memory writes are never closed. The access hook is the Windows build's vectored handler (Windows, Wine,
+// Proton) and, since 2026-11-16, the Linux build's SIGSEGV handler (platform/linux.c; not yet run on Linux).
 #define SLZ_MIN (64ull << 10)
 #define SLZ_HOT_FRAMES 240
 #define SLZ_POOLS 2048
@@ -1727,7 +2264,6 @@ static PlatMutex slz_lock = PLAT_MUTEX_INIT;   // slz_pool and the copy-ins; a l
 
 static int mirror_verify;   // REKARINA_MEMORY=verify (mirror_mode below)
 static int slz_on(void) {
-#ifdef _WIN32
     static int on = -1;
     if (on < 0) {
         on = shadow_on && rt_knob("SHADOW_LAZY", "1") != 0 && !mirror_verify && !vk_sync_awb_on();
@@ -1737,9 +2273,6 @@ static int slz_on(void) {
                                                 : "every GPU write is copied into guest memory at its fence");
     }
     return on;
-#else
-    return 0;
-#endif
 }
 
 static void *slz_chunk(void **tab, uint64_t page, size_t elem, int make) {
@@ -1923,7 +2456,7 @@ static void vk_gpu_written_(uint64_t addr, uint64_t size) {
             s_ft_copy += qpc() - ft0;
             own = 1;
         }
-        if (at >= 0) free(pre), spend[at] = spend[--nspend];
+        if (at >= 0) free(pre), free(spend[at].pm), spend[at] = spend[--nspend];
         plat_mutex_unlock(&shadow_lock);
         plat_mutex_unlock_shared(&pool_lock);
     }
@@ -1955,13 +2488,15 @@ static void shadow_log(uint64_t frame) {
            "copied in (%llu untracked), %.1f MiB written back, %.2f ms, %d GPU writes pending, %.3f MiB of the CPU's "
            "words into them; GPU writes merged %.1f MiB, copied plainly %.1f MiB (%.3f MiB in pages the CPU wrote meanwhile); "
            "fence reports %llu taking %.2f ms (copy %.2f, unwatch %.2f, stamps %.2f); on demand: pages closed %llu, "
-           "left closed %llu, brought in at an access %llu",
+           "left closed %llu, brought in at an access %llu; snapshots by page %llu, %.1f MiB not copied",
            (unsigned long long)frame, (long long)s_live_n, s_live_bytes / 1048576.0, (unsigned long long)s_syncs,
            (unsigned long long)s_queries, s_copied / 1048576.0, (unsigned long long)s_untracked, s_wb_bytes / 1048576.0,
            qpc_ms(s_ticks), nspend, s_pend_words / 1048576.0, s_merge_bytes / 1048576.0, s_plain_bytes / 1048576.0,
            s_plain_cpu / 1048576.0, (unsigned long long)s_fence_calls, qpc_ms(s_fence_ticks), qpc_ms(s_ft_copy),
            qpc_ms(s_ft_unwatch), qpc_ms(s_ft_stamp), (unsigned long long)s_lz_closed, (unsigned long long)s_lz_left,
-           (unsigned long long)__atomic_exchange_n(&slz_touched, 0, __ATOMIC_RELAXED));
+           (unsigned long long)__atomic_exchange_n(&slz_touched, 0, __ATOMIC_RELAXED), (unsigned long long)s_pm_ranges,
+           s_pm_saved / 1048576.0);
+    s_pm_ranges = s_pm_saved = 0;
     s_fence_calls = s_fence_ticks = s_ft_copy = s_ft_unwatch = s_ft_stamp = s_lz_closed = s_lz_left = 0;
     s_syncs = s_queries = s_copied = s_untracked = s_wb_bytes = s_ticks = s_pend_words = s_merge_bytes = s_plain_bytes = 0;
     s_plain_cpu = 0;
@@ -2246,8 +2781,8 @@ static void dirty_frame(uint64_t frame) {
 //   submission, exact byte ranges, before the fence signals (vk_mem_mirror_end).
 // - REKARINA_MEMORY=verify: every submission also copies up to VERIFY_BYTES of mirror pages, round robin, into host memory;
 //   at its fence the pages the CPU has not written since their sync are compared with guest memory.
-// A pool stays imported when its mirror would not fit the VRAM budget, its range is not write-watched, it overlaps
-// another pool or the allocation fails.
+// A pool stays imported when its mirror would not fit the card's room (mirror_fits), its range is not write-watched,
+// it overlaps another pool or the allocation fails. The first and the last are asked again later (vk_mem_use).
 #define VERIFY_BYTES (4u << 20)
 #define VERIFY_SAMPLES 64
 #define VERIFY_LOG 16
@@ -2279,6 +2814,33 @@ static MirrorAcc macc;                 // mirror_stat_lock: since the last summa
 static PlatMutex mirror_stat_lock = PLAT_MUTEX_INIT;
 static volatile int64_t m_live_n, m_live_bytes, m_refused_n[MR_N], m_refused_bytes[MR_N];
 static volatile int64_t m_flush_calls, m_flush_bytes, v_pages, v_skipped, v_mismatch;
+
+#ifndef _WIN32
+// REKARINA_LINUX_GUEST_MEMORY = auto | driver | shadow (Linux): where the pools the GPU reads live. shadow: shadow
+// storage (a host-visible copy of each pool, synced both ways, above). driver: the pools re-backed in place by memory
+// the Vulkan driver allocates (VK_EXT_map_memory_placed, else an exported dma-buf mmapped at the pool's address), so
+// the GPU and the game share the pages and the write watch's protection does not touch the GPU's view (no userptr):
+// designed in docs/oot-notes.md, "Guest memory from the GPU driver on Linux", proven per device by `--memory-test`,
+// NOT BUILT into the game yet. Every value runs shadow storage in this build; the line says what the device offers.
+static void guest_memory_log(void) {
+    const char *want = cfg_get("REKARINA_LINUX_GUEST_MEMORY");
+    if (!want || !*want) want = "auto";
+    uint32_t n = 0;
+    VkCtx *c = vk_ctx();
+    vkEnumerateDeviceExtensionProperties(c->phys, NULL, &n, NULL);
+    VkExtensionProperties *e = calloc(n ? n : 1, sizeof *e);
+    int placed = 0, dmabuf = 0;
+    if (e && vkEnumerateDeviceExtensionProperties(c->phys, NULL, &n, e) >= 0)
+        for (uint32_t i = 0; i < n; i++) {
+            placed |= !strcmp(e[i].extensionName, "VK_EXT_map_memory_placed");
+            dmabuf |= !strcmp(e[i].extensionName, "VK_EXT_external_memory_dma_buf");
+        }
+    free(e);
+    rt_log("mem: guest memory: shadow storage (REKARINA_LINUX_GUEST_MEMORY=%s; the driver-memory way is not built into "
+           "this version; this device offers placed maps %s, dma-buf export %s; `--memory-test` checks it)",
+           want, placed ? "yes" : "no", dmabuf ? "yes" : "no");
+}
+#endif
 
 static void mirror_mode(int discrete) {
     const char *e = cfg_value("REKARINA_MEMORY");
@@ -2389,19 +2951,73 @@ static void mbarrier(VkCommandBuffer cb, VkPipelineStageFlags2 ss, VkAccessFlags
     vkCmdPipelineBarrier2(cb, &di);
 }
 
+// REKARINA_MIRROR_ROOM=0: the rule before 2026-11-17 (mirror_fits), asked again 300 frames after a refusal; 1 (default):
+// the card's room.
+static int mirror_room_on(void) {
+    static int on = -1;
+    if (on < 0) on = rt_knob("MIRROR_ROOM", "1") != 0;
+    return on;
+}
+
 static void refuse(PoolRec *r, int why, const char *what) {
     r->mstate = MS_REFUSED;
     r->mwhy = (uint8_t)why;
     r->mtry = (uint32_t)__atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED);
     uint64_t n = r->import_hi - r->import_lo;
     if (sec_on && why == MR_BUDGET) sec_count(SEC_MR_BUDGET, 1);
-    if (plat_inc64(&m_refused_n[why]) <= 4) {
+    int64_t live = plat_inc64(&m_refused_n[why]);
+    int say = live <= 4, room_rule = mirror_room_on();
+    if (why == MR_BUDGET || why == MR_ALLOC) {
+        if (r->mrefused < 0xffff) r->mrefused++;
+        // Asked again every few dozen frames (vk_mem_use): the pool's first refusal, then every 20th, so a pool that
+        // waits for room says so about every 10 s and a long wait does not fill the log.
+        static volatile int32_t lines;
+        if (room_rule) say = (r->mrefused == 1 || !(r->mrefused % 20)) && plat_inc32(&lines) <= 256;
+    }
+    if (say) {
         char f[160];
         flag_names(r->flags, f, sizeof f);
-        rt_log("mem: pool %#llx+%#llx (%s) stays imported: %s", (unsigned long long)r->lo, (unsigned long long)r->size,
-               f, what);
+        if (room_rule && r->mrefused > 1)
+            rt_log("mem: pool %#llx+%#llx (%s) stays imported (asked %u times): %s", (unsigned long long)r->lo,
+                   (unsigned long long)r->size, f, (unsigned)r->mrefused, what);
+        else
+            rt_log("mem: pool %#llx+%#llx (%s) stays imported: %s", (unsigned long long)r->lo, (unsigned long long)r->size,
+                   f, what);
     }
     plat_add64(&m_refused_bytes[why], (int64_t)n);
+}
+
+// Whether a mirror of n bytes fits the card; *short_by: what is missing when it does not.
+// A buffer pool's mirror is not memory the game can do without: a texture that goes comes back at its next draw, a pool
+// left without its mirror has every draw read its vertices, indices, constants and storage buffers over PCIe (the
+// section's comment above: ~90-110 ms of GPU time a frame). The rule before 2026-11-17 (REKARINA_MIRROR_ROOM=0) kept an
+// eighth of the video memory budget free after the mirror, and the budget keeps 15 % of the card free besides the other
+// programs' share (room_main): the texture eviction holds the game at about 88 % of that budget (vk_texture.c
+// sweep_pressure, REKARINA_TEX_EVICT) and the rule wanted 87.5 % less the mirror, so with a desktop holding 1.8-2.3 GiB
+// of a 12 GiB card a 48 MiB pool that came at the title screen was refused at 7,233 of 8,177 MiB, asked again every
+// 300 frames, refused again at 7,117-7,149 of 7,999-8,180, and the title ran at 11 fps (87-95 ms of GPU time a frame)
+// until the game's use happened to fall to 6.9 GiB (2026-11-17, the user's session). So the mirror is held to the
+// card's real room (vk_mem_vram_real: the heaps less what the other programs hold, no margin; never stricter than the
+// budget the textures are held to), less MIRROR_SAFETY; the margin stays for the textures, which make room for the
+// mirror afterwards: over the budget the eviction takes them (sweep_pressure), and a mirror that does not fit even the
+// real room asks the eviction for what is missing (vk_texture_room_for) and is asked again MIRROR_RETRY frames later.
+// Without the adapter counter (no real room known) the budget stands for the room.
+#define MIRROR_SAFETY (64ull << 20)
+#define MIRROR_RETRY 30
+static int mirror_fits(uint64_t n, uint64_t *used, uint64_t *room, uint64_t *short_by) {
+    uint64_t budget;
+    int exact;
+    *used = *room = *short_by = 0;
+    if (!vk_mem_vram(used, &budget, &exact)) return 1;   // nothing known: as before
+    if (!mirror_room_on()) {
+        *room = budget;
+        return *used + n + budget / 8 <= budget;
+    }
+    uint64_t real = vk_mem_vram_real();
+    *room = real > budget ? real : budget;
+    if (*used + n + MIRROR_SAFETY <= *room) return 1;
+    *short_by = *used + n + MIRROR_SAFETY - *room;
+    return 0;
 }
 
 // Replay thread: the pool's mirror on its first buffer use.
@@ -2421,18 +3037,24 @@ static void mirror_create(PoolRec *r) {
     if (!alone) return refuse(r, MR_OVERLAP, "it overlaps another pool");
     uint64_t r0 = r->import_lo >> SNAP_SHIFT, r1 = (r->import_hi - 1) >> SNAP_SHIFT;
     if (r1 >= SNAP_REGIONS) return refuse(r, MR_UNTRACKED, "outside the write-watched address space");
-    // The budget test (an eighth of the budget stays free after the mirror) is for pools over 32 MiB. A smaller pool
-    // always gets its mirror: without one it is bound in the game's live memory, which costs the early results point
-    // (vk_mem_host_read_note). In the field, with 2.5 GiB of a 12 GiB card held by other programs, 120 pools of
-    // 58 MiB in all were refused and the frame rate went from 96 to 61 fps for them; with the line at 97 % of the
-    // budget 49 pools of 36 MiB still were. A refusal of a large pool is asked again 300 frames later (vk_mem_use): it
-    // used to stand for the pool's life, whatever the video memory did afterwards.
-    uint64_t used, budget;
-    int exact;
-    if (n > (32u << 20) && vk_mem_vram(&used, &budget, &exact) && used + n + budget / 8 > budget) {
-        char why[128];
-        snprintf(why, sizeof why, "its %.1f MiB mirror does not fit the VRAM budget (%.0f of %.0f MiB in use)",
-                 n / 1048576.0, used / 1048576.0, budget / 1048576.0);
+    // The room test (mirror_fits) is for pools over 32 MiB. A smaller pool always gets its mirror: without one it is
+    // bound in the game's live memory, which costs the early results point (vk_mem_host_read_note). In the field, with
+    // 2.5 GiB of a 12 GiB card held by other programs, 120 pools of 58 MiB in all were refused and the frame rate went
+    // from 96 to 61 fps for them; with the line at 97 % of the budget 49 pools of 36 MiB still were. A refusal of a
+    // large pool is asked again later (vk_mem_use): it used to stand for the pool's life, whatever the video memory did
+    // afterwards.
+    uint64_t used = 0, room = 0, short_by = 0;
+    if (n > (32u << 20) && !mirror_fits(n, &used, &room, &short_by)) {
+        char why[160];
+        if (mirror_room_on()) {
+            vk_texture_room_for(short_by);   // textures make room; the pool is asked again MIRROR_RETRY frames later
+            snprintf(why, sizeof why, "its %.1f MiB mirror does not fit the card's room (%.0f of %.0f MiB in use); "
+                     "textures are asked for %.0f MiB", n / 1048576.0, used / 1048576.0, room / 1048576.0,
+                     short_by / 1048576.0);
+        } else {
+            snprintf(why, sizeof why, "its %.1f MiB mirror does not fit the VRAM budget (%.0f of %.0f MiB in use)",
+                     n / 1048576.0, used / 1048576.0, room / 1048576.0);
+        }
         return refuse(r, MR_BUDGET, why);
     }
     plat_mutex_lock(&gen_lock);
@@ -2444,15 +3066,33 @@ static void mirror_create(PoolRec *r) {
     if (untracked) return refuse(r, MR_UNTRACKED, "its range is not write-watched");
     VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = n, .usage = pool_usage(c),
                              .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
+    // REKARINA_MIRROR_OWN_MB=<n> (default 0, a test): a mirror of n MiB or more has memory of its own. A mirror goes
+    // with its pool, mostly at a map change, and in VMA's shared blocks the larger ones left holes between the
+    // blocks' longer-lived pieces (the free space stranded inside blocks over a long session, vk_texture.c compact_step).
+    static int64_t own_mb = -1;
+    if (own_mb < 0) { const char *e = cfg_get("REKARINA_MIRROR_OWN_MB"); own_mb = e && *e ? atoll(e) : 0; }
     VmaAllocationCreateInfo ai = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE,
-                                  .requiredFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT};
+                                  .requiredFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+                                  .flags = own_mb > 0 && n >= (uint64_t)own_mb << 20 ? VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT : 0};
     VkResult res = vmaCreateBuffer(c->vma, &bi, &ai, &r->mbuf, &r->malloc_, NULL);
     if (res != VK_SUCCESS) {
         r->mbuf = VK_NULL_HANDLE, r->malloc_ = NULL;
         char why[96];
         snprintf(why, sizeof why, "device-local allocation of %.1f MiB failed (%d)", n / 1048576.0, (int)res);
+        if (mirror_room_on()) vk_texture_room_for(n + MIRROR_SAFETY);
         return refuse(r, MR_ALLOC, why);
     }
+    if (r->mrefused) {   // it waited for room: say when it got it
+        static volatile int32_t lines;
+        if (!room) mirror_fits(0, &used, &room, &short_by);   // a small pool skipped the test: the numbers for the line
+        if (plat_inc32(&lines) <= 64)
+            rt_log("mem: pool %#llx+%#llx has its %.1f MiB mirror now, after %u refusals (%.0f of %.0f MiB in use)",
+                   (unsigned long long)r->lo, (unsigned long long)r->size, n / 1048576.0, (unsigned)r->mrefused,
+                   used / 1048576.0, room / 1048576.0);
+        r->mrefused = 0;
+        vk_texture_room_for(0);   // what this pool asked the eviction for is no longer wanted
+    }
+    vk_vma_name(r->malloc_, "mirror:%#x", (unsigned)r->flags);   // DEBUG-VMANAME
     plat_mutex_lock(&pool_lock);
     if (nm == mcap) grow((void **)&mlist, &mcap, sizeof *mlist);
     int at = nm;
@@ -2493,10 +3133,12 @@ static void lz_pool_gone(PoolRec *r);
 static void mirror_retiring(PoolRec *r) {
     lz_pool_gone(r);
     plat_mutex_lock(&retire_lock);
-    if (nretiring == cretiring) grow((void **)&retiring, &cretiring, sizeof *retiring);
+    if (nretiring == cretiring) grow((void **)&retiring, &cretiring, sizeof *retiring), rt_heap_note("retiring mirrors", retiring, cretiring * sizeof *retiring);
     retiring[nretiring++] = r;
     plat_mutex_unlock(&retire_lock);
 }
+
+static void pool_free_later(void *arg) { destroy_rec(vk_ctx(), arg); }
 
 static void mirror_retire(void *arg) {
     plat_mutex_lock(&retire_lock);
@@ -2674,10 +3316,14 @@ void vk_mem_use(VkMemSpan *sp) {
         return;
     }
     plat_rmutex_lock(&use_lock);
-    if (r->mstate == MS_REFUSED && r->mwhy == MR_BUDGET &&
-        (uint32_t)__atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED) - r->mtry >= 300) {   // the budget may have room now
-        plat_add64(&m_refused_n[MR_BUDGET], -1);
-        plat_add64(&m_refused_bytes[MR_BUDGET], -(int64_t)(r->import_hi - r->import_lo));
+    // A pool refused for room is asked again: the card may have room now, or the textures made it (mirror_fits). Every
+    // MIRROR_RETRY frames, a failed allocation every 300; with REKARINA_MIRROR_ROOM=0 the budget's refusals every 300 as
+    // before and a failed allocation never.
+    if (r->mstate == MS_REFUSED && (r->mwhy == MR_BUDGET || (r->mwhy == MR_ALLOC && mirror_room_on())) &&
+        (uint32_t)__atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED) - r->mtry >=
+            (r->mwhy == MR_BUDGET && mirror_room_on() ? MIRROR_RETRY : 300u)) {
+        plat_add64(&m_refused_n[r->mwhy], -1);
+        plat_add64(&m_refused_bytes[r->mwhy], -(int64_t)(r->import_hi - r->import_lo));
         r->mstate = MS_NONE;
     }
     if (r->mstate == MS_NONE) {
@@ -2730,10 +3376,18 @@ static void shadow_touch_all(void) {
     if (done == f) return;
     done = f;
     plat_mutex_lock_shared(&pool_lock);
+    // one shadow_lock for the whole walk (shadow_touch's, inlined): some 4,500 pools a submission took and gave it
+    // back once each, while the replay's chunk threads take it for each pool their bindings resolve
+    plat_mutex_lock(&shadow_lock);
     for (int i = 0; i < pool_index.n; i++) {
         PoolRec *r = pool_index.e[i].buf;
-        if (r->kind == POOL_IMPORT && r->smap && !r->stouched) shadow_touch(r);
+        if (r->kind == POOL_IMPORT && r->smap && !r->stouched) {
+            if (nstouch == cstouch) grow((void **)&stouch, &cstouch, sizeof *stouch);
+            stouch[nstouch++] = r;
+            r->stouched = 1;
+        }
     }
+    plat_mutex_unlock(&shadow_lock);
     plat_mutex_unlock_shared(&pool_lock);
 }
 
@@ -3908,8 +4562,23 @@ void nvn_pool_flushed(const pool_t *p, uint64_t off, uint64_t size) {
 
 // gen_lock exclusive: freezes up to FREEZE_PER_SUB candidate regions still idle. The query after the
 // protection collects the writes made before it took effect.
+// Behind an arrival the new map's buffers go idle together and the passes of one frame froze 100-250 regions, 4-11 ms of
+// the replay in that frame (the field, the first dungeon, the village, 2026-11-17; each freeze walks the region's pages
+// and protects them). So the passes of one frame stop after REKARINA_FREEZE_FRAME_US microseconds (default 1000, 0: no
+// limit but the count, as before); the regions left wait for a later frame, queried meanwhile as before.
 static void freeze_pass(void) {
+    static int64_t budget_ns = -1;
+    static uint64_t fz_frame, fz_ns;
+    if (budget_ns < 0) {
+        const char *e = cfg_get("REKARINA_FREEZE_FRAME_US");
+        budget_ns = (int64_t)(e && *e ? atoi(e) : 1000) * 1000;
+    }
+    uint64_t frame = __atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED);
+    if (frame != fz_frame) fz_frame = frame, fz_ns = 0;
+    if (budget_ns > 0 && fz_ns >= (uint64_t)budget_ns) return;
+    uint64_t t0 = budget_ns > 0 ? plat_now_ns() : 0;
     for (int done = 0; nfcand && done < FREEZE_PER_SUB;) {
+        if (t0 && plat_now_ns() - t0 + fz_ns >= (uint64_t)budget_ns) break;   // the rest at a later frame
         uint64_t j = fcand[--nfcand], a = j << REG_SHIFT;
         if (ww_ep - reg_last[j] < (uint32_t)freeze_idle || mem_frozen(a)) continue;
         done++;
@@ -3919,9 +4588,16 @@ static void freeze_pass(void) {
         query_stamp(a, a + (1ull << REG_SHIFT), ++gen_now);
         sec_end(SEC_FZ_QUERY, sec1);
     }
+    if (t0) fz_ns += plat_now_ns() - t0;
 }
 
-void vk_mem_mirror_begin(void) {
+// presnap: query the write-watch state of the pools the previous submission used, in a few batched calls, before
+// this one's first accesses (each access queries its own regions otherwise: mirror_sync). vk_exec.c leaves it out for
+// a small submission (REKARINA_PRESNAP_MIN_KB): the game's main thread submits two small ones a frame right after the
+// frame's big one, and their pre-snapshot queried the big one's pools, hundreds of MiB, about 0.5 ms a frame of that
+// thread, which is on the game's cycle (the Market's square, 2026-11-18).
+void vk_mem_mirror_begin(void) { vk_mem_mirror_begin_ex(1); }
+void vk_mem_mirror_begin_ex(int presnap) {
     uint64_t sec0 = sec_begin();
     awb_prune();   // async write-back: drop the ranges of the write-backs done
     sec_end(SEC_MB_AWB, sec0);
@@ -3951,7 +4627,7 @@ void vk_mem_mirror_begin(void) {
     ww_ep++;
     uint64_t b0 = ww_bytes;
     sec1 = sec_begin();
-    for (int i = 0; i < nm; i++) {
+    for (int i = 0; i < nm && presnap; i++) {
         const PoolRec *r = mlist[i];
         if (r->acc_sub != prev) continue;
         uint64_t a = r->import_lo >> SNAP_SHIFT, b = (r->import_hi - 1) >> SNAP_SHIFT;
@@ -4826,6 +5502,22 @@ static void vram_log(uint64_t frame) {
            alloc_bytes / M, (unsigned long long)t.live, (unsigned long long)t.own_live, t.bytes_live / M,
            (unsigned long long)t.released, (unsigned long long)t.own_released, t.bytes_released / M, (long long)m_live_n,
            m_live_bytes / M, dead_pending());
+    {   // per device-local memory type: where the free space inside VMA's blocks lies and how cut up it is (a block
+        // goes back to the system only when nothing is left in it)
+        VmaTotalStatistics ts;
+        vmaCalculateStatistics(c->vma, &ts);
+        char line[768];
+        int n = 0;
+        for (uint32_t i = 0; i < c->mem_props.memoryTypeCount && i < VK_MAX_MEMORY_TYPES && n < (int)sizeof line - 96; i++) {
+            const VmaDetailedStatistics *s = &ts.memoryType[i];
+            if (!(c->mem_props.memoryTypes[i].propertyFlags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) || !s->statistics.blockCount) continue;
+            n += snprintf(line + n, sizeof line - (size_t)n, "; type %u: %u blocks %.0f MiB, %u allocations %.0f MiB, free %.0f MiB in %u ranges (largest %.1f MiB)",
+                          i, s->statistics.blockCount, s->statistics.blockBytes / M, s->statistics.allocationCount,
+                          s->statistics.allocationBytes / M, (s->statistics.blockBytes - s->statistics.allocationBytes) / M,
+                          s->unusedRangeCount, s->unusedRangeCount ? s->unusedRangeSizeMax / M : 0.0);
+        }
+        rt_log("mem: vram frame %llu by memory type%s", (unsigned long long)frame, line);
+    }
     // DEBUG-VMADUMP: REKARINA_VMA_DUMP=<path prefix> writes VMA's detailed map (every allocation with its size, kind and
     // usage flags) to <prefix><frame>.json at each of these lines, to tell what the allocations beside textures are.
     const char *dump = cfg_get("REKARINA_VMA_DUMP");
@@ -4891,8 +5583,7 @@ typedef struct {
     int ub;   // REKARINA_SECTIONS: the batch's timestamp pair + 1, 0 none
 } Batch;
 
-enum { DEAD_IMAGE = 1, DEAD_IMAGE_VMA, DEAD_VIEW, DEAD_BUFFER_VMA, DEAD_HOST, DEAD_CALL };   // from DEAD_HOST on: no Vulkan object
-typedef struct { int kind; uint64_t handle; VmaAllocation alloc; uint64_t seq, tl; } Dead;
+typedef struct { int kind; uint64_t handle; VmaAllocation alloc; uint64_t seq, tl, hold_ns; const void *site; } Dead;   // site: DEBUG-IMGWATCH   // hold_ns: not before (plat_now_ns)
 
 static PlatRMutex cmd_lock;
 static PlatOnce cmd_once = PLAT_ONCE_INIT;
@@ -4996,16 +5687,18 @@ int vk_live_check_on(void) {
     return lc_on;
 }
 
-static void lc_put(uint64_t handle, uint64_t tl) {
+static int lc_put(uint64_t handle, uint64_t tl) {   // 1: the handle was waiting for its destruction already
     plat_mutex_lock(&lc_lock);
     uint32_t i = (uint32_t)((handle * 0x9E3779B97F4A7C15ull) >> 48), free_at = LC_N;
+    int twice = 0;
     for (uint32_t k = 0; k < LC_N; k++, i = (i + 1) & (LC_N - 1)) {
-        if (lc_tab[i].handle == handle) { free_at = i; break; }
+        if (lc_tab[i].handle == handle) { free_at = i, twice = 1; break; }
         if (lc_tab[i].handle == 1 && free_at == LC_N) free_at = i;
         if (!lc_tab[i].handle) { if (free_at == LC_N) free_at = i; break; }
     }
     if (free_at < LC_N) lc_tab[free_at].handle = handle, lc_tab[free_at].tl = tl;
     plat_mutex_unlock(&lc_lock);
+    return twice;
 }
 
 static void lc_del(uint64_t handle) {   // it is destroyed now
@@ -5019,7 +5712,22 @@ static void lc_del(uint64_t handle) {   // it is destroyed now
     plat_mutex_unlock(&lc_lock);
 }
 
+static void lc_dead(uint64_t handle) {   // a held image: its texture went, uses of it are stale (vk_mem_pool_image_hold)
+    if (lc_on <= 0 || !handle) return;
+    plat_mutex_lock(&lc_lock);
+    uint32_t g = (uint32_t)((handle * 0x9E3779B97F4A7C15ull) >> 47);
+    lg_tab[g].handle = handle, lg_tab[g].tl = 0, lg_tab[g].t_ns = plat_now_ns();
+    plat_mutex_unlock(&lc_lock);
+}
+
+// A parked image (vk_texture.c park_image) is a held one for the check: its texture went, and until a new texture
+// takes it (vk_live_check_born) a recording that still names it is stale.
+void vk_live_check_dead(uint64_t handle) {
+    lc_dead(handle);
+}
+
 void vk_live_check_born(uint64_t handle) {   // a new image or view has this handle
+    vk_dd_born(handle);   // DEBUG-DOUBLEDEFER
     if (lc_on <= 0 || !handle) return;
     plat_mutex_lock(&lc_lock);
     uint32_t g = (uint32_t)((handle * 0x9E3779B97F4A7C15ull) >> 47);
@@ -5046,7 +5754,10 @@ int vk_live_check_use(uint64_t handle, const char *what, uint64_t id) {
     if (dead) dead_tl = lg_tab[g].tl, dead_ns = lg_tab[g].t_ns;
     plat_mutex_unlock(&lc_lock);
     if (dead) {
-        if (plat_inc32(&lc_reports) <= 24)
+        // a handle of the image cache or a held image (value 0: its memory lives) is reported 24 times; one that was
+        // really destroyed (it waited for a value) every time, up to 2000: the first 24 used to hide the rest
+        static volatile int32_t n_real;
+        if (dead_tl ? plat_inc32(&n_real) <= 2000 : plat_inc32(&lc_reports) <= 24)
             rt_log("LIVE CHECK: %s takes %#llx (id %#llx), which was DESTROYED %.1f ms ago (it had waited for value %llu); the "
                    "submission being recorded is %llu, the newest submitted %llu",
                    what, (unsigned long long)handle, (unsigned long long)id, (plat_now_ns() - dead_ns) / 1e6,
@@ -5054,7 +5765,8 @@ int vk_live_check_use(uint64_t handle, const char *what, uint64_t id) {
         return 1;
     }
     if (!found) return 0;
-    if (plat_inc32(&lc_reports) <= 24)
+    static volatile int32_t n_pending;   // handed to the deferral for a value before this submission: always a hazard
+    if (plat_inc32(&n_pending) <= 2000)
         rt_log("LIVE CHECK: %s takes %#llx (id %#llx), which waits for its destruction at value %llu; the submission being "
                "recorded is %llu, the newest submitted %llu, the GPU is past %llu",
                what, (unsigned long long)handle, (unsigned long long)id, (unsigned long long)tl, (unsigned long long)f,
@@ -5107,15 +5819,85 @@ static void lc_reap_check(VkCtx *c, const Dead *d) {
                ended ? "the end of" : "a command inside", sub, raw, (unsigned long long)n_checked, (unsigned long long)n_unknown);
 }
 
+// DEBUG-DOUBLEDEFER (REKARINA_IMGWATCH=1): every image and view handle handed to the deferral is remembered until the
+// reaper destroys it, and for a while after; a handle handed over again meanwhile (two owners let go of one object:
+// the second destruction, or a holder left reading freed memory) is logged with both call sites (offsets from
+// vk_defer_image, which the exe's map turns into functions) and the frames. A creation of a new object with the
+// handle (vk_live_check_born) ends the "after".
+#define DD_N (1u << 17)
+typedef struct { uint64_t handle; const void *site, *site2; uint64_t frame, dead_frame; uint8_t state; } DdRec;   // 1 pending, 2 destroyed
+static DdRec *dd_tab;
+static PlatMutex dd_lock = PLAT_MUTEX_INIT;
+static int dd_on(void) {
+    static int on = -1;
+    if (on < 0) {
+        on = cfg_get("REKARINA_IMGWATCH") != NULL;
+        if (on && !(dd_tab = calloc(DD_N, sizeof *dd_tab))) on = 0;
+    }
+    return on;
+}
+static DdRec *dd_slot(uint64_t h) { return &dd_tab[(h * 0x9E3779B97F4A7C15ull) >> 47]; }   // one per bucket: a later one may take it
+static void dd_defer(int kind, uint64_t h, const void *site) {
+    if (!dd_on() || !h || (kind != DEAD_IMAGE && kind != DEAD_IMAGE_VMA && kind != DEAD_VIEW)) return;
+    uint64_t f = __atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED);
+    plat_mutex_lock(&dd_lock);
+    DdRec *r = dd_slot(h), was = *r;
+    *r = (DdRec){h, site, NULL, f, 0, 1};
+    plat_mutex_unlock(&dd_lock);
+    static volatile int32_t nlog;
+    static uint64_t n_pend, n_dead;
+    if (was.handle == h && was.state) {
+        if (was.state == 1) n_pend++; else n_dead++;
+        if (plat_inc32(&nlog) <= 300)
+            rt_log("DOUBLEDEFER frame %llu: %s %#llx handed to the deferral again by vk_defer_image%+lld; first handed over at "
+                   "frame %llu by vk_defer_image%+lld, %s%llu (%llu while pending, %llu after destruction so far)",
+                   (unsigned long long)f, kind == DEAD_VIEW ? "view" : "image", (unsigned long long)h,
+                   (long long)((const char *)site - (const char *)(uintptr_t)vk_defer_image), (unsigned long long)was.frame,
+                   (long long)((const char *)was.site - (const char *)(uintptr_t)vk_defer_image),
+                   was.state == 1 ? "still pending, frame " : "destroyed at frame ", (unsigned long long)(was.state == 1 ? f : was.dead_frame),
+                   (unsigned long long)n_pend, (unsigned long long)n_dead);
+        if (kind != DEAD_VIEW && plat_inc32(&nlog) <= 300) vk_addr_label_print(h);
+    }
+}
+static void dd_reaped(uint64_t h) {
+    if (!dd_tab) return;
+    plat_mutex_lock(&dd_lock);
+    DdRec *r = dd_slot(h);
+    if (r->handle == h && r->state == 1) r->state = 2, r->dead_frame = __atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED);
+    plat_mutex_unlock(&dd_lock);
+}
+// 1 when a new object took the handle after the reaper destroyed it (or nothing is known of it any more)
+int vk_dd_reborn(uint64_t h) {
+    if (!dd_tab || !h) return 1;
+    plat_mutex_lock(&dd_lock);
+    DdRec *r = dd_slot(h);
+    int reborn = r->handle != h || r->state != 2;
+    plat_mutex_unlock(&dd_lock);
+    return reborn;
+}
+void vk_dd_born(uint64_t h) {   // a new object has this handle
+    if (!dd_tab || !h) return;
+    plat_mutex_lock(&dd_lock);
+    DdRec *r = dd_slot(h);
+    if (r->handle == h) r->state = 0;
+    plat_mutex_unlock(&dd_lock);
+}
+
 static void reap_one(VkCtx *c, const Dead *d) {
+    if (d->kind <= DEAD_VIEW) vk_drv_reap_turn();   // queue work and images made ahead first (gfx_present.c "driver turns")
     if (lc_on > 0 && d->kind <= DEAD_VIEW) lc_del(d->handle), lc_reap_check(c, d);
+    if (d->kind <= DEAD_VIEW) dd_reaped(d->handle);   // DEBUG-DOUBLEDEFER
+    if (d->kind == DEAD_IMAGE || d->kind == DEAD_IMAGE_VMA) {   // DEBUG-IMGWATCH: who still names it (vk_texture.c)
+        void vk_texture_reap_check(uint64_t image, const void *site, int64_t site_off);
+        vk_texture_reap_check(d->handle, d->site, (int64_t)((const char *)d->site - (const char *)(uintptr_t)vk_defer_image));
+    }
     switch (d->kind) {
     case DEAD_IMAGE: vkDestroyImage(c->device, (VkImage)(uintptr_t)d->handle, NULL); break;
     case DEAD_IMAGE_VMA: vmaDestroyImage(c->vma, (VkImage)(uintptr_t)d->handle, d->alloc); break;
     case DEAD_VIEW: vkDestroyImageView(c->device, (VkImageView)(uintptr_t)d->handle, NULL); break;
     case DEAD_BUFFER_VMA: vmaDestroyBuffer(c->vma, (VkBuffer)(uintptr_t)d->handle, d->alloc); break;
     case DEAD_HOST: free((void *)(uintptr_t)d->handle); break;
-    case DEAD_CALL: ((void (*)(void *))(uintptr_t)d->handle)((void *)d->alloc); break;   // vk_defer_call
+    case DEAD_CALL: case DEAD_POOL: ((void (*)(void *))(uintptr_t)d->handle)((void *)d->alloc); break;   // vk_defer_call
     }
 }
 
@@ -5212,13 +5994,31 @@ static void collect_locked(VkCtx *c) {
         if (plat_inc32(&said) == 1)
             rt_log("vk: the timeline counter reads %llu (result %d): the device is lost; %d deferred objects stay as they are",
                    (unsigned long long)tl, (int)cr, ndead);
+        // The loss of 2026-11-17 16:44 was first seen here, a second before the run's end, and left no report: no
+        // submit or present came after it. The report takes no lock it cannot try.
+        vk_device_fault_report(VK_ERROR_DEVICE_LOST);
         tl = 0;
     }
     if (lc_on > 0 && tl) lc_reap_check(c, &(Dead){DEAD_IMAGE, 0, NULL, 0, tl});   // DEBUG-LIVECHECK: the counter itself, each time it is read
+    // Images, views and buffers stay for DEFER_GRACE submissions more than the stamp asks (REKARINA_DEFER_GRACE,
+    // default 24: about four frames at the game's six submissions a frame; 0 the stamp alone). The device was lost now
+    // and then right after a map change (the Market's arrival, then the walk out to the field, 2026-11-15; the Market
+    // burst of 2026-11-14): a shader read at the address of a render target destroyed a frame or two earlier, after
+    // its memory went back to the driver, and none of the checks (LIVE_CHECK, the pool's gone list, the stamp) has
+    // named the reader. With the grace a reader that late reads memory that is still the image's, at worst for one
+    // frame, instead of losing the device; the memory comes back four frames later. Objects stamped 0 (the device is
+    // idle, vk_mem_shutdown) are not held.
+    static uint64_t grace = ~0ull;
+    if (grace == ~0ull) {
+        const char *e = cfg_get("REKARINA_DEFER_GRACE");
+        grace = e && *e ? strtoull(e, NULL, 10) : 24;
+    }
     int k = 0;
+    uint64_t now_ns = plat_now_ns();
     for (int i = 0; i < ndead; i++) {
         Dead *d = &dead[i];
-        if (d->seq > done_seq || d->tl > tl) { dead[k++] = *d; continue; }
+        uint64_t need = d->tl + (d->tl && (d->kind <= DEAD_BUFFER_VMA || d->kind == DEAD_POOL) ? grace : 0);
+        if (d->seq > done_seq || need > tl || now_ns < d->hold_ns) { dead[k++] = *d; continue; }
         if (d->kind < DEAD_HOST)   // (not a Vulkan object: nothing for the recorder's handle check)
             rec_check_handle(d->kind == DEAD_VIEW ? REC_VIEW : d->kind == DEAD_BUFFER_VMA ? REC_BUFFER : REC_IMAGE, d->handle, 1,
                              d->tl, tl);
@@ -5228,9 +6028,26 @@ static void collect_locked(VkCtx *c) {
     if (ft_t && plat_now_ns() - ft_t > 30000) FT(FT_NOTE, 15, plat_now_ns() - ft_t, (uint64_t)(ft_n0 - k) << 32 | (ft_r / 1000));
 }
 
+// Who holds the upload lock (cmd_lock): the caller of vk_upload_begin that took it, and since when. A flush that waits
+// for the lock over 3 ms says so with this (the Market's frames of 5-12 ms in the upload flush, 2026-11-15).
+static void *volatile cmd_holder_site;
+static volatile uint64_t cmd_holder_ns;
+
+static void cmd_take(void) {   // cmd_lock; RL_UPL: how long the replay thread waited for another thread's hold
+    if (__builtin_expect(sec_on, 0)) {
+        if (plat_rmutex_trylock(&cmd_lock)) return;
+        uint64_t t0 = sec_clock();
+        plat_rmutex_lock(&cmd_lock);
+        if (sec_replay_thread()) sec_add(SEC_RL_UPL, sec_clock() - t0);
+        return;
+    }
+    plat_rmutex_lock(&cmd_lock);
+}
+
 VkCommandBuffer vk_upload_begin(void) {
     plat_once(&cmd_once, cmd_init, NULL);
-    plat_rmutex_lock(&cmd_lock);
+    cmd_take();
+    if (cmd_lock.depth == 1) cmd_holder_site = __builtin_return_address(0), cmd_holder_ns = plat_now_ns();
     VkCtx *c = vk_ctx();
     if (!c) rt_fatal("vk: upload before vk_init");
     if (open_active) return open_b.cb;
@@ -5319,9 +6136,22 @@ void *vk_staging(VkDeviceSize size, VkBuffer *buf, VmaAllocation *alloc) {
 uint64_t vk_upload_flush(int wait) {
     uint64_t sec0 = sec_begin();
     plat_once(&cmd_once, cmd_init, NULL);
-    uint64_t ft_t = ftrace_on ? plat_now_ns() : 0;
-    plat_rmutex_lock(&cmd_lock);
+    uint64_t ft_t = ftrace_on ? plat_now_ns() : 0, w0 = plat_now_ns();
+    uint32_t holder = __atomic_load_n(&cmd_lock.owner, __ATOMIC_RELAXED);
+    void *site = cmd_holder_site;
+    uint64_t since = cmd_holder_ns;
+    cmd_take();
     if (ft_t && plat_now_ns() - ft_t > 50000) FT(FT_NOTE, 14, plat_now_ns() - ft_t, 0);
+    {
+        uint64_t waited = plat_now_ns() - w0;
+        static int logs;
+        if (waited > 3000000 && holder && holder != plat_thread_id() && logs < 200) {
+            logs++;
+            rt_log("vk: frame %llu: an upload flush waited %.1f ms for the upload lock, held by thread %u for %.1f ms from "
+                   "%p (vk_upload_begin is %p)", (unsigned long long)__atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED) + 1,
+                   waited / 1e6, holder, since ? (w0 - since) / 1e6 : 0.0, site, (void *)vk_upload_begin);
+        }
+    }
     VkCtx *c = vk_ctx();
     uint64_t seq = next_seq;
     if (c && open_active) {
@@ -5330,9 +6160,13 @@ uint64_t vk_upload_flush(int wait) {
         vk_crumb(open_b.cb, VK_CRUMB_UPLOAD_END, open_b.seq);
         vkEndCommandBuffer(open_b.cb);
         VkSubmitInfo si = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .commandBufferCount = 1, .pCommandBuffers = &open_b.cb};
-        vk_queue_lock();
-        VkResult r = vkQueueSubmit(c->gfx_queue, 1, &si, open_b.fence);
-        vk_queue_unlock();
+        int vk_sync_submit_upload(VkCommandBuffer cb, VkFence vkfence);
+        VkResult r = VK_SUCCESS;
+        if (!vk_sync_submit_upload(open_b.cb, open_b.fence)) {   // queued behind the parts already queued (vk_sync.c)
+            vk_queue_lock();
+            r = vkQueueSubmit(c->gfx_queue, 1, &si, open_b.fence);
+            vk_queue_unlock();
+        }
         if (r != VK_SUCCESS) {
             vk_device_fault_report(r);
             rt_fatal("vk: upload submit failed (%d)", (int)r);
@@ -5353,10 +6187,38 @@ uint64_t vk_upload_flush(int wait) {
     return seq;
 }
 
+static _Thread_local void *defer_site;   // DEBUG-LIVECHECK: who handed the image or view over
+// DEBUG-WHONAMES: the last images and views handed to the deferral (cmd_lock): the caller (an offset from vk_defer_image
+// for the link map), the value waited for, what was submitted and done then. A device fault names an image by its
+// address; this says who let it go and what it waited for.
+#define DR_N 65536
+static struct { uint64_t handle, tl, issued, done, ns; int64_t site; uint8_t kind, quiet; } *dr_ring;
+static uint32_t dr_next;
+void vk_mem_defer_who(uint64_t handle) {
+    if (!dr_ring) return;
+    int locked = plat_rmutex_trylock(&cmd_lock);
+    uint64_t now = plat_now_ns();
+    uint32_t have = dr_next < DR_N ? dr_next : DR_N, shown = 0;
+    for (uint32_t k = 0; k < have && shown < 3; k++) {
+        const typeof(*dr_ring) *d = &dr_ring[(dr_next - 1 - k) % DR_N];
+        if (d->handle != handle) continue;
+        shown++;
+        rt_log("  deferred %.1f ms before the report by the caller at vk_defer_image%+lld (%s%s): waits for value %llu; then "
+               "submitted %llu, done %llu; now submitted %llu, done %llu", (now - d->ns) / 1e6, (long long)d->site,
+               d->kind == DEAD_VIEW ? "a view" : "an image", d->quiet ? ", eviction or pressure" : "",
+               (unsigned long long)d->tl, (unsigned long long)d->issued, (unsigned long long)d->done,
+               (unsigned long long)vk_sync_issued(), (unsigned long long)vk_sync_fence_done());
+    }
+    if (!shown) rt_log("  deferral: not among the last %u images and views deferred", have);
+    if (locked) plat_rmutex_unlock(&cmd_lock);
+}
+static _Thread_local int defer_quiet;   // vk_defer_past_reserved
+void vk_defer_past_reserved(int on) { defer_quiet = on; }
+
 static void defer(int kind, uint64_t handle, VmaAllocation alloc) {
     plat_once(&cmd_once, cmd_init, NULL);
     plat_rmutex_lock(&cmd_lock);
-    if (ndead == cap_dead) grow((void **)&dead, &cap_dead, sizeof *dead);
+    if (ndead == cap_dead) grow((void **)&dead, &cap_dead, sizeof *dead), rt_heap_note("deferrals", dead, cap_dead * sizeof *dead);
     // The open batch may record into the object: it counts as the newest user. The GPU must also be past every
     // submission that names it. tl_noted covers the submitted ones; an object the replay lets go of while it records
     // a submission (vk_exec_recording_fence) may be named by that one too, not yet submitted: vk_texture.c
@@ -5373,8 +6235,62 @@ static void defer(int kind, uint64_t handle, VmaAllocation alloc) {
     // the submission another thread records meanwhile: that one is issued + 1 (vk_sync_submit sets issued after it).
     if (stamp && !rf) rf = vk_sync_issued() + 1;
     if (rf > tl) tl = rf;
-    dead[ndead++] = (Dead){kind, handle, alloc, open_active ? open_b.seq : next_seq, tl};
-    if (vk_live_check_on() && kind <= DEAD_VIEW) lc_put(handle, tl);   // DEBUG-LIVECHECK
+    // A pool: past every value handed out so far as well (the asynchronous replay reserves values for submissions it
+    // records later); any later submission resolves addresses without it (vk_pool_fini took it out of the index).
+    if ((kind == DEAD_POOL || defer_quiet) && vk_sync_reserved() + 1 > tl) tl = vk_sync_reserved() + 1;
+    // Off by default since 2026-11-16 (REKARINA_EVICT_HOLD_MS=<ms> brings it back): held through map changes, what
+    // eviction let go of stayed counted against the video memory budget while the next map loaded, and a 22-map tour
+    // ended at 23 fps on a 10.4 GiB budget against 97 fps with no hold (the castle grounds, fresh start 138); the
+    // device-loss class it was against did not come back in a 22-map tour and ~820,000 texture moves without it.
+    // Textures evicted or dropped under memory pressure (vk_defer_past_reserved) could be held for
+    // REKARINA_EVICT_HOLD_MS: twice in the night the device was lost seconds after evictions with a read
+    // where only such textures' images had lain (2026-11-15 c16_field, 2026-11-16 the mountain city), so something
+    // still names them that no check has found. Held, a late reader reads the texels the image had, which are what
+    // the texture comes back with; the memory goes back seconds later. 0: no hold.
+    static int64_t hold_ms = -1;
+    if (hold_ms < 0) {
+        const char *e = cfg_get("REKARINA_EVICT_HOLD_MS");
+        hold_ms = e && *e ? atoll(e) : 0;
+        if (hold_ms < 0) hold_ms = 0;
+    }
+    int64_t hold_ms_now = hold_ms;
+    // Not while the device-local memory is near the budget (REKARINA_EVICT_HOLD_FREE_PCT=10: under a tenth
+    // of the budget left): what eviction and the pressure drops let go of is then what the next map's textures need,
+    // and held through a map change it took the driver's count past the budget, where Windows moves images out of video
+    // memory (a 22-map tour ended at 16 fps on a 10.4 GiB budget, 2026-11-16). Checked once a frame.
+    if (defer_quiet && hold_ms) {
+        static uint64_t at_frame = ~0ull;
+        static int tight;
+        static int pct = -1;
+        if (pct < 0) { const char *e = cfg_get("REKARINA_EVICT_HOLD_FREE_PCT"); pct = e && *e ? atoi(e) : 0; }
+        uint64_t f = __atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED);
+        if (f != at_frame) {
+            uint64_t used = 0, budget = 0;
+            int exact = 0;
+            at_frame = f;
+            tight = pct > 0 && vk_mem_vram(&used, &budget, &exact) && budget && used + budget / 100 * (uint64_t)pct > budget;
+        }
+        if (tight) hold_ms_now = 0;
+    }
+    uint64_t hold = defer_quiet && hold_ms_now ? plat_now_ns() + (uint64_t)hold_ms_now * 1000000ull : 0;
+    dead[ndead++] = (Dead){kind, handle, alloc, open_active ? open_b.seq : next_seq, tl, hold, defer_site};
+    dd_defer(kind, handle, defer_site);   // DEBUG-DOUBLEDEFER
+    if (kind <= DEAD_VIEW) {   // DEBUG-WHONAMES: who deferred it, for the device fault report (vk_mem_defer_who)
+        if (!dr_ring) dr_ring = calloc(DR_N, sizeof *dr_ring);
+        if (dr_ring)
+            dr_ring[dr_next++ % DR_N] = (typeof(*dr_ring)){handle, tl, vk_sync_issued(), vk_sync_fence_done(), plat_now_ns(),
+                                                           (int64_t)((const char *)defer_site - (const char *)(uintptr_t)vk_defer_image),
+                                                           (uint8_t)kind, (uint8_t)defer_quiet};
+    }
+    // DEBUG-LIVECHECK. A handle handed to the deferral twice is destroyed twice: the second destruction meets whatever
+    // later object the driver gave the handle (a live texture's image or a cached view), which the GPU then reads.
+    if (vk_live_check_on() && kind <= DEAD_VIEW && lc_put(handle, tl)) {
+        static volatile int32_t n_twice;
+        if (plat_inc32(&n_twice) <= 16)
+            rt_log("LIVE CHECK: %s %#llx handed to the deferral TWICE (by %p; look it up in rekarina.map): its second "
+                   "destruction will meet a later object with its handle", kind == DEAD_VIEW ? "view" : "image",
+                   (unsigned long long)handle, defer_site);
+    }
     if (kind < DEAD_HOST)
         rec_check_handle(kind == DEAD_VIEW ? REC_VIEW : kind == DEAD_BUFFER_VMA ? REC_BUFFER : REC_IMAGE, handle, 0, tl,
                          vk_sync_fence_done());
@@ -5390,9 +6306,13 @@ static int dead_pending(void) {
 }
 
 void vk_defer_image(VkImage img, VmaAllocation alloc) {
+    defer_site = __builtin_return_address(0);
     if (img) defer(alloc ? DEAD_IMAGE_VMA : DEAD_IMAGE, (uint64_t)(uintptr_t)img, alloc);
 }
-void vk_defer_view(VkImageView view) { if (view) defer(DEAD_VIEW, (uint64_t)(uintptr_t)view, NULL); }
+void vk_defer_view(VkImageView view) {
+    defer_site = __builtin_return_address(0);
+    if (view) defer(DEAD_VIEW, (uint64_t)(uintptr_t)view, NULL);
+}
 void vk_defer_free(void *p) { if (p) defer(DEAD_HOST, (uint64_t)(uintptr_t)p, NULL); }
 // fn(arg) on the reaper thread (or where the deferrals are collected, with REKARINA_REAPER=0) once the GPU is past the
 // open upload batch and every submission made or being recorded now: for reading what such a batch copied back.
@@ -5411,6 +6331,8 @@ void vk_mem_note_submit(uint64_t timeline_value) {
 void vk_mem_collect(void) {
     VkCtx *c = vk_ctx();
     if (!c) return;
+    ph_release(NULL);
+    quar_drain(c, 0);
     plat_once(&cmd_once, cmd_init, NULL);
     plat_rmutex_lock(&cmd_lock);
     collect_locked(c);
@@ -5443,7 +6365,7 @@ void vk_mem_shutdown(void) {
     retire(c, 1);
     uint64_t keep = tl_noted;
     tl_noted = 0;
-    for (int i = 0; i < ndead; i++) dead[i].seq = 0, dead[i].tl = 0;   // the device is idle
+    for (int i = 0; i < ndead; i++) dead[i].seq = 0, dead[i].tl = 0, dead[i].hold_ns = 0;   // the device is idle
     collect_locked(c);
     vk_mem_reap_drain();
     tl_noted = keep;
@@ -5467,12 +6389,13 @@ void vk_mem_shutdown(void) {
     nsnap_pool = 0, snap_pool_bytes = 0;
     plat_mutex_unlock(&snap_pool_lock);
     plat_mutex_lock(&shadow_lock);
-    for (int i = 0; i < nspend; i++) free(spend[i].pre);
+    for (int i = 0; i < nspend; i++) free(spend[i].pre), free(spend[i].pm);
     nstouch = nspend = 0;   // shadows too
     s_live_n = s_live_bytes = 0;
     plat_mutex_unlock(&shadow_lock);
     for (int i = 0; i < nretiring; i++) destroy_rec(c, retiring[i]);   // finalized ones whose callback never ran
     nretiring = 0;
+    quar_drain(c, 1);
     __atomic_add_fetch(&pool_gen, 1, __ATOMIC_RELEASE);
     nphys = 0;
     plat_mutex_unlock(&pool_lock);

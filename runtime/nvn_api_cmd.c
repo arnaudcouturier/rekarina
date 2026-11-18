@@ -414,8 +414,10 @@ void nvn_pins_stats(uint64_t *live, uint64_t *freed) {
 // adding control memory again releases the copies recorded there without walking every live copy. 4 KiB pages cost
 // about 500 lookups per AddControlMemory under the exclusive lock (1.4.3 field: 53 calls a frame, 2 MiB ranges, 3.7
 // copies per page), and the recording threads waited on it.
-// deferred: 0 unknown, 1 none, 2 some; pins: texture pins its ops name, counted in their refs (pin_refs)
-typedef struct { uint64_t magic, bytes, made_at, used_at, deferred, pins; } copy_prefix;
+// deferred: 0 unknown, 1 none, 2 some; pins: texture pins its ops name, counted in their refs (pin_refs); ho: the size of
+// the recording buffer the copy is (REKARINA_CMD_HANDOVER), which goes back to the buffer pool with it; 0 for a copy of
+// its own
+typedef struct { uint64_t magic, bytes, made_at, used_at, deferred, pins, ho, pad; } copy_prefix;
 _Static_assert(sizeof(copy_prefix) % 8 == 0, "records stay 8-byte aligned");
 typedef struct { uintptr_t lo, hi; uint8_t *copy; } cmd_copy;
 typedef struct { cmd_copy *v; uint32_t n, cap; } copy_bucket;
@@ -437,9 +439,10 @@ static void zombie_add(copy_prefix *pf) {   // copy_lock held
     zombies[nzombies++] = pf;
 }
 
-static void copy_free(copy_prefix *pf) {   // copy_lock held
+static void copy_free(copy_prefix *pf) {   // copy_lock held, or the copy is out of every index
     if (pf->pins) pin_refs((const uint8_t *)(pf + 1), -1);
-    free(pf);
+    if (pf->ho) pool_put((uint8_t *)pf, (size_t)pf->ho);   // a handed-over recording buffer: back to the pool
+    else free(pf);
 }
 
 static void zombie_sweep(uint64_t replayed) {   // copy_lock held
@@ -473,7 +476,22 @@ uint64_t nvn_handle_bytes(uint64_t handle) {
 }
 
 // Marks a live copy used by submission now; its size from OP_BEGIN to OP_END inclusive.
+// The game calls ~2,900 recordings a frame into others at the Market's square (CallCommands), most of a few hundred
+// bytes, from six threads at once; the shared lock and the map lookup per call, on a lock that EndRecording and
+// AddControlMemory take exclusively, were most of CallCommands' time. A live copy's prefix says so itself (magic, set
+// at EndRecording, cleared under copy_lock before the copy goes), so with the synchronous replay a call reads it
+// directly (REKARINA_CMD_CALL_FAST, on by default; 0: the locked lookup always). A handle whose prefix is not live goes
+// the locked way, which stops the game as before. The asynchronous replay keeps the lock: it frees copies by used_at.
 static uint64_t copy_touch(uint64_t handle, uint64_t now, const char *what) {
+    static int fast = -1;
+    if (fast < 0) fast = rt_knob("CMD_CALL_FAST", "1") != 0;
+    if (fast && handle && !gfx_replay_async()) {
+        copy_prefix *q = (copy_prefix *)(uintptr_t)handle - 1;
+        if (__atomic_load_n(&q->magic, __ATOMIC_ACQUIRE) == COPY_MAGIC) {
+            __atomic_store_n(&q->used_at, now, __ATOMIC_RELAXED);
+            return q->bytes;
+        }
+    }
     plat_mutex_lock_shared(&copy_lock);
     copy_prefix *pf = copy_find(handle);
     uint64_t bytes = 0;
@@ -487,19 +505,18 @@ static uint64_t copy_touch(uint64_t handle, uint64_t now, const char *what) {
 // The recording [p, p + n), OP_BEGIN to OP_END (the recording buffer is one block: recording emits no OP_JUMP), copied
 // into one host block of its exact size. One allocation and one copy: growing the copy record by record cost the
 // game's main thread about 1 ms a frame in reallocations and small copies (1.4.3, field).
-static uint8_t *flatten_recording(const uint8_t *p, size_t n) {
-    uint8_t *out = realloc_wait(NULL, sizeof(copy_prefix) + n, "command copy");
-    if (!out) rt_fatal("nvn: command copy allocation");
-    memcpy(out + sizeof(copy_prefix), p, n);
+// The records of a finished recording [p, p + n) checked (a corrupt one stops here, not in the replay) and the texture
+// pins their payloads name counted; returns how many.
+static uint64_t scan_recording(const uint8_t *p, size_t n) {
     uint64_t pins_named = 0;
-    for (size_t at = 0;;) {   // the records stay checked: a corrupt one stops here, not in the replay
+    for (size_t at = 0;;) {
         op_hdr h;
         memcpy(&h, p + at, sizeof h);
         if (h.size < 8 || (h.size & 7) || h.op >= OP_COUNT_ || h.op == OP_JUMP || h.op == OP_CALL || at + h.size > n ||
             (!at && h.op != OP_BEGIN))
             rt_fatal("nvn: corrupt recording at %p (op %u size %u)", (const void *)(p + at), h.op, h.size);
         const tex_t *pinned[9];
-        int k = op_pins(h.op, out + sizeof(copy_prefix) + at + 8, pinned);
+        int k = op_pins(h.op, p + at + 8, pinned);
         for (int i = 0; i < k; i++) pin_ref(pinned[i], 1, 0);
         pins_named += (uint64_t)k;
         at += h.size;
@@ -508,8 +525,36 @@ static uint8_t *flatten_recording(const uint8_t *p, size_t n) {
             break;
         }
     }
+    return pins_named;
+}
+
+static uint8_t *flatten_recording(const uint8_t *p, size_t n) {
+    uint8_t *out = realloc_wait(NULL, sizeof(copy_prefix) + n, "command copy");
+    if (!out) rt_fatal("nvn: command copy allocation");
+    memcpy(out + sizeof(copy_prefix), p, n);
+    uint64_t pins_named = scan_recording(out + sizeof(copy_prefix), n);
     *(copy_prefix *)out = (copy_prefix){.magic = COPY_MAGIC, .bytes = n, .pins = pins_named};
     return out + sizeof(copy_prefix);
+}
+
+// ---- REKARINA_CMD_HANDOVER (1 on, the default; 0 off): a large recording's buffer becomes its copy
+// A recording starts behind room for a copy prefix in its command buffer's heap buffer (cmd_t.recording REC_HEAP_HO),
+// and one of HO_MIN bytes or more is not copied at EndRecording: the buffer itself, its records checked and pins
+// counted (scan_recording), becomes the copy, and the command buffer takes another from the buffer pool at its next
+// record. The copy gives the buffer back to the pool when it is freed, so the large buffers circulate without the
+// heap's allocations and frees. At the Market's square 92 % of the main thread's 1.5 MiB of recordings a frame were in
+// 1.8 recordings of 64 KiB or more, 46-75 % of each module worker's; with the hand-over the game's threads spent 2.3 ms
+// a frame less (summed) in EndRecording, CallCommands and AddControlMemory, and the square ran 4-5 fps faster
+// (2026-11-18). Small recordings are copied as before (most copies are a few hundred bytes and live long).
+#define HO_MIN ((size_t)64 << 10)
+#define REC_HEAP_HO 2   // cmd_t.recording of a recording with room for a copy prefix in front
+static int ho_knob(void) {
+    static int on = -1;
+    if (on < 0) {
+        on = rt_knob("CMD_HANDOVER", "1") != 0;
+        rt_log("nvn: large recordings %s (REKARINA_CMD_HANDOVER=%d)", on ? "hand their buffers over as copies" : "are copied", on);
+    }
+    return on;
 }
 
 static void copy_add(uintptr_t lo, uintptr_t hi, uint8_t *copy) {
@@ -540,9 +585,18 @@ static void copy_add(uintptr_t lo, uintptr_t hi, uint8_t *copy) {
 }
 
 // Adding control memory again retires every recording copy made in it (the driver's handle lived there).
+// The copies leaving every index are freed after copy_lock (their pins and the buffer pool have locks of their own), so
+// the threads waiting for copy_lock in CallCommands and EndRecording do not wait behind the frees (REKARINA_CMD_LATE_FREE,
+// on by default; 0: freed under the lock as before). At the Market's square with the buffer hand-over this took the
+// game's threads' summed time in AddControlMemory from ~1.1 to ~0.75 ms a frame and in CallCommands by ~0.3 ms
+// (2026-11-18).
 static void release_copies(uintptr_t lo, uintptr_t hi) {
     if (hi <= lo) return;
     uint64_t replayed = gfx_replayed_submits();
+    static int late_on = -1;
+    if (late_on < 0) late_on = rt_knob("CMD_LATE_FREE", "1") != 0;
+    copy_prefix *late[256];
+    int nlate = 0;
     plat_mutex_lock(&copy_lock);
     if (nzombies) zombie_sweep(replayed);
     for (uintptr_t pg = lo >> COPY_PAGE_SHIFT; pg <= (hi - 1) >> COPY_PAGE_SHIFT; pg++) {
@@ -558,6 +612,7 @@ static void release_copies(uintptr_t lo, uintptr_t hi) {
             copy_bytes -= pf->bytes;
             pf->magic = 0;
             if (pf->used_at > replayed) zombie_add(pf);   // a queued submission still reads it
+            else if (late_on && nlate < 256) late[nlate++] = pf;
             else copy_free(pf);
             b->v[i] = b->v[--b->n];
         }
@@ -568,6 +623,7 @@ static void release_copies(uintptr_t lo, uintptr_t hi) {
         }
     }
     plat_mutex_unlock(&copy_lock);
+    for (int i = 0; i < nlate; i++) copy_free(late[i]);
 }
 
 // ---------- CommandBuffer: object and memory
@@ -648,6 +704,11 @@ NVN_API(nvnCommandBufferBeginRecording) {
     o->recording = 1;
     FT(FT_NOTE, 40, (uintptr_t)o, 0);   // DEBUG-FTRACE: a recording begins (which thread, when)
     o->cur = o->seg;   // the previous recording was copied at EndRecording
+    if (ho_knob()) {   // REKARINA_CMD_HANDOVER: room for the copy prefix in front of the records
+        cmd_reserve(o, sizeof(copy_prefix) + 8);
+        o->cur = o->seg + sizeof(copy_prefix);
+        o->recording = REC_HEAP_HO;
+    }
     o->rec_start = o->cmd_used;
     put_hdr(cmd_alloc(o, 8), OP_BEGIN, 8);
     o->hw_used -= 8;   // BEGIN and END have no hardware equivalent
@@ -661,9 +722,19 @@ NVN_API(nvnCommandBufferEndRecording) {
     if (!o->ctl_size) memory_event(c, o, NVN_COMMAND_BUFFER_MEMORY_EVENT_OUT_OF_CONTROL_MEMORY, MIN_CONTROL_SIZE);
     put_hdr(cmd_alloc(o, 8), OP_END, 8);
     o->hw_used -= 8;
+    size_t front = o->recording == REC_HEAP_HO ? sizeof(copy_prefix) : 0;   // REKARINA_CMD_HANDOVER's prefix room
     o->recording = 0;
     FT(FT_NOTE, 41, (uintptr_t)o, (uint64_t)(o->cur - o->seg));   // DEBUG-FTRACE: it ends, with its bytes
-    uint8_t *copy = flatten_recording(o->seg, (size_t)(o->cur - o->seg));
+    uint8_t *copy;
+    size_t n = (size_t)(o->cur - o->seg) - front;
+    if (front && n >= HO_MIN) {   // the buffer itself becomes the copy; the next record takes one from the pool
+        copy = o->seg + front;
+        uint64_t pins = scan_recording(copy, n);
+        *(copy_prefix *)o->seg = (copy_prefix){.magic = COPY_MAGIC, .bytes = n, .pins = pins,
+                                               .ho = (uint64_t)(o->end - o->seg)};
+        o->seg = o->cur = o->end = NULL;
+    } else
+        copy = flatten_recording(o->seg + front, n);
     // Finalizing the recorder does not retire its handle; only reusing the control memory it was recorded in does.
     uintptr_t lo = (uintptr_t)o->ctl + (o->ctl_used < o->ctl_size ? o->ctl_used : 0);
     uintptr_t hi = o->ctl ? lo + 1 : 0;
@@ -1308,6 +1379,7 @@ void nvn_submit_prepare_async(const uint64_t *handles, uint64_t *out, int n) {
             copy_prefix *cl = malloc(sz);
             if (!cl) rt_fatal("nvn: out of memory (recording clone, %zu bytes)", sz);
             memcpy(cl, pf, sz);
+            cl->ho = 0;   // a clone of the heap's
             if (cl->pins) pin_refs((const uint8_t *)(cl + 1), 1);
             cl->magic = 0;   // not a live handle: the game never sees it
             cl->used_at = now;

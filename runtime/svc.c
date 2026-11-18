@@ -9,6 +9,7 @@
 #include "fs.h"
 #include "host.h"
 #include "kernel.h"
+#include "prep.h"
 #include "vk.h"
 #include "platform/platform.h"
 
@@ -247,6 +248,7 @@ static void svc_body(Cpu *c, uint32_t imm, uint64_t pc) {
         rt_log("guest ExitProcess at %s; exiting", ldr_describe(pc, at, sizeof at));
         fs_save_flush();
         vk_pipeline_save();
+        prep_report();
         prof_write();
         fflush(NULL);
         if (svc_test_exit_hook) return svc_test_exit_hook(0);

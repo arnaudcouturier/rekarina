@@ -108,6 +108,15 @@ of them.
 
    `gen.py` sizes its emit pool from the CPU count and the free memory; `--jobs N` sets it, and so does the environment variable `REKARINA_LIFT_JOBS=N`, which the installer's lift step honours too (it has no `--jobs`). When a worker runs out of memory, the pool restarts with half the workers (`emit: out of memory with N workers, retrying with M`), down to one; only an out-of-memory error with one worker fails the step.
 
+   Options that change the shape of the emitted C (each changes most functions, so a profile trained before it no
+   longer fits them: retrain, "Profile-guided build"). By default X9-X15 are not stored to the `Cpu` before a call
+   (AAPCS64 makes them neither arguments nor preserved; a direct call of a function that may read one before writing
+   it, `Emitter.reads_temps`, still stores them; `--temps-saved` stores them before every call), and only
+   `runtime/resolution.c`'s SET_RENDER_SIZE calls the runtime's function-entry hook (`cpu.h` `FN_ENTER`; `--fn-hooks
+   all` for `runtime/prof_win.c`'s function watch). Measured and left off: `--kept-locals`, `--reg-locals`,
+   `--inline-leaves` (more register locals or inlined leaf copies: more host instructions in the hottest functions
+   when compiled). `tests\diff\func.py` takes the same options and the same defaults.
+
    Lifting takes about 15 s, a clean compile about 200 s on 24 threads; later builds recompile only what changed.
    A compiler cache in front of clang shortens it further: with `SCCACHE` set to an sccache executable, `build_game.py`
    writes it into the ninja file ahead of `cc`, and every lift rewrites the generated chunks with the same contents, so

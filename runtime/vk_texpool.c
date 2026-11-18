@@ -50,6 +50,7 @@ static struct {
     uint32_t ngone, cgone;
     int gone_all;                       // the list overflowed: every slot with an image resolves again
     int dirty_any;                      // vk_tpool_slot_dirty since the last complete look
+    uint64_t *regbits;                  // per texture id, a bit: registered again or marked dirty since it was looked at
     uint64_t upd_fence;                 // DEBUG-LIVECHECK: the submission the last update was made in
 } T;
 
@@ -119,7 +120,9 @@ static int setup(void) {
     T.ntex = (int)ntex;
     T.reg = calloc(ntex, sizeof *T.reg), T.img = calloc(ntex, sizeof *T.img), T.dirty = calloc(ntex, 1);
     T.v2d = calloc(ntex, sizeof *T.v2d), T.v2da = calloc(ntex, sizeof *T.v2da);
-    if (!T.reg || !T.img || !T.dirty || !T.v2d || !T.v2da) rt_fatal("vk_texpool: out of memory");
+    T.regbits = calloc((ntex + 63) / 64, sizeof *T.regbits);
+    rt_heap_note("pool bits", T.regbits, (ntex + 63) / 64 * sizeof *T.regbits);   // DEBUG-HEAPCHECK
+    if (!T.reg || !T.img || !T.dirty || !T.v2d || !T.v2da || !T.regbits) rt_fatal("vk_texpool: out of memory");
     const char *e = cfg_get("REKARINA_TPOOL_MS");
     int ms = e ? atoi(e) : 0;
     T.budget_ns = (uint64_t)(ms > 0 ? ms : 2) * 1000000ull;
@@ -219,6 +222,21 @@ void vk_tpool_slot_dirty(int id) {
     if (__atomic_load_n(&T.state, __ATOMIC_ACQUIRE) <= 0 || id < 0 || id >= T.ntex) return;
     T.dirty[id] = 1;
     T.dirty_any = 1;
+    T.regbits[id >> 6] |= 1ull << (id & 63);
+}
+
+// vk_texture_register, texture lock held: the slot's registration changed. The update looks at these slots instead of
+// reading every slot's registration (the game registers a few hundred slots a frame; two passes over 32,768 slots were
+// 0.25 to 0.4 ms of each frame's replay in the field and the Market). REKARINA_TPOOL_REGBITS=0: every slot, as before.
+void vk_tpool_slot_registered(int id) {
+    if (__atomic_load_n(&T.state, __ATOMIC_ACQUIRE) <= 0 || id < 0 || id >= T.ntex) return;
+    T.regbits[id >> 6] |= 1ull << (id & 63);
+}
+
+static int regbits_on(void) {
+    static int on = -1;
+    if (on < 0) on = rt_knob("TPOOL_REGBITS", "1") != 0;
+    return on;
 }
 
 // Marks the slots whose image went. Texture lock held.
@@ -226,14 +244,14 @@ static void take_gone(int n) {
     if (!T.ngone && !T.gone_all) return;
     if (T.gone_all) {
         for (int id = 0; id < n; id++)
-            if (T.img[id]) T.dirty[id] = 1;
+            if (T.img[id]) T.dirty[id] = 1, T.regbits[id >> 6] |= 1ull << (id & 63);
     } else {
         uint32_t cap = 64;
         while (cap < T.ngone * 2) cap *= 2;
         VkImage *set = calloc(cap, sizeof *set);   // open addressing; images are never VK_NULL_HANDLE
         if (!set) {
             for (int id = 0; id < n; id++)
-                if (T.img[id]) T.dirty[id] = 1;
+                if (T.img[id]) T.dirty[id] = 1, T.regbits[id >> 6] |= 1ull << (id & 63);
         } else {
             for (uint32_t i = 0; i < T.ngone; i++) {
                 uint32_t h = (uint32_t)(((uint64_t)T.gone[i] * 0x9E3779B97F4A7C15ull) >> 40) & (cap - 1);
@@ -245,7 +263,7 @@ static void take_gone(int n) {
                 if (!im) continue;
                 uint32_t h = (uint32_t)(((uint64_t)im * 0x9E3779B97F4A7C15ull) >> 40) & (cap - 1);
                 while (set[h] && set[h] != im) h = (h + 1) & (cap - 1);
-                if (set[h]) T.dirty[id] = 1;
+                if (set[h]) T.dirty[id] = 1, T.regbits[id >> 6] |= 1ull << (id & 63);
             }
             free(set);
         }
@@ -262,8 +280,64 @@ static int pumping;              // update() runs from vk_tpool_pump: its own bu
 static int update_stopped;       // the last update() left slots for a later one
 static uint64_t last_bind_frame; // the frame of the last pool bind
 
-// One slot: its image and views now, or the stand-in.
-static void resolve_slot(int id, uint32_t reg) {
+// vk_arrive.c: 1 when a draw bound the pool while frame was recorded (a scene is drawn; loading screens bind none).
+int vk_tpool_bound_recently(uint64_t frame) {
+    uint64_t b = __atomic_load_n(&last_bind_frame, __ATOMIC_RELAXED);
+    return b && b + 1 >= frame;
+}
+
+// The update's budget while vk_arrive.c holds a scene's first frames unshown (REKARINA_ARRIVE_POOL_MS, default 40): the
+// frames are not seen, so the slots are resolved in long runs; the lock is still let go between updates for the game's
+// registering threads.
+int vk_arrive_holding(void);
+static uint64_t hold_ns(void) {
+    static uint64_t ns;
+    if (!ns) {
+        const char *e = cfg_get("REKARINA_ARRIVE_POOL_MS");
+        int ms = e && *e ? atoi(e) : 40;
+        ns = (uint64_t)(ms > 0 ? ms : 1) * 1000000ull;
+    }
+    return ns;
+}
+
+// Slots left for a later update in this one because the texture stream still prepares their texture
+// (vk_texture_stream_defer): their bits are set again at the end of the update (a list too long for this makes the
+// next update a complete look instead).
+#define DEFER_N 2048
+static int defer_ids[DEFER_N], ndefer, defer_over;
+
+// DEBUG-WHONAMES: the last slot writes (what each slot was given, when, in which submission's update), for the device
+// fault report: a fault comes seconds after the read and the slot that showed the image may have been written again
+// since. A ring under the texture lock.
+// REKARINA_POOL_HISTORY=<writes> (DEBUG-WHONAMES): the ring's length, rounded up to a power of two (default 65,536, about
+// 10-20 s of play); a fault whose image went a minute before needs a longer one (1048576: 56 MiB).
+static uint32_t pw_n_;
+static uint32_t pw_len(void) {
+    if (!pw_n_) {
+        const char *e = cfg_get("REKARINA_POOL_HISTORY");
+        uint32_t want = e && *e ? (uint32_t)strtoul(e, NULL, 0) : 65536, n = 1024;
+        while (n < want && n < (1u << 24)) n <<= 1;
+        pw_n_ = n;
+    }
+    return pw_n_;
+}
+#define PW_N pw_len()
+static struct { uint64_t image, v2d, v2da, fence, ns; int id; uint8_t force, parked; } *pw_ring;
+static uint32_t pw_next;
+static void pw_note(int id, VkImage im, VkImageView a, VkImageView b, int force) {
+    if (!pw_ring && !(pw_ring = calloc(PW_N, sizeof *pw_ring))) return;
+    pw_ring[pw_next++ % PW_N] = (typeof(*pw_ring)){(uint64_t)(uintptr_t)im, (uint64_t)(uintptr_t)a, (uint64_t)(uintptr_t)b,
+                                                    T.upd_fence, plat_now_ns(), id, (uint8_t)force, 0};
+}
+
+// One slot: its image and views now, or the stand-in. 1: left for a later update (it showed the stand-in and still does).
+static int resolve_slot(int id, uint32_t reg) {
+    if (reg && !T.img[id] && vk_texture_stream_defer(id)) {
+        if (ndefer < DEFER_N) defer_ids[ndefer++] = id;
+        else defer_over = 1;
+        return 1;
+    }
+    lf_count(LF_POOL_RES, 1);
     VkImageView a = T.dummy2d, b = T.dummy2da;
     VkImage im = VK_NULL_HANDLE;
     if (reg) {
@@ -315,9 +389,11 @@ static void resolve_slot(int id, uint32_t reg) {
             rt_log("vk_texpool: %llu slots so far whose image went got a view with the old view's handle (slot %d)",
                    (unsigned long long)n_same, id);
     }
+    if (force || a != T.v2d[id] || b != T.v2da[id] || im != T.img[id]) pw_note(id, im, a, b, force);   // DEBUG-WHONAMES
     if (force || a != T.v2d[id]) T.v2d[id] = a, put(GFX_POOL_2D, (uint32_t)id, a, VK_NULL_HANDLE);
     if (force || b != T.v2da[id]) T.v2da[id] = b, put(GFX_POOL_2D_ARRAY, (uint32_t)id, b, VK_NULL_HANDLE);
     T.reg[id] = reg, T.img[id] = im, T.dirty[id] = 0;
+    return 0;
 }
 
 static uint64_t knob_ms(const char *name, int def) {
@@ -351,7 +427,10 @@ static void update(void) {
     static uint32_t scan_gen;
     static int scan_n;
     uint32_t reg_gen = vk_texture_slots_gen();
-    int full = reg_gen != scan_gen || n != scan_n || T.ngone || T.gone_all || update_stopped || T.dirty_any;
+    int bits = regbits_on() && scan_gen;   // after one complete look: the bits name every slot registered since
+    // The images that went mark their slots in the bits too (take_gone), so they need no look at every slot either:
+    // the game destroys transient targets nearly every frame, and that alone made every update a full one.
+    int full = n != scan_n || T.gone_all || update_stopped || (!bits && (reg_gen != scan_gen || T.dirty_any || T.ngone));
     take_gone(n);
     uint64_t t0 = plat_now_ns();
     int checked = 0, stopped = 0;
@@ -365,22 +444,60 @@ static void update(void) {
     // would show the stand-in while they wait, so those come first and keep the long budget: they mostly find their
     // image by its content (vk_texture.c adopt_released) and cost no upload.
     static int backlog;
-    static uint64_t burst_ns, mid_ns;
+    static uint64_t burst_ns, mid_ns, old_ns;
     static int burst_min;
     if (!burst_ns) {
         burst_ns = knob_ms("REKARINA_TPOOL_BURST_MS", 50), mid_ns = knob_ms("REKARINA_TPOOL_MID_MS", 4);
+        // REKARINA_TPOOL_OLD_MS: the old slots' budget while no large backlog waits (a test of the field's and the
+        // Market's slowest frames, a quarter of which are this update at 7-8 ms); default the long budget, as before
+        old_ns = knob_ms("REKARINA_TPOOL_OLD_MS", 50);
         const char *e = cfg_get("REKARINA_TPOOL_BURST_MIN");
         burst_min = e && *e ? atoi(e) : 1024;
     }
     uint64_t pump_ns = (uint64_t)pump_ms() * 1000000ull;
-    uint64_t budget_old = pumping ? pump_ns : burst_ns;
+    uint64_t budget_old = pumping ? pump_ns : backlog >= burst_min ? burst_ns : old_ns;
     uint64_t budget = pumping ? pump_ns : backlog >= burst_min ? burst_ns : backlog >= 16 ? mid_ns : T.budget_ns;
+    if (vk_arrive_holding()) budget = budget_old = hold_ns();
+    // The budget is looked at after every slot: a new texture's slot can cost milliseconds (its creation, its storage's
+    // hash, its cache file's read), and sixteen of them between two looks held the lock 30-90 ms where the budget said
+    // 4 or 8 (the start's logo, the title). REKARINA_TPOOL_CHECK_EVERY=16 (a power of two; the default with
+    // REKARINA_UPFRONT=0): every sixteenth, as before.
+    static int every = -1;
+    if (every < 0) {
+        int vk_upfront(void);
+        const char *e = cfg_get("REKARINA_TPOOL_CHECK_EVERY");
+        int k = e && *e ? atoi(e) : vk_upfront() ? 1 : 16;
+        every = k > 1 ? k - 1 : 0;
+    }
     uint32_t sweep_lo = n ? T.sweep % (uint32_t)n : 0, sweep_n = n < SWEEP ? (uint32_t)n : SWEEP;
     const uint64_t *regs = vk_texture_slot_regs();   // n > 0: a slot was registered, so the words exist
+    int nw = (n + 63) / 64;
+    if (!full && regs) {   // the slots the bits name, those that showed an image first (the long budget), then the rest
+        for (int pass = 0; pass < 2 && !stopped; pass++)
+            for (int w = 0; w < nw && !stopped; w++) {
+                uint64_t m = T.regbits[w];
+                while (m) {
+                    int id = w * 64 + __builtin_ctzll(m);
+                    uint64_t bit = m & -m;
+                    m &= m - 1;
+                    if (id >= n) { T.regbits[w] &= ~bit; continue; }
+                    if (!pass && !T.img[id]) continue;   // the second pass
+                    uint32_t reg = (uint32_t)(regs[id] >> 16);
+                    if (reg != T.reg[id] || T.dirty[id]) {
+                        if ((++checked & every) == 0 && plat_now_ns() - t0 > (pass ? budget : budget_old)) {
+                            stopped = 1;
+                            break;
+                        }
+                        resolve_slot(id, reg);
+                    }
+                    T.regbits[w] &= ~bit;
+                }
+            }
+    }
     for (int id = 0; id < n && full; id++) {   // the slots that showed an image
         uint32_t reg = (uint32_t)(regs[id] >> 16);
         if (!T.img[id] || (reg == T.reg[id] && !T.dirty[id])) continue;
-        if ((++checked & 15) == 0 && plat_now_ns() - t0 > budget_old) {
+        if ((++checked & every) == 0 && plat_now_ns() - t0 > budget_old) {
             stopped = 1;
             break;
         }
@@ -392,18 +509,28 @@ static void update(void) {
         uint32_t reg = (uint32_t)(regs[id] >> 16);   // the slot's registration serial; 0: never registered
         int in_sweep = (uint32_t)((uint32_t)id - sweep_lo) % (uint32_t)n < sweep_n;
         if (reg == T.reg[id] && !T.dirty[id] && !(in_sweep && reg)) continue;
-        if ((++checked & 15) == 0 && plat_now_ns() - t1 > budget) {
+        if ((++checked & every) == 0 && plat_now_ns() - t1 > budget) {
             T.scan = (uint32_t)id;   // the rest at the next submission
             stopped = 1;
             break;
         }
         resolve_slot(id, reg);
     }
-    if (full && !stopped) scan_gen = reg_gen, scan_n = n, T.dirty_any = 0;
+    if (full && !stopped) {
+        scan_gen = reg_gen, scan_n = n, T.dirty_any = 0;
+        memset(T.regbits, 0, (size_t)nw * sizeof *T.regbits);   // every slot was looked at
+    } else if (!full && !stopped) {
+        scan_gen = reg_gen, T.dirty_any = 0;   // the bits named every change
+    }
     backlog = 0;
     if (stopped)
         for (int id = 0; id < n; id++) backlog += (uint32_t)(regs[id] >> 16) != T.reg[id] || T.dirty[id];
     update_stopped = stopped;
+    if (ndefer || defer_over) {   // the slots the texture stream still prepares: the next update looks at them again
+        for (int i = 0; i < ndefer; i++) T.regbits[defer_ids[i] >> 6] |= 1ull << (defer_ids[i] & 63);
+        if (defer_over || !regbits_on()) update_stopped = 1;
+        ndefer = 0, defer_over = 0;
+    }
     if (stopped) {
         // A slot whose image went and whose turn did not come within the budget must not keep its views: they are
         // destroyed with the image once the GPU is past this submission, and the next one samples the slot. It shows
@@ -415,10 +542,11 @@ static void update(void) {
         uint64_t before = parked_slots;
         for (int id = 0; id < n; id++) {
             if (!T.dirty[id] || !T.img[id]) continue;
+            pw_note(id, VK_NULL_HANDLE, T.dummy2d, T.dummy2da, 2);   // DEBUG-WHONAMES (2: parked)
             if (T.v2d[id] != T.dummy2d) T.v2d[id] = T.dummy2d, put(GFX_POOL_2D, (uint32_t)id, T.dummy2d, VK_NULL_HANDLE);
             if (T.v2da[id] != T.dummy2da) T.v2da[id] = T.dummy2da, put(GFX_POOL_2D_ARRAY, (uint32_t)id, T.dummy2da, VK_NULL_HANDLE);
             T.img[id] = VK_NULL_HANDLE;
-            parked_slots++;
+            parked_slots++, lf_count(LF_POOL_STANDIN, 1);
         }
         if (before / 4096 != parked_slots / 4096 || (!before && parked_slots))
             rt_log("vk_texpool: %llu slots so far took the stand-in while they waited for their turn after their image went",
@@ -426,11 +554,26 @@ static void update(void) {
     }
     if (__builtin_expect(vk_live_check_on(), 0)) {   // DEBUG-LIVECHECK: what every slot shows after the update
         void vk_texture_slot_log(int id);
+        // An image that went DURING this update (the slots resolved after a slot can replace the released entry it showed:
+        // the subtitle strips, a new R8 line at the storage of the last one) is in T.gone until the next update takes it
+        // in (take_gone), which rewrites the slot (or gives it the stand-in) before the next submission binds the set.
+        // Until then the slot names it only in the submission being recorded, in which the image still lives: it was
+        // parked in the image cache or held (its memory lives; the check counted such a handle as DESTROYED at value 0),
+        // or it waits for the GPU to pass this submission. Its views go the same way. So the slot's image is not a
+        // hazard here; its views are still checked. (On the release head this printed 5 reports a run in the field and at
+        // the square, all of this kind, 2026-11-18.)
+        static uint64_t n_gone_now;
         for (int id = 0; id < n; id++) {
             int bad = 0;
             if (T.v2d[id] != T.dummy2d) bad |= vk_live_check_use((uint64_t)(uintptr_t)T.v2d[id], "a texture pool slot after the update (2D view)", (uint64_t)id);
             if (T.v2da[id] != T.dummy2da) bad |= vk_live_check_use((uint64_t)(uintptr_t)T.v2da[id], "a texture pool slot after the update (array view)", (uint64_t)id);
-            if (T.img[id]) bad |= vk_live_check_use((uint64_t)(uintptr_t)T.img[id], "a texture pool slot after the update (its image)", (uint64_t)id);
+            int gone_now = 0;
+            for (uint32_t i = 0; T.img[id] && i < T.ngone && !gone_now; i++) gone_now = T.gone[i] == T.img[id];
+            if (gone_now && !(n_gone_now++ & 1023))
+                rt_log("vk_texpool: live check: %llu slots so far named an image that went during the update (taken in by "
+                       "the next one; slot %d)", (unsigned long long)n_gone_now, id);
+            if (T.img[id] && !gone_now && !T.gone_all)
+                bad |= vk_live_check_use((uint64_t)(uintptr_t)T.img[id], "a texture pool slot after the update (its image)", (uint64_t)id);
             if (bad) {
                 rt_log("LIVE CHECK: pool slot %d: dirty %d, written for serial %u, serial now %u; update %s, %u images gone and "
                        "not taken in", id, (int)T.dirty[id], T.reg[id], (uint32_t)(regs[id] >> 16), stopped ? "stopped" : "complete",
@@ -548,6 +691,30 @@ void vk_tpool_who_names(uint64_t image) {
             rt_log("  pool slot %d shows it (dirty %d, written for serial %u, serial now %u)", id, (int)T.dirty[id], T.reg[id],
                    (uint32_t)(vk_texture_slot_token(id) >> 32));
     rt_log("  pool: %d slots show it; %u images gone and not yet taken in", shown, T.ngone);
+    if (!pw_ring) return;
+    // the history: every write that gave a slot this image (newest first), and the write that slot got next
+    uint64_t now = plat_now_ns();
+    uint32_t have = pw_next < PW_N ? pw_next : PW_N, listed = 0;
+    for (uint32_t k = 0; k < have && listed < 12; k++) {
+        uint32_t i = (pw_next - 1 - k) % PW_N;
+        if (pw_ring[i].image != image) continue;
+        listed++;
+        int id = pw_ring[i].id;
+        uint32_t nx = PW_N;   // the slot's next write after this one
+        for (uint32_t j = 0; j < k && nx == PW_N; j++) {
+            uint32_t q = (pw_next - k + j) % PW_N;
+            if (pw_ring[q].id == id) nx = q;
+        }
+        rt_log("  pool history: slot %d was given it %.1f ms before the report (update of submission %llu, view %#llx/%#llx%s); "
+               "%s", id, (now - pw_ring[i].ns) / 1e6, (unsigned long long)pw_ring[i].fence,
+               (unsigned long long)pw_ring[i].v2d, (unsigned long long)pw_ring[i].v2da, pw_ring[i].force ? ", forced" : "",
+               nx == PW_N ? "NOT WRITTEN SINCE" : "written again after");
+        if (nx != PW_N)
+            rt_log("  pool history:   slot %d next: %.1f ms before the report, submission %llu, image %#llx view %#llx%s", id,
+                   (now - pw_ring[nx].ns) / 1e6, (unsigned long long)pw_ring[nx].fence, (unsigned long long)pw_ring[nx].image,
+                   (unsigned long long)pw_ring[nx].v2d, pw_ring[nx].force == 2 ? " (parked: the stand-in)" : "");
+    }
+    rt_log("  pool history: %u writes of it among the last %u", listed, have);
 }
 
 void vk_tpool_shutdown(void) {

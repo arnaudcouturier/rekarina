@@ -83,7 +83,10 @@ def simd_mask(w):
     return ((w & 0x0E000000) == 0x0E000000) | (((w & 0x0A000000) == 0x08000000) & (((w >> 26) & 1) == 1))
 
 
-def pick_functions(name, mod, count, r, spins=None):
+STUB_SKIP_TEMPS = False   # --temps-unsaved (main sets it)
+
+
+def pick_functions(name, mod, count, r, spins=None, kept_uses=0, reg_locals=gen.regs.LOCALS, temps_unsaved=False):
     """[(entry, end, tags)] of up to count functions of mod, plus the Emitter that will emit them. spins: {spin wait
     back-edge: head}, emitted with gates."""
     starts, _ = gen.discover(mod)
@@ -107,7 +110,8 @@ def pick_functions(name, mod, count, r, spins=None):
     with_spin = sorted({int(i) for i in gated} & set(cand.tolist()))
     for pool in (with_spin, with_br, with_call, rest):
         r.shuffle(pool)
-    emitter = gen.Emitter(mod, set((mod.lo + starts * 4).tolist()), spins=spins)
+    emitter = gen.Emitter(mod, set((mod.lo + starts * 4).tolist()), spins=spins, kept_uses=kept_uses,
+                          reg_locals=reg_locals, temps_unsaved=temps_unsaved)
     picks, tags_seen = [], Counter()
     # Functions with a spin wait first, then with a br (jump tables, fallbacks), at most a quarter of the picks each;
     # then functions with calls, at most half.
@@ -288,7 +292,9 @@ class Runner:
             target = mu.reg_read(e.xregs[(w >> 5) & 31])
         mu.reg_write(A.UC_ARM64_REG_X30, a + 4)
         h = ((self.h ^ target) * FNV) & M64
-        for val in list(mu.reg_read_batch(e.xregs)) + [mu.reg_read(A.UC_ARM64_REG_SP)]:
+        for i, val in enumerate(list(mu.reg_read_batch(e.xregs)) + [mu.reg_read(A.UC_ARM64_REG_SP)]):
+            if STUB_SKIP_TEMPS and 9 <= i <= 15:
+                continue
             h = ((h ^ val) * FNV) & M64
         for val in mu.reg_read_batch(e.qregs[:8]):
             h = ((h ^ (val & M64)) * FNV) & M64
@@ -345,6 +351,11 @@ def main():
     ap.add_argument('--jobs', type=int, default=os.cpu_count() or 4)
     ap.add_argument('--show', type=int, default=20)
     ap.add_argument('--patches', type=Path, help='patch table whose spin waits are emitted with their gates')
+    ap.add_argument('--temps-saved', action='store_true', help='recomp/gen.py --temps-saved; without it (the default, '
+                    'as the generator) the stubs (harness.c rt_stub, Runner.stub) leave X9-X15 out of the state they '
+                    'fold, as a callee may not read them')
+    ap.add_argument('--reg-locals', type=int, default=gen.regs.LOCALS, help='recomp/gen.py --reg-locals')
+    ap.add_argument('--kept-locals', type=int, default=0, help='recomp/gen.py --kept-locals for the emitted functions')
     ap.add_argument('--cflags', default='-march=x86-64-v3' if platform.machine().lower() in ('amd64', 'x86_64') else '')
     args = ap.parse_args()
     r = random.Random(args.seed)
@@ -363,14 +374,16 @@ def main():
         img = work / f'{name}.img'
         img.write_bytes(mod.image)
         images.append((base, img, mod.image))
-        picks, emitter = pick_functions(name, mod, args.functions, r, table.spins_for(name, base))
+        picks, emitter = pick_functions(name, mod, args.functions, r, table.spins_for(name, base), args.kept_locals,
+                                        args.reg_locals, not args.temps_saved)
         for entry, end, t in picks:
             emitted.append((name, entry, end, emitter))
             tags.append(t)
     print(f'picked {len(emitted)} functions ({time.time() - t0:.0f}s)', flush=True)
 
     t1 = time.time()
-    exe = build(work, emitted, args.jobs, args.cflags)
+    globals()['STUB_SKIP_TEMPS'] = not args.temps_saved
+    exe = build(work, emitted, args.jobs, args.cflags + ('' if args.temps_saved else ' -DSTUB_SKIP_TEMPS'))
     print(f'compiled ({time.time() - t1:.0f}s)', flush=True)
 
     buf0 = make_buffer(r)

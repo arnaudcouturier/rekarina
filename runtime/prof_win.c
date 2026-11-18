@@ -448,7 +448,7 @@ void prof_sampler_frame(uint64_t frame, uint64_t now, uint64_t d) {
 // ---- DEBUG-HWWATCH: REKARINA_HWWATCH=<addr>[,<addr>...] (up to 4, 4 bytes each) and REKARINA_HWWATCH_FRAME=<frame>: from that
 // present on, the CPU's debug registers break on writes to those guest addresses in every thread; each hit logs the
 // writing instruction's RVA (the instruction after the store) and the new value, the first 60 hits. REKARINA_HWWATCH_RW=1
-// breaks on reads too (400 hits, no value: reading it here would trip the watch again); scratch/w/rva2fn.py-style
+// breaks on reads too (400 hits, no value: reading it here would trip the watch again); an address-to-function
 // lookups in the link map name the generated function f_<guest address> an RVA falls in.
 static volatile LONG hw_hits;
 static uint64_t hw_addr[4];

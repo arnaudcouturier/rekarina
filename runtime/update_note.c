@@ -4,8 +4,9 @@
 // The answer is kept in <app data>/Rekarina/update.json, which the launcher (installer/update.py) writes too:
 //   {"latest": "1.0.1", "checked": 1731326400}
 // latest: the newest release's version without its "v"; checked: Unix seconds of the check. Other members are left to
-// the launcher and not read here. A file younger than CHECK_EVERY_S is trusted; else one HTTPS request asks GitHub for
-// the newest release (update_http_latest, update_note_win.c) and the file is written again. The request carries no
+// the launcher and not read here. A file younger than CHECK_EVERY_S is trusted; else one HTTPS request asks the site's
+// release feed for the newest release (update_http_latest, update_note_win.c, update_note.h) and the file is written
+// again. The request carries no
 // more than the port's name and version as its User-Agent. UPDATE_CHECK=0 (menu: Interface) stops both the request and
 // the notice. All of it runs on a thread of its own at idle priority: a slow or absent network costs the game nothing.
 #include <stdatomic.h>
@@ -147,6 +148,9 @@ void update_note_start(void) {
         rt_log("update: the check is off (UPDATE_CHECK=0)");
         return;
     }
+    // once a run: at start, or when the menu switches the check on later (ui/menu.cpp tab_menu)
+    static _Atomic int started;
+    if (atomic_exchange(&started, 1)) return;
     if (!plat_thread_spawn(check_thread, NULL, "update check", 256 * 1024)) rt_log("update: the check thread did not start");
 }
 

@@ -80,6 +80,7 @@ typedef struct {
     VkRenderingAttachmentInfo ca[8], da, sa;
     uint32_t crumb;                      // DEBUG-PARCRUMB: stretch serial * 16 + chunk; 0: no crumbs
     uint64_t asof;                       // vk_texture_asof_mark when the stretch was handed out: its lookups' limit
+    uint32_t updn, useq;                 // inline uniform updates noted and snapshot drops by them at the handout
 } ParJob;
 static struct {
     int threads;                         // -1: not read; 0: off
@@ -319,6 +320,7 @@ static int bc_standin(const VkTexImage *img, uint32_t level, VkFormat fmt, BcSta
         if (!warned++) rt_log("vk: stand-in for a 3D BC render target could not be created: left out");
         return 0;
     }
+    vk_addr_label((uint64_t)(uintptr_t)s.img, "BC stand-in of %#llx level %u", (unsigned long long)(uintptr_t)img->image, level);
     // In the upload batch, which goes to the queue before this part: GENERAL, then the texture's blocks.
     VkCommandBuffer cb = vk_upload_begin();
     image_barrier(cb, s.img, VK_IMAGE_LAYOUT_UNDEFINED, s.d);
@@ -1396,6 +1398,7 @@ static void par_run(ParJob *j) {
     uint64_t was_fence = par_fence;
     vk_par_worker = 1, par_fence = ex->fence;
     uint64_t was_asof = vk_texture_asof(j->asof);   // textures as they were at the stretch's place, not where the replay is now
+    vk_exec_draw_upd_limit(j->updn), vk_usnap_view_limit(j->useq);   // and the inline uniform updates
     vk_exec_draw_new_cb();
     vk_exec_oq_worker(1);
     par_ri = &j->ri;
@@ -1441,6 +1444,7 @@ done:
     vkEndCommandBuffer(ex->cb);
     vk_exec_oq_worker(0);
     vk_texture_asof(was_asof);
+    vk_exec_draw_upd_limit(UINT32_MAX), vk_usnap_view_limit(UINT32_MAX);
     vk_par_worker = was_worker, par_fence = was_fence;
 }
 
@@ -1487,7 +1491,9 @@ static int par_on(void) {
     if (n <= 0) {   // by the processor: the game's own threads record the next frame meanwhile and keep their cores
 #ifdef GAME_OOT
         uint32_t cpus = plat_cpu_weighted();   // a slower core (Intel's efficient cores) counts half
-        n = cpus >= 12 ? 6 : cpus >= 8 ? 4 : cpus >= 6 ? 3 : 1;
+        // 8 logical processors (4 cores / 8 threads, as a Steam Deck): 3 measured better than 4 in the forest
+        // (1 % low 51 against 44 fps, 7 against 17 frames over 25 ms) and no worse in the Market
+        n = cpus >= 12 ? 6 : cpus >= 6 ? 3 : 1;
 #else
         n = 1;   // measured and checked on OoT only so far
 #endif
@@ -1536,10 +1542,15 @@ void vk_exec_par_join(void) {
     uint64_t t0 = plat_now_ns();
     int why = par_why & 127, open = PAR.njobs - __atomic_load_n(&PAR.ndone, __ATOMIC_ACQUIRE);   // DEBUG-PARWHY
     par_why = 0;
+    uint64_t s0 = sec_begin();
     while (par_take_run()) {}
+    uint64_t s1 = s0 ? sec_clock() : 0;
     int n = PAR.njobs;
     for (int i = 0; i < n; i++)
         while (__atomic_load_n(&PAR.jstate[i], __ATOMIC_ACQUIRE) != 3) _mm_pause();
+    if (s0) sec_add(SEC_PAR_RUN, s1 - s0), sec_add(SEC_PAR_SPIN, sec_clock() - s1);
+    void vk_exec_draw_tchk_drain(void);
+    vk_exec_draw_tchk_drain();   // the chunks' storage checks, before the part and its uploads go
     for (int i = 0; i < n; i++) PAR.jstate[i] = 0;
     __atomic_store_n(&PAR.ndone, 0, __ATOMIC_RELEASE);
     __atomic_store_n(&PAR.njobs, 0, __ATOMIC_RELEASE);
@@ -1557,10 +1568,20 @@ void vk_exec_par_join(void) {
 // own view of the uniform snapshot). A wait does when the CPU's late writes are taken in after it (the uniform snapshot
 // and the mirrors are made again). Measured in the
 // forest: with every one of them waiting, 1.2 ms of a frame went into ~12 waits of 0.06 to 0.13 ms.
+// Nor an inline uniform update (REKARINA_PAR_UB_JOIN=1: it waits, as before): the chunks read the snapshot's regions
+// and the update ring as of their stretch's handout (vk_usnap_drop_update, vk_exec_draw_upd_limit), its copy goes into
+// the replay thread's command buffer behind them, and its write-back note is taken under vk_par_lock. Its wait was the
+// largest: ~5 a frame at 0.19 ms, a millisecond of the replay thread's frame in the forest and the field.
+int vk_exec_ub_nojoin(void) {
+    static int on = -1;
+    if (on < 0) on = !rt_knob("PAR_UB_JOIN", "0");
+    return on;
+}
+
 static int par_join_op(uint32_t op) {
     return !(vk_exec_op_quiet(op) || op == OP_RESET_COUNTER || op == OP_REPORT_COUNTER || op == OP_BARRIER ||
              op == OP_CLEAR_COLOR || op == OP_CLEAR_DS || op == OP_END || op == OP_DISPATCH || op == OP_DISPATCH_IND ||
-             op == OP_SIGNAL_EVENT || op == OP_WAIT_EVENT);
+             op == OP_SIGNAL_EVENT || op == OP_WAIT_EVENT || (op == OP_UPDATE_UB && vk_exec_ub_nojoin()));
 }
 
 static void part_split(VkExec *ex);
@@ -1662,7 +1683,7 @@ static const op_hdr *par_try(VkExec *ex, const op_hdr *h) {
         j = &PAR.job[ji];                                                                                                   \
         j->st = *ex, j->from = (first_op), j->to = NULL, j->cb = cbs[k];                                                    \
         j->crumb = crumb0 ? crumb0 | (uint32_t)(k & 15) : 0;                                                                \
-        j->asof = asof_mark;                                                                                                \
+        j->asof = asof_mark, j->updn = upd_mark, j->useq = useq_mark;                                                       \
         j->slot = PAR.slots + PAR.nslots, j->cond = PAR.conds + PAR.nconds;                                                 \
         memcpy(j->ca, PAR.ca, sizeof j->ca), j->da = PAR.da, j->sa = PAR.sa, j->ri = PAR.ri;                                \
         j->ri.pColorAttachments = j->ca;                                                                                    \
@@ -1674,6 +1695,7 @@ static const op_hdr *par_try(VkExec *ex, const op_hdr *h) {
     ParJob *j;
     // GPU writes the replay records from here on come after the stretch: its chunks' lookups leave them out
     uint64_t asof_mark = vk_texture_asof_mark();
+    uint32_t upd_mark = vk_exec_draw_upd_count(ex->fence), useq_mark = vk_usnap_update_serial();   // no update inside a stretch
     PAR_JOB_OUT(h);
     for (const op_hdr *o = h; o != e; o = nvn_op_next(o)) {
         uint32_t op = o->op;
@@ -1737,6 +1759,8 @@ static const op_hdr *par_try(VkExec *ex, const op_hdr *h) {
                        w == 101 ? "room" : nvn_op_name((uint32_t)w - 1), (unsigned long long)par_why_n[w],
                        par_why_ns[w] / 1e6 / (double)par_why_n[w], (double)par_why_open[w] / (double)par_why_n[w]);
         memset(par_why_n, 0, sizeof par_why_n), memset(par_why_ns, 0, sizeof par_why_ns), memset(par_why_open, 0, sizeof par_why_open);
+        void vk_exec_draw_tchk_log(void);
+        vk_exec_draw_tchk_log();
         PAR.stretches = PAR.chunks_n = PAR.draws = PAR.walk_ns = PAR.join_ns = PAR.joins = 0;
     }
     return e;
@@ -2317,7 +2341,20 @@ static int exec_record_(VkCommandBuffer cb, const uint64_t *handles, int n, uint
         uint64_t a = plat_now_ns();
         vk_exec_copies_ns = a;   // the uniform snapshot and the mirrors' syncs of this submission begin here
         if (work && n) vk_dlaa_scene_jitter(ex, handles, n);
-        if (work) vk_mem_mirror_begin();
+        if (work) {
+            // REKARINA_PRESNAP_MIN_KB (default 512; 0: always): a submission whose recordings hold fewer KiB than this
+            // skips the mirrors' batched pre-snapshot (vk_memory.c vk_mem_mirror_begin_ex). At the Market's square the
+            // main thread's host time on the game's cycle fell from 1.00 to 0.22 ms a cycle with it (critical-path
+            // recorder, 2026-11-18), the replay's per-texture checks taking ~0.4 ms of what the batch did.
+            static int64_t pmin = -1;
+            if (pmin < 0) {
+                const char *e = cfg_get("REKARINA_PRESNAP_MIN_KB");
+                pmin = (int64_t)(e && *e ? atoll(e) : 512) << 10;
+            }
+            uint64_t bytes = 0;
+            for (int i = 0; pmin > 0 && i < n && bytes < (uint64_t)pmin; i++) bytes += nvn_handle_bytes(handles[i]);
+            vk_mem_mirror_begin_ex(pmin <= 0 || bytes >= (uint64_t)pmin);
+        }
         uint64_t b = plat_now_ns();
         if (work) vk_usnap_begin(handles, n, fence);
         vk_spike.mirb += b - a, vk_spike.usnap += plat_now_ns() - b;

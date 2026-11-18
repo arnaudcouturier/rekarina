@@ -33,6 +33,39 @@ typedef void (*GuestFn)(Cpu *);
 
 // ---- runtime services (runtime/*.c)
 void rt_dispatch(Cpu *c);                 // call function at c->pc
+
+// The dispatch table of runtime/dispatch.c (one cache line), read by rt_dispatch_call below.
+typedef struct __attribute__((aligned(64))) {
+    const uint32_t *slot;   // per 4 guest bytes from lo: the function's offset from anchor, 0 none
+    uintptr_t anchor;
+    uint64_t lo;
+    uint64_t slots;
+} RtDispatchTable;
+// RT_LOCAL: data of this executable. Without it a MinGW build reads an extern variable through a pointer of its own
+// (.refptr, for data a DLL might export), one more load before each use in every lifted function.
+#define RT_LOCAL __attribute__((visibility("hidden")))
+extern RT_LOCAL RtDispatchTable rt_dispatch_table;
+extern RT_LOCAL int rt_dispatch_inline_on;   // 0: every call site goes through rt_dispatch (REKARINA_DISPATCH_INLINE=0)
+
+// An indirect CALL of the lifted code (BLR; recomp/gen.py emits it, tail jumps keep rt_dispatch): rt_dispatch's lookup
+// done at the call site, so that each site's indirect call has its own entry in the host's branch predictor instead
+// of every virtual call of the game sharing rt_dispatch's one jump. A pending preempt request, a host function or a pc
+// outside the table goes to rt_dispatch as before.
+static inline __attribute__((always_inline)) void rt_dispatch_call(Cpu *c) {
+    const RtDispatchTable *d = &rt_dispatch_table;
+    uint64_t i = __builtin_rotateright64(c->pc - d->lo, 2);
+    uint32_t off = i < d->slots ? d->slot[i] : 0;
+    if (__builtin_expect(!off || !rt_dispatch_inline_on || (c->thread && __atomic_load_n((const int *)c->thread, __ATOMIC_RELAXED)), 0)) {
+        rt_dispatch(c);
+        return;
+    }
+    ((GuestFn)(d->anchor + off))(c);
+}
+
+// An indirect JUMP of the lifted code that leaves the function (a BR that is no jump table: the import stubs' `br x17`,
+// virtual tail calls): rt_dispatch_call's lookup as a tail jump at the site, so that each stub and tail call has its
+// own predictor entry too. A macro, because the tail calls must be the lifted function's own `return`.
+#define RT_DISPATCH_JUMP(c) do {                                                                                             const RtDispatchTable *d_ = &rt_dispatch_table;                                                                      uint64_t i_ = __builtin_rotateright64((c)->pc - d_->lo, 2);                                                          uint32_t o_ = i_ < d_->slots ? d_->slot[i_] : 0;                                                                     if (__builtin_expect(!o_ || !rt_dispatch_inline_on ||                                                                                     ((c)->thread && __atomic_load_n((const int *)(c)->thread, __ATOMIC_RELAXED)), 0))                  __attribute__((musttail)) return rt_dispatch(c);                                                                 __attribute__((musttail)) return ((GuestFn)(d_->anchor + o_))(c);                                                } while (0)
 void rt_spin_gate(Cpu *c, uint64_t head);  // a pass of a spin wait loop (kernel.c, recomp/patches.py `spin`)
 void rt_svc(Cpu *c, uint32_t imm, uint64_t pc);
 void rt_brk(Cpu *c, uint32_t imm, uint64_t pc) __attribute__((noreturn));
@@ -70,7 +103,7 @@ typedef uint64_t __attribute__((aligned(1), may_alias)) u64u;
 typedef uint8_t __attribute__((may_alias)) u8a;
 
 // Function-entry profiler (runtime/fnprof.c, LARECOMP_FNPROF): one predictable branch per call when off.
-extern volatile int g_fnprof;
+extern RT_LOCAL volatile int g_fnprof;
 void fnprof_hit(uint64_t addr, uint64_t lr, uint64_t x0);
 #define FN_ENTER(a) do { if (__builtin_expect(g_fnprof, 0)) fnprof_hit(a, c->x[30], c->x[0]); } while (0)
 

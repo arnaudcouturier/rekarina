@@ -205,6 +205,9 @@ def theme(root):
     root.bind_class('TButton', '<KP_Enter>', lambda e: e.widget.invoke())
 
 
+# The prepared textures' size on disk, C's estimate (tools/oot_prepare_textures.py --estimate) until a full run measures it
+TEXTURES_GIB = 12
+
 STAGE_W, STAGE_H, BAND_H = 1120, 700, 62   # the window's picture (tools/make_launcher_art.py) and its band
 ART = Path(__file__).resolve().parent / 'art'
 
@@ -448,6 +451,7 @@ class OotForm:
     prompts: str = 'auto'
     dlls: str = ''
     toolchain: str = ''
+    textures: bool = True   # the setup's texture step (installer/oot.py --no-textures when off)
 
     def installed_state(self):
         if not self.dest.strip():
@@ -480,6 +484,8 @@ class OotForm:
                             ('--dlls', self.dlls), ('--toolchain', self.toolchain)):
             if value and value.strip():
                 cmd += [flag, value.strip()]
+        if not self.textures:
+            cmd.append('--no-textures')
         if root:
             cmd += ['--root', str(root)]
         if temp:
@@ -534,6 +540,7 @@ class RekarinaApp(App):
         self.args = args
         self.extra = {n: tk.StringVar() for n in ('game', 'dlls')}
         self.prompts_var = tk.StringVar()
+        self.textures_var = tk.StringVar()
         self.tracker = eta.Tracker()     # the times of the step list
         self.step_times = {}
         self.job = None                  # the launcher's own running work, or None
@@ -931,7 +938,8 @@ class RekarinaApp(App):
         y = 202
         for id, command in (('ui.oot_home_mods', self.open_mods), ('ui.oot_home_saves', self.open_saves),
                             ('ui.oot_home_settings', self.open_settings),
-                            ('ui.open_folder', self.open_game_folder), ('ui.oot_home_update', lambda: self.show('form'))):
+                            ('ui.open_folder', self.open_game_folder), ('ui.oot_home_update', lambda: self.show('form')),
+                            ('ui.oot_home_report', self.make_report)):
             p = Plate(self, 'plate46', 266, command, 'RekPlate', tags)
             p.place(34, y)
             self.bind_text(p, 'text', id)
@@ -1034,6 +1042,8 @@ class RekarinaApp(App):
         state = self.form().installed_state() if ready else None
         if state and state.get('release') and state['release'] != self.layout.release:
             text = self.cat('ui.oot_built_by_older', dest=dest, built=state['release'], version=self.layout.release)
+        if ready and self.last_run_failed():   # the game stopped with an error last time: say what to send
+            text += '\n\n' + self.cat('ui.oot_report_after_crash')
         self.home_text.configure(text=text)
         self.home_play.state(['!disabled' if ready else 'disabled'])
         lacking = self.missing_groups()
@@ -1049,6 +1059,48 @@ class RekarinaApp(App):
         dest = self.vars['dest'].get().strip()
         if dest and Path(dest).is_dir() and os.name == 'nt':
             os.startfile(dest)
+
+    def last_run_failed(self):
+        """True when the game's last run ended with an error: its log (logs/rekarina.log beside the game, the newest run)
+        ends with a crash report, a fatal error or a lost graphics device (runtime/report.c reads the same marks)."""
+        log = self.game_exe().parent / 'logs' / 'rekarina.log'
+        try:
+            with open(log, 'rb') as f:
+                f.seek(0, os.SEEK_END)
+                f.seek(max(0, f.tell() - 256 * 1024))
+                tail = f.read()
+        except OSError:
+            return False
+        return b'FATAL' in tail or b'vk: device lost' in tail
+
+    def make_report(self):
+        """The game makes the problem report (rekarina --make-report: one zip in reports/ beside it, nothing sent);
+        the launcher then shows the folder. The game runs without a window for it, a few seconds."""
+        exe = self.game_exe()
+        if not exe.is_file():
+            return
+
+        def work():
+            env = dict(os.environ, REKARINA_REPORT_NO_OPEN='1')
+            flags = subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
+            r = subprocess.run([str(exe), '--make-report'], cwd=str(exe.parent), env=env, capture_output=True,
+                               timeout=120, creationflags=flags)
+            path = r.stdout.decode('utf-8', 'replace').strip().splitlines()
+            if r.returncode or not path or not Path(path[-1]).is_file():
+                raise RuntimeError(r.stderr.decode('utf-8', 'replace').strip() or f'exit {r.returncode}')
+            return Path(path[-1])
+
+        def then(value):
+            if isinstance(value, Exception):
+                messagebox.showerror(self.cat('ui.oot_title'), self.cat('ui.oot_report_failed', detail=str(value)[:300]))
+                return
+            folder = value.parent
+            if os.name == 'nt':
+                os.startfile(str(folder))
+            else:
+                subprocess.Popen(['xdg-open', str(folder)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                 start_new_session=True)
+        self.background(work, then)
 
     def open_settings(self):
         """rekarina.ini in the player's text editor: every setting has its explanation there. (totk.ini in a folder
@@ -1984,6 +2036,7 @@ class RekarinaApp(App):
         super().retext()
         self.root.title(self.cat('ui.oot_title'))
         self.fill_prompts()
+        self.fill_textures()
         self.refresh_home()
         self.refresh_mods(rescan=False)
 
@@ -2009,7 +2062,7 @@ class RekarinaApp(App):
         rows = ttk.Frame(f)
         rows.pack(fill='x')
 
-        def row(label_id, pick=None):
+        def row(label_id, pick=None, **params):
             """One row; returns the cell its value goes into. All cells are one size, so the values stand in a
             column; a name too long for its strip takes a second line."""
             strip = tk.Frame(rows, background=ROW, highlightbackground=ROW_EDGE, highlightthickness=1)
@@ -2019,7 +2072,8 @@ class RekarinaApp(App):
             cell.pack_propagate(False)
             if pick:
                 self.button(cell, 'ui.browse', pick, style='Cell.TButton').pack(side='right', fill='y', padx=(3, 0))
-            name = self.label(strip, label_id, style='Row.TLabel', wraplength=WRAP - FORM_VALUE_W - 36, justify='left')
+            name = ttk.Label(strip, style='Row.TLabel', wraplength=WRAP - FORM_VALUE_W - 36, justify='left')
+            self.bind_text(name, 'text', label_id, **params)
             name.pack(side='left', padx=(14, 10), pady=4)
             return cell
 
@@ -2041,20 +2095,42 @@ class RekarinaApp(App):
         self.prompts_code = PROMPTS[0]
         self.prompts_box.bind('<<ComboboxSelected>>', self.pick_prompts)
         self.fill_prompts()
+        # the setup's texture step: a choice of two, on by default (2026-11-16, an RTX 5070 tour of eight places from a
+        # fresh start: with the prepared cache the village's first visit ran at 96 fps with 4 frames over 25 ms a
+        # minute, where converting its textures in play gave 53 fps and 354); its size and the drive's room below it
+        self.textures_box = choice(row('ui.oot_textures', gib=TEXTURES_GIB), self.textures_var)
+        self.textures_on = True
+        self.textures_box.bind('<<ComboboxSelected>>', self.pick_textures)
+        self.fill_textures()
         entry(row('ui.oot_dlls', self.pick_dlls), self.extra['dlls'])
-        self.label(f, 'ui.oot_dlls_help', wraplength=WRAP, justify='left', style='Dim.TLabel').pack(anchor='w', pady=(2, 0))
+        self.dlls_help = self.label(f, 'ui.oot_dlls_help', wraplength=WRAP, justify='left', style='Dim.TLabel')
+        self.dlls_help.pack(anchor='w', pady=(2, 0))
+        # The paragraph under the rows explains the libraries' row; while the texture row has the focus (opened, chosen
+        # from, or reached with Tab) it explains that row instead, the one other row whose choice needs a sentence.
+        self.textures_box.bind('<FocusIn>', lambda _e: self.form_help('ui.oot_textures_help'), add='+')
+        self.textures_box.bind('<FocusOut>', lambda _e: self.form_help('ui.oot_dlls_help'), add='+')
         # lines that are empty most of the time: place_form_lines gives each its room only while it says something
         self.form_hw = ttk.Label(f, style='Dim.TLabel', wraplength=WRAP, justify='left')   # the card and its preset
+        self.form_space = ttk.Label(f, style='Hint.TLabel', wraplength=WRAP, justify='left')   # room for the textures
         self.update_hint = ttk.Label(f, style='Hint.TLabel', wraplength=WRAP, justify='left')
         self.form_error = ttk.Label(f, style='Err.TLabel', wraplength=WRAP, justify='left')
         self.form_notice = self.notice(f)
         self.form_notice.pack(fill='x', pady=(12, 0))
         return f
 
+    def form_help(self, id):
+        """The form's help paragraph says the text of `id`, and keeps saying it after a language change."""
+        self.bound = [(w, o, id if w is self.dlls_help else i, p) for w, o, i, p in self.bound]
+        self.dlls_help.configure(text=self.cat(id))
+
     def place_form_lines(self):
         """The card's line, the "this folder is updated" line and the error line of the form, each in its place
         above the notice while it has text and gone while it has none (an empty label would still take a line)."""
-        for w in (self.form_hw, self.update_hint, self.form_error):
+        # a short drive's line takes the place of the libraries' help, which the window has no room for beside it
+        self.dlls_help.pack_forget()
+        if not self.form_space.cget('text'):
+            self.dlls_help.pack(anchor='w', pady=(2, 0), before=self.form_notice)
+        for w in (self.form_hw, self.form_space, self.update_hint, self.form_error):
             w.pack_forget()
             if w.cget('text'):
                 w.pack(anchor='w', pady=(8, 0), before=self.form_notice)
@@ -2063,6 +2139,32 @@ class RekarinaApp(App):
         labels = [self.cat('ui.oot_prompts_' + p) for p in PROMPTS]
         self.prompts_box.configure(values=labels)
         self.prompts_var.set(labels[PROMPTS.index(self.prompts_code)])
+
+    def fill_textures(self):
+        self.textures_box.configure(values=[self.cat('ui.oot_textures_yes'), self.cat('ui.oot_textures_no')])
+        self.textures_box.current(0 if self.textures_on else 1)
+
+    def pick_textures(self, _event=None):
+        i = self.textures_box.current()
+        if i >= 0:
+            self.textures_on = i == 0
+            self.refresh_form()
+
+    def textures_space_text(self):
+        """The drive's room for the game and the prepared textures, said only when it is short: the setup then
+        prepares what fits (tools/oot_prepare_textures.py stops with 2 GiB left) and the game makes the rest in play,
+        so a short drive is a sentence here, not a failed install. Empty while it fits or the folder is unknown."""
+        dest = self.vars['dest'].get().strip()
+        if not self.textures_on or not dest or getattr(self, 'forced_free', None) is None and not os.path.isabs(dest):
+            return ''
+        try:
+            free = self.forced_free if getattr(self, 'forced_free', None) is not None else oot.free_bytes(dest)
+        except OSError:
+            return ''
+        need = oot.NEED_DEST + (TEXTURES_GIB << 30)
+        if free >= need:
+            return ''
+        return self.cat('ui.oot_textures_space', free=round(free / 2**30), need=round(need / 2**30))
 
     def pick_prompts(self, _event=None):
         i = self.prompts_box.current()
@@ -2081,13 +2183,14 @@ class RekarinaApp(App):
 
     def form(self):
         return OotForm(game=self.extra['game'].get(), dest=self.vars['dest'].get(), lang=self.selected_lang(),
-                       prompts=self.prompts_code, dlls=self.extra['dlls'].get(),
+                       prompts=self.prompts_code, dlls=self.extra['dlls'].get(), textures=self.textures_on,
                        toolchain=str(self.args.toolchain) if self.args and self.args.toolchain else '')
 
     def refresh_form(self):
         self.update_hint.configure(text=self.cat('ui.oot_update_mode') if self.form().installed_state() else '')
         self.home_button.state(['!disabled' if self.game_exe().is_file() else 'disabled'])
         self.form_hw.configure(text=self.hardware_text())
+        self.form_space.configure(text=self.textures_space_text())
         self.fit()
 
     def go_home(self):
@@ -2202,7 +2305,7 @@ SAMPLE_NOTES = ('Rekarina 1.0.1\n\n- Shorter loading between areas.\n- The water
                 '- New button prompt set for PlayStation pads.\n- The setup downloads DLSS and FSR 3.1 by itself.\n\n'
                 'The update keeps your saves, settings and shader caches. After it the setup rebuilds the game from the '
                 'dump you already have; that takes a few minutes.')
-SCREENS = ('form', 'home', 'home-update', 'mods', 'mods-empty', 'saves', 'saves-ask', 'saves-empty', 'update', 'run',
+SCREENS = ('form', 'form-textures-help', 'form-space', 'home', 'home-update', 'mods', 'mods-empty', 'saves', 'saves-ask', 'saves-empty', 'update', 'run',
            'components', 'ok', 'failed')
 
 
@@ -2276,6 +2379,17 @@ def selftest(layout, shots=None):
             app.refresh_form()
             app.show('form')
             shot(f'oot-form-{lang}')
+            app.form_help('ui.oot_textures_help')   # the texture row in focus: its paragraph instead of the libraries'
+            shot(f'oot-form-textures-help-{lang}')
+            app.form_help('ui.oot_dlls_help')
+            app.textures_on = True       # chosen, on a drive with 20 GiB free: the textures' line says what happens
+            app.fill_textures()
+            app.forced_free = 20 << 30
+            app.refresh_form()
+            shot(f'oot-form-space-{lang}')
+            app.forced_free = None
+            app.textures_on = False
+            app.fill_textures()
             app.update_info = sample_update('1.0.0', False)
             app.refresh_home()
             app.home_play.state(['!disabled'])
@@ -2327,6 +2441,27 @@ def selftest(layout, shots=None):
     return 0 if len(drawn) == 2 * len(SCREENS) else 1
 
 
+def fit_small_screen():
+    """Windows: the window is a fixed picture of STAGE_W x STAGE_H, which Windows enlarges by the display scale for a
+    program that does not say it handles it (pythonw does not). On a handheld's 1920x1080 screen at its usual 150 %
+    that is 1680x1050 plus the title bar: taller than the space above the taskbar, so the bottom was cut off. When the
+    enlarged window would not fit, the process says it handles the scale itself and the window keeps its own pixels
+    (smaller on screen, whole). Before the first window; nothing changes where it fits."""
+    if os.name != 'nt':
+        return
+    try:
+        import ctypes
+        from ctypes import wintypes
+        rect = wintypes.RECT()
+        if not ctypes.windll.user32.SystemParametersInfoW(0x0030, 0, ctypes.byref(rect), 0):   # SPI_GETWORKAREA
+            return
+        if rect.bottom - rect.top >= STAGE_H + 40 and rect.right - rect.left >= STAGE_W:   # 40: the title bar, roughly
+            return
+        ctypes.windll.shcore.SetProcessDpiAwareness(1)   # PROCESS_SYSTEM_DPI_AWARE
+    except (AttributeError, OSError):
+        pass
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument('--selftest', action='store_true')
@@ -2343,6 +2478,7 @@ def main(argv=None):
     if args.selftest:
         return selftest(layout, args.shots)
     fix_tcl_paths()
+    fit_small_screen()
     root = tk.Tk()
     RekarinaApp(root, args.lang or windows_ui_language(), layout, args)
     root.mainloop()

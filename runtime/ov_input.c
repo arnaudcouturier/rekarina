@@ -12,6 +12,7 @@
 #include <string.h>
 
 #include "cfg.h"
+#include "frame_start.h"
 #include "host.h"
 #include "input.h"
 #include "ov.h"
@@ -90,7 +91,9 @@ static void npad_states(Cpu *c, uint32_t want) {
     NpadState s = {.sampling = ++sample};
     int live = want && enabled && allowed && id == pad_id() && want == pad_style() && (styles & want);
     plat_mutex_unlock(&lock);
+    frame_start_pad_census(want, live, id);   // DEBUG-PADCENSUS
     if (live) {
+        frame_start_pad();   // frame_start.c: the main thread's pad read may wait for its frame's slot first
         s.attributes = ATTR_CONNECTED;
         input_poll(&s.buttons, &s.lx, &s.ly, &s.rx, &s.ry);
     }

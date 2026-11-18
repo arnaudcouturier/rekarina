@@ -102,9 +102,12 @@ static const SDL_GamepadButton pad_sdl[PAD_COUNT] = {
 // and its hold are milliseconds of the world clock (frame_step_world_us, game time since the loaded save's first
 // frame), so it lands at the same game time at any frame rate and load length. A timed event shorter than a frame is
 // applied once. In a script with timed lines (a recording) the untimed ones belong before the world clock: they stop
-// when it starts, as the load ends at another tick in each run.
+// when it starts, as the load ends at another tick in each run. A line "+<ticks> ..." counts from the arrival after the
+// latest map change a warp asked for (REKARINA_WARP_AT, oot_warp.c): the first frame that draws a scene after the
+// loading screen that followed the warp, so a test route starts at the same place and moment of its map whatever the
+// title and the load took (a route timed from the start ran a different path in each arm of a pair).
 // at, hold: ticks, or microseconds of the world clock when timed.
-typedef struct { uint64_t at, hold; int bit, stick, timed; int32_t x, y; int logged; char text[48]; } ScriptEv;
+typedef struct { uint64_t at, hold; int bit, stick, timed, rel; int32_t x, y; int logged; char text[48]; } ScriptEv;
 static const struct { const char *name; int bit; } script_buttons[] = {
     {"A", B_A}, {"B", B_B}, {"X", B_X}, {"Y", B_Y}, {"LCLICK", B_STICK_L}, {"RCLICK", B_STICK_R}, {"L", B_L}, {"R", B_R},
     {"ZL", B_ZL}, {"ZR", B_ZR}, {"PLUS", B_PLUS}, {"MINUS", B_MINUS}, {"LEFT", B_LEFT}, {"UP", B_UP}, {"RIGHT", B_RIGHT}, {"DOWN", B_DOWN},
@@ -128,11 +131,11 @@ static void script_load(void) {
         if (h) *h = 0;
         char name[32];
         double at;
-        int off = 0, timed = line[0] == '@';
-        if (sscanf(line + timed, "%lf %31s%n", &at, name, &off) < 2 || at < 0) continue;
-        off += timed;
+        int off = 0, timed = line[0] == '@', rel = line[0] == '+', skip = timed || rel;
+        if (sscanf(line + skip, "%lf %31s%n", &at, name, &off) < 2 || at < 0) continue;
+        off += skip;
         double unit = timed ? 1000.0 : 1.0;   // ms to us, or presents
-        ScriptEv e = {.at = (uint64_t)(at * unit + 0.5), .hold = timed ? 66667 : 4, .bit = -1, .timed = timed};
+        ScriptEv e = {.at = (uint64_t)(at * unit + 0.5), .hold = timed ? 66667 : 4, .bit = -1, .timed = timed, .rel = rel};
         long a, b;
         double c;
         if (!strcmp(name, "MOUSE") || !strcmp(name, "LSTICK") || !strcmp(name, "RSTICK")) {
@@ -161,15 +164,35 @@ static void script_load(void) {
     rt_log("input: script %s, %d events", path, script_n);
 }
 
+// The arrival after the latest warp, for the "+" lines: 0 none yet; ticks + 1 of its first scene frame.
+__attribute__((weak)) int oot_warps_made(void) { return 0; }
+int perf_scene_frames_ago(void);   // perf.c (a weak 0), vk_texture.c
+static uint64_t rel_base;
+static int rel_warps, rel_state;   // the warps seen; 1 a warp was made, 2 its loading screen is up
+
+static void script_rel_track(uint64_t fr, uint64_t tick) {
+    int w = oot_warps_made();
+    if (w != rel_warps) rel_warps = w, rel_state = 1, rel_base = 0;
+    int scene = perf_scene_frames_ago() <= 2;
+    if (rel_state == 1 && !scene) rel_state = 2;
+    else if (rel_state == 2 && scene) {
+        rel_state = 0, rel_base = tick + 1;
+        rt_log("input: script frame %llu tick %llu: arrival after warp %d: \"+\" lines count from here",
+               (unsigned long long)fr, (unsigned long long)tick, w);
+    }
+}
+
 static void script_apply(uint64_t *b, int32_t sl[2], int32_t sr[2]) {
     if (!script_state) script_load();
     if (!script_n) return;
     uint64_t fr = __atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED), tick = frame_step_ticks();
     int64_t w = frame_step_world_us();
+    script_rel_track(fr, tick);
     for (int i = 0; i < script_n; i++) {
         ScriptEv *e = &script_ev[i];
-        if (e->timed ? w < 0 : script_mixed && w >= 0) continue;
-        uint64_t now = e->timed ? (uint64_t)w : tick;
+        if (e->rel && !rel_base) continue;
+        if (!e->rel && (e->timed ? w < 0 : script_mixed && w >= 0)) continue;
+        uint64_t now = e->timed ? (uint64_t)w : e->rel ? tick + 1 - rel_base : tick;
         if (now < e->at || (now >= e->at + e->hold && (e->logged || !e->timed))) continue;
         if (e->stick == 3 && e->logged) continue;
         if (!e->logged) {
@@ -486,22 +509,120 @@ static void stick(const int16_t *axes, SDL_GamepadAxis ax, SDL_GamepadAxis ay, f
     input_pad_stick(axes[ax], -(int32_t)axes[ay], dead, out);
 }
 
-// Open the first gamepad when none is open or the open one went away; logs once per change.
+// REKARINA_PAD_FOLLOW (default 1, live): with several gamepads connected, the one pressed last is the one the game reads
+// (its labels, rumble and gyro go with it). Each of them stays open; a controller that SDL lists but that sends nothing
+// (a second driver's copy of it, a receiver with no pad paired, Steam's virtual pad beside the real one) then never
+// keeps the game from the one in the player's hands. 0: the first gamepad only, as before.
+enum { MAX_OTHER_PADS = 7 };
+static SDL_Gamepad *others[MAX_OTHER_PADS];   // gamepad thread: the other open gamepads
+static int n_others;
+static char pad_name_shown[64];               // the open gamepad's name for the menu, under snap_lock
+
+static int pad_follow(void) {
+    static int on = -1;
+    static unsigned seen;
+    unsigned v = cfg_version();
+    if (on < 0 || v != seen) seen = v, on = cfg_bool("REKARINA_PAD_FOLLOW") != 0;
+    return on;
+}
+
+static void pad_adopt(SDL_Gamepad *g);
+
+// The gamepads SDL lists now against the open ones: the read one and the others that went away are closed, new ones
+// opened (the first becomes the read one when none is), and with REKARINA_PAD_FOLLOW=0 only the first is kept. Logs
+// once per change. Gamepad thread (start() calls it once before that thread exists).
 static void scan_pads(void) {
-    if (pad && SDL_GamepadConnected(pad)) return;
-    if (pad) {
+    for (int i = 0; i < n_others;)
+        if (!SDL_GamepadConnected(others[i]) || !pad_follow()) {
+            SDL_CloseGamepad(others[i]);
+            others[i] = others[--n_others];
+        } else {
+            i++;
+        }
+    if (pad && !SDL_GamepadConnected(pad)) {
         SDL_CloseGamepad(pad); pad = NULL; sensor_pad = 0; sensor_ok = 0; hd_until = 0;
         plat_xchg32(&pad_hd, 0);
         plat_xchg32(&pad_layout_shown, -1);
         plat_xchg32(&pad_family, -1);
         for (int i = 0; i < 4; i++) plat_xchg32(&pad_labels[i], PAD_LABEL_NONE);
         rt_log("input: gamepad disconnected");
+        if (n_others) {   // another one is still there: it is read from now on
+            SDL_Gamepad *g = others[--n_others];
+            pad_adopt(g);
+        }
     }
+    if (pad && !pad_follow()) return;
     int n = 0;
     SDL_JoystickID *ids = SDL_GetGamepads(&n);
-    for (int i = 0; ids && i < n && !pad; i++) pad = SDL_OpenGamepad(ids[i]);
+    for (int i = 0; ids && i < n; i++) {
+        int open = pad && SDL_GetGamepadID(pad) == ids[i];
+        for (int k = 0; k < n_others && !open; k++) open = SDL_GetGamepadID(others[k]) == ids[i];
+        if (open) continue;
+        // one that could not be opened is not tried again each second: an open holds SDL's joystick lock for a long
+        // moment, and this thread updates the pad the game reads
+        static SDL_JoystickID refused[8];
+        static int n_refused;
+        for (int k = 0; k < n_refused && k < 8 && !open; k++) open = refused[k] == ids[i];
+        if (open) continue;
+        if (pad && n_others >= MAX_OTHER_PADS) break;
+        SDL_Gamepad *g = SDL_OpenGamepad(ids[i]);
+        if (!g) {
+            rt_log("input: gamepad %u cannot be opened (%s)", (unsigned)ids[i], SDL_GetError());
+            refused[n_refused++ % 8] = ids[i];
+            continue;
+        }
+        if (!pad) {
+            pad_adopt(g);
+            if (!pad_follow()) break;
+        } else {
+            others[n_others++] = g;
+            rt_log("input: another gamepad \"%s\" (vendor %04x product %04x): the game reads it once it is pressed",
+                   SDL_GetGamepadName(g), SDL_GetGamepadVendor(g), SDL_GetGamepadProduct(g));
+        }
+    }
     SDL_free(ids);
-    if (!pad) return;
+}
+
+// A press on gamepad g: a button down, a trigger past half way or a stick past PAD_USED. Gamepad thread.
+static int pad_pressed_now(SDL_Gamepad *g) {
+    for (int k = 0; k < SDL_GAMEPAD_BUTTON_COUNT; k++)
+        if (SDL_GetGamepadButton(g, (SDL_GamepadButton)k)) return 1;
+    for (int a = 0; a < SDL_GAMEPAD_AXIS_COUNT; a++) {
+        int v = SDL_GetGamepadAxis(g, (SDL_GamepadAxis)a);
+        if (a == SDL_GAMEPAD_AXIS_LEFT_TRIGGER || a == SDL_GAMEPAD_AXIS_RIGHT_TRIGGER ? v > TRIGGER_ON : abs(v) > PAD_USED)
+            return 1;
+    }
+    return 0;
+}
+
+// REKARINA_PAD_FOLLOW: another open gamepad that was pressed becomes the one read; the one read so far joins the others.
+static void pad_follow_press(void) {
+    if (!pad || !n_others || !pad_follow()) return;
+    // Only while the one read is at rest: two copies of one controller (Steam's virtual pad and the real one, two
+    // drivers) press together, and switching on every such poll would flap between them.
+    if (pad_pressed_now(pad)) return;
+    for (int i = 0; i < n_others; i++)
+        if (pad_pressed_now(others[i])) {
+            SDL_Gamepad *g = others[i];
+            if (sensor_ok) {   // the old one stops streaming its sensors
+                SDL_SetGamepadSensorEnabled(pad, SDL_SENSOR_GYRO, false);
+                SDL_SetGamepadSensorEnabled(pad, SDL_SENSOR_ACCEL, false);
+            }
+            others[i] = pad;
+            hd_until = 0;
+            plat_xchg32(&pad_hd, 0);
+            rt_log("input: gamepad \"%s\" pressed: the game reads it from now on", SDL_GetGamepadName(g));
+            pad_adopt(g);
+            return;
+        }
+}
+
+// g becomes the gamepad the game reads: its labels, the prompts' kind, rumble, HD rumble and sensors are taken from it.
+static void pad_adopt(SDL_Gamepad *g) {
+    pad = g;
+    plat_mutex_lock(&snap_lock);
+    snprintf(pad_name_shown, sizeof pad_name_shown, "%s", SDL_GetGamepadName(pad) ? SDL_GetGamepadName(pad) : "");
+    plat_mutex_unlock(&snap_lock);
     pad_rumble = SDL_GetBooleanProperty(SDL_GetGamepadProperties(pad), SDL_PROP_GAMEPAD_CAP_RUMBLE_BOOLEAN, false);
     pad_east_a = SDL_GetGamepadButtonLabel(pad, SDL_GAMEPAD_BUTTON_EAST) == SDL_GAMEPAD_BUTTON_LABEL_A;
     int shapes = 0;
@@ -633,6 +754,16 @@ static void start(void) {
     binds_refresh();
     const char *e = cfg_get("REKARINA_INPUT");
     if (e && !strcmp(e, "none")) { state = -1; rt_log("input: disabled (REKARINA_INPUT=none)"); return; }
+    // REKARINA_PAD_DRIVER=compat (read at start): SDL's own drivers (HIDAPI, and on Windows Raw Input and Windows.Gaming.Input)
+    // stay off, so a controller is read through the system's XInput or DirectInput (Linux: the kernel's evdev). Some
+    // controllers are listed by those drivers but send nothing through them (8BitDo pads in some modes, an Xbox One S pad
+    // over Bluetooth); the system's path reads them. Gyro, HD rumble and the PlayStation labels need the default (auto).
+    if (!strcmp(cfg_value("REKARINA_PAD_DRIVER"), "compat")) {
+        SDL_SetHint(SDL_HINT_JOYSTICK_HIDAPI, "0");
+        SDL_SetHint(SDL_HINT_JOYSTICK_RAWINPUT, "0");
+        SDL_SetHint(SDL_HINT_JOYSTICK_WGI, "0");
+        rt_log("input: gamepad driver compat: the system's XInput / DirectInput (evdev on Linux), not SDL's own drivers");
+    }
     if (!SDL_Init(SDL_INIT_GAMEPAD)) { state = -1; rt_log("input: SDL gamepad init failed (%s), keyboard only", SDL_GetError()); }
     else state = 1;
     if (state == 1) test_pad_attach();
@@ -699,6 +830,18 @@ static int pad_read(uint64_t *b, int32_t sl[2], int32_t sr[2]) {
     return 1;
 }
 
+int input_pad_snapshot(uint8_t pd[PAD_COUNT], int16_t ax[6], char *name, size_t n) {
+    plat_mutex_lock(&snap_lock);
+    int on = snap.on;
+    if (on) {
+        memcpy(pd, snap.pd, sizeof snap.pd);
+        for (int i = 0; i < 6 && i < SDL_GAMEPAD_AXIS_COUNT; i++) ax[i] = snap.ax[i];
+    }
+    if (name && n) snprintf(name, n, "%s", on ? pad_name_shown : "");
+    plat_mutex_unlock(&snap_lock);
+    return on;
+}
+
 int input_pad_stick_percent(double pct[2]) {
     int ok = 0;
     pct[0] = pct[1] = 0;
@@ -760,6 +903,35 @@ static void prompt_track(int dev) {
                ++logged == 64 ? " (further changes are not logged)" : "");
 }
 
+// REKARINA_KBM_OFF (default 0, live): while a gamepad is connected the game takes nothing from the keyboard and the mouse
+// (a pad player whose desk or cat leans on a key); the settings menu, F11 and the screenshot key still work.
+static int kbm_off(void) {
+    static int on = -1;
+    static unsigned seen;
+    unsigned v = cfg_version();
+    if (on < 0 || v != seen) seen = v, on = cfg_bool("REKARINA_KBM_OFF") != 0;
+    return on;
+}
+
+void gfx_screenshot_request(void);   // gfx_present.c
+
+// The screenshot key (REKARINA_SCREENSHOT_KEY, a key name of the bind_ lines; default f12, none: off): its press asks
+// the present for a picture (gfx_present.c gfx_screenshot_request). Under lock, the window in front.
+static void screenshot_key(void) {
+    static unsigned seen = ~0u;
+    static int key = KEY_NONE, was;
+    unsigned v = cfg_version();
+    if (v != seen) {
+        seen = v, key = KEY_NONE;
+        const char *name = cfg_value("REKARINA_SCREENSHOT_KEY");
+        for (int k = KEY_A; k < KEY_COUNT && *name && !name_matches(name, "none") && key == KEY_NONE; k++)
+            if (input_key_name(k) && name_matches(name, input_key_name(k))) key = k;
+    }
+    int down = key != KEY_NONE && ikb_down(key);
+    if (down && !was) gfx_screenshot_request();
+    was = down;
+}
+
 static void poll_merged(uint64_t *buttons, int32_t *lx, int32_t *ly, int32_t *rx, int32_t *ry) {
     uint64_t b = 0;
     int32_t sl[2] = {0, 0}, sr[2] = {0, 0};
@@ -767,13 +939,14 @@ static void poll_merged(uint64_t *buttons, int32_t *lx, int32_t *ly, int32_t *rx
     if (!state) start();
     if (state > 0) {
         binds_refresh();
-        if (state == 1) pad_read(&b, sl, sr);
+        int pad_on = state == 1 && pad_read(&b, sl, sr);
         int pad_used = b || abs(sl[0]) > PAD_USED || abs(sl[1]) > PAD_USED || abs(sr[0]) > PAD_USED ||
                        abs(sr[1]) > PAD_USED, kbm_used = 0;
         int pad_press = pad_pressed(b, sl, sr), key_press = 0;
         static int was_front;   // the game window was in front at the last poll
         int front = ikb_foreground();
-        if (front) {
+        if (front) screenshot_key();
+        if (front && !(pad_on && kbm_off())) {
             uint8_t down[KEY_COUNT] = {0};
             // Mouse buttons count only while the cursor is captured, and a button already held when the capture began
             // (the click that refocused the window) is ignored until it is released.
@@ -1161,8 +1334,9 @@ static void pad_main(void *arg) {
     for (;;) {
         plat_wait_ns(4000000);
         uint64_t now = plat_now_ns() / 1000000u;
-        if ((!pad || !SDL_GamepadConnected(pad)) && now >= next_scan) next_scan = now + RESCAN_MS, scan_pads();
+        if (now >= next_scan) next_scan = now + RESCAN_MS, scan_pads();
         SDL_UpdateGamepads();
+        pad_follow_press();
         int on = pad && SDL_GamepadConnected(pad);
         uint8_t pd[PAD_COUNT] = {0};
         int16_t ax[SDL_GAMEPAD_AXIS_COUNT] = {0};

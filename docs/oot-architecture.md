@@ -90,3 +90,80 @@ What depends on Nintendo, and how each dependency is handled:
 3. CPU, replay (~7 ms + waits): GPU-side event waits (approach A), bindings as data, a second recording thread.
 4. Frame generation (DLSS-G or FSR 3 FG, as in the reference port) once the base frame rate is stable: it needs the
    vendors' runtime DLLs (not on this machine) and motion vectors (vk_dlaa.c already makes them for DLSS).
+
+## The frame in release 1.2.0 (2026-11-18)
+
+The sections above are the picture of 2026-11-08. This one records where the frame stood at release 1.2.0 and what was
+changed on the way, with the measurements that decided each step (RTX 5070 12 GB, Ryzen 7 9700X, 2560x1440, base mode:
+the scene at its native size, no temporal upscaler, no frame limit). Three places are the standing gate: a town square
+walked into (the hardest for the processor), a forest village, the open field.
+
+### The chain
+
+One frame is three links in a row, on three threads: the game's main thread runs its update (~10 ms at the square) and
+hands the frame over to the game's presenting thread; that thread submits the frame's command buffers, which is our
+replay (`vk_exec.c`, 7-9 ms); the graphics card then finishes the frame (~5 ms after the last submission). Where the
+processor is the limit nothing in the frame waits for the card, and the time from the update's start to the picture is
+the sum of the three (~24 ms in the village). The pad is read by the game's job threads ~2.4 ms after the update starts.
+
+The frame clock the overlay and `REKARINA_FRAMETIMES` show is the GPU timestamp of the present's blit, taken only
+while one of them reads it. The earlier clock (the completion thread's notice) drew frames in pairs and was misleading.
+`REKARINA_PACELOG=<file>` writes one row per frame with every stage's time; "update start to shown" and "pad to shown"
+are the latency columns.
+
+### What 1.2.0 changed
+
+- **Driver waits in a camera turn.** The game re-places its render targets while the view turns; the frame waited
+  inside the driver's object lock for each new view. Views are made ahead and the driver calls take turns.
+- **Shadow targets while walking.** While the hero moves, the game re-sizes its square shadow depth targets every
+  frame, which moved every later transient target with them. Their storage is taken from a size ladder (128, 192, 256,
+  384, 512, 768, ...), so a re-size keeps the storage: images made per frame while walking 14.6 -> 4.0, and walking
+  costs 0.27 ms over standing.
+- **Texture slot lookups without the texture lock.** The draw path reads a pool slot's resolved texture through a
+  sequence word (`vk_texture_by_id_fast`); the slot table grows into a new block and the old one stays for readers
+  still in it. Jumps of over 4 ms between shown frames at the square: 12.8 -> 3.5 a second.
+- **Command buffers.** The hand-over copies less (`handover`, `latefree`), a called recording is read in place
+  (`callfast`), and a small submission no longer queries the write-watch state of the previous big submission's pools
+  (`REKARINA_PRESNAP_MIN_KB`, 512): 0.8 ms less of the main thread's time on the game's cycle.
+- **Images made ahead** (`REKARINA_TEX_MAKE_AHEAD`, on). The long frames while moving are the game streaming ~40 new
+  textures into one frame, each made on the frame's threads under the texture lock. The texture stream's workers now
+  make the Vulkan image, its memory and its views after they hashed a job's storage, with no texture lock held; the
+  frame's thread takes the record when address and create info match and makes it itself otherwise. Records never
+  taken leave through the deferred destruction. Skipped while video memory is short. Walking into the square, frames
+  over 25 ms in the first minute: 128 / 54 / 41 / 118 in an off / on / on / off series.
+- **The lifted code** (`recomp/`). Indirect calls and tail jumps look their target up at the call site, so each site
+  has its own branch history; X9-X15 are not stored before calls; the function-entry hook runs only where the runtime
+  needs it; a barrier that orders only loads or only stores is a compiler barrier on x86-64. The kernel signals the
+  threads it wakes after it releases its lock, counts the waiters of a guest mutex, and skips its lock for a signal on
+  an address nobody waits on. With a retrained execution profile, in one hold at the square against the build before:
+  the game's cycle 12.80 -> 11.75 ms, the game threads' running time per cycle -8.4 %, frame rate +4.9 %.
+  `tools/pgo.py` records which generated code a profile was trained on; `tools/make_rekarina_release.py` warns when
+  the shipped profile names other code.
+- **The frame start** (`REKARINA_FRAME_START=jit`, off). Where the card is the limit the main thread finishes its
+  update early and waits for the presenting thread; holding its update start back by that wait takes 0.3-2.8 ms off
+  the input latency and costs 2-4 fps. It stays an option: a latency-for-rate trade is not a default.
+
+### Tried and not kept
+
+- A resolver thread walking the submitted buffers ahead of the replay (shader, pipeline and descriptor resolution as
+  records the replay checks and uses): correct in verify mode, but the replay's own lookups were already ~0.25 ms
+  (memos, the parallel draw stretches), and the one large item, the mirrors' sync at a submission's first
+  global-memory binding (0.7-1.2 ms), must follow the submit and precede the first dispatch.
+- Querying those mirrors' write-watch state in merged runs: 28-45 queries instead of ~560, the same time. The cost
+  follows the pages the game wrote (~2,500 a frame), not the number of calls.
+- Handing the texture lock over inside a pool update, and the upload worker making textures ahead under the lock:
+  the first moved the waits without shortening a frame, the second made the replay wait for the worker.
+- Presenting only when the frame's GPU work is done, folding clears, render targets without storage usage: no gain.
+- ThinLTO across all generated code: the link takes hours.
+
+### Open
+
+- Frames of 25-50 ms remain where the game streams textures while video memory is short (another program holding
+  4-5 GB of a 12 GB card makes it an 8 GB card).
+- Block compaction of video memory (`REKARINA_VRAM_COMPACT`, off) loses the device at its first pass; the free space
+  inside partly used blocks (0.15-0.5 GB in play, about 2 GB after ten map changes) stays until that is fixed.
+- The kernel probe (`--probe-kernel`) still expects three application cores; this title has six, so its virtual-core
+  check reports clashes that are not errors.
+- Video memory in play, by owner: the driver's own for the prebuilt pipelines ~1.1 GB, mirrors of the game's buffer
+  pools 0.7-0.9, the game's block-compressed textures 0.8-1.1, render targets 0.6-0.7, other textures 0.4-0.7.
+

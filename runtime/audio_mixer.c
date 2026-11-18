@@ -83,6 +83,25 @@ static float host_volume(void) {
     v = (float)((pct < 0 ? 0 : pct > 100 ? 100 : pct) / 100);
     return v;
 }
+// REKARINA_BG_MUTE (default 0, live): silent while the game window is in the background (an alt-tab, another program
+// in front). The level eases in four steps of one mix each, so the cut does not click.
+int gfx_window_focused(void);   // gfx_present.c
+static float background_gain(void) {
+    static float g = 1.0f;
+    static int on = -1;
+    static unsigned seen;
+    unsigned ver = cfg_version();
+    if (on < 0 || ver != seen) seen = ver, on = cfg_bool("REKARINA_BG_MUTE") != 0;
+    float want = on && !gfx_window_focused() ? 0.0f : 1.0f;
+    static float logged = 1.0f;   // the last level the log named
+    g += (want - g) * 0.25f;
+    if (fabsf(want - g) < 0.01f) g = want;
+    if (g == want && want != logged) {
+        logged = want;
+        rt_log("audio: %s (bg_mute)", want == 0 ? "silent: the window is in the background" : "the sound is back");
+    }
+    return g;
+}
 static unsigned audio_revision(const AudioRenderer *r) { unsigned byte = r->revision >> 24; return byte >= '0' ? byte - '0' : 0; }
 static void report_once(Mixer *m, unsigned bit, const char *msg, int value) {
     if (m->reported & (1u << bit)) return;
@@ -887,7 +906,7 @@ void audio_mixer_render(AudioRenderer *r, double seconds) {
             m->reported |= 1u << 6;
             rt_log("audio: device sink has %u inputs, output %s", sink->input_count, oc == 6 ? "5.1" : "stereo");
         }
-        const float gain = host_volume() * atomic_load(&device_volume) * (r->mixes[0].in_use ? r->mixes[0].volume : 1.0f);
+        const float gain = host_volume() * background_gain() * atomic_load(&device_volume) * (r->mixes[0].in_use ? r->mixes[0].volume : 1.0f);
         const float *ch[6] = {0};
         float raw[2 * MAX_FRAME];
         for (uint32_t c = 0; c < sink->input_count; c++) if (sink->inputs[c] >= 0 && sink->inputs[c] < m->nbuf) ch[c] = mixbuf(m, sink->inputs[c]);

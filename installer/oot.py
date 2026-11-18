@@ -588,19 +588,40 @@ class Prepare(Step):
         return (build / 'shader-prepared.bin').is_file() and (build / 'romfs-patches-xbox' / 'manifest.tsv').is_file() and \
             all((build / f'shared-fonts-{d}' / '5-nintendo-extension.bfttf').is_file() for d, _ in STYLES)
 
+    PROMPTS_DONE = '.prompts-done'   # in the build folder: the fingerprint the prompts and fonts there were drawn under
+
+    def prompts_done(self, ctx, build):
+        """The prompts and fonts of an earlier run of this step that was cut short later on (the shader preparation is
+        the long part: a player who closes the launcher during it would pay a minute of drawing again at the resume)."""
+        stamp = build / self.PROMPTS_DONE
+        try:
+            ok = stamp.read_text(encoding='ascii').strip() == self.prompts_key(ctx)
+        except OSError:
+            return False
+        return ok and (build / 'romfs-patches-xbox' / 'manifest.tsv').is_file() and \
+            all((build / f'shared-fonts-{d}' / '5-nintendo-extension.bfttf').is_file() for d, _ in STYLES)
+
+    def prompts_key(self, ctx):
+        return fingerprint('oot-prompts-1', self.key(ctx), str(ctx.nup))
+
     def run(self, ctx):
         layout, rep, build = ctx.layout, ctx.reporter, ctx.temp / 'build'
         rep.progress(self.id, 'prompts', force=True)
-        code, log = run_tool(ctx, self.id, layout.tools / 'make_oot_prompts.py', ['--out', build, '--nup', ctx.nup])
-        if code:
-            raise InstallError('oot.prompts_failed', code=code, log=str(log))
-        for folder, style in STYLES:
-            out = build / f'shared-fonts-{folder}'
-            out.mkdir(parents=True, exist_ok=True)
-            code, log = run_tool(ctx, self.id, layout.tools / 'make_ext_font.py',
-                                 [out / '5-nintendo-extension.bfttf', '--style', style])
+        if self.prompts_done(ctx, build):
+            rep.log('The button prompts and fonts are there from the run before: not drawn again')
+        else:
+            (build / self.PROMPTS_DONE).unlink(missing_ok=True)
+            code, log = run_tool(ctx, self.id, layout.tools / 'make_oot_prompts.py', ['--out', build, '--nup', ctx.nup])
             if code:
                 raise InstallError('oot.prompts_failed', code=code, log=str(log))
+            for folder, style in STYLES:
+                out = build / f'shared-fonts-{folder}'
+                out.mkdir(parents=True, exist_ok=True)
+                code, log = run_tool(ctx, self.id, layout.tools / 'make_ext_font.py',
+                                     [out / '5-nintendo-extension.bfttf', '--style', style])
+                if code:
+                    raise InstallError('oot.prompts_failed', code=code, log=str(log))
+            (build / self.PROMPTS_DONE).write_text(self.prompts_key(ctx) + '\n', encoding='ascii')
         # the translator beside the exe, where --prepare-shaders and the game look for it
         shutil.copy2(layout.xlate, build / layout.xlate.name)
         if layout.xlate.with_suffix('.id').is_file():
@@ -629,7 +650,31 @@ class Prepare(Step):
                              [build, '--nup', ctx.nup, '--exefs', ctx.dest / 'exefs', '--exe-name', GAME_EXE], parse)
         if code or not (build / 'shader-prepared.bin').is_file():
             raise InstallError('oot.shaders_failed', code=code, log=str(log))
+        # One shader-cache.pack instead of four files per shader (about 250,000 after the preparation): the game reads
+        # the pack first, and with the loose files a start after the setup spent 7 s reading the shaders named by the
+        # pipeline keys and 53 s reading their use masks, where a packed cache takes a fraction of a second; the
+        # package step then copies one file instead of all of them.
+        rep.progress(self.id, 'pack', force=True)
+        code, log = run_tool(ctx, self.id, layout.tools / 'pack_shader_cache.py', [build / 'shader-cache'])
+        if code:
+            raise InstallError('oot.shaders_failed', code=code, log=str(log))
         return {}
+
+
+LOOSE_SHADER_FILE = re.compile(r'[0-9a-f]{64}\.(spv|res\.json|use)$')   # tools/pack_shader_cache.py NAME, beside in/*.in
+
+
+def has_loose_shader_files(cache):
+    """Whether a shader cache holds files tools/pack_shader_cache.py would fold into its pack: stops at the first one."""
+    try:
+        with os.scandir(cache) as it:
+            for e in it:
+                if LOOSE_SHADER_FILE.match(e.name):
+                    return True
+        with os.scandir(cache / 'in') as it:
+            return any(e.name.endswith('.in') for e in it)
+    except OSError:
+        return False
 
 
 class Package(Step):
@@ -639,7 +684,9 @@ class Package(Step):
         opt = ctx.options
         # (the compile key only when mods changed the code: a folder without them keeps the key it had)
         built = ctx.keys['oot_compile']
+        # (the texture step's tool and choice: a folder set up before it gets its textures prepared once)
         return fingerprint('oot-package-3', ctx.keys['oot_prepare'], ctx.layout.tools / 'package_oot.py',
+                           ctx.layout.tools / 'oot_prepare_textures.py', 'textures-no' if getattr(opt, 'no_textures', False) else '',
                            str(opt.dlls or ''), *([built] if built != compile_base_key(ctx) else []))
 
     def current(self, ctx, record):
@@ -676,6 +723,14 @@ class Package(Step):
                 except PermissionError:
                     raise InstallError('oot.exe_in_use', path=str(exe)) from None
             raise InstallError('oot.package_failed', code=code, log=str(log))
+        # A folder set up by a release before 1.2.0 holds its shader cache as loose files (four per shader, about 250,000),
+        # which the copy above leaves beside the new pack: the game would still read them at every start (seconds to
+        # a minute of its entry step). Folded into the pack here, once; a folder without loose files is not touched.
+        if has_loose_shader_files(ctx.dest / 'shader-cache'):
+            rep.progress(self.id, 'pack', force=True)
+            code, log = run_tool(ctx, self.id, layout.tools / 'pack_shader_cache.py', [ctx.dest / 'shader-cache'])
+            if code:
+                raise InstallError('oot.package_failed', code=code, log=str(log))
         # The prepared pipelines, once more where the game is played from: a driver that keys its disk cache to the
         # executable's path (AMD) has none for this folder yet and builds them now instead of during play; one that
         # keys it to the file name (NVIDIA: the preparation ran under this name, tools/oot_prepare_shaders.py) finds
@@ -695,6 +750,15 @@ class Package(Step):
             rep.log(f'{GAME_EXE} --warm-shaders: exit code {warm}')
         except OSError as e:
             rep.log(f'{GAME_EXE} --warm-shaders did not start: {e}')
+        # Every ASTC texture of the game into the texture cache, as play would write it (tools/oot_prepare_textures.py,
+        # rekarina.exe --prepare-textures): a new player's first visit of a place no longer decodes and encodes its
+        # textures in the frames that draw them. Skipped with --no-textures; a disk without room stops it with a
+        # message (the game then fills the cache in play, as before), and a failure costs smoothness, not the install.
+        if not getattr(opt, 'no_textures', False):
+            rep.progress(self.id, 'textures', force=True)
+            code, tlog = run_tool(ctx, self.id, layout.tools / 'oot_prepare_textures.py',
+                                  [ctx.dest, '--nup', ctx.nup, '--exe-name', GAME_EXE])
+            rep.log(f'texture preparation: exit code {code} ({tlog})')
         write_rebuild_command(ctx)
         return {'exe_size': exe.stat().st_size, 'exe_sha256': file_sha256(exe),
                 'ini_preset': chosen['id'] if new_ini else None}
@@ -762,6 +826,9 @@ def main(argv=None):
     ap.add_argument('--root', type=Path, help='release folder or checkout (default: the folder above installer/)')
     ap.add_argument('--temp', type=Path, help='temp folder (default: temp/ of the release, build/install-temp of a checkout)')
     ap.add_argument('--until', help='stop after this step (oot_check ... oot_package): for tests')
+    ap.add_argument('--no-textures', action='store_true',
+                    help='do not prepare the textures for play (about 12 GiB on the disk; the game then prepares each one '
+                         'at its first use)')
     args = ap.parse_args(argv)
     for name in ('SIGBREAK', 'SIGTERM'):
         if hasattr(signal, name):

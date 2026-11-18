@@ -2,9 +2,11 @@
 #pragma once
 #include <stddef.h>
 
-// The repository whose releases are asked for the newest version (update_note_win.c).
-#define UPDATE_REPO_HOST L"api.github.com"
-#define UPDATE_REPO_PATH L"/repos/hooxielooxie/Rekarina/releases/latest"
+// Where the newest version is asked for (update_note_win.c): the site's release feed, the file the launcher reads first
+// (installer/update.py FEED), shaped like a GitHub release ("tag_name"). The GitHub repository is private, so its API
+// answers 404 to anyone else.
+#define UPDATE_REPO_HOST L"rekarina.dev"
+#define UPDATE_REPO_PATH L"/releases/latest.json"
 
 void update_note_start(void);   // game runs only: starts the check on a thread of its own
 // 1 when a release newer than this build is known; its version ("1.0.1") into out. Any thread.

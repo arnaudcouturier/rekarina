@@ -557,6 +557,90 @@ class FontsTest(unittest.TestCase):
         self.assertEqual(steps.firmware_dir(self.firmware), nested)
 
 
+class OotPrepareResumeTest(unittest.TestCase):
+    """The OoT shader step cut short and run again draws the button prompts and fonts only once."""
+
+    def setUp(self):
+        from installer import oot
+        self.oot = oot
+        self.tmp = tempfile.TemporaryDirectory()
+        base = Path(self.tmp.name)
+        (base / 'temp' / 'build').mkdir(parents=True)
+        xlate = base / 'rekarina_xlate.exe'
+        xlate.write_bytes(b'x')
+        self.ctx = SimpleNamespace(dest=base / 'dest', temp=base / 'temp', nup=base / 'game.nup',
+                                   layout=SimpleNamespace(tools=base / 'tools', xlate=xlate, libs=()),
+                                   reporter=Reporter(out=io.StringIO()))
+        self.calls, self.prep_code = [], 0
+        build = self.ctx.temp / 'build'
+
+        def run(ctx, step, script, args, parse=None):
+            self.calls.append(script.name)
+            if script.name == 'make_oot_prompts.py':
+                (build / 'romfs-patches-xbox').mkdir(exist_ok=True)
+                (build / 'romfs-patches-xbox' / 'manifest.tsv').write_text('x')
+            elif script.name == 'make_ext_font.py':
+                Path(args[0]).write_bytes(b'font')
+            elif script.name == 'oot_prepare_shaders.py' and not self.prep_code:
+                (build / 'shader-prepared.bin').write_bytes(b'p')
+            return (self.prep_code if script.name == 'oot_prepare_shaders.py' else 0), ctx.temp / 'tool.log'
+        self.saved = oot.run_tool, oot.Prepare.key
+        oot.run_tool = run
+        oot.Prepare.key = lambda step, ctx: 'key-1'
+
+    def tearDown(self):
+        self.oot.run_tool, self.oot.Prepare.key = self.saved
+        self.ctx.reporter.close()
+        self.tmp.cleanup()
+
+    def test_a_resume_does_not_draw_again(self):
+        self.prep_code = 1   # the shader preparation cut short
+        with self.assertRaises(self.oot.InstallError):
+            self.oot.Prepare().run(self.ctx)
+        self.assertEqual(self.calls.count('make_oot_prompts.py'), 1)
+        self.prep_code = 0
+        self.calls.clear()
+        self.oot.Prepare().run(self.ctx)
+        self.assertEqual(self.calls, ['oot_prepare_shaders.py', 'pack_shader_cache.py'])
+
+    def test_another_step_key_or_dump_draws_again(self):
+        self.oot.Prepare().run(self.ctx)
+        self.oot.Prepare.key = lambda step, ctx: 'key-2'
+        self.calls.clear()
+        self.oot.Prepare().run(self.ctx)
+        self.assertIn('make_oot_prompts.py', self.calls)
+        self.ctx.nup = Path(self.tmp.name) / 'other.nup'
+        self.calls.clear()
+        self.oot.Prepare().run(self.ctx)
+        self.assertIn('make_oot_prompts.py', self.calls)
+
+    def test_a_missing_output_draws_again(self):
+        self.oot.Prepare().run(self.ctx)
+        (self.ctx.temp / 'build' / 'shared-fonts-xbox' / '5-nintendo-extension.bfttf').unlink()
+        self.calls.clear()
+        self.oot.Prepare().run(self.ctx)
+        self.assertIn('make_oot_prompts.py', self.calls)
+
+
+class LooseShaderFilesTest(unittest.TestCase):
+    """installer/oot.py has_loose_shader_files: what tells the package step that a folder's cache still needs packing."""
+
+    def test_cases(self):
+        from installer import oot
+        with tempfile.TemporaryDirectory() as t:
+            cache = Path(t) / 'shader-cache'
+            self.assertFalse(oot.has_loose_shader_files(cache))                    # no cache at all
+            cache.mkdir()
+            (cache / 'shader-cache.pack').write_bytes(b'TKSPACK1')
+            (cache / 'in').mkdir()
+            self.assertFalse(oot.has_loose_shader_files(cache))                    # a pack only: a new install
+            (cache / 'in' / ('ab' * 32 + '.in')).write_bytes(b'x')
+            self.assertTrue(oot.has_loose_shader_files(cache))                     # an input left beside it
+            (cache / 'in' / ('ab' * 32 + '.in')).unlink()
+            (cache / ('cd' * 32 + '.res.json')).write_text('{}')
+            self.assertTrue(oot.has_loose_shader_files(cache))                     # a folder of an earlier release
+
+
 class EventsTest(unittest.TestCase):
     def test_lines_are_json_and_the_log_is_english(self):
         with tempfile.TemporaryDirectory() as d:

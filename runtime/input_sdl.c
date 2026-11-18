@@ -10,6 +10,7 @@
 
 #include <SDL3/SDL.h>
 
+#include "cfg.h"
 #include "host.h"
 #include "input.h"
 #include "input_map.h"
@@ -161,8 +162,22 @@ void input_sdl_window(SDL_Window *w) {
     cursor_apply();
 }
 
+// The idle cursor (REKARINA_CURSOR_HIDE, as input_win.c): one that is not captured and rests that many seconds is hidden
+// until it moves. Window thread: input_sdl_idle runs when no event came for 100 ms.
+static uint64_t idle_since_ns;
+static int idle_hidden;
+
+static void idle_check(void) {
+    int s = cfg_int("REKARINA_CURSOR_HIDE");
+    if (idle_hidden || captured || s <= 0 || !focused || !idle_since_ns) return;
+    if (plat_now_ns() - idle_since_ns < (uint64_t)s * 1000000000ull) return;
+    idle_hidden = 1;
+    SDL_HideCursor();
+}
+
 void input_sdl_idle(void) {
     if (cur_pending) cursor_apply();
+    idle_check();
 }
 
 void input_sdl_event(const SDL_Event *e) {
@@ -189,6 +204,8 @@ void input_sdl_event(const SDL_Event *e) {
         break;
     }
     case SDL_EVENT_MOUSE_MOTION:
+        idle_since_ns = plat_now_ns();
+        if (idle_hidden) idle_hidden = 0, SDL_ShowCursor();
         if (captured) {
             rem_x += e->motion.xrel;
             rem_y += e->motion.yrel;
@@ -210,6 +227,7 @@ void input_sdl_event(const SDL_Event *e) {
         break;
     }
     cursor_apply();
+    idle_check();
 }
 
 // ---- input_wsys.h

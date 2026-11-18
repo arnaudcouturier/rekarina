@@ -20,6 +20,7 @@
 #include "gfx.h"
 #include "mods.h"
 #include "nvn_api.h"
+#include "prep.h"
 #include "platform/platform.h"
 #include "vk.h"
 #include "vk_dlaa.h"
@@ -373,6 +374,7 @@ void rt_frame_presented(const tex_t *t, uint64_t n) {
     fflush(stderr);
     fs_save_flush();
     vk_pipeline_save();   // no-op without the Vulkan back end
+    prep_report();        // what play still had to build (prep.c)
     prof_write();
     fflush(stderr);
     plat_exit(0);
@@ -403,6 +405,58 @@ static void prewarm_main(void *arg) {
     return;
 }
 
+// The wait for the entry step (vk_pipeline_prewarm on the prewarm thread). Once it has taken PREP_SCREEN_MS and its
+// count says it needs PREP_LEFT_MS more, or once it has taken PREP_SCREEN_LATE_MS, the window opens with the progress
+// picture (gfx_present_prep_frame, ui/prep_screen.cpp), drawn every 100 ms until the step ends; a start whose step is
+// done in about 1.5 s (everything cached) shows no picture for a moment. REKARINA_PREP_SCREEN=0 waits without it.
+// A step whose count has not moved for PREP_STUCK_MS, or for four times its longest build so far when that is longer
+// (a slow compiler: one mesh pipeline took 22 s on an RTX 5070 with a cold cache), is taken for a driver that never
+// comes back from one build and left to finish beside the game: the guest starts, and the step's journal names that
+// build for the next start (vk_pipeline.c, "the entry step").
+#define PREP_SCREEN_MS 1500
+#define PREP_LEFT_MS 1000
+#define PREP_SCREEN_LATE_MS 2500
+#define PREP_STUCK_MS 180000
+static void prep_wait(PlatThread *warm) {
+    const char *gpu = rt_config()->gpu;
+    int show = cfg_bool("REKARINA_PREP_SCREEN") && !rt_config()->shot && !(gpu && !strcmp(gpu, "null"));
+    uint64_t t0 = plat_now_ms(), moved = t0, frames = 0;
+    int64_t last = -1;
+    int shown = 0;
+    while (!plat_thread_join_ns(warm, 100000000u)) {
+        uint64_t now = plat_now_ms();
+        int64_t done = 0, total = 0;
+        int phase = prep_progress(&done, &total, NULL);
+        if (done != last) last = done, moved = now;
+        double stuck_ms = 4 * prep_progress_longest() > PREP_STUCK_MS ? 4 * prep_progress_longest() : PREP_STUCK_MS;
+        if ((double)(now - moved) > stuck_ms) {
+            rt_log("boot: the entry step has not moved for %.0f s (%lld of %lld): the game starts beside it",
+                   stuck_ms / 1000, (long long)done, (long long)total);
+            break;
+        }
+        uint64_t took = now - t0;
+        // the time the count says is left, once a tenth is done (the shaders load first, about a second, and the
+        // first builds give no rate yet)
+        int64_t left_ms = done * 10 >= total && done > 0 ? (int64_t)((double)took * (double)(total - done) / (double)done) : 0;
+        if (show && !shown && phase != PREP_PHASE_NONE && phase != PREP_PHASE_DONE &&
+            ((took >= PREP_SCREEN_MS && left_ms >= PREP_LEFT_MS) || took >= PREP_SCREEN_LATE_MS))
+            shown = 1;
+        if (shown && phase != PREP_PHASE_DONE) {
+            prep_screen_set(1);
+            gfx_present_prep_frame();
+            frames++;
+        }
+    }
+    prep_screen_set(0);
+    if (frames) rt_log("boot: progress picture shown for %.1f s (%llu frames)", (plat_now_ms() - t0) / 1000.0,
+                       (unsigned long long)frames);
+}
+
+// The priority class main.c asked for (plat_process_priority's levels; 0 leaves the process as it is). It is taken
+// after the entry step, whose builds would otherwise starve every other program for the step's first second.
+static int boot_process_priority;
+void rt_boot_process_priority(int level) { boot_process_priority = level; }
+
 void rt_boot(void) {
     check_npdm();
     if (!rt_config()->shot) vk_pipeline_async_enable();   // a --shot image must not depend on build timing
@@ -420,13 +474,15 @@ void rt_boot(void) {
     cb_addr[2] = hostfn_register("<rtld module_finis>", cb_module_finis);
     hostfn_seal();
     uint64_t held = plat_now_ms();
-    if (warm) plat_thread_join(warm);
+    if (warm) prep_wait(warm);
     else vk_pipeline_prewarm();
     vk_dlaa_warm();   // after the prewarm, whose thread brings NGX up: the first DLSS feature's seconds leave the game
+    if (boot_process_priority) plat_process_priority(boot_process_priority);
     held = plat_now_ms() - held;
     rt_log("boot: guest starts %llu ms after process start (%llu ms of it waiting for the prewarm)",
            (unsigned long long)(plat_process_uptime_ns() / 1000000), (unsigned long long)held);
     rt_guest_start_ns = kern_now_ns();
+    prep_play_begin();   // a shader or pipeline built from here on is a build in play (prep.c ledger)
     kern_run_on_guest_main(guest_main);
     rt_fatal("boot: the guest main thread ended");
 }

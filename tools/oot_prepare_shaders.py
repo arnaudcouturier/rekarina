@@ -10,6 +10,8 @@ shader cache and the driver's own disk cache hold them. Game-derived output stay
     .venv/Scripts/python tools/oot_prepare_shaders.py build/oot [--nup <container>] [--exefs ../build/oot/exefs-plain] [--no-run]
 """
 import argparse
+import gzip
+import hashlib
 import os
 import shutil
 import struct
@@ -23,7 +25,69 @@ import oot_romfs                                         # noqa: E402
 import shader_census as census                           # noqa: E402
 import prepare_shaders as prep                           # noqa: E402
 
-ROOTS = ('Shader/', 'Layout2Shader/', 'Effect/', 'UI/', 'agl/', 'Lib/', 'System/', 'Foliage/', 'Pack/')
+ROOTS = ('Shader/', 'Layout2Shader/', 'Effect/', 'UI/', 'agl/', 'Lib/', 'System/', 'Foliage/', 'Pack/', 'Movie/')
+SEED_ANSWERS = Path(__file__).resolve().parent / 'data' / 'shader-answers-oot.bin.gz'   # tools/make_seed_answers.py
+# A mesh or task program the runtime also translates as a compute kernel (runtime/gfx.h GFX_STAGE_MSC, GFX_STAGE_TSC:
+# vk_exec_draw.c mesh_emulate) is hashed with that stage and the kernel's revision (gfx_shader.c build_code_hash,
+# MESHC_REVISION): the same program under another hash, which the seed's played variants name.
+EMU_STAGES = {7: 8, 6: 9}     # ms -> msc, ts -> tsc
+MESHC_REVISION = 3
+# Beside the seed files: what they were made from. A run that was cut short in --prepare-shaders (the setup's longest
+# step) finds it at its resume and does not read the dump again (40 s).
+INVENTORY_DONE = '.seed-inventory'
+
+
+def inventory_stamp(a):
+    """A hash of everything the seed files follow from: these tools, the seed of played variants, the dump (by its path,
+    size and time) and the game's modules (names, sizes, times)."""
+    h = hashlib.sha256(b'oot-seed-inventory-1')
+    here = Path(__file__).resolve().parent
+    for f in (Path(__file__).resolve(), here / 'prepare_shaders.py', here / 'oot_romfs.py', here / 'shader_census.py', SEED_ANSWERS):
+        h.update(f.name.encode() + b'\0' + (f.read_bytes() if f.is_file() else b'missing') + b'\1')
+    for f in [Path(a.nup)] + (sorted(Path(a.exefs).iterdir()) if Path(a.exefs).is_dir() else []):
+        try:
+            st = f.stat()
+            h.update(f'{f.resolve()}\0{st.st_size}\0{st.st_mtime_ns}\1'.encode())
+        except OSError:
+            h.update(f'{f}\0missing\1'.encode())
+    return h.hexdigest()
+
+
+def ndve_shaders(data):
+    """The compute programs of the video decoder's file (Movie/Ndve/*.dat.zs, magic NDVE), which play dispatches when
+    a video runs: an NDSR package inside it (census.ndsr_shaders), and tables of <u32 count, 1, 0xa0, u32> followed by
+    count entries <u32 offset of the control section from the count, u32 offset of the code from the control section,
+    u32 code bytes, 0>. 9 of the 23 programs the inventory did not find before were these (2026-11-16)."""
+    at = data.find(b'NDSR')
+    if at >= 0:
+        try:
+            yield from census.ndsr_shaders(data[at:])
+        except (ValueError, struct.error):
+            pass
+    # The same entries also follow a shorter table head, <u32 count, 0>, at +8 (offsets still from the count): the one
+    # program of vid_seq5 that play dispatched and the setup had not prepared (2026-11-16).
+    for p in range(0, len(data) - 16, 4):
+        n, one, head = struct.unpack_from('<3I', data, p)
+        if one == 1 and head == 0xa0:
+            first = p + 16
+        elif one == 0 and 0 < n <= 16:
+            first = p + 8
+        else:
+            continue
+        if not 0 < n <= 256 or first + 16 * n > len(data):
+            continue
+        for i in range(n):
+            off, rel, size, zero = struct.unpack_from('<4I', data, first + 16 * i)
+            c = p + off
+            if zero or c + census.NVN2_CONTROL > len(data) or data[c:c + 4] != census.CONTROL_MAGIC:
+                continue
+            control = data[c:c + census.NVN2_CONTROL]
+            stage = census.NVN2_STAGES.get(struct.unpack_from('<I', control, 0x54)[0] >> 16)
+            if not stage or c + rel + size > len(data):
+                continue
+            control += bytes(0x880 - census.NVN2_CONTROL)
+            code = data[c + rel:c + rel + size]
+            yield census.digest(control + code), stage, control, code
 
 
 def inventory(fs, exefs):
@@ -36,6 +100,8 @@ def inventory(fs, exefs):
     def visit(name, data, depth=0):
         if data[:4] == b'BAHS':
             return add('sharcb', name, census.sharcb_shaders(data, rejected))
+        if data[:4] == b'NDVE':
+            return add('ndve', name, ndve_shaders(data))
         if data[:4] == b'NDSR':
             return add('ndsr', name, census.ndsr_shaders(data))
         if data[:4] == b'SARC':
@@ -67,18 +133,12 @@ def inventory(fs, exefs):
     return shaders
 
 
-def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument('build', type=Path)
-    ap.add_argument('--nup', default=oot_romfs.NUP)
-    ap.add_argument('--exefs', type=Path, default=Path('../build/oot/exefs-plain'))
-    ap.add_argument('--no-run', action='store_true')
-    ap.add_argument('--exe-name', default='rekarina.exe' if os.name == 'nt' else 'rekarina',
-                    help='the file name the game will be started under: the preparation runs a copy of rekarina.exe of that name')
-    a = ap.parse_args()
-    t0 = time.monotonic()
+def write_seed_files(a, out, t0):
+    """The inventory of the dump's shaders and the seed's played variants, written as seed-programs.bin and
+    seed-answers.bin beside the build's exe for --prepare-shaders."""
     shaders = inventory(oot_romfs.RomFS(a.nup), a.exefs)
     progs, recs, seen, skipped, stages = {}, [], set(), 0, {}
+    emu = {}   # the kernel hash of a mesh or task program -> (its stage, the program's body without stage and hash)
     for key in sorted(shaders):
         s = shaders[key]
         stage = prep.STAGES.get(s['stage'])
@@ -101,6 +161,10 @@ def main():
         if key not in progs:
             h = prep.code_hash(stage, control, code, length, c1)
             progs[key] = (h, struct.pack('<III', stage, length, len(c1)) + h + control + code[:length] + c1)
+            if stage in EMU_STAGES:
+                es = EMU_STAGES[stage]
+                eh = prep.code_hash(es | MESHC_REVISION << 16, control, code, length, c1)
+                emu[eh] = (es, struct.pack('<II', length, len(c1)), control + code[:length] + c1)
         h = progs[key][0]
         # No texture answers: the first translation names the real types (runtime/gfx_shader_guess.c), which the 0x80
         # flag asks the runtime to apply.
@@ -109,7 +173,30 @@ def main():
             continue
         seen.add((h, packed))
         recs.append(struct.pack('<I', stage) + h + bytes(32) + packed + bytes([2 | 0x80]))
-    out = a.build.resolve()
+    # The variants play met (tools/make_seed_answers.py): the answers of real draws, which the default variants above do
+    # not always give. They go first, so the boot prebuild warms them before the rest; a record whose program the dump
+    # does not hold (another version of the game) is left out.
+    played, unmatched, kernels = [], 0, 0
+    hashes = {h for h, _ in progs.values()}
+    if SEED_ANSWERS.is_file():
+        b = gzip.decompress(SEED_ANSWERS.read_bytes())
+        if b[:8] == b'TOTKSANS' and struct.unpack_from('<II', b, 8) == (1, prep.ANS_REC):
+            for i in range(16, len(b) - prep.ANS_REC + 1, prep.ANS_REC):
+                r = b[i:i + prep.ANS_REC]
+                h, packed = r[4:36], r[68:prep.ANS_REC - 1]
+                if h not in hashes and h in emu:   # a compute kernel of a mesh or task program: its body under that stage
+                    es, sizes, body = emu[h]
+                    progs[('kernel', h)] = (h, struct.pack('<I', es) + sizes + h + body)
+                    hashes.add(h)
+                    kernels += 1
+                if h not in hashes:
+                    unmatched += 1
+                elif (h, packed) not in seen:
+                    seen.add((h, packed))
+                    played.append(r)
+        print(f'{len(played)} variants met in play taken from {SEED_ANSWERS.name} ({kernels} of them compute kernels of mesh '
+              f'or task programs), {unmatched} for programs not in this dump', flush=True)
+    recs = played + recs
     with open(out / 'seed-programs.bin', 'wb') as f:
         f.write(b'TOTKSPRG' + struct.pack('<II', 1, 0))
         for _, body in progs.values():
@@ -120,6 +207,30 @@ def main():
             f.write(rec)
     print(f'{len(recs)} variants of {len(progs)} shaders {stages}, {skipped} of other stages, {time.monotonic() - t0:.1f} s',
           flush=True)
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument('build', type=Path)
+    ap.add_argument('--nup', default=oot_romfs.NUP)
+    ap.add_argument('--exefs', type=Path, default=Path('../build/oot/exefs-plain'))
+    ap.add_argument('--no-run', action='store_true')
+    ap.add_argument('--exe-name', default='rekarina.exe' if os.name == 'nt' else 'rekarina',
+                    help='the file name the game will be started under: the preparation runs a copy of rekarina.exe of that name')
+    a = ap.parse_args()
+    t0 = time.monotonic()
+    out = a.build.resolve()
+    stamp = inventory_stamp(a)
+    done = out / INVENTORY_DONE
+    if (out / 'seed-programs.bin').is_file() and (out / 'seed-answers.bin').is_file() and done.is_file() and \
+            done.read_text(encoding='ascii').strip() == stamp:
+        n = max(0, ((out / 'seed-answers.bin').stat().st_size - 16) // prep.ANS_REC)
+        print(f'{n} variants of the shaders from the run before (seed-programs.bin, seed-answers.bin): the dump is '
+              f'not read again', flush=True)
+    else:
+        done.unlink(missing_ok=True)
+        write_seed_files(a, out, t0)
+        done.write_text(stamp + '\n', encoding='ascii')
     if a.no_run:
         return 0
     # NVIDIA's driver keeps its disk cache in a file named after the executable's file name (the same name in another

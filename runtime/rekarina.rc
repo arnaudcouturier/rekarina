@@ -7,3 +7,38 @@
 #else
 1 ICON "totk.ico"
 #endif
+
+/* The version resource: Explorer's Details tab, and the name overlays and capture tools (NVIDIA's overlay, Steam,
+   Discord, OBS) file the game under ("Rekarina" rather than the bare exe name). rekarina_version.h comes from
+   tools/build_game.py (the out folder): RK_VERSION_NUM a,b,c,0 and RK_VERSION_STR "a.b.c" from VERSION. */
+#ifdef GAME_OOT
+#include "rekarina_version.h"
+1 VERSIONINFO
+FILEVERSION RK_VERSION_NUM
+PRODUCTVERSION RK_VERSION_NUM
+FILEFLAGSMASK 0x3f
+FILEFLAGS 0
+FILEOS 0x40004
+FILETYPE 1
+FILESUBTYPE 0
+BEGIN
+  BLOCK "StringFileInfo"
+  BEGIN
+    BLOCK "040904b0"
+    BEGIN
+      VALUE "CompanyName", "Rekarina"
+      VALUE "FileDescription", "Rekarina"
+      VALUE "FileVersion", RK_VERSION_STR
+      VALUE "InternalName", "Rekarina"
+      VALUE "LegalCopyright", "GNU General Public License, version 3"
+      VALUE "OriginalFilename", "Rekarina.exe"
+      VALUE "ProductName", "Rekarina"
+      VALUE "ProductVersion", RK_VERSION_STR
+    END
+  END
+  BLOCK "VarFileInfo"
+  BEGIN
+    VALUE "Translation", 0x409, 1200
+  END
+END
+#endif

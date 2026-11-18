@@ -61,6 +61,7 @@ import ctypes.wintypes as wt   # the job-object structures below; importing it w
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -375,6 +376,19 @@ def module_glue(layout, linked, hashes, paths, version):
     return '\n'.join(out)
 
 
+def write_version_header(out):
+    """out/rekarina_version.h for the version resource of runtime/rekarina.rc: the first three numbers of VERSION (1.1.0,
+    1.2.0-rc1 -> 1,2,0,0). Rewritten only when it changes, so the resource is not compiled again on every build."""
+    nums = [int(n) for n in re.findall(r'\d+', port_version().split('-')[0].split('+')[0])[:3]]
+    nums += [0] * (4 - len(nums))
+    text = (f'#define RK_VERSION_NUM {nums[0]},{nums[1]},{nums[2]},0\n'
+            f'#define RK_VERSION_STR "{nums[0]}.{nums[1]}.{nums[2]}"\n')
+    path = Path(out) / 'rekarina_version.h'
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if not path.is_file() or path.read_bytes() != text.encode():
+        path.write_bytes(text.encode())
+
+
 def port_version():
     """VERSION at the root: the repository's semver, or in a release folder the release string (make_release.py
     version)."""
@@ -421,7 +435,7 @@ def ninja_file(gen, out, mods, pool_depth, skip=(), prebuilt=False, runtime_lib=
         '',
         'rule rc',
         # the game defines pick the icon (rekarina.rc)
-        f'  command = {cmd_arg(WINDRES.as_posix())} -I {cmd_path(RUNTIME)} '
+        f'  command = {cmd_arg(WINDRES.as_posix())} -I {cmd_path(RUNTIME)} -I {cmd_path(out)} '
         f'{" ".join(f for f in RT_FLAGS if f.startswith("-DGAME_"))} -O coff $in -o $out',
         '  description = RC $in',
         '',
@@ -460,8 +474,10 @@ def ninja_file(gen, out, mods, pool_depth, skip=(), prebuilt=False, runtime_lib=
     for src in sources:
         o = runtime_object(out, src)
         if src.suffix == '.rc':   # windres writes no depfile: the files rekarina.rc embeds are listed by hand
+            write_version_header(out)
             lines.append(f'build {ninja_path(o)}: rc {ninja_path(src)} | {ninja_path(RUNTIME / "rekarina.manifest")} '
-                         f'{ninja_path(RUNTIME / "totk.ico")} {ninja_path(RUNTIME / "rekarina.ico")}')
+                         f'{ninja_path(RUNTIME / "totk.ico")} {ninja_path(RUNTIME / "rekarina.ico")} '
+                         f'{ninja_path(out / "rekarina_version.h")}')
         else:
             lines.append(f'build {ninja_path(o)}: cc_rt {ninja_path(src)}{pgo_dep}')
         rt.append(o)

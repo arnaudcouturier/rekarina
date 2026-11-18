@@ -2805,7 +2805,7 @@ the cache):
 - Memory: 128 x 11 x 16 B + 768 B = ~23 KiB per meshlet; the grass is ~40 indirect draws of up to a few thousand
   meshlets each, so a ring of tens of MiB per frame, on cards that have 2 to 6 GiB.
 - Testable here: `REKARINA_MESH_EMULATE=1` on the RTX 5070 against the real mesh path, frame dumps compared with
-  `scratch/w/dcmp.py`.
+  a local comparison script.
 
 ### Built (2026-11-15, afternoon): mesh shaders without a task
 
@@ -2954,3 +2954,687 @@ languages, two versions) without those tags into `romfs-patches-fasttext`, and `
 option is on. 372,162 tags in all, about 11,600 a language; 5.5 s at zstd level 9 with the original dictionary. Checked
 against the dump: every message equals the original without its pause tags, every other section as it was; in game the
 item and menu texts and the banner after the menu read as before. Not yet seen in a conversation.
+
+## The night of 2026-11-15/16: a tour of every map, what play still builds, the fault after a map change
+
+### The tour
+
+`REKARINA_WARP_AT` reaches every map now (`runtime/oot_warp.c`: the other outdoor maps, the dungeons in the order the
+game reaches them, the side dungeons, the boss rooms; the names are the map's start positions, read from each map's
+`Banc/*/<map>_Dynamic.bcett.byml.zs`: actors of type `StartPos` and their `Name`), up to 64 changes a run, and each
+warp's log line carries its frame number. A tour run (scratch `w/tourrun.sh`, input `loc/tourA.txt`: the camera right
+and left, a few steps, A, a sword stroke, every 10 s) stays 35 s at each place; `w/tour.py` scores each stop from the
+section rows (frames from 12 s after the warp: mean, 1 % low, frames over 25 ms with the section that dominated each,
+replay and GPU time) and from the stop's log lines (lost device, flashes, stand-ins, pipeline waits, work left out,
+pipelines built and shaders translated in play). Two traps: the world-clock form of `REKARINA_SHOTS` gives nothing in
+this build (the world clock stays at -0.0), and a screenshot costs its frame ~90 ms, so the shot frames are left out
+of the numbers. Warping a child save into a map of the grown-up part (the fortress) turns the hero grown-up for the
+rest of the run.
+
+### Work left out in play, and the mesh pipelines' keys
+
+The replay leaves a draw or a dispatch out while its shader is translated or its pipeline built beside it (so the
+frame does not wait). That was invisible until now; the flight recorder's `frames.tsv` counts it per frame (`mesh_skip`
+and `cs_skip` beside the older `draws_skip_pipe` and `draws_skip_shader`) and the log names the first of each kind in a
+frame with its program (`vk_exec_draw.c left_out`). The first tour showed mesh and geometry pipelines built in play at
+every arrival: 54 at the forest save's first frames, 42 at a field arrival, 381 frames with a left-out mesh draw in the
+meadow. Graphics pipelines had a key file and a boot prewarm for a long time (`pipeline-keys.bin`); the mesh pipelines
+(`vk_pipeline_stages`) had none, so a session met each of them again. They have one now: `pipeline-keys-mesh.bin` (the
+three stages' input ids, the kind, the state; `mk_note` on each build, `mk_flush` with the graphics keys), queued to the
+mesh threads by the boot prewarm (`mk_prewarm`), and a release's seed `pipeline-keys-mesh-seed.bin`
+(`tools/make_seed_keys.py` takes both kinds of key file). The next run built all 94 records of the first runs at boot
+and left nothing out in play at that place; over the night's runs the mesh pipelines built in play (after the first
+300 frames) went 112, 36, 3, 6, then 0 in each of the next four runs. How long such a draw was missing: in the meadow a
+mesh shader of 105,896 SPIR-V words took 11.3 s to build with the driver's cache cold for it (another one in the
+desert 24.6 s; most take 0.2 to 0.7 s), and its draw was left out the whole time. The player's report of grass that
+flickered when they struck it fits a variant of the cut grass first met at a strike.
+
+A pipeline key in the release's seed is only built at a player's boot when the player's shader cache holds its exact
+shader variants. The setup prepares the dump's default variants (`tools/oot_prepare_shaders.py`), and a variant with
+the answers a real draw gives (texture types, formats) is another one: the tour's places meant 37 to 155 graphics
+pipelines built in play per stop, thousands of draws skipped while they were built, and stage libraries of 230-280 ms
+on average (up to 3.1 s) compiled with the frame waiting where the draw could not be skipped. `tools/make_seed_answers.py`
+collects the answers records of every input id the key files name (graphics, mesh, the compute shaders of
+`compute-used.bin`, and the release's own key seeds) into `tools/data/shader-answers-oot.bin.gz` (no program, only its
+hash and the answers), and the setup's preparation puts them first among the variants it translates and builds.
+
+### The device lost after a map change, twice in the first two tours
+
+Both reports name the memory of a render target the game had placed in one of its pools (fmt 0x34, R11G11B10F, "pool
+gpu": bound into the pool's memory, not memory of its own): a 384x384 one in the Market, its pool freed when the hero
+walked out to the field; a 1280x720 one in the desert, its pool freed in play. The image went with its pool
+(`vk_texture_range_gone`), and the address lies in no live pool buffer: the pool's memory itself had gone back to the
+driver. The "unbound N s before the report" is not the read's age (the earlier trap: the CPU runs ahead, then blocks
+until the lost device is reported seconds later).
+
+The mechanism, read from `vk_pool_fini`: the game frees a pool once its own fence says the GPU is done with it, on its
+own thread. The images in the pool go through the deferral (stamped with the submission being recorded, so their
+objects outlive it), but the pool's memory was freed right there by `destroy_rec`, after a `vkQueueWaitIdle` that
+covers only what was submitted. A submission of the replay's that was not submitted yet still named the pool's images
+or buffers: one held by the queue interleave until its wait is met, parts recorded beside on the chunk threads, the
+early results point that lets the game go on before the GPU has read everything. Its draws then read memory that was
+no longer allocated. That fits both reports (at a map change, where pools go by the hundred, and in the desert, where
+the game frees pools while it streams) and the earlier ones in the Market burst.
+
+A deferral grace for images, views and buffers (`REKARINA_DEFER_GRACE`, 24 submissions, default) was in the second
+run and could not help: the memory went with the pool, not with the image. The fix holds a finalized pool's memory and
+buffers (`vk_memory.c` "a finalized pool's memory, held a while", `REKARINA_POOL_QUARANTINE`, default on) until the
+scene has drawn 240 submissions and 2 s have passed (at most 20 s; over an eighth of the video memory budget the oldest
+go at once). At a map change that holds 385 to 641 MiB for a few seconds.
+
+The exact release came the same night: `vk_pool_fini` hands the record, its buffers and memory to the deferral as a
+kind of its own (`DEAD_POOL`), stamped past the submission being recorded and every value handed out
+(`vk_sync_reserved`: the asynchronous replay reserves values for submissions it records later), with the images'
+grace; mirrored pools (`mirror_retire`) the same way, where they had a completion callback at the next value. Any
+submission recorded later resolves addresses without the pool (it left the index at the start of `vk_pool_fini`), so
+that stamp covers every submission that can name it. The quarantine stays behind it as the fallback.
+
+### Places that freeze for seconds: shaders nobody prepared
+
+In places the test folder had never seen (the river, the domain, the fortress) the tour built 37 to 155 graphics
+pipelines per stop in play, skipped thousands of draws meanwhile, and in the fortress froze for 8.3, 5.6, 2.3 and 1.1 s.
+The log's summary says why: 358 pre-rasterization and 385 fragment stage libraries compiled in play, 230-280 ms each on
+average (up to 3.1 s), and of the 324 library jobs for draws that wait, 172 were built by the drawing thread itself
+because no worker was free. The draws that wait are the "one-shot" ones (`vk_exec_draw.c prepare_draw`: a target the
+previous frame did not render): here the faces and mip levels of a 128x128 light probe the game renders on arrival.
+A cold driver cache makes every such variant a compile; the fix is that a player's setup has prepared it (the seeded
+answers above), not a shorter wait, which would leave the probe without those objects for the session.
+
+### Two traps of the tour itself
+
+A warp asked while the hero is inside a dungeon hung the game (no frame and no log line for minutes, the process
+alive): the map change event from our pad hook, not something a player can do. Dungeons and boss rooms get a boot each
+(scratch `w/qd.sh`). And the sword is on Y in this game: a script pressing B swings nothing.
+
+### The water beside the drawbridge
+
+The player saw the reflections in the moat on the right of the drawbridge flicker. With thumbnails of 640x360 (the
+recorder's size is a setting now, `REKARINA_FLIGHT_THUMB`) and a still camera on the bank, 255 frames of the region with
+the bridge's reflection showed no one- or two-frame change (`w/regpulse.py`: the region's difference from the median of
+its neighbours, against the run's typical difference). In the same frames a large faint face lies over water and wall:
+the hero, faded by the game because the camera is pressed against his head; when the camera moves near him under the
+bridge that fade comes and goes, which may be what was seen. The gate's camera on the drawbridge (the right stick does
+not turn it there) looks over the moat on both sides for minutes: 5,329 still frames of those regions never changed by
+more than 2.7 levels against their neighbours. All by day; a warp brings daytime, so the night was not reached.
+
+The player then said it is by day and the bridge's reflection on the right. The same view in the player's own
+settings (DLAA on, DLSS quality, DLSS frame generation, the FSR upscaler, 2560x1440 stretched, the character mask),
+640x360 thumbnails of every frame: a still camera (4,960 frames), slow turns on the bridge (4,868) and slow walks along
+it (4,787) showed no one- or two-frame change of either moat region over 1.5 levels (the typical frame-to-frame
+difference there is 0.4 levels); the test folder's settings (the base scene with FXAA) neither. Those are the rendered
+frames. Frame generation makes no frame in a background window, and its frames never reach the thumbnails; it is
+given depth, motion vectors and the HUD-less colour (`runtime/dlssg/nx2_sl.cpp`), and the moat's pixels carry the
+water surface's motion while the reflected bridge moves as if it lay at its mirrored depth, so a generated frame can
+put the reflection in the wrong place: a flicker of the reflection alone. Not shown yet: whether the player's flicker
+goes with frame generation off.
+
+The strike runs (the user's save, which has the sword; it is on Y) in the forest grass with thumbnails of 640x360: in a
+session whose mesh pipelines were built at boot, nothing was left out at ~140 strokes, and the grass region's only
+one-frame changes were the sword's trail. Without the boot prewarm (`REKARINA_PIPE_PREBUILD=0`) the forest's mesh
+pipelines were built at the arrival with their draws left out for 1-3 frames each, and still none at the strokes there:
+the flicker the player saw at a strike needs a variant met for the first time, which the key file and the release's
+seed now build before play.
+
+### The replay's CPU time, and a processor of 4 cores
+
+Base mode at 1440p on the 9700X (16 logical processors), the scratch bench (`w/bench.sh`: the forest from the village
+save turning slowly, the field and the Market after a warp, walking then turning; section rows): forest 94.8 fps, 1 %
+low 50.1, 7 frames over 25 ms of 7,216, replay 8.27 ms a frame; field 97.5 / 45.2 / 4 of 4,536 / 7.88 ms; Market 93.5 /
+41.0 / 10 of 5,099 / 7.80 ms. The same with the process confined to 4 cores and 8 threads (`REKARINA_AFFINITY=0xff`,
+which the thread pools size themselves by): forest 87.5 / 45.2 / 14 frames over 25 ms / 8.78 ms. Most of those long
+frames have 20 to 50 ms in the submission that no section names: the replay thread waiting, not working (the chunk
+threads and the game's own six share eight processors there).
+
+The texture pool's update read every slot's registration twice whenever the game had registered any slot since the
+last update, which it does every frame (two passes over 32,768 slots: 0.25 ms of a frame at the drawbridge, 0.38 ms in
+the Market, beside the resolving itself). `vk_texture_register` now sets a bit per slot it changed and the update looks
+at those slots only (`vk_texpool.c`, `REKARINA_TPOOL_REGBITS`); a budget stop, the gone list or a grown slot count still
+make it look at every slot. The images that go mark their slots in the same bits (`take_gone`): the game destroys
+transient targets nearly every frame, which by itself made every update a full one.
+
+The render thread's profile in the forest (`REKARINA_PROFILE_RENDER`, 10 s): 37.5 % of the samples in our code, 20.9 %
+in NVIDIA's driver, 34.9 % blocked. The hottest line by far is the spin of `vk_exec_par_join`, ~1 ms a frame: the replay
+thread waiting for a stretch's chunks. The perf log's "chunk waits asked by" lines say who asks: an inline uniform update
+(`UPDATE_UB`) about five times a frame at 0.19 ms each, then texture copies and clears (0.15 ms a frame each). The update
+waited because the chunks read the update ring (`upd_read`, for the shaders that load an address from a uniform block)
+and the uniform snapshot's regions, which the update changes. They read both as of their stretch's handout now (the
+ring's count and the snapshot's update serial ride in the job, as the texture as-of mark does; a region an update drops
+carries the update's serial, `vk_usnap_drop_update`), the update's copy goes into the replay thread's command buffer
+behind the chunks as a dispatch's already did, and its write-back note is taken under `vk_par_lock`; so it no longer
+waits (`REKARINA_PAR_UB_JOIN=1` brings the wait back). The next lines of the profile: the report index probes
+(`vk_exec_xfer.c` pidx, ~0.2 ms), the mirror syncs and the snapshot drops.
+
+### A broken heap in a dungeon, and the held rest's snapshot
+
+The first run after the night's merge ended in the first dungeon, about 30 s after the arrival, with an access
+violation inside ntdll's heap (reading 0xffffffffffffffff) under `nvnCommandBufferEndRecording`'s allocation on a game
+render thread: the heap had been broken earlier by some other writer. The next four dungeon runs were clean, so it
+was rare. Reading the night's changes and their neighbours for a write that can pass a block's end found one in old
+code that the night made likelier: `vk_exec.c held_resume` records a held rest without waiting for the chunk threads
+of the draw stretch in flight ("they read copies of the queue state, and the uniform snapshot through a view of their
+own"), and it swaps the uniform snapshot's state with the rest's (`vk_usnap.c held_exchange`: the region array, its
+count and capacity, the arena, `U_other`) without `vk_par_lock`. A chunk thread meanwhile may be inside
+`vk_usnap_drop` under that lock (a draw binding a buffer it writes), walking `U.reg` up to `U.nreg` and setting each
+region's dropped flag. Seeing half of the swap, it walks the held copy, which `vk_usnap_hold` allocates to its exact
+count, with the running snapshot's larger count: a write past the block's end. The inline update without the join
+(4d2c43e) lets the replay thread run on past an update while chunks work, so it reaches a signal and a held rest's
+resume with chunks still busy more often. Fix: the exchange under `vk_par_lock`, and the held copy freed through the
+deferral (past the submission being recorded) instead of at once, since the rest's last chunks may still read it
+through their view. `REKARINA_USNAP_HELD_LOCK=0` is the old way.
+
+The A/B on the same dungeon stop (the user's save, the tour input, heap checked every 30 presents): with the lock
+off, the second run ended with an access violation inside `vk_usnap_drop` itself (+0x1d3, on a chunk or the replay
+thread, reading an address past the array the exchange had just swapped in); with the lock, the runs were clean and
+the heap whole at every check (a check costs 4.6 ms). The race is real and in that function; a write there breaks
+the heap instead of faulting at once.
+
+To catch a heap writer in a test run without a debugger: `REKARINA_HEAP_CHECK=<n>` validates the process heap
+(`HeapValidate`, which walks every block under the heap's lock) every n presents and, on a broken heap, logs the first
+frame found broken and the last found whole, where a heap walk stopped, the bytes around that place, and which of the
+suspects' arrays lie near it (`rt_heap_note`: the snapshot's regions and writes, the pool quarantine, the deferral
+list, the retiring mirrors and the pool bits register their address whenever they grow).
+
+### The device lost in the field without a map change
+
+One run of the CPU bench (the field, about 6,000 frames after the arrival) lost the device with a read inside a live
+texture's memory (its binding 4.3 s old, no unbind after it); texture eviction had run in that run (512 cold textures
+evicted at the arrival). Not the pool class above. An evicted texture's image was destroyed past the submission being
+recorded; textures evicted or dropped under memory pressure now wait for the GPU to pass every timeline value handed
+out so far (`vk_defer_past_reserved`, the finalized pools' rule; `REKARINA_EVICT_QUIET=0` is the old stamp). Eviction
+runs only while video memory is short, so the longer wait costs nothing measurable.
+
+## 2026-11-16: story progress for test runs (`tools/oot_progress.py`)
+
+The game keeps its progress as named game-data values (the TotK engine's game data manager: a value is found by the
+MurmurHash3 of its name), and `slot_NN/progress.sav` holds every value that is saved: an 0x20-byte header (magic
+0x01020304, version, offset of the data region), then (hash, value) pairs split into typed sections by an entry of hash
+0 whose value is the type number (Bool 0, BoolArray 1, Int 2 ... Bool64bitKey 32, TotK's order), then the data region
+with arrays (a count, then the elements), fixed-size strings and 64-bit values. No checksum. The RomFS
+`GameData/GameDataList.Product.<ver>.byml.zs` (big-endian BYML) lists every value with its type, default and file.
+
+The names of the hero's belongings are not strings anywhere in the game (the code holds their hashes), but the list's
+structs give them: `PouchData/<item actor>` holds a count (1 for an owned item, the ammunition otherwise),
+`IsGet/<item actor>` a was-got bool (the songs are only here), and `PlayerStatus` the hearts in quarters (`Life`,
+`MaxLife`), the magic (`MP`, `MPMax`), the rupees (member 0xc995bbb8), what is worn (`EquipWeapon`, `EquipShield`,
+`EquipArmor`, `EquipBoot` and the instrument's, actor names as text), the item on the item button (`AssignableItem/Adult`,
+`/Child`, enums) and the bottles' contents. The story is a set of enums, `Step_<quest>`, each running from `NotReady`
+through named steps to `Complete`. The hero's age is `Sequence_IsChildhood` together with the map the save continues
+in (`<map>_Child` / `<map>_Adult`).
+
+The tool changes those values in place, in every slot of a COPIED profile (it refuses the test folder's
+`profile-try` and the package's own): presets `child-all`, `adult`, `adult-early`, single values by name, struct path or
+hash (`--set`), quest steps (`--quest`), and `--dump` / `--dump-all` to read them back. It reads the list, the structs
+and the member names (the item actors' pack names) from the player's dump; the names its presets need are stored with
+their letters moved 13 places. The test runs apply it to the run's profile copy before the start. Verified on
+2026-11-16: the village save with `--preset adult` continues as the grown-up hero in the grown-up forest, 20 hearts,
+the sword and shield of that age, the pause menu's belongings as set; a warp to the field arrived at night.
+
+### A start that every test run hid
+
+From 929110f to 0fdb6f9 every start without `REKARINA_HEAP_CHECK` in the environment ended at once: the setting was
+read with `cfg_int`, which ends the game when a key has no row in `cfg.c`'s settings table, and every test run set the
+variable through the scratch run script, so none of them saw it (a player's start, and the other agents' exes, did).
+A test setting is read with `cfg_get` or `rt_knob` (no row needed); a player setting gets its row. Each round of runs
+now begins and ends with a player's start: the exe in a folder of its own (`src\build\pstart`: links to the exe, the
+DLLs, the overlays, the fonts and the shader cache, a silent windowed `rekarina.ini` with the romfs path) and no
+`REKARINA_`/`TOTK_` variable in the environment at all.
+
+### The bench after the night's CPU work
+
+The same scratch bench as before (base mode 1440p, 16 logical processors, nothing else of ours running), on 0fdb6f9:
+forest 97.8 fps, 1 % low 54.4, 4 frames over 25 ms of 7,404, replay 7.27 ms a frame (before: 94.8 / 50.1 / 7 of
+7,216 / 8.27); field 99.3 / 47.6 / 5 of 5,430 / 7.20 (97.5 / 45.2 / 4 of 4,536 / 7.88); Market 96.7 / 48.4 / 1 of
+5,271 / 6.97 (93.5 / 41.0 / 10 of 5,099 / 7.80). The replay thread's frame is 0.7 to 1.0 ms shorter: the update without
+the chunk join, the pool's registration bits, and the night's smaller fixes.
+
+What the slowest 1 % of frames are now, from the section rows with the submission split once more (`SUB_OFFCPU`: of
+the submission's wall time, what the replay thread spent not running, from its own cycle count; `PAR_RUN` /
+`PAR_SPIN`: the chunk join): in the forest a third of them are the replay thread off the CPU inside the submission
+(+1.9 ms against the median frame's 0.27 ms; the thread runs above normal priority, so it is blocked on something,
+not preempted), a few the chunk join's spin, the rest still unnamed. In the field and the Market about 40 % are the
+texture pool's update (+4.9 ms in the field, +7.1 ms in the Market: the slots that showed an image before +3.2 / +4.4,
+uploads +3.0 / +2.7, images made for the pool +1.6 / +3.2), then the replay thread off the CPU (+2.4 / +5.2 ms).
+`RL_TEX`, `RL_UPL`, `RL_POOL` (df5a13e) time the replay thread's waits for the texture, upload and pool locks, to
+name the off-CPU part; the old slots' budget has a test setting (`REKARINA_TPOOL_OLD_MS`).
+
+## 2026-11-16: the entry step, the ledger of builds in play, what the setup cannot prepare
+
+### The entry step
+
+Other recompiled ports prepare their shaders when the game is entered; this one did it in part. Since 2026-11-16 the
+boot builds everything the player's key files and the release's seeds name before the guest starts
+(`vk_pipeline.c`, "the entry step", `vk_pipeline_prewarm`): the shaders they name are loaded or translated from their
+stored inputs, then the graphics pipelines (`pipeline-keys.bin`, `pipeline-keys-seed.bin`), the mesh and geometry
+pipelines (`pipeline-keys-mesh.bin`, `pipeline-keys-mesh-seed.bin`; before, they were queued to the mesh threads and
+went on through the title screen into play, their draws left out until built) and the compute pipelines a dispatch
+asked for (`compute-used.bin` and the new `compute-used-seed.bin`; before, they came from the boot prebuild beside play
+at below-normal priority) are built on every logical processor, the mesh shaders with the most SPIR-V first. The pool
+workers leave the low queue to the step's builders (`K.pw`), so every build in flight is in the step's journal
+(`pipeline-prewarm-journal.bin`, three 64-byte entries per builder: input id and stage, the layout of
+`shader-prepare-journal.bin`); a process that dies inside the driver leaves it, `skip_init` moves its entries into
+`shader-prepare-skip.txt` for this GPU and driver, and the next start drops every record naming one of them. A normal
+exit during the step clears it (`vk_pipeline_prewarm_quit`). If the count stops moving for 90 s, the guest starts
+beside the unfinished step (`boot.c prep_wait`).
+
+The window opens with a progress picture when the step will take a while (after 1 s if the count says it needs 1 s
+more, else after 2.5 s): `gfx_present_prep_frame` clears the swapchain image and the menu's ImGui draws
+`ui/prep_screen.cpp` (the band, one khaki row with the amber segment and the count, the description box; texts
+`UI_PREP_*` in the 13 catalog languages). `REKARINA_PREP_SCREEN=0` keeps the window closed until the game's first frame;
+`REKARINA_PREP_SHOT=<png>` saves one frame of it.
+
+### The ledger
+
+`runtime/prep.c` counts every shader translated and every graphics pipeline, stage library, mesh, geometry and compute
+pipeline built after the guest started, by kind and by map (the map is the name of the last `<map>.bcett.byml.zs` the
+game opened, `_Static`/`_Dynamic` cut: `romfs.c romfs_open` calls `prep_map_open`). The first 400 get a line each
+("prep: frame N, map M: a graphics pipeline in play (waited x ms, build y ms)"); at exit "prep: in play: ..." sums them
+by kind with the worst wait and build, and a table follows per map.
+
+### What the setup cannot prepare
+
+The answers seed's records name programs by the hash of their code; the setup's inventory of the dump matched 6,990 of
+7,260. Of the rest, 47 were the compute kernels of mesh and task programs (`GFX_STAGE_MSC`/`TSC`: the same program,
+hashed with that stage and `MESHC_REVISION`): `tools/oot_prepare_shaders.py` hashes every mesh and task program that
+way too now and prepares them. 126 were records of older hash rules (programs with a uniform-predicate VOTEU hashed
+before patch 0042's tag, mesh kernels of revisions 0 and 2): the current runtime gives those programs other hashes,
+the setup and the entry step pass over them. 23 programs (21 compute) have code that is neither in the archives the
+inventory reads nor in the modules: a new install translates them once, in play; their stored inputs then let every
+later start build them in the entry step.
+
+### The proof runs (RTX 5070, 16 logical processors)
+
+A player-like folder (scratch, not in the repository): the build's exe and translator, the overlays, the seeds, the
+setup's translation of 62,701 variants (55,820 prepared, 723 s on 16 threads; `REKARINA_PREPARE_DRIVER=0` stops
+`--prepare-shaders` after the translation), its pack, and nothing else: no `pipeline-cache.bin`, no `nv-cache`, no key
+files of its own, so the driver's cache is cold as after a driver update. The first start's entry step took 292 s:
+5,228 graphics pipelines (3,093 s of thread time, 0.59 s each), 354 mesh and geometry pipelines (927 s, the longest
+22 s), 621 compute pipelines (579 s, 0.93 s each, the longest 10.5 s); the shaders loaded in 0.7 s. A warp tour of
+eight maps (forest, woods, meadow, field, Market, castle, village, graveyard; the child's save, 35 s each) then built
+98 things in play: the 19 translations of the programs the dump's archives do not hold (the forest's arrival and the
+field) with their 18 compute pipelines (one 34 s, its dispatch left out meanwhile), and 19 graphics pipelines, 34 stage
+libraries and 8 mesh pipelines of states the tours behind the seeds had not met (13, 18 and 3 of them in the
+graveyard, where a one-shot probe draw waited 1.7 s). With the caches warm the step takes about 1.5 s and the
+picture does not appear.
+
+### Device losses at textures dropped under memory pressure
+
+Three runs lost the device with a read at an address where only a texture of its own memory had lain, seconds after
+it went: the CPU bench in the field (a 1536x552 BC7 texture's place), and two of the other agent's runs in a fresh
+player folder with an empty texture cache (the mountain city: 260x260 images; the field: a 576x576 ASTC texture
+decoded to BC3, unbound 7.5 s before the read). In those runs the drops of released textures under video memory
+pressure ran all the time (40 to 430 per second), and the 8 s hold of what eviction and those drops destroy did not
+help: the read came later than that. The drops by age and `sweep_released` have long left a released texture alone
+while a slot or a binding still reads it (`released_in_use`, the castle shadow fix of 2026-11-14); the pressure drops
+did not. They do now (`REKARINA_PRESSURE_KEEP_USED=0` is the old way). The first two empty-cache runs after it were
+clean; the comparison with the old way is in the night's last runs.
+
+A new player's first session with an empty texture cache is rough by itself: 74 and 136 frames over 25 ms in 46 s of
+the forest, woods, meadow and field (a warm cache: 0 to 5), every ASTC texture being decoded on the GPU at its first
+use and read back for the cache.
+
+The live check in a third empty-cache run (no device loss) found one of that class: a draw's texture binding was
+handed, 24 times over a minute, a view that had been destroyed 82 s before, for a live 4x4 texture whose slot
+resolved under the current generation. The view came from the view cache (`vk_exec_draw.c get_view`, keyed by the
+image handle and the view's parameters), which the purges at a texture's destruction and at a new image's handle
+should have emptied of it. Harmless there (the image itself lived), it is how a binding reaches freed memory when the
+image behind such a view is gone; not found yet how the entry outlived its view.
+
+With the image serial in the view cache's key (9a9ba6e) the next empty-cache run with the live check reported
+nothing (the run before it: 82 reports, all of that one view). Four empty-cache runs since the pressure fix, no
+device loss.
+
+The forest's slowest frames with the lock waits named (`RL_*`): the replay thread is off the CPU about 2.4 ms more
+than in a median frame; the upload flush's submission of the upload batch is +1.4 ms of it, the texture lock +0.3 ms,
+the rest unnamed (the driver's calls). The texture lock costs the replay 0.32 ms in every frame, held by the chunk
+threads' lookups that miss the draw memo and by the game threads' registrations: a lever for the mean.
+
+Frame generation in a foreground window with the player's settings: "2 presented per frame", so the generator ran;
+its frames are not captured (the player's rule against desktop grabs). The motion-vector debug view clamps negative
+motion to black, so it cannot show whether the moat's vectors differ from the bridge's.
+
+The old slots' pool budget at 8 ms in place of 50 (`REKARINA_TPOOL_OLD_MS=8`, same bench): the slowest frames that the
+pool update dominates fall by a quarter in the field and the Market, and the 1 % low stays where it was (those frames
+are then slow by the replay thread's time off the CPU instead): not worth a stand-in risk, the default stays.
+
+GPU time per pass (drained, fenced marks) at base 1440p: the child field 7.15 ms of marks a frame, the grown-up
+fortress 6.28, the grown-up mountain trail at its arrival point 4.89; the port's own GPU work (mirror prologues, merge
+dispatches, write-backs) 0.6-0.7 ms in each. The 17-22 ms GPU frames of the grown-up tour belong to views or moments
+these runs did not meet.
+
+The dialogue log's black frame reproduces: the user's save, the village, a walk to the gate, then Y opens the
+conversation log and the third frame after it is dark (the same in the tour, three frames after Y). The log screen
+draws a 640x360 capture of the scene (R11G11B10F) as its blurred background; the dark frame is the one before that
+capture is first drawn.
+
+### Guest memory from the GPU driver on Linux (design, 2026-11-16; the test is built, the game path is not)
+
+Why shadow storage exists on Linux: the Windows build imports the game's pools for the GPU as host pointers and
+watches them with GetWriteWatch. On Linux a host-pointer import is a userptr, which amdgpu (and i915) follow through
+the kernel's MMU notifier: every protection change of the write watch (userfaultfd write-protect, mprotect) invalidates
+the import, about 1.3 ms per 16 MiB at the next submission, and the import's pinning clears the watch's bits. So every
+pool gets a copy (shadow storage): on the integrated Radeon standing in for a Deck, +4.9 GiB of committed memory (21.0
+against 16.1 GiB) and the replay doubled (7.9 -> 15.8 ms, of it ~6.7 ms the `pre` snapshots of GPU-written ranges,
+named by a render-thread profile with call chains: shadow_pend < note_written < ssbo_info < bind_resources).
+
+The way out is the other direction: memory the Vulkan driver allocates is not a userptr, so the CPU-side protection
+of a mapping of it does not touch the GPU's view. Decisions:
+
+- What is backed: each pool, at its registration (nvnMemoryPoolInitialize), not the whole guest heap. Pools are ~5 GiB
+  of a 7+ GiB heap; backing the heap would make every heap page driver memory (resident once the GPU references the
+  object) and take the write watch off memory no GPU reads.
+- How it is placed: VK_EXT_map_memory_placed (vkMapMemory2KHR with VK_MEMORY_MAP_PLACED_BIT_EXT at the pool's address;
+  Mesa RADV/ANV/NVK 24.1+, NVIDIA 560+) first; else the memory exported as a dma-buf and mmapped there with
+  MAP_SHARED | MAP_FIXED (RADV, ANV); else shadow storage. An opaque fd is not used: lavapipe's carries its data a page
+  off (`--memory-test` in WSL showed it), so only a dma-buf's layout is known.
+- Re-backing in place: the pool's pages go read-only, a CPU write into them waits in the fault hook until the new
+  backing is in, the bytes are copied into the new memory (mapped elsewhere first), the placed map replaces the old
+  pages (MAP_FIXED semantics), the pages open. At finalize the reverse: the bytes go into fresh anonymous memory at the
+  address, the uffd write-protect registration is made again for it, the device memory is freed past the last
+  submission that can name it (the deferral every freed pool already takes).
+- The write watch: userfaultfd write-protect is for anonymous, shmem and hugetlb memory only; a driver mapping is not
+  one (VM_PFNMAP/VM_IO), so those ranges get the fallback the platform layer needs anyway: a per-page dirty bit, the
+  page read-only while clean, a write fault marks it and opens it (linux.c fault handler), and plat_mem_written answers
+  for them from the bits and re-protects on reset. Every other protection memory.c asks for (freeze, lazy close, result
+  guard) is composed with it in plat_mem_protect (the stricter wins), as Wine does for VPROT_WRITEWATCH.
+- Limits: NVIDIA's maxMemoryAllocationCount is 4,096 and the village has ~4,500 pools: pools under 64 KiB stay on
+  shadow storage there (a per-pool choice, which vk_memory.c already has in r->smap against r->buf), the rest are
+  backed. RADV's limit is far above it. The memory type: host-visible, coherent, cached where offered; on a discrete GPU
+  that is system memory read over PCIe, so the existing mirror mode stays on top, fed by the same write watch.
+- Fallback and choice: REKARINA_LINUX_GUEST_MEMORY = auto | driver | shadow; auto takes driver memory when the device
+  passes the same checks `--memory-test` runs (a placed or dma-buf map at a test address, both directions of reads,
+  a write fault on a read-only page, no cost on the next submission after a protection change), else shadow, and the
+  log line says which and why. Until the game path is built every value runs shadow storage, and the log line says so.
+
+The test: `Rekarina --memory-test` (runtime/memtest.c), or built alone with
+`cc -O1 -DMEMTEST_STANDALONE runtime/memtest.c -l:libvulkan.so.1 -o memtest`. In WSL (lavapipe only) the placed way is
+absent, the dma-buf export fails and the opaque fd is a page off, so nothing here can prove the driver way: a Deck
+or a Linux PC with a GPU must.
+
+### Video memory over a long session: free space stranded in VMA's blocks (2026-11-16)
+
+The grown-up tours' slowest stops (castle grounds 43 fps with 21.75 ms of GPU work a frame, the mountain trail 48,
+the wasteland 55) came at the end of ten-map runs. From a fresh start with one warp the castle grounds run 138 fps
+(GPU 5-7 ms, 5.18 ms of drained pass marks) and the trail 119 fps (6.4-6.9 ms). Over a tour VMA's device-local
+blocks grew from 5.9 to 8.6 GiB while the allocations in them stayed between 5.7 and 7.1 GiB: the free space inside
+blocks went from 0.2 to 1.8 GiB. A block goes back to the system only when nothing is left in it, and the driver
+counts the whole block against the process. The driver's count reached the budget Windows gives the game (10.4 GiB
+on a 12 GiB card with the desktop and other programs), and past it Windows moves images out of video memory: the
+GPU time of a frame doubles or triples.
+
+What held the stranded space (VMA's detailed map at the end of the tour, main device-local type): 14 blocks under a
+tenth full (896 MiB, 854 MiB free) held by 119 sub-allocated textures (37 MiB) and 73 small buffers (4 MiB); blocks a
+quarter to half full held 546 textures and 150 buffers. The textures are the CPU-filled ones of 2 MiB or less
+(create_tex sub-allocates them; larger ones and render targets have dedicated memory already). The buffers are the
+VRAM mirrors of the game's small pools.
+
+What was tried (all behind settings, off by default). Sub-allocated textures in VMA pools of their own
+(vk_texture.c tex_pool_for, REKARINA_TEX_POOL=1), apart from the buffers, so that a block of textures can empty; and
+a compaction (vk_texture.c compact_step, REKARINA_VRAM_COMPACT=1) that moves the textures of the emptiest blocks: a
+new image made with the create info of the old one at a free place of another block of the same pool
+(NEVER_ALLOCATE), its texels copied on the GPU in the upload batch, the old image's views and pool slots dropped
+(vk_exec_image_gone) and the old image and memory deferred past every value handed out, plus the eviction hold. In a
+ten-map tour it moved 1,280 textures (455 MiB) and the free space inside blocks did not fall (it sits in VMA's default
+pools, the mirrors' and the non-dedicated images' blocks, where the compaction does not reach), and at the ninth
+stop the device was lost: a shader read inside a texture block freed 21 s before, the eviction class of the night of
+2026-11-15/16, with the live check silent. It did not repeat: a second ten-map tour and four runs of a stress mode
+that moves 16 textures every frame (REKARINA_COMPACT_STRESS, about 820,000 moves) ran clean, with checks for an image
+or view handed to the deferral twice and for the view cache used without the texture lock. The compaction stays off.
+
+The live check's one finding in those runs, a destroyed view handed to slot 258 (the predecessor saw the same in an
+empty-cache tour), was its own false positive: the slot is a 4x4 fill-in texture whose binding takes a colour
+stand-in made during play (vk_exec_draw.c colour_dummy), and make_dummy did not announce the stand-in's handles, one of
+which had been a destroyed view's.
+REKARINA_MIRROR_OWN_MB gives mirrors from a size up memory of their own (a test setting).
+
+Instruments: the perf trace's "mem: vram frame N by memory type" line (free space inside blocks per memory type, how
+many pieces, the largest) and "vk: compaction" lines; scratch tourvram.py turns a tour log into a table per stop
+(fps, GPU ms, driver MiB of budget, blocks, allocations, free).
+
+The cause of the collapse itself was found by 22-map tours (2026-11-16, warps every 25 s, grown-up, ending at the
+castle grounds; fresh start there 138 fps, GPU 5-7 ms): with the release defaults the last stop ran 23 fps with 41 ms
+of GPU work a frame and the driver's count 250 MiB over the budget; with REKARINA_EVICT_HOLD_MS=0 it ran 97 fps with
+7.8 ms, the count under the budget at 21 of 22 stops. The 8 s hold of what eviction and the pressure drops destroy
+(added the night before against two device losses whose cause was not found) kept the maps left behind in video memory
+while the next ones loaded. The hold is off by default now; the device-loss class it was against did not show in that
+tour, nor in ~820,000 texture moves without it. The pools of their own and the mirrors' own memory did not help the
+tour (its end was 15.7 fps) and stay off.
+
+## 2026-11-16: the texture stream (`REKARINA_TEX_STREAM`, off until measured)
+
+Why. A texture's first use (the pool set's update or a draw's binding, on the replay thread, or a chunk thread
+holding the texture lock) hashed its storage (adopt_released and the texture cache key by the hash), read its cache
+file from the disk or deswizzled its bytes into staging memory, all inside the frame that needed it. With the cache
+prepared at install the field had frames of 300 ms of "texture upload" and one of 2.35 s, worse than decoding on a fast
+GPU; with an empty cache the same frames carried the deswizzle and the GPU's ASTC decode. The old upload-ahead worker
+(`REKARINA_TEX_PREP`) did the whole upload on its own thread, entries and command buffers included, and lost the device
+once in six runs.
+
+Design (`runtime/vk_texture.c`, "the texture stream"). Worker threads (3) take a job per texture storage (address and
+size) and never touch an entry, an image or a command buffer: they take the page generation, copy the bytes the
+storage shares with its neighbours in its first and last page, hash the storage, and then read the cache file the
+upload would read (named by that hash and the descriptor's shape) or stage the bytes the upload would copy (every
+region deswizzled at the upload's offsets; an ASTC texture's raw blocks for the GPU decode). adopt_released and upload
+take the results where they computed them: the hash, then one recorded copy (or the decode) from the job's buffer. A
+result is used only while the storage still holds what it was made from: no page wholly inside it written since the
+generation, and the shared edge bytes as copied (the page check alone threw away a third of the field's results: the
+game loads the next texture into the shared page). A file or staging of another name, size or descriptor is not taken.
+So a job can save work and never change a texel.
+
+Not ready at the first use: a job a worker is running is waited for (`TS_WAIT`, at most
+`REKARINA_TEX_STREAM_WAIT_MS`, default 250, then the replay does the work as before); a job still queued is taken back
+and done as before (`TS_MISS`). The pool update leaves a slot that shows the stand-in, and whose job is in flight, for a
+later update, at most 30 frames after the ask (`TS_DEFER`); slots over the update's budget wait the same way today.
+Reads of the game's memory happen under a shared lock that `vk_texture_range_gone` takes exclusively once the pool
+left the index, so no read outlasts the memory. Staging held by results is capped (`REKARINA_TEX_STREAM_MB`, 512).
+
+When to ask. At `nvnTextureInitialize` the lead is long (10 ms to 2 s) but three in four textures the game initializes
+in the field and the Market are not used within 300 frames (25,604 asks in 70 s, 5,587 hashes taken, the staging cap
+full): the ask is made when the game registers the texture in its pool (vk_backend.c, on the game's thread, before
+the registration is queued for the replay), and a storage whose result was taken is not asked again while it lies in
+the same pool. `REKARINA_TEX_STREAM_AT_INIT=1` asks at initialization instead. Repeats measured at initialization:
+603 of 25,604 asks were storage asked again after its job was done, 299 of them with the same bytes.
+
+Instrument. Sections `TS_HASH` and `TS_READ` time the replay thread's hashes and cache file reads (both arms),
+`TS_WAIT` its waits for a worker, `TS_MISS` and `TS_DEFER` count textures not ready and slots left for later; a
+`perf` line every 60 frames counts the stream's asks, results, takes, stale results and staging held.
+`scratch` scorer: tsum.py (per stop: fps, 1 % low, frames over 25 ms, the replay thread's texture milliseconds).
+
+What the old path's runs showed (prepared cache, base 1440p): hashing on the replay thread is small (0.02 ms a frame);
+the cache file reads (0.22 ms a frame in the field, 184 ms summed over its 53 slow frames) and the pool update (0.66
+ms a frame, 360 ms over the slow frames) carry the cost, and the texture lock the chunk threads hold through such
+reads shows as the replay thread's `TEXREG_LOCK` (423 ms over the field's slow frames).
+
+What the stream's counters showed in the field and the Market (2026-11-16, before any of it was a gain):
+- The game registers 400 to 570 textures a second while the hero runs through the field (17,021 in 30 s). Six in ten
+  are textures its compaction just copied to a new address: adopt_released gives them the old image by the source's
+  hash, so a worker's hash and file read for them were wasted. The stream now makes no job for storage the newest
+  noted large copy filled (`moved_from`), keeps no bytes for storage whose hash a released entry or a parked image
+  carries (a hash set kept by the release list and the image cache), and drops the job of a texture registered again
+  while it is made already.
+- With those wasted jobs the staging cap (512 MiB) was full for thousands of jobs, whose files the replay then read
+  itself beside three workers reading the same disk: one run had the replay's file reads at 1.68 ms a frame in the
+  field against 0.43 on the old path. Comparisons on this machine today were also skewed by the order of the arms (the
+  first arm after the user's video work met a cold file cache) and by the machine itself (forest-side maps 72-97 fps
+  in old-path runs an hour apart); no arm pair so far can be quoted.
+- Reading the 11,938 prepared cache files once took 61 s (about 200 MB/s on an NVMe disk that reads far faster): the
+  first read of freshly written files is slow here, which is what made the replay's in-frame reads cost 300 ms in the
+  prepared-cache run of the morning. Later reads come from the system's file cache and cost 1-3 ms for a large
+  texture.
+- With an empty cache the replay's `TS_READ` (0.25 ms a frame in the field) was mostly opens of files that do not
+  exist yet; the worker now tells upload so.
+
+## 2026-11-16 afternoon: the late read of a destroyed image, image churn, what holds the long frames
+
+### The device loss of the afternoon (not closed)
+- Four faults on the installed release build (runtime of 10:16) in the other agent's tours, one on the test build under
+  system memory pressure: a shader (the fault's instruction pointer) read an address where an image had lain, 8.6 to
+  10.4 s after that image was destroyed. The image classes differ: a 640x360 depth target bound into a pool's memory,
+  an unlabelled 1 MiB image, an own-memory 1536x1536 BC7 texture with a dedicated allocation that lived ~35 ms (the
+  empty image a moved texture makes before it takes its released image: those come and go every few milliseconds).
+- On NVIDIA every image has an address mapping of its own (the binding report shows a dedicated allocation's image at
+  the allocation's address, a pool-bound image at an address no pool buffer covers); a read through it after the image
+  is destroyed faults once nothing else is mapped there.
+- Not reproduced on the test build: 0 in 14 runs over five arms (the budget capped, a forced 9.5 s replay stall at
+  every map change (`REKARINA_TEST_STALL`), the empty-cache child path with and without the hold, the released-age drop
+  off, the release folder's settings) nor on the installed build in 3 runs of the same path; two torture runs (drop age
+  30 frames, pressure line 40 %, budget 4 GiB, 15 stalls: 48,000 age drops, 19,000 pressure drops) found no recording
+  of a destroyed image at the live check's sites.
+- Mitigation shipped: `REKARINA_POOL_IMAGE_HOLD_MS` (30 s): an image bound into a pool's memory is kept, mapped, after
+  its texture goes, or until the pool's memory goes; it frees no memory when destroyed, so the hold costs none
+  (measured: no change in frame rate or video memory; 3,600-4,600 images held at most in play, the cap of 16,384 met in
+  a torture run). The live check counts a held image as destroyed, so a recording that takes one is reported.
+- The fault report (`REKARINA_FAULT_WHO=1`) also prints who destroyed the image (destroy_tex's caller as an offset, the
+  entry's state), who handed it to the deferral and what that waited for, and the texture pool's write history for it.
+
+### Image churn in steady play, and the pressure line
+- Standing in warm places the texture pool creates 4-6 images a frame (the field 6.0, the Market 4.1, the first dungeon
+  4.7): released textures dropped under video memory pressure (above 75 % of the budget, 32 every 8th submission) whose
+  slots are still registered are made again by the pool at once, and moved textures make an empty image before they take
+  their released one. The bursts of 32 are long frames of 25-36 ms (TP_OLD 13-16 ms with 32 uploads).
+- The pressure line at 85 % (`REKARINA_TEX_VRAM_PRESSURE=85`): the Market better, the village and the first dungeon
+  worse (base mode, one run each); the default stays 75 %. A test knob that keeps a dropped released texture of an
+  evictable class out of the pool, as eviction does (so the pool does not remake it), was measured and is not in this
+  runtime: the field and the village got worse in its run (stash "A fifth shift" in the working repository).
+- The two replay-next slices (chunk threads' texture checks at the join; the upload batch through the submitter) and
+  the texture stream, measured on the five places (base, warm, no instrument, one run each): frames over 25 ms a minute
+  summed over the five places 93.5 (slices) and 99.9 (slices + stream) against 91.2 without: not shown better, not in
+  this runtime.
+
+### What holds the long frames (sections, warm cache, base and DLSS)
+The replay thread, 16-22 ms in the long frames (the GPU 6.5-8.5 ms): the pool update (new slots' uploads and cache
+reads, old slots' remakes), the upload batch's submit behind the submitter's queue lock (UP_FLUSH, the replay off the
+processor), the texture lock (chunk threads' lookups), draw bindings. The first dungeon's DLSS-mode stutter is the same
+list plus an occasional 100-170 ms GPU-side wait near an arrival; nothing DLSS-specific on the frame thread.
+
+## The night of 2026-11-16/17: where the video memory goes, BC1 for opaque textures, what the driver keeps
+
+Measured on the RTX 5070 (12 GiB) at 2560x1440 in base mode with full textures, the prepared texture cache and the
+release candidate's folder, a 4-map tour (the forest, the field, the Market, the first dungeon) with `REKARINA_TRACE=perf`
+and `REKARINA_VMA_DUMP` (each allocation named by kind in VMA's map), and VK_EXT_memory_budget's count beside VMA's.
+
+### The census (MiB, before tonight's changes, the old budget)
+
+| | title | the forest after 2 min | after 4 maps |
+|---|---|---|---|
+| the driver's count for the process | 4,145 | 7,791 | 8,853 |
+| ASTC textures as BC3 | 1,517 | 2,206 | 2,801 |
+| textures as shipped (BC1-7, R16 ...) | 419 | 700 | 1,467 |
+| GPU-written with memory of their own | 571 | 729 | 656 |
+| mirrors | 62 | 722 | 878 |
+| physical pool and its twin | 305 | 610 | 610 |
+| free space inside VMA's blocks | 62 | 618 | 717 |
+| outside VMA (the driver's own) | 1,200 | 2,098 | 1,614 |
+
+- The start's share outside VMA is pipelines: 978 MiB after the entry step (8,601 graphics, 683 mesh and ~930 compute
+  records, ~0.1 MiB a pipeline) and +212-290 MiB after the library prebuild, which built all 4,191 compute shaders on a
+  card with a budget of 8 GiB or more. Now it builds the ones a dispatch has used (`REKARINA_CS_KEEP=all` for the old
+  way): the title screen 4,145 -> 3,936 MiB, the process's memory after the prebuild 5.4 -> 4.1 GB.
+- A destroyed pipeline's device memory stays in the driver's count but is used again for the next pipelines made: a
+  standalone test (compute pipelines of one shader made distinct by a constant, no pipeline cache object) gave +34.2 MiB
+  for 1,500, still +34.2 after destroying them and after making 1,500 others; 300 / 300 others / 600 others gave
+  +10.2 / +10.2 / +18.2. So pipelines built per map and destroyed at the next loading screen would hold the count at
+  the largest set alive at once, not at the union of every map visited.
+- Freeing memory gives it back at once (a standalone test frees dedicated images after GPU copies: the count returns to
+  the byte). What the driver does keep: ~0.25 MiB for every DEPTH image alive (any depth format, sampled or not, bound or
+  not; colour images, views, binding into a shared block and first use as an attachment cost nothing), and it keeps the
+  high-water mark when they go. In the forest the outside count rose by +0.8-1.0 GiB in two minutes, also with eviction
+  off, in steps exactly where the game makes new pool-bound images (up to 250 depth images in 60 frames, each at a new
+  address, so each a new VkImage), and plan A's village reached 2.7 GiB outside VMA. The images live on after their
+  texture goes because every image bound into pool memory is held 30 s (`vk_mem_pool_image_hold`, the device-loss
+  mitigation): 6,144 held at most in a 110 s forest run, 8,704 in plan A, about half of them depth. Holding colour
+  images costs nothing; the held depth images are the growth. Two minutes of the forest, outside VMA mean / max:
+  1,718 / 2,131 MiB with the hold, 1,237 / 1,301 with `REKARINA_POOL_IMAGE_HOLD_MS=0`; capping the released depth
+  entries does nothing while the hold keeps them (1,620 / 2,012); depth targets in memory of their own
+  (`REKARINA_DEPTH_ALIAS=0`) remove the hidden part but cost 1.2 GiB more of real memory. So a shorter hold for depth
+  images (colour ones can stay held) is the lever, weighed against the late reads the hold catches.
+- Depth images are now held 500 ms (`REKARINA_POOL_IMAGE_HOLD_DEPTH_MS`; colour images keep the 30 s of
+  `REKARINA_POOL_IMAGE_HOLD_MS`). Plan A (eight maps), one run of each, none with a lost device: outside VMA grew
+  +963 MiB over the run with the 30 s hold (driver max 8,426 MiB, 4,687 depth images held at most), +343 with no hold
+  (8,009), +409 with 5 s for all (8,061), +207 with depth images held 500 ms (7,986, at most 249 held). A 22-map tour
+  with the 500 ms depth hold: no lost device, outside VMA 1,072-1,211 MiB at every stop (+139 over the tour), driver max
+  8,272 under a budget of 8,855; its five dark frames were the camera behind foliage, a post or the water's surface.
+- Eviction of small textures (sub-allocated, <= 2 MiB) does not lower the count unless their block empties: in the
+  forest eviction removed 811 MiB of allocations while the count rose (+619 MiB of holes, +358 outside VMA).
+- Blocks of 16 MiB instead of 64 (now the default; `REKARINA_VMA_BLOCK_MB`): 200-390 MiB less free space inside blocks
+  late in a tour, no frame-time cost shown in two pairs.
+- About 95 % of a map's texture bytes go within a minute of the next map's arrival, but the few that stay and the
+  mirrors sit in nearly every block (at the dungeon's end 800 MiB free inside 45 blocks, the Market's last 101 MiB of
+  textures in 43 of them, mirrors in 44). `REKARINA_TEX_GEN_POOLS=1` (off) puts small textures in pools by map
+  generation, apart from the mirrors, for a bulk drop at loading screens. Without such a drop it is worse (a 4-map
+  tour's end: 1,274 MiB free inside blocks against 495, the driver's count +0.87 GiB), and the loading-screen cleaning
+  it was written for was not taken (it made arrivals longer), so it stays off.
+- The mirrors are buffer pools: a census line every 600 frames over the same tour (an instrument, not kept) found under
+  1 MiB of live textures' storage inside 667-1,114 MiB of mirrors in play (428-769 small pools with flags 0x24, 263-695
+  MiB; 5-21 with 0x22, 92-112 MiB; the title's 62 MiB held 10). A mirror that left texture storage out would gain nothing.
+
+### The same tour after tonight's changes (MiB, averages over windows, one run each)
+
+Windows: the title = frames 1200-1800; the forest = one to two minutes after its second warp; the end = the last 3,000
+frames (the first dungeon). Before: 7fc787f's rules with the old budget. After: compute pipelines by use, BC1, 16 MiB
+blocks and the 500 ms depth hold, with the budget that leaves other programs their share (8.85 GiB that night).
+
+| | title | the forest | the end |
+|---|---|---|---|
+| the driver's count, before | 4,356 | 8,524 | 9,388 |
+| the driver's count, after | 3,771 | 7,068 | 7,562 |
+| outside VMA, before / after | 1,202 / 988 | 2,018 / 1,222 | 1,806 / 1,159 |
+| free inside blocks, before / after | 64 / 20 | 190 / 89 | 971 / 498 |
+| ASTC textures, before / after | 1,514 / 1,263 | 2,850 / 2,405 | 2,697 / 2,259 |
+
+In play the textures take what the budget leaves, so the forest's and the end's counts also follow the budget; the title,
+the part outside VMA and the free space inside blocks are what the changes alone move. With the cuts and the old budget
+(no depth hold yet): 3,865 / 8,372 / 8,910.
+
+### BC1 for opaque ASTC textures
+
+Of the prepared cache's 13.3 GiB of BC3 blocks, 3.9 GiB (29 %) are textures whose every alpha half is the opaque
+pattern the encoder writes; the colour half is a BC1 block in its four-colour order, so such a texture is BC1 with the
+same texels at half the memory (85.7 million texel comparisons of 80 cache files: no difference on the RTX 5070 or the
+Radeon iGPU). The cache keeps them as `.bc1` (play and the setup's preparation write them; an older cache's `.bc3` files
+load as before), and a texture whose storage hashes to a `.bc1` key gets a BC1 image, filled only from its file: other
+bytes written into its storage refill it from their own `.bc1` file or make it again as BC3 (`bc1_redo`).
+`REKARINA_TEX_BC1=0` turns it off. Normal maps (57 % of the cache) keep their second channel in alpha and stay BC3.
+
+## The start and the arrivals, 2026-11-17 (`REKARINA_UPFRONT`, on)
+
+The user's report on 1.2.0: 10-20 s of 10-17 fps from the start, and the overlay showed one thread at work (the
+replay's "frame prep" 39-50 ms a frame with 16-22 texture uploads) while the GPU idled at 10 % and the CPU at 19 %. In
+their logs the first minute had 213 frames over 25 ms, 101 over 50 and 23 over 100.
+
+What it was, measured with a copy of their profile in a copy of their 1.2.0 folder (prepared texture cache as hard
+links; scratch scripts `k/pstart.sh`, `k/cold.sh`, `k/score.py`, `k/secs.py`), launch to the title, 60 s:
+- Not a commit of the runtime: the 1.1.0 runtime with the prepared cache behaved as the current one with the village
+  save. It is the setup's prepared texture cache (14,646 files, 14 GiB): each texture's first use opened and read its
+  file on the replay thread, under the texture lock, 0.7 ms a file from the file cache and 5.3 ms on a cold one (the
+  virus scanner's first look at a file; the disk is an NVMe). The start's read of the whole folder into the file cache
+  ran beside it for 52-79 s and fought for the same scanner. Without the files (every texture GPU-decoded, as 1.1.0
+  started) the same start had 21 / 9 / 3 frames over 25 / 50 / 100 ms.
+- Where: the long frames are in the opening that follows the logos (a live 3D scene the arrival rule does not count as
+  a scene: fewer than 24 first draw lookups a submission), not on the title menu: the game registers ~900 textures in
+  one frame there. The pool's update checked its budget every 16th slot: 16 slots of 2-5 ms held the lock 30-90 ms
+  where the budget said 4 or 8, and the game's registering threads waited on it (TEXREG_LOCK 6 s in a cold start).
+- The texture stream (2026-11-16, off) did not help as it stood: it made no job for storage a large copy had filled
+  ("moved storage", meant for the Market's compaction), and the game loads every texture by such a copy from its file
+  buffer, so the start's textures had no job at all (TS_READ with no TS_MISS).
+
+The design (`REKARINA_UPFRONT=0` brings back all of the old behaviour on the same exe):
+1. Worker threads do a texture's heavy part, from the moment the game registers it: the texture stream on by default,
+   a third of the logical processors (2-6), a job for every freshly loaded texture (moved storage skips the job only
+   when the copy's source is a texture adopt_released will find). The replay thread records a copy.
+2. Whatever is not ready is waited for out of sight (`runtime/vk_arrive.c`): the frames that begin a scene after a
+   loading screen, and those of a burst of new textures while no scene is drawn (the opening fades in from black), are
+   made, not shown, unpaced and at the shortest game step; the pool's slots wait for their jobs and resolve with a 40 ms
+   budget; the hold ends after 4 calm frames or 2.5 s. The frame-time summaries leave held frames out and the hold's
+   log line says how long the last picture stayed up.
+3. The pool update looks at its budget after every slot.
+4. The start's warm read of the cache folder waits for the first scene shown and runs at background I/O priority.
+
+Before / after (first 60 s, frames over 25 / 50 / 100 ms; one run each unless said):
+| case | b775624 | upfront |
+|---|---|---|
+| user's save, warm file cache | 151 / 75 / 35 and 29 / 9 / 3 (2 runs) | 10 / 2 / 1 and 12 / 3 / 2 (2 runs) |
+| user's save, cold file cache | 66 / 22 / 9 | 18 / 2 / 1 |
+| the same exe, `REKARINA_UPFRONT=0`, warm | | 27 / 6 / 1 |
+The hold at the opening lasted 0.05-0.96 s warm and 0.80 s cold (1,068-1,121 textures made in it). What is left: frame 2
+(the boot's first 282 textures), two game-side frames of 85-108 ms around frames 310 and 420 (replay under 10 ms: the
+game's own boot work), a few 25-35 ms frames.

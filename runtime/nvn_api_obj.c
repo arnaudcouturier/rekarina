@@ -13,8 +13,10 @@
 
 #include "cfg.h"   // DEBUG-PRESENT-FINISH
 #include "gfx.h"
+#include "frame_start.h"
 #include "ftrace.h"
 #include "host.h"
+#include "pacelog.h"   // DEBUG-PACELOG
 #include "nvn_api.h"
 #include "nvn_hmap.h"
 #include "nvn_tex.h"
@@ -213,12 +215,39 @@ NVN_API(nvnTextureBuilderGetPackagedTextureData) { ret_x(c, (uintptr_t)TB(c)->pk
 static uint64_t storage_class(const nvn_texdesc *d) { return d->target == NVN_TEXTURE_TARGET_BUFFER ? 0 : 1; }
 NVN_API(nvnTextureBuilderGetStorageClass) { ret_x(c, storage_class(&TB(c)->d)); }
 NVN_API(nvnTextureBuilderGetFlags) { ret_x(c, (uint32_t)TB(c)->d.flags); }
+// The storage a square depth target asks for is that of the next side on a ladder of 128, 192, 256, 384, 512, 768,
+// 1024, ... (REKARINA_DEPTH_SQUARE_PAD, on by default; 0: its exact size). The game sizes its square shadow targets to
+// what they cover, a new side nearly every frame while the hero walks or the camera turns (76-97, 384-650, 1390-1398
+// pixels), and places its transient render targets one after another in a heap by the sizes it is told; so a re-sized
+// square moved every target placed after it, and a target at a new address is a new image bound there (vk_texture.c
+// entry_of: 14 images a frame while walking in the village against 1 standing, ~0.7 ms of the replay's frame and its
+// longest frames). With the padded size the targets after a square keep their addresses while its side stays on one
+// step of the ladder. Larger storage than the exact need is what a driver may report anyway; the texture's own layout
+// (nvnTextureGetStorageSize, the image) stays exact.
+static int depth_square_pad_on(void) {
+    static int on = -1;
+    if (on < 0) on = rt_knob("DEPTH_SQUARE_PAD", "1");
+    return on;
+}
+static uint64_t storage_size(const nvn_texdesc *d, uint64_t exact) {
+    if (!depth_square_pad_on() || d->target != NVN_TEXTURE_TARGET_2D || d->width != d->height || d->width < 2 ||
+        d->levels > 1 || d->samples > 1 || d->pkg_block_h || !(d->flags & NVN_TEXTURE_FLAGS_COMPRESSIBLE) ||
+        d->format < 0x32 || d->format > 0x36)   // the depth formats
+        return exact;
+    uint32_t side = 128;
+    while (side < d->width) side = (side & (side - 1)) ? side / 3 * 4 : side / 2 * 3;   // 128 192 256 384 512 768 ...
+    nvn_texdesc p = *d;
+    p.width = p.height = side;
+    nvn_texlayout L;
+    nvn_tex_layout(&p, &L);
+    return L.size > exact ? L.size : exact;
+}
 // size_t nvnTextureBuilderGetStorageSize(const NVNtextureBuilder *b)
 NVN_API(nvnTextureBuilderGetStorageSize) {
     nvn_texlayout L;
     nvn_tex_layout(&TB(c)->d, &L);
     if (!L.bpb) rt_log("nvn: TextureBuilderGetStorageSize: unknown format %#x", TB(c)->d.format);
-    ret_x(c, L.size);
+    ret_x(c, storage_size(&TB(c)->d, L.size));
 }
 // size_t nvnTextureBuilderGetStorageAlignment(const NVNtextureBuilder *b)
 NVN_API(nvnTextureBuilderGetStorageAlignment) {
@@ -779,13 +808,17 @@ NVN_API(nvnWindowAcquireTexture) {
     *out = idx;
     FT(FT_ACQ0, c->x[30], idx, o->active);
     uint64_t ft_fence = 0, ft_waited = 0;
-    uint64_t at = idx < 4 ? o->avail[idx] : 0;
+    uint64_t at = idx < 4 ? o->avail[idx] : 0, fs_w0 = kern_now_ns(), fs_w = 0;   // fs_w: the waits (frame_start.c)
     if (at) {
         uint64_t p0 = perf_begin();
         sleep_until(at);
         perf_end(PERF_PACE, p0);
+        fs_w = kern_now_ns() - fs_w0;
     }
     if (gfx_backend()->frame_start) gfx_backend()->frame_start();   // the frame's work starts here
+    uint64_t fs_frame = __atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED) + 1;   // the frame the game starts now
+    if (__builtin_expect(pacelog_on(), 0))   // DEBUG-PACELOG
+        pacelog_mark(PL_ACQ, fs_frame, kern_now_ns());
     // The sync means "the display no longer reads this image". On the console that is when the present after the
     // image's last one is on screen, and the display flips only once the GPU has finished the frame it shows: a game
     // that waits for the sync (nvnSyncWait) cannot run more than its swap chain ahead of the GPU. OoT
@@ -808,7 +841,9 @@ NVN_API(nvnWindowAcquireTexture) {
             if (block && gb->fence_done() < s->fence) {
                 uint64_t p0 = perf_begin();
                 ft_waited = 1;
+                uint64_t w0 = kern_now_ns();
                 gb->fence_wait(s->fence, UINT64_MAX);
+                fs_w += kern_now_ns() - w0;
                 perf_end(PERF_PACE, p0);
             }
         } else {
@@ -817,6 +852,7 @@ NVN_API(nvnWindowAcquireTexture) {
         }
     }
     FT(FT_ACQ1, idx, ft_fence, ft_waited);
+    frame_start_acquire(fs_w, fs_frame);   // frame_start.c: the main thread's frame ends here, its waits begin
     ret_x(c, NVN_WINDOW_ACQUIRE_TEXTURE_RESULT_SUCCESS);
 }
 
@@ -837,6 +873,7 @@ NVN_API(nvnQueuePresentTexture) {
         romfs_prompts_live();
     }
     NVN_BLOCKING();
+    frame_start_present();   // frame_start.c: the presenting thread
     if (o->magic != NVN_WIN_MAGIC || idx < 0 || idx >= o->ntex || idx >= 4 || !o->tex[idx])
         rt_fatal("nvn: QueuePresentTexture of image %d on window %p", idx, (void *)o);
     o->presents++;
@@ -859,7 +896,11 @@ NVN_API(nvnQueuePresentTexture) {
                    (unsigned long long)vk_listlog_hash(), vk_listlog_ms());
     }
     const tex_t *t = (const tex_t *)o->tex[idx];
-    uint64_t period = present_period(o), now = kern_now_ns();
+    // vk_arrive.c: a scene's first frame after a loading screen and those after it may be held unshown while their
+    // textures are made; a held frame is not paced (period 0 also restarts the pacer's phase for the frame after)
+    int gfx_arrive_hold_next(void);
+    int held = gfx_arrive_hold_next();
+    uint64_t period = held ? 0 : present_period(o), now = kern_now_ns();
     uint64_t slot = now + pace(&o->pace, now, period);
     int crop[4] = {o->crop[0], o->crop[1], o->crop[2], o->crop[3]};
 #ifdef GAME_NS2
@@ -878,6 +919,7 @@ NVN_API(nvnQueuePresentTexture) {
         }
     }
 #endif
+    if (__builtin_expect(pacelog_on(), 0)) pacelog_mark(PL_CALL, __atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED) + 1, now);   // DEBUG-PACELOG
     gfx_backend()->present(t, crop, slot);
     o->pfence[o->presents % 8] = nvn_fence_last();   // the acquire sync of the image this present releases
     {   // The present waits for the GPU (OoT). The game reads GPU results of the frame it just presented
@@ -934,10 +976,16 @@ NVN_API(nvnQueuePresentTexture) {
                 uint64_t f = ps >= 100 ? (last > (uint64_t)(ps - 100) ? last - (uint64_t)(ps - 100) : 0)
                                        : back[(o->presents + 8 - (uint64_t)ps) % 8];
                 FT(FT_PRSW, f, b->fence_done(), 0);
+                uint64_t psync = 0;
                 if (f && (b->results_done ? b->results_done() : b->fence_done()) < f) {   // the frame's results (vk_sync.c)
+                    uint64_t w0 = kern_now_ns();
                     if (b->results_wait) b->results_wait(f, UINT64_MAX);
                     else b->fence_wait(f, UINT64_MAX);
+                    psync = kern_now_ns() - w0;
+                    if (__builtin_expect(pacelog_on(), 0))   // DEBUG-PACELOG: the present sync's wait for the GPU
+                        pacelog_dur(PLD_PSYNC, __atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED), psync);
                 }
+                frame_start_present_wait(psync);   // frame_start.c: the hold never exceeds what the presenting thread waits for the GPU
                 if (f && b->results_seen) b->results_seen(f);
                 waited = f;
             } else {
@@ -949,7 +997,9 @@ NVN_API(nvnQueuePresentTexture) {
     }
     o->ticket[idx] = o->presents;
     o->avail[idx] = slot + period;
+    if (__builtin_expect(pacelog_on(), 0)) pacelog_mark(PL_RET, __atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED), kern_now_ns());   // DEBUG-PACELOG
     frame_step_present(slot, o->interval);   // frame_rate.c: the real-time step follows the display times
+    if (__builtin_expect(pacelog_on(), 0)) pacelog_step(__atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED), frame_step_now());   // DEBUG-PACELOG
     rt_frame_presented(t, o->presents);
     FT(FT_PRS1, o->presents, 0, 0);
 }

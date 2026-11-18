@@ -1,5 +1,6 @@
 // Host input sampling (runtime/input.c, with input_win.c or input_sdl.c): SDL3 gamepad and the keyboard as one Switch npad.
 #pragma once
+#include <stddef.h>
 #include <stdint.h>
 
 // Bits of libnx HidNpadButton (A=0 B=1 X=2 Y=3 StickL=4 StickR=5 L=6 R=7 ZL=8 ZR=9 Plus=10 Minus=11 Left=12 Up=13 Right=14
@@ -49,6 +50,10 @@ int input_pad_layout(void);
 // deflection, before the dead zone: the menu shows it on the dead zone rows, so a drifting stick's resting value can be
 // read off. 0 (and both 0) without a connected gamepad. Any thread.
 int input_pad_stick_percent(double pct[2]);
+// The read gamepad's inputs by position (pd[PAD_*], input_map.h: PAD_COUNT entries), its six axes as SDL gives them (left
+// x, y, right x, y, left and right trigger; y grows downwards) and its name, for the menu's controller picture; 0 and
+// nothing written without a gamepad.
+int input_pad_snapshot(uint8_t *pd, int16_t ax[6], char *name, size_t n);
 // The label on a face button of the open gamepad (input_map.h PAD_SOUTH..PAD_NORTH, as SDL reports it); PAD_LABEL_NONE for another
 // button, an unknown label or no gamepad. Any thread.
 enum { PAD_LABEL_NONE, PAD_LABEL_A, PAD_LABEL_B, PAD_LABEL_X, PAD_LABEL_Y, PAD_LABEL_CROSS, PAD_LABEL_CIRCLE,

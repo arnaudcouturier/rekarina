@@ -18,26 +18,40 @@ and maintained with heavy use of LLM assistants unwelcome, and this one is.
 Ports on the server: 22 (the server's own SSH), 80 and 443 (Caddy), 2222 (git over SSH into Forgejo's port 22). Clone
 URLs show `ssh://git@git.rekarina.dev:2222/...` (`FORGEJO__server__SSH_PORT`).
 
-Requirements: a VPS with Ubuntu 24.04, 2 GB of memory and 20 GB of disk or more, a public IPv4 address, and a DNS record
+Requirements: a VPS with Debian 13 or Ubuntu 24.04, 2 GB of memory and 20 GB of disk or more, a public IPv4 address, and a DNS record
 `git.rekarina.dev` of type A pointing at it. The record is **DNS only** in Cloudflare (not proxied): Cloudflare's proxy
 passes neither SSH on 2222 nor Caddy's HTTP certificate challenge as set up here.
 
 ## Setting it up
 
-1. The VPS with Ubuntu 24.04 and the maintainer's SSH public key (the provider's panel takes it at installation).
+1. The VPS with the maintainer's SSH public key in root's `authorized_keys`.
 2. The DNS record `git` (type A, the server's IPv4, DNS only) in the `rekarina.dev` zone.
-3. On the server, as root:
+3. On the server, as root (the compose package is `docker-compose` on Debian 13 and `docker-compose-v2` on Ubuntu
+   24.04):
 
-       apt update && apt install -y docker.io docker-compose-v2
+       apt update && apt install -y docker.io docker-compose cron
        mkdir -p /root/forgejo/forgejo && chown 1000:1000 /root/forgejo/forgejo
 
-   Copy `docker-compose.yml`, `Caddyfile` and `backup.sh` into `/root/forgejo/`, then:
+   Copy `docker-compose.yml`, `Caddyfile` and `backup.sh` into `/root/forgejo/`. Beside them, on the server only, go
+   the server's own secret and the switch that closes Forgejo's first-run page from the start (a new host name shows
+   up in the certificate logs within minutes, and an open first-run page lets the first visitor become the
+   administrator):
 
-       cd /root/forgejo && chmod +x backup.sh && docker compose up -d
+       cd /root/forgejo && chmod +x backup.sh && umask 077
+       echo "FORGEJO_SECRET_KEY=$(docker run --rm codeberg.org/forgejo/forgejo:17 forgejo generate secret SECRET_KEY)" > .env
 
-4. https://git.rekarina.dev shows Forgejo's first-run page: SQLite is preset; set the administrator's name, e-mail and
-   password under "Administrator account settings" and install. Registration stays closed
-   (`FORGEJO__service__DISABLE_REGISTRATION`): accounts are made by the administrator.
+   and a `docker-compose.override.yml` that adds two lines to the `forgejo` service's `environment`:
+   `FORGEJO__security__INSTALL_LOCK=true` and `FORGEJO__security__SECRET_KEY=${FORGEJO_SECRET_KEY}`. Then:
+
+       docker compose up -d
+
+4. The administrator is made from the command line, with a one-time password that Forgejo asks to be changed at the
+   first sign-in:
+
+       docker exec -u git forgejo forgejo admin user create --admin --username <name> --email <address> \
+           --random-password --must-change-password > admin-first-password.txt
+
+   Registration stays closed (`FORGEJO__service__DISABLE_REGISTRATION`): accounts are made by the administrator.
 5. An organization `rekarina` with a repository `rekarina` (empty), and the maintainer's SSH key under the account's
    SSH keys.
 

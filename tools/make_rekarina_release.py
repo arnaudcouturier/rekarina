@@ -86,6 +86,21 @@ Terminal=false
 '''
 
 
+def profile_check(pgo):
+    """Warn when the execution profile was trained on other generated code than this tree makes (tools/pgo.py
+    code_identity: recomp/ and the headers the chunks inline): the functions whose C changed would build at -O2
+    without counts, silently."""
+    sys.path.insert(0, str(ROOT / 'tools'))
+    from pgo import code_identity
+    rec = pgo.with_suffix('.json')
+    record = json.loads(rec.read_text(encoding='utf-8')) if rec.is_file() else {}
+    now = code_identity()
+    if record.get('code') != now:
+        print(f'make_rekarina_release: warning: {pgo.name} was trained on generated code {record.get("code") or "unknown"}, '
+              f'this tree makes {now or "uncommitted changes"}: retrain (docs/building.md, "Profile-guided build")',
+              file=sys.stderr)
+
+
 def linux_release(base, out, appimage=None):
     """The Linux folder (see the module text), from the folder tools/make_release_linux.py made. 0 when complete."""
     need = [base / 'python' / 'bin' / 'python3', base / 'llvm' / 'bin' / 'clang', base / 'llvm' / 'sysroot',
@@ -314,6 +329,7 @@ def main():
             shutil.copy2(ROOT / name, out / name)
     pgo = ROOT / 'build' / 'pgo' / 'pgo-oot.profdata'
     if pgo.is_file():
+        profile_check(pgo)
         (out / 'data').mkdir(exist_ok=True)
         shutil.copy2(pgo, out / 'data' / pgo.name)
 

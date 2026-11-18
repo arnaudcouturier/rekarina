@@ -16,7 +16,10 @@
 #include "dispatch.h"
 
 // ---- logging and results
-void rt_log(const char *fmt, ...) __attribute__((format(printf, 1, 2)));   // "[host] <msg>\n" to the log, one write
+void rt_log(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
+// DEBUG-HEAPCHECK: where a growing array of the suspects lives now (perf.c heap_check names the one a broken heap
+// entry lies in or after). what: a string literal, the key.
+void rt_heap_note(const char *what, const void *p, size_t bytes);   // "[host] <msg>\n" to the log, one write
 // The log is stderr plus, in a game run whose stderr is not a file, logs\totk.log next to rekarina.exe (main.c log_open).
 // rt_logf and rt_log_raw write to both without the prefix and the newline: crash reports, fatal errors, guest output.
 void rt_logf(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
@@ -40,13 +43,18 @@ void perf_main_thread(void);                    // the calling thread is the gue
 // thread's waits (perf.c), plus a line every 60 frames of what the load registers and creates. A section is a clock read
 // at each end and two additions; off, sec_on (set once at start) is the only cost. The _T/_D/_P kinds split work by
 // what asked for the image: a render target or vk_texture_get, a draw's binding, the texture pool's update. SUB_*
-// partition vk_sync_submit, OP_* the ops inside it (REKARINA_SPIKE_MS also on), MB_* vk_mem_mirror_begin. The clock is the
-// CPU's cycle counter, so a section around a draw stays under 20 ns.
+// partition vk_sync_submit (SUB_OFFCPU, beside them: of the submission's wall time, what the replay thread spent not
+// running, preempted or blocked; PAR_RUN / PAR_SPIN, inside SUB_REST: the chunk join running left-over chunks itself /
+// waiting for the other threads' chunks; RL_*: the replay thread's waits for a lock another thread holds: the
+// texture lock, the upload lock, the pool lock), OP_* the ops inside it (REKARINA_SPIKE_MS also on), MB_* vk_mem_mirror_begin.
+// TS_* (vk_texture.c, "the texture stream"): the replay thread's storage hashes and texture cache file reads, its waits
+// for a stream worker, and the counts of textures not ready at their first use and of pool slots left for later.
+// The clock is the CPU's cycle counter, so a section around a draw stays under 20 ns.
 #define SEC_LIST(X) \
     X(SUB_TOTAL) X(SUB_LOCK) X(SUB_EV) X(SUB_USNAP) X(SUB_MIRB) X(SUB_MIRE) X(SUB_GMEM) X(SUB_TEX) X(SUB_REC) X(SUB_UPL) \
-    X(SUB_PRO) X(SUB_QUE) X(SUB_REST) \
+    X(SUB_PRO) X(SUB_QUE) X(SUB_REST) X(SUB_OFFCPU) X(PAR_RUN) X(PAR_SPIN) X(RL_TEX) X(RL_UPL) X(RL_POOL) \
     X(OP_DRAW) X(OP_DISPATCH) X(OP_CLEAR) X(OP_REPORT) X(OP_BARRIER) X(OP_PASS) X(OP_OTHER) \
-    X(BIND_RES) X(SET_DYN) X(SHADER_MISS) X(PIPE_MISS) X(SHADER_MESH) X(PIPE_MESH) X(SIM8_SHADER) X(SIM8_PIPE) \
+    X(BIND_RES) X(BIND_CS) X(SET_DYN) X(SHADER_MISS) X(PIPE_MISS) X(SHADER_MESH) X(PIPE_MESH) X(SIM8_SHADER) X(SIM8_PIPE) \
     X(TP_UPDATE) X(TP_RESOLVE) X(TP_VIEWS) X(TP_PUT) X(TP_SLOTS) X(TP_DESC) X(TP_BACKLOG) X(TP_ARRAY) X(TP_OLD) X(TP_NEW) \
     X(IC_CREATE_T) X(IC_CREATE_D) X(IC_CREATE_P) X(IC_BIND_ALIAS_T) X(IC_BIND_ALIAS_D) X(IC_BIND_ALIAS_P) \
     X(IC_BIND_SUB_T) X(IC_BIND_SUB_D) X(IC_BIND_SUB_P) X(IC_VMA_T) X(IC_VMA_D) X(IC_VMA_P) \
@@ -58,7 +66,8 @@ void perf_main_thread(void);                    // the calling thread is the gue
     X(MB_TOTAL) X(MB_AWB) X(MB_DEMOTE) X(MB_LOCKS) X(MB_SNAP) X(MB_FREEZE) X(FZ_QUERY) X(FZ_LOCK) X(FZ_STATE) X(FZ_PROTECT) \
     X(FZ_OK) X(FZ_REFUSED) \
     X(TEXREG) X(TEXREG_LOCK) X(VKALLOC_R) X(VKALLOC_O) X(MR_BUDGET) X(GPU_UPLOAD) X(GPU_PROLOGUE) \
-    X(PK_STATE) X(PK_BIND) X(PK_DRAW) X(PK_XFER) X(PK_BARRIER) X(PK_OTHER) X(ROW)
+    X(PK_STATE) X(PK_BIND) X(PK_DRAW) X(PK_XFER) X(PK_BARRIER) X(PK_OTHER) \
+    X(TS_HASH) X(TS_READ) X(TS_WAIT) X(TS_MISS) X(TS_DEFER) X(ROW)
 enum {
 #define SEC_X(n) SEC_##n,
     SEC_LIST(SEC_X)
@@ -73,12 +82,17 @@ uint64_t plat_now_ns(void);
 static inline uint64_t sec_clock(void) { return plat_now_ns(); }
 #endif
 void sec_add(int kind, uint64_t ticks);                      // any thread
-void sec_add_ns(int kind, uint64_t ns);                      // a duration from the ns clock
+void sec_add_ns(int kind, uint64_t ns);
+int sec_replay_thread(void);   // the calling thread replays (the render thread or the asynchronous replay's)                      // a duration from the ns clock
 void sec_count(int kind, int64_t n);                         // a count without a time
 void sec_peak(int kind, uint64_t v);                         // the largest value of this present (counts, e.g. the pool backlog)
 double sec_ticks_ms(uint64_t ticks);
 void sec_init(void);                                         // reads REKARINA_SECTIONS; repeat calls do nothing
 void sec_alloc_note(uint64_t size, uint32_t type, uint64_t ticks);   // VMA's vkAllocateMemory wrapper (vk_device.c)
+// The long-frame report (perf.c "Long frames"): running totals of what the back end did, taken per frame. Any thread.
+enum { LF_UP_BYTES, LF_ADOPT, LF_DROP, LF_EVICT, LF_EVICT_BYTES, LF_POOL_RES, LF_POOL_STANDIN, LF_N };
+void lf_count(int kind, int64_t n);
+int perf_scene_frames_ago(void);   // presents since a submission last drew a scene (weak: 0; vk_texture.c has it)
 extern _Thread_local int sec_thread_off;   // this thread's sections are not timed (the chunk threads of vk_exec.c)
 static inline uint64_t sec_begin(void) { return __builtin_expect(sec_on, 0) && !sec_thread_off ? sec_clock() : 0; }
 static inline void sec_end(int kind, uint64_t t0) { if (__builtin_expect(t0 != 0, 0)) sec_add(kind, sec_clock() - t0); }
@@ -88,11 +102,13 @@ static inline void sec_end(int kind, uint64_t t0) { if (__builtin_expect(t0 != 0
 // waited for their pending shader or pipeline instead of being skipped (vk_exec_draw.c prepare_draw). The rest feed only
 // the flight recorder (flight.c): graphics pipelines created on any thread, texture images created, images created at an
 // address where a live image of another descriptor already starts, write-backs done and skipped because the CPU
-// rewrote the storage after the GPU render (vk_texture.c vk_texture_write_back).
+// rewrote the storage after the GPU render (vk_texture.c vk_texture_write_back), mesh and geometry draws and compute
+// dispatches left out while their shader is translated or their pipeline built beside the replay (vk_exec_draw.c
+// left_out).
 enum { PERF_CNT_PIPE_ASYNC, PERF_CNT_PIPE_SKIP, PERF_CNT_TEX_UP, PERF_CNT_TEX_REUP, PERF_CNT_SHADER_SKIP,
        PERF_CNT_PIPE_WAIT, PERF_CNT_ONESHOT_WAIT, PERF_CNT_PIPE_BUILT, PERF_CNT_TEX_NEW, PERF_CNT_TEX_ALIAS,
        PERF_CNT_WB, PERF_CNT_WB_SKIP, PERF_CNT_COND_GPU, PERF_CNT_COND_UNKNOWN, PERF_CNT_COND_MEM_TRUE,
-       PERF_CNT_COND_MEM_FALSE, PERF_CNT_N };
+       PERF_CNT_COND_MEM_FALSE, PERF_CNT_MESH_SKIP, PERF_CNT_CS_SKIP, PERF_CNT_N };
 void perf_count(int kind);
 void perf_present(uint64_t frame);
 void perf_summary_flush(void);                  // prints the frame-time summary of the running period (exit); the 60 s lines come from perf_present
@@ -319,6 +335,12 @@ void kern_main_stack(uint64_t *base, uint64_t *size);      // the main thread's 
 void kern_run_on_guest_main(void (*fn)(Cpu *c));           // start the guest main host thread, run fn there, join
 int kern_core_away(void);                                  // give the virtual core up around a blocking host wait
 void kern_core_back(int *away);
+int kern_wait_off_core(void);                              // REKARINA_WAIT_OFF_CORE (on unless 0)
+// A host lock other threads may hold for milliseconds, from a guest thread that holds no other host lock: 1 when taken,
+// with every wait for it made without the virtual core; 0: take it the usual way (not on a core, the switch off, or
+// still busy after a few rounds). try_lock takes it (1) or fails at once; wait_free returns once it was free.
+int kern_lock_off_core(int (*try_lock)(void *), void (*wait_free)(void *), void *m);
+int kern_core_away_counted(void);                          // kern_core_away under REKARINA_WAIT_OFF_CORE, counted
 void kern_checkpoint(void);                                // preemption point, at every SVC and indirect call
 // A preempt request is pending for the thread (Cpu.thread): its RtThread starts with the flag (kernel.c).
 static inline int kern_preempt_pending(const void *thread) { return __atomic_load_n((const int *)thread, __ATOMIC_RELAXED); }
@@ -428,6 +450,7 @@ typedef struct { const char *exefs, *romfs, *profile; int boot; double seconds; 
 const RtConfig *rt_config(void);
 void rt_boot_event(const char *what, Cpu *c, const char *detail);   // checkpoint log; "nvn" ends --boot
 void rt_boot(void);                                        // boot.c
+void rt_boot_process_priority(int level);                  // the priority class rt_boot takes once the entry step is done
 // Modes of rekarina.exe. main.c has run mem_init and parsed the paths; each mode calls ldr_load itself if it needs the
 // modules, registers its host functions, then seals (hostfn_seal, or implicitly at the first rt_call). Return the
 // process exit code.
@@ -449,3 +472,4 @@ int probe_codec(const char *path);                         // ns2_codec.c (GAME_
                                                            // video decoder, as OoT's movie library calls it
 int vk_pipeline_prepare_shaders(void);                     // vk_pipeline.c: --prepare-shaders (tools/prepare_shaders.py)
 int vk_pipeline_warm_shaders(void);                        // vk_pipeline.c: --warm-shaders (tools/build_game.py)
+int tex_prepare_main(void);                                // tex_prepare.c: --prepare-textures (tools/oot_prepare_textures.py)

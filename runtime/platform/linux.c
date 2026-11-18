@@ -342,7 +342,12 @@ PlatFiber *plat_fiber_new(size_t stack, void (*fn)(void *arg), void *arg) {
     mprotect(m, 4096, PROT_NONE);
     f->stack = m, f->size = stack;
     uint64_t *top = (uint64_t *)(((uintptr_t)m + stack) & ~(uintptr_t)15);
-    uint64_t *sp = top - 10;   // fpu state (2 words), r15, r14, r13, r12, rbx, rbp, return address, padding
+    // fpu state (2 words), r15, r14, r13, r12, rbx, rbp, return address, padding. fiber_swap's `ret` into fiber_entry
+    // leaves rsp at &sp[9], which must be 16-aligned for its `call` (the System V ABI: rsp + 8 aligned at a function's
+    // first instruction). With 10 words it was 8 off, and the first SSE spill of an aligned slot inside fn faulted
+    // (a general protection fault, reported as a read of address 0 in libc): every Linux run stopped at the game's
+    // first SwitchToFiber (found in WSL, 2026-11-16).
+    uint64_t *sp = top - 11;
     sp[0] = 0x037f;            // x87 control word: the default
     sp[1] = 0x1f80;            // MXCSR: the default
     sp[2] = sp[3] = 0;         // r15, r14
@@ -350,7 +355,7 @@ PlatFiber *plat_fiber_new(size_t stack, void (*fn)(void *arg), void *arg) {
     sp[5] = (uint64_t)(uintptr_t)fn;    // r12
     sp[6] = sp[7] = 0;         // rbx, rbp
     sp[8] = (uint64_t)(uintptr_t)plat_fiber_entry;
-    sp[9] = 0;
+    sp[9] = sp[10] = 0;
     f->sp = sp;
     return f;
 }
@@ -404,6 +409,9 @@ uint64_t plat_thread_affinity(PlatThread *t, uint64_t mask) {
         if (CPU_ISSET(i, &old)) prev |= 1ull << i;
     return prev;
 }
+
+uint64_t plat_thread_cycles(void) { return 0; }   // the sections' off-CPU split is Windows only
+int plat_heap_check(uint64_t *at, uint64_t *n) { *at = 0, *n = 0; return 1; }   // DEBUG-HEAPCHECK: not checked here
 
 uint32_t plat_cpu_count(void) {
     long n = sysconf(_SC_NPROCESSORS_ONLN);
@@ -974,10 +982,24 @@ uint64_t plat_mem_written(uint64_t addr, uint64_t n, uint64_t *pages, uint64_t m
 // gets the default action. Runs on the thread's signal stack.
 static int (*fault_hook)(uint64_t addr);
 static void (*crash_fn)(const PlatCrash *c);
+// The access hook (plat_mem_access_hook): any SIGSEGV goes to it first, as the Windows build's vectored handler does:
+// memory.c result_fault opens a page it closed (the GPU result guard, shadow storage's write-back on demand) and says
+// so; a page it does not know goes on to the write-fault hook and the crash hook. kind as Windows gives it: 0 a read,
+// 1 a write, 8 an instruction fetch (the page-fault error code's bits 1 and 4); rva: the faulting instruction's offset
+// in this executable, ~0 outside it (the hook's own diagnostics).
+static int (*access_hook)(uint64_t addr, int kind, uint64_t rva);
+static uintptr_t exe_lo, exe_hi;
+extern char _end[];   // the end of this executable's image (GNU ld and lld both define it)
 
 static void fault_handler(int sig, siginfo_t *si, void *uc) {
     ucontext_t *u = uc;
     long err = u->uc_mcontext.gregs[REG_ERR];
+    if (sig == SIGSEGV && access_hook) {
+        uintptr_t ip = (uintptr_t)u->uc_mcontext.gregs[REG_RIP];
+        int kind = (err & 16) ? 8 : (err & 2) ? 1 : 0;
+        if (access_hook((uint64_t)(uintptr_t)si->si_addr, kind, ip >= exe_lo && ip < exe_hi ? (uint64_t)(ip - exe_lo) : ~0ull))
+            return;
+    }
     if (sig == SIGSEGV && fault_hook && (err & 2) && fault_hook((uint64_t)(uintptr_t)si->si_addr)) return;
     uintptr_t rip = (uintptr_t)u->uc_mcontext.gregs[REG_RIP];
     Dl_info at, self;
@@ -1012,7 +1034,11 @@ static void fault_install(void) {
     sigaction(SIGFPE, &sa, NULL);
 }
 
-void plat_mem_access_hook(int (*fn)(uint64_t addr, int kind, uint64_t rva)) { (void)fn; }   // not wired here
+void plat_mem_access_hook(int (*fn)(uint64_t addr, int kind, uint64_t rva)) {
+    exe_lo = plat_exe_base(), exe_hi = (uintptr_t)_end;
+    access_hook = fn;
+    fault_install();
+}
 
 void plat_mem_fault_hook(int (*fn)(uint64_t addr)) {
     fault_hook = fn;
@@ -1486,6 +1512,8 @@ static void reap_main(void *arg) {
 
 // xdg-open picks the desktop's file manager; it runs detached, so a slow answer does not hold up the caller, and a
 // thread of its own reaps it so it does not stay a zombie.
+int plat_message_box(const char *title, const char *text) { (void)title, (void)text; return 0; }
+
 int plat_open_folder(const char *path) {
     struct stat st;
     if (stat(path, &st) || !S_ISDIR(st.st_mode)) return 0;

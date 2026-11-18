@@ -10,6 +10,7 @@
 // The table is filled once by rt_dispatch_init and then made read-only, so any number of threads read it without
 // locks or per-thread caches. Host (HLE) functions at addresses outside the modules live in a small hash table that
 // is also fixed at init; they are looked up only after the flat table misses.
+#include "report.h"
 #include "dispatch.h"
 #include "host.h"
 #include "platform/platform.h"
@@ -24,13 +25,12 @@
 #define HOST_CAP 8192                   // host function registry, power of two
 #define MAX_MODULES 16
 
-// Hot data read by every rt_dispatch: one cache line.
-static struct __attribute__((aligned(64))) {
-    const uint32_t *slot;
-    uintptr_t anchor;
-    uint64_t lo;
-    uint64_t slots;
-} D;
+// Hot data read by every rt_dispatch: one cache line. Also read by rt_dispatch_call (cpu.h), the dispatch inlined at
+// each indirect call site of the lifted code; rt_dispatch_inline_on is 0 until the table is built, and with
+// REKARINA_DISPATCH_INLINE=0 (every site then calls rt_dispatch).
+RtDispatchTable rt_dispatch_table;
+#define D rt_dispatch_table
+int rt_dispatch_inline_on;
 
 static const RtModule *g_mods[MAX_MODULES];   // sorted by base
 static int g_nmods;
@@ -55,6 +55,7 @@ void rt_fatal(const char *fmt, ...) {
     kern_free_cores_note();
     fflush(stdout);
     fflush(stderr);
+    report_crash_notice();   // a fatal error ends the game as a crash does: the player is told what to send (report.c)
     _Exit(70);
 }
 
@@ -91,6 +92,17 @@ void rt_register_host(uint64_t addr, GuestFn fn) {
     g_host[h].addr = addr;
     g_host[h].fn = fn;
     g_nhost++;
+}
+
+// Lifted functions reached only through indirect branches that a host function takes the place of (rt_dispatch_replace).
+#define REPLACE_CAP 16
+static struct { uint64_t addr; GuestFn fn; } g_repl[REPLACE_CAP];
+static int g_nrepl;
+
+void rt_dispatch_replace(uint64_t addr, GuestFn fn) {
+    if (g_ready) rt_fatal("rt_dispatch_replace(%#llx) after rt_dispatch_init", (unsigned long long)addr);
+    if (!addr || (addr & 3) || !fn || g_nrepl >= REPLACE_CAP) rt_fatal("rt_dispatch_replace: bad entry %#llx", (unsigned long long)addr);
+    g_repl[g_nrepl].addr = addr, g_repl[g_nrepl].fn = fn, g_nrepl++;
 }
 
 static void *table_alloc(uint64_t bytes) {
@@ -138,6 +150,11 @@ void rt_dispatch_init(const RtModule *mods, int count) {
             if (m->addrs[m->count - 1] + 4 > hi) hi = m->addrs[m->count - 1] + 4;
         }
     }
+    for (int i = 0; i < g_nrepl; i++) {
+        uintptr_t f = (uintptr_t)g_repl[i].fn;
+        if (f < host_lo) host_lo = f;
+        if (f > host_hi) host_hi = f;
+    }
     if (hi <= lo) rt_fatal("dispatch: no functions in any module");
     if (hi - lo > TABLE_SPAN_LIMIT)
         rt_fatal("dispatch: modules span %#llx guest bytes, over the %#llx the flat table allows",
@@ -161,12 +178,22 @@ void rt_dispatch_init(const RtModule *mods, int count) {
             slot[(m->addrs[k] - lo) >> 2] = (uint32_t)((uintptr_t)m->fns[k] - anchor);
         g_functions += m->count;
     }
+    for (int i = 0; i < g_nrepl; i++) {   // only where a lifted function starts: the replacement stands in for it
+        uint64_t a = g_repl[i].addr;
+        if (a < lo || a >= hi || !slot[(a - lo) >> 2])
+            rt_fatal("dispatch: no lifted function starts at %#llx to replace", (unsigned long long)a);
+        slot[(a - lo) >> 2] = (uint32_t)((uintptr_t)g_repl[i].fn - anchor);
+    }
     table_seal(slot, bytes);
 
     g_table_bytes = bytes;
     D.slot = slot;
     D.anchor = anchor;
     D.lo = lo;
+    {   // REKARINA_DISPATCH_INLINE=0: the call sites' inlined dispatch is off (A/B)
+        const char *e = getenv("REKARINA_DISPATCH_INLINE");
+        rt_dispatch_inline_on = !(e && *e == '0');
+    }
     D.slots = slots;
     __atomic_store_n(&g_ready, true, __ATOMIC_RELEASE);
 }

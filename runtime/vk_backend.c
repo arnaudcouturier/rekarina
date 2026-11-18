@@ -26,6 +26,7 @@
 #include "ftrace.h"
 #include "gfx.h"
 #include "host.h"
+#include "pacelog.h"   // DEBUG-PACELOG
 #include "nvn_api.h"
 #include "vk.h"
 #include "vk_exec.h"
@@ -49,6 +50,22 @@ static void wait_until(uint64_t at) {
     while (kern_now_ns() < at) plat_yield();
 }
 
+// The GPU finished the blit of a presented frame: the frame clock's "shown" moment (perf.c perf_shown; the earliest the
+// display can show it) and the pacing log's.
+// A held present (nvn_api_obj.c hold_until, the frame limit) is flipped after its blit is done: the later of the two.
+void perf_shown(uint64_t frame, uint64_t ns);
+static uint64_t flip_at[16];   // present thread: when each of the last 16 frames was flipped
+static void frame_blit_done(void *arg) {
+    uint64_t now = kern_now_ns(), frame = (uint64_t)(uintptr_t)arg;
+    uint64_t g = gfx_blit_gpu_ns(frame);   // the GPU's own end of the blit; 0: unknown (REKARINA_FRAME_CLOCK=seen, no query)
+    uint64_t fl = __atomic_load_n(&flip_at[frame % 16], __ATOMIC_ACQUIRE);
+    perf_shown(frame, (g ? g : now) > fl ? (g ? g : now) : fl);
+    if (__builtin_expect(pacelog_on(), 0)) {   // DEBUG-PACELOG
+        pacelog_mark(PL_GPU, frame, now);
+        if (g) pacelog_mark(PL_GTS, frame, g);
+    }
+}
+
 static void present_main(void *arg) {
     (void)arg;
     uint64_t last = 0, last_queued = 0;
@@ -62,6 +79,7 @@ static void present_main(void *arg) {
         plat_mutex_unlock(&pl);
         if (flight_on) vk_thumbs_frame(j.frame);
         vk_dlssg_present_frame(j.frame);
+        gfx_blit_frame(j.frame);   // DEBUG-PACELOG: the blit's moments and GPU timestamp
         vk_present_blit(j.image, VK_IMAGE_LAYOUT_GENERAL, j.format, j.w, j.h, j.has_crop ? j.crop : NULL);
         uint64_t f = vk_sync_submit(NULL, 0);   // a timeline value after the blit: deferred destruction waits for the blit too
         if (j.value && f != j.value)
@@ -74,7 +92,11 @@ static void present_main(void *arg) {
         uint64_t t0 = kern_now_ns();
         wait_until(j.at);
         uint64_t t1 = kern_now_ns();
+        gfx_present_frame(j.frame);   // DEBUG-PRESENTTIMING: the present id
         vk_present_flip();
+        __atomic_store_n(&flip_at[j.frame % 16], kern_now_ns(), __ATOMIC_RELEASE);
+        if (__builtin_expect(pacelog_on(), 0)) pacelog_mark(PL_FLIP, j.frame, kern_now_ns());   // DEBUG-PACELOG: the host present
+        vk_completion_add(f, frame_blit_done, (void *)(uintptr_t)j.frame);   // the frame clock (perf.c)
         // REKARINA_TRACE=present: one line per present: the host present's interval, the interval of the game's present
         // calls (when the host present went out before back-edge pacing), the wait and how far past its target it went
         if (rt_trace & RT_TRACE_PRESENT)
@@ -129,6 +151,8 @@ static void present_image(const tex_t *t, const int crop[4], uint64_t at_ns, uin
         for (int i = 0; i < 4; i++) j.crop[i] = crop[i];
     }
     vk_upload_flush(0);   // an upload vk_texture_get just recorded goes before the blit
+    int vk_arrive_held(uint64_t frame);
+    if (!value && vk_arrive_held(frame)) return;   // vk_arrive.c: made, not shown (the display keeps the last picture)
     plat_mutex_lock(&pl);
     if (!present_thread) {
         if (!plat_thread_spawn(present_main, NULL, "vk present", 0)) rt_fatal("vk: cannot start the present thread");
@@ -487,6 +511,7 @@ static int vk_be_pool_map_virtual(pool_t *v, int n, const void *requests) {
 // they were recorded (the game rewrites much of its descriptor pool for the next frame while this one is replayed).
 static void vk_be_texture_register(int id, const tex_t *t, const view_t *v) {
     vk_sync_start();
+    vk_texture_stream_ask(t);   // ahead of the replay's first use (vk_texture.c, the texture stream; off by default)
     if (!gfx_replay_async()) {
         vk_texture_register(id, t, v);
         return;
@@ -516,7 +541,15 @@ static void vk_be_sampler_register(int id, const samp_par *s) {
 static void vk_be_texture_release(const tex_t *t) {
     vk_sync_start();
     if (!gfx_replay_async()) {
+        // A game thread (with its virtual core, no host lock held) that finds the present thread busy waits for it
+        // without the core, as for the texture lock (vk_texture.c lock_off_core): the blit's submission can wait for
+        // the submit lock behind a replay.
+        plat_mutex_lock(&pl);
+        int wait = pending || busy;
+        plat_mutex_unlock(&pl);
+        int away = wait ? kern_core_away_counted() : 0;
         vk_present_drain();
+        kern_core_back(&away);
         vk_texture_release(t);
         return;
     }
@@ -684,6 +717,9 @@ static void vk_be_guest_written(uint64_t addr, uint64_t size) { vk_sync_start();
 static void vk_be_guest_read(uint64_t addr, uint64_t size) {
     if (!vk_texture_cpu_stale(addr, size)) return;
     vk_sync_start();
+    // From here the read waits (the replay's writer, the present thread, the texture lock, the GPU's copy back): a game
+    // thread (memcpy, pool invalidate; no host lock held) waits without its virtual core, taken back at the end.
+    int away = kern_core_away_counted();
     if (gfx_replay_async()) {
         uint64_t f = vk_texture_dirty_fence(addr, size);
         plat_mutex_lock(&rl);
@@ -702,6 +738,7 @@ static void vk_be_guest_read(uint64_t addr, uint64_t size) {
     }
     vk_present_drain();
     vk_texture_write_back(addr, size);
+    kern_core_back(&away);
 }
 // After a fence wait: the value is done, so its replay is too; a later submission the replay records meanwhile marks
 // its targets with a later fence, which write_back_small leaves alone. No drain.

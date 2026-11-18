@@ -1,4 +1,4 @@
-// The update notice's request on Windows: GET https://api.github.com/repos/<owner>/<repo>/releases/latest through
+// The update notice's request on Windows: GET https://rekarina.dev/releases/latest.json (update_note.h) through
 // WinHTTP, loaded at run time so a system without it only loses the notice. Timeouts of five seconds each; the answer
 // is read up to 64 KiB (the release's notes may be long, tag_name comes first or early).
 #include <stdio.h>
@@ -60,7 +60,7 @@ int update_http_latest(char *out, size_t cap) {
     if (!QueryHeaders(req, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER, WINHTTP_HEADER_NAME_BY_INDEX, &status,
                       &len, WINHTTP_NO_HEADER_INDEX) ||
         status != 200) {
-        rt_log("update: GitHub answered %lu", (unsigned long)status);   // 404: no release yet; 403: rate limit
+        rt_log("update: the release feed answered %lu", (unsigned long)status);
         goto done;
     }
     enum { CAP = 64 * 1024 };

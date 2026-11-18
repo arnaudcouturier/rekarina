@@ -23,6 +23,7 @@ Chunks are sized from a per-instruction estimate of the C they produce, so their
 the input; a chunk whose text did not change is not rewritten and keeps its mtime.
 """
 import argparse
+import bisect
 import json
 import multiprocessing as mp
 import os
@@ -51,6 +52,7 @@ from module import Module  # noqa: E402
 TERMINATORS = ('b', 'br', 'ret', 'trap')
 SETJMP_NAMES = frozenset({'setjmp', '_setjmp', '__setjmp', 'sigsetjmp', '__sigsetjmp'})
 MUSTTAIL = '__attribute__((musttail)) return'
+FN_HOOKS = '7000585bd0'   # gen.py --fn-hooks default: runtime/resolution.c SET_RENDER_SIZE
 
 # Estimated bytes of C per instruction, by class, for chunking (estimate_sizes()).
 # Least squares over every function of main, subsdk0 and sdk (1.2.1) gives 62 / 75 / 48 bytes per instruction, 38
@@ -209,13 +211,26 @@ def partition(est, max_fns, max_bytes, big_fn):
 class Emitter:
     """C for the functions of one module. starts is the set of every function start of the module."""
 
-    def __init__(self, mod, starts, patched=None, reg_locals=regs.LOCALS, callee_saved=True, spins=None):
+    def __init__(self, mod, starts, patched=None, reg_locals=regs.LOCALS, callee_saved=True, spins=None, kept_uses=0,
+                 inline_leaves=0, temps_unsaved=False, fn_hooks=None):
         self.mod = mod
         self.starts = starts
         self.patched = patched or {}   # {address: [(set index, [replacement words])]} (recomp/patches.py)
         self.spins = spins or {}       # {spin wait back-edge: its head} (recomp/patches.py `spin`)
         self.reg_locals = reg_locals   # recomp/regs.py: registers per function in C locals
         self.kept = regs.CALLEE_SAVED if callee_saved else frozenset()   # not reloaded after a call
+        self.kept_uses = kept_uses     # recomp/regs.py plan: kept registers named this often are locals too (0: off)
+        # Direct calls of leaf functions up to this many instructions go to an always-inline copy in the caller's chunk
+        # (leaf(), chunk_text): 0, off.
+        self.inline_leaves = inline_leaves
+        self.temps_unsaved = temps_unsaved   # recomp/regs.py SPILL_CALL: X9-X15 not stored before a call
+        self.temps_memo = {}
+        # Functions whose entry calls the runtime's function-entry hook (cpu.h FN_ENTER, while g_fnprof is set):
+        # None, every function (the default; the diagnostic watch of runtime/prof_win.c needs it); else that set.
+        self.fn_hooks = fn_hooks
+        self.leaf_memo = {}
+        self.sorted_starts = None
+        self.clones = set()   # leaves the chunk being emitted calls through a copy
         self.uses_patches = False
         self.uses_setjmp = False
         # Calls to an imported setjmp: the caller saves a host jump point the guest longjmp comes back to
@@ -349,6 +364,132 @@ class Emitter:
             raise patches.PatchError(f'{a:#x}: a patched call that uses flags')
         return reads, alts[0][1]
 
+    def reads_temps(self, t, depth=0):
+        """Whether function t may read one of X9-X15 before it writes it (--temps-unsaved keeps storing them before a
+        call to such a function). AAPCS64 code never does; an outlined function or hand-written code might. Its own
+        body is walked over its control flow: a read of a temporary not yet written on that path counts, a call
+        clobbers them all (what the caller held there is gone), a jump to another function start passes them on (that
+        function is asked in turn), an indirect jump or a return ends the path. Unclear cases count as a read."""
+        memo = self.temps_memo
+        if t in memo:
+            return memo[t]
+        if depth > 8:
+            return True
+        memo[t] = False   # a recursive tail jump back to t adds nothing to what t reads
+        if self.sorted_starts is None:
+            self.sorted_starts = sorted(self.starts)
+        ss = self.sorted_starts
+        k = bisect.bisect_right(ss, t)
+        end = ss[k] if k < len(ss) else self.mod.hi
+        if end - t > 4 * 20000:
+            memo[t] = True
+            return True
+        insns = [self.mod.lift(a) for a in range(t, end, 4)]
+        n = len(insns)
+        temps = regs.TEMPS
+        unw = [None] * (n + 1)   # per instruction: temporaries not yet written on some path to it
+        unw[0] = set(temps)
+        work, read = [0], False
+        while work and not read:
+            i = work.pop()
+            u = set(unw[i])
+            if i == n:   # falls into the next function
+                read = bool(u) and (end >= self.mod.hi or self.reads_temps(end, depth + 1))
+                continue
+            ins, a = insns[i], t + 4 * i
+            k = ins.kind
+            if a in self.patched or k == 'trap':
+                read = True
+                break
+            text = (ins.code or '') + ' ' + (ins.cond or '' if k == 'bcond' else '')
+            if k == 'op' or k == 'bcond':
+                cnt = Counter(regs.refs(text))
+                w = regs.written(text) if k == 'op' else set()
+                if any(cnt[r] > (1 if r in w else 0) for r in u):
+                    read = True
+                    break
+                u -= w
+                nxt = [i + 1]
+                if k == 'bcond':
+                    if t <= ins.target < end:
+                        nxt.append((ins.target - t) // 4)
+                    elif u and (ins.target not in self.starts or self.reads_temps(ins.target, depth + 1)):
+                        read = True
+                        break
+            elif k in ('bl', 'blr'):
+                if k == 'blr' and any(r in u for r in regs.refs(ins.target if isinstance(ins.target, str) else '')):
+                    read = True
+                    break
+                # A call clobbers the temporaries. A callee that reads them gets them stored at t's call (the guard);
+                # that it would then read what t's own caller left there is AAPCS64-impossible and not followed.
+                u, nxt = set(), [i + 1]
+            elif k == 'b':
+                if t <= ins.target < end:
+                    nxt = [(ins.target - t) // 4]
+                else:
+                    if u and (ins.target not in self.starts or self.reads_temps(ins.target, depth + 1)):
+                        read = True
+                        break
+                    nxt = []
+            elif k == 'br':
+                tgt = ins.target if isinstance(ins.target, str) else ''
+                if any(r in u for r in regs.refs(tgt)):
+                    read = True
+                    break
+                jt = jumptables.resolve(self.mod, a, t, end)
+                if jt:   # a jump table inside the function: its targets
+                    if any(not t <= x < end for x in jt):
+                        read = True
+                        break
+                    nxt = [(x - t) // 4 for x in jt]
+                else:    # through a register: an import stub's or a virtual tail call (AAPCS64: no temporaries)
+                    nxt = []
+            elif k == 'ret':
+                nxt = []
+            else:
+                read = True
+                break
+            for j in nxt:
+                if unw[j] is None or not u <= unw[j]:
+                    unw[j] = (unw[j] or set()) | u
+                    work.append(j)
+        memo[t] = read
+        self.stats['temps_read_functions'] += read
+        return read
+
+    def fn_enter(self, entry):
+        """The function-entry hook line of entry: a load and a branch on every call, so only where it is wanted."""
+        return f'FN_ENTER({hx(entry)});' if self.fn_hooks is None or entry in self.fn_hooks else '/* no entry hook */'
+
+    def leaf(self, t):
+        """The end of function t when it is a leaf this chunk may copy (--inline-leaves): at most inline_leaves
+        instructions, only plain operations and branches inside itself, ending in a return: no call, no jump out, no
+        SVC or trap, no patched site. A copy behaves as the call it replaces (the caller syncs and reloads around it as
+        around a call), and clang can then inline it. None otherwise."""
+        if t in self.leaf_memo:
+            return self.leaf_memo[t]
+        if self.sorted_starts is None:
+            self.sorted_starts = sorted(self.starts)
+        ss = self.sorted_starts
+        k = bisect.bisect_right(ss, t)
+        end = ss[k] if k < len(ss) else self.mod.hi
+        ok = 0 < (end - t) // 4 <= self.inline_leaves and not any(a in self.patched for a in range(t, end, 4))
+        last = None
+        if ok:
+            for a in range(t, end, 4):
+                ins = self.mod.lift(a)
+                last = ins.kind
+                if last == 'op':
+                    ok = not regs.ESCAPE.search(ins.code or '')
+                elif last in ('b', 'bcond'):
+                    ok = t <= ins.target < end
+                else:
+                    ok = last == 'ret'
+                if not ok:
+                    break
+        self.leaf_memo[t] = end if ok and last == 'ret' else None
+        return self.leaf_memo[t]
+
     def function(self, entry, end):
         """(lines of C, referenced function starts) for the guest function [entry, end)."""
         mod, starts = self.mod, self.starts
@@ -363,6 +504,7 @@ class Emitter:
         # The same holds for registers in locals (recomp/regs.py): fb_<entry> keeps them in the Cpu too.
         local = not all_labels
         spill, reload, reload_call = (regs.SPILL, regs.RELOAD, regs.RELOAD_CALL) if local else ('', '', '')
+        spill_call = regs.SPILL_CALL if local and self.temps_unsaved else spill   # before a plain call only
         succ = self.flow(insns, entry, end, tables) if local else None
         fp = self.flag_plan(insns, entry, end, tables, succ) if local else None
         if fp and fp.used:
@@ -397,13 +539,13 @@ class Emitter:
             cases = ' '.join(f'case {hx(t)}: goto L_{t:x};' for t in range(entry, end, 4))
             redispatch = f'{MUSTTAIL} {fb}(c);'
             out = [f'static void {fb}(Cpu *c);',
-                   f'void {fname(entry)}(Cpu *c) {{', f'    FN_ENTER({hx(entry)});', f'    c->pc = {hx(entry)};',
+                   f'void {fname(entry)}(Cpu *c) {{', f'    {self.fn_enter(entry)}', f'    c->pc = {hx(entry)};',
                    f'    {redispatch}', '}',
                    f'static void {fb}(Cpu *c) {{', f'    switch (c->pc) {{ {cases} default: break; }}',
                    f'    {MUSTTAIL} rt_dispatch(c);']
         else:
             redispatch = f'{MUSTTAIL} rt_dispatch(c);'
-            out = [f'void {fname(entry)}(Cpu *c) {{', f'    FN_ENTER({hx(entry)});']
+            out = [f'void {fname(entry)}(Cpu *c) {{', f'    {self.fn_enter(entry)}']
             if fp.used:
                 out.append('    ' + fp.decl())
 
@@ -421,10 +563,17 @@ class Emitter:
                 if t in starts:
                     refs.add(t)
                 return (f'c->x[30] = {hx(a + 4)}; {spill}rt_setjmp_arm(c, &sj_{a:x}); '
-                        f'if (!plat_jmp_save(&sj_{a:x})) {{ {callee} }}{reload_call}')
+                        f'if (!plat_jmp_save(&sj_{a:x})) {{ {callee} }}{reload}')   # all: the guest longjmp
+                # restores the callee-saved registers from its jmp_buf, so after the second return the Cpu holds
+                # them, not the locals (recomp/regs.py)
+            if t in starts and self.inline_leaves and t != entry and self.leaf(t):
+                self.clones.add(t)
+                self.stats['leaf_copy_calls'] += 1
+                return f'c->x[30] = {hx(a + 4)}; {spill}fi_{t:x}(c);{reload_call}'
             if t in starts:
                 refs.add(t)
-                return f'c->x[30] = {hx(a + 4)}; {spill}{fname(t)}(c);{reload_call}'
+                sp = spill_call if spill_call == spill or not self.reads_temps(t) else spill
+                return f'c->x[30] = {hx(a + 4)}; {sp}{fname(t)}(c);{reload_call}'
             self.stats['external_calls'] += 1
             return f'c->x[30] = {hx(a + 4)}; {spill}c->pc = {hx(t)}; rt_dispatch(c);{reload_call}'
 
@@ -483,7 +632,8 @@ class Emitter:
             elif k == 'bl':
                 emit(i, '    ' + call(ins.target, a))
             elif k == 'blr':
-                emit(i, f'    c->pc = {ins.target}; c->x[30] = {hx(a + 4)}; {spill}rt_dispatch(c);{reload_call}')
+                # the lookup at the call site (runtime/cpu.h rt_dispatch_call): one branch-predictor entry per site
+                emit(i, f'    c->pc = {ins.target}; c->x[30] = {hx(a + 4)}; {spill_call}rt_dispatch_call(c);{reload_call}')
             elif k == 'br':
                 jt = tables.get(a)
                 if jt == 'all':
@@ -492,8 +642,8 @@ class Emitter:
                     cases = ' '.join(f'case {hx(t)}: goto L_{t:x};' for t in jt)
                     emit(i, f'    switch ({ins.target}) {{ {cases} default: break; }}')
                     emit(i, f'    {publish(i)}{spill}c->pc = {ins.target}; {redispatch}')
-                else:
-                    emit(i, f'    {publish(i)}{spill}c->pc = {ins.target}; {MUSTTAIL} rt_dispatch(c);')
+                else:   # the lookup at the site (runtime/cpu.h RT_DISPATCH_JUMP): one predictor entry per site
+                    emit(i, f'    {publish(i)}{spill}c->pc = {ins.target}; RT_DISPATCH_JUMP(c);')
             elif k == 'ret':
                 emit(i, f'    {spill}return;')
             else:
@@ -511,7 +661,8 @@ class Emitter:
                     texts[i] += line
             clean = {i for i, ins in enumerate(insns) if entry + 4 * i not in self.patched
                      and (ins.kind in ('bl', 'blr') or (ins.kind == 'op' and regs.RELOAD in texts[i]))}
-            rp = regs.plan(texts, succ, clean, self.reg_locals, self.kept)
+            rp = regs.plan(texts, succ, clean, self.reg_locals, self.kept, self.kept_uses)
+            rp.temps_unsaved = self.temps_unsaved
             if rp.regs:
                 out.append('    ' + rp.decl())
             self.stats['local_reg_functions'] += bool(rp.regs)
@@ -533,19 +684,32 @@ def chunk_text(name, number, emitter, fns):
     body, refs = [], set()
     emitter.uses_patches = False
     emitter.uses_setjmp = False
+    emitter.clones = set()
     for entry, end in fns:
         lines, r = emitter.function(entry, end)
         body.append('\n'.join(lines))
         refs |= r
+    copies = []   # --inline-leaves: the leaves called through a copy, each a static always-inline function
+    if emitter.clones:
+        saved = Counter(emitter.stats)
+        for t in sorted(emitter.clones):
+            lines, _ = emitter.function(t, emitter.leaf(t))
+            assert lines[0] == f'void {fname(t)}(Cpu *c) {{', lines[0]
+            lines[0] = f'static inline __attribute__((always_inline)) void fi_{t:x}(Cpu *c) {{'
+            copies.append('\n'.join(lines))
+        emitter.stats = saved
+        emitter.stats['leaf_copies'] += len(copies)
     # Every referenced function gets a prototype, including ones defined later in this chunk.
     protos = ''.join(f'void {fname(r)}(Cpu *c);\n' for r in sorted(refs))
+    protos += ''.join(f'static inline __attribute__((always_inline)) void fi_{t:x}(Cpu *c);\n'
+                      for t in sorted(emitter.clones))
     if emitter.uses_patches:
-        protos += 'extern uint8_t rt_patch_on[];\n'
+        protos += 'extern RT_LOCAL uint8_t rt_patch_on[];\n'
     inc = '#include "cpu.h"\n#include "simd.h"\n'
     if emitter.uses_setjmp:
         inc += '#include "platform/platform.h"\nvoid rt_setjmp_arm(Cpu *c, PlatJmp *j);\n'
     return (header(f'{name} chunk {number:04d}') + inc + '\n' + protos + '\n'
-            + '\n\n'.join(body) + '\n')
+            + '\n\n'.join(copies + body) + '\n')
 
 
 def write_if_changed(path, text):
@@ -696,8 +860,25 @@ def main():
     ap.add_argument('--no-callee-saved-trust', action='store_true',
                     help='reload X19-X29 and SP after every call too, instead of trusting AAPCS64 (slower; for '
                          'telling a broken callee from a generator bug)')
+    ap.add_argument('--fn-hooks', default=FN_HOOKS, metavar='ADDRS',
+                    help="functions whose entry calls the runtime's function-entry hook (cpu.h FN_ENTER), as "
+                         "comma-separated addresses; 'all' for every function (runtime/prof_win.c's function watch "
+                         f"needs it). The default, {FN_HOOKS}, is runtime/resolution.c's SET_RENDER_SIZE, the one the "
+                         "game itself needs: every other call saves a load and a branch")
+    ap.add_argument('--temps-saved', action='store_true',
+                    help='store X9-X15 to the Cpu before every call too (by default they are not, AAPCS64 making them '
+                         'neither arguments nor preserved, except before a direct call of a function that reads one '
+                         'before writing it: Emitter.reads_temps)')
+    ap.add_argument('--inline-leaves', type=int, default=0, metavar='N',
+                    help='direct calls of leaf functions of at most N instructions go to an always-inline copy in the '
+                         "caller's chunk (Emitter.leaf; 0, the default: off)")
+    ap.add_argument('--kept-locals', type=int, default=0, metavar='USES',
+                    help='also keep in C locals every callee-saved register (X19-X29, SP) a function names at least '
+                         'USES times (recomp/regs.py plan; 0, the default: off)')
     args = ap.parse_args()
-    opts = {'reg_locals': args.reg_locals, 'callee_saved': not args.no_callee_saved_trust}
+    opts = {'reg_locals': args.reg_locals, 'callee_saved': not args.no_callee_saved_trust, 'kept_uses': args.kept_locals,
+            'inline_leaves': args.inline_leaves, 'temps_unsaved': not args.temps_saved,
+            'fn_hooks': None if args.fn_hooks == 'all' else {int(a, 16) for a in args.fn_hooks.split(',') if a}}
 
     t0 = time.perf_counter()
     mods = layout(args.exefs)

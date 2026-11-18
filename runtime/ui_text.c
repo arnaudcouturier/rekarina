@@ -397,7 +397,7 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_MENU_LANG] = "Menu language", [UI_MENU_MENU_LANG_DESC] = "Language of this menu and the overlay.",
     [UI_MENU_MENU_LANG_AUTO] = "Automatic (from Windows)",
     [UI_MENU_UPDATE_CHECK] = "Check for updates",
-    [UI_MENU_UPDATE_CHECK_DESC] = "When the game starts it asks GitHub once for the newest " RT_PORT_NAME " release and shows a "
+    [UI_MENU_UPDATE_CHECK_DESC] = "When the game starts it asks rekarina.dev once for the newest " RT_PORT_NAME " release and shows a "
                                   "notice when there is one. The request carries the port's version and nothing about you. "
                                   "The launcher installs the update.",
     [UI_MENU_PREVIEW] = "Live picture",
@@ -532,6 +532,33 @@ static const char *const text_en[UI_TEXT_COUNT] = {
                                    "now.",
     [UI_MENU_CHEAT_UNSUPPORTED] = "not supported",
     [UI_MENU_CHEAT_UNSUPPORTED_DESC] = "This cheat cannot be used with this version of the game:",
+
+    [UI_MENU_FPS_UNLIMITED] = "No limit (240 FPS)",
+    [UI_MENU_BG_MUTE] = "Mute in the background",
+    [UI_MENU_BG_MUTE_DESC] = "No sound while another window is in front (after Alt+Tab, for example). The sound comes "
+                             "back when the game window is in front again.",
+    [UI_MENU_PAD_FOLLOW] = "Use the controller pressed last",
+    [UI_MENU_PAD_FOLLOW_DESC] = "With several controllers connected, the game reads the one you pressed something on "
+                                "last; its button labels, rumble and gyro follow it. Off: only the first controller found "
+                                "is read. Helps when a receiver, Steam's virtual controller or a second copy of the same "
+                                "controller is listed but sends nothing.",
+    [UI_MENU_PAD_DRIVER] = "Controller driver",
+    [UI_MENU_PAD_DRIVER_DESC] = "Automatic reads controllers through SDL's own drivers: gyro, HD rumble and the "
+                                "PlayStation and Switch button labels work. If a controller is found but its buttons do "
+                                "nothing (some 8BitDo pads, an Xbox One S pad over Bluetooth), choose Compatibility: it "
+                                "reads controllers the way the system does (XInput and DirectInput; on Linux, the "
+                                "kernel's driver), without gyro.",
+    [UI_MENU_PAD_DRIVER_AUTO] = "Automatic", [UI_MENU_PAD_DRIVER_COMPAT] = "Compatibility",
+    [UI_MENU_CURSOR_HIDE] = "Hide an idle cursor",
+    [UI_MENU_CURSOR_HIDE_DESC] = "The mouse pointer over the game window disappears when it has not moved for this long "
+                                 "(in this menu, or with the mouse camera off) and comes back as soon as it moves. While "
+                                 "the mouse camera holds the cursor it is always hidden.",
+    [UI_MENU_AFTER_SECONDS] = "after %d s",
+    [UI_PIC_UPSCALING] = "Upscaling", [UI_PIC_PAD_NONE] = "No controller found: connect one and press a button",
+    [UI_PIC_CPU_FRAME] = "CPU, drawing", [UI_PIC_GPU_FRAME] = "GPU",
+    [UI_PIC_DRIVER] = "Driver", [UI_PIC_DISPLAY] = "Display", [UI_PIC_SYSTEM] = "System", [UI_PIC_PROFILE] = "Device profile",
+    [UI_PIC_PROFILE_DESKTOP] = "Desktop: no handheld found", [UI_PIC_PROFILE_DECK] = "Steam Deck: found by its firmware",
+    [UI_PIC_PROFILE_HANDHELD] = "Handheld PC: found by its firmware", [UI_PIC_PROFILE_SET] = " (set in rekarina.ini)",
     [UI_MENU_CHEATS_REBUILD] = "Rebuild the game now",
     [UI_MENU_CHEATS_REBUILD_DESC] = "Some cheats change the game's code and are not built into it: they are new or "
                                     "edited, or their last rebuild failed or was cancelled. Closes the game; the setup "
@@ -543,6 +570,25 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_MODS_EXEFS_ON] = "Code patches in use: %d files.",
     [UI_MENU_MODS_REPLACES_BUILTIN] = "Code patches in use: %d files. They replace the port's own patch %s, which "
                                       "stays off while this mod is on.",
+    [UI_MENU_REPORT] = "Make a problem report",
+    [UI_MENU_REPORT_DESC] = "Writes one zip into the reports folder beside the game and opens the folder: the logs of the last five runs, your settings and what the game knows of this computer (graphics card and driver, processor, memory, system). No saves and no game files; your user name is taken out of every path. Nothing is sent anywhere: attach the file to your report.",
+    [UI_MENU_REPORT_DONE] = "Made",
+    [UI_REPORT_LAST_RUN] = "The last run ended with an error.",
+    [UI_REPORT_LAST_RUN_HINT] = "To report it: Esc, then Advanced > Make a problem report. It writes one file to attach.",
+    [UI_REPORT_CRASHED] = "Rekarina stopped with an error.\n\nWhat happened is written at the end of the log:\n%s\n\nTo report it, start the game again and choose Esc > Advanced > Make a problem report (or Problem report in the launcher): the logs, the settings and the system details go into one zip to attach. Nothing is sent anywhere.",
+    [UI_MENU_KBM_OFF] = "Keyboard and mouse off with a controller",
+    [UI_MENU_KBM_OFF_DESC] = "While a controller is connected the game takes nothing from the keyboard and the mouse (a key leaned on, a mouse bumped). This menu, F11 and the screenshot key still work.",
+    [UI_MENU_SHOT_KEY] = "Screenshot key",
+    [UI_MENU_SHOT_KEY_DESC] = "Saves the picture as a PNG into the screenshots folder beside the game. Steam and the graphics driver's overlays have their own keys.",
+    [UI_MENU_SHOT_OVERLAY] = "Screenshots with the menu and overlays",
+    [UI_MENU_SHOT_OVERLAY_DESC] = "Off: the screenshot shows the game alone. On: also this menu and the performance overlay when they are open.",
+    // the entry step's progress picture (ui/prep_screen.cpp)
+    [UI_PREP_TITLE] = "Preparing shaders…",
+    [UI_PREP_COUNT] = "%s of %s",
+    [UI_PREP_NOTE] = "Builds what the game will draw before play starts, so that play never stops for it. It takes long only the first time and after a graphics driver update.",
+    [UI_PREP_SECONDS] = "%d s",
+    [UI_PREP_LEFT_MIN] = "about %d min left",
+    [UI_PREP_LEFT_LT1] = "under a minute left",
 };
 
 static const char *const text_ru[UI_TEXT_COUNT] = {
@@ -910,7 +956,7 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_MENU_MENU_LANG] = "Язык меню", [UI_MENU_MENU_LANG_DESC] = "Язык этого меню и индикатора.",
     [UI_MENU_MENU_LANG_AUTO] = "Автоматически (из Windows)",
     [UI_MENU_UPDATE_CHECK] = "Проверять обновления",
-    [UI_MENU_UPDATE_CHECK_DESC] = "При запуске игра один раз спрашивает у GitHub о новом выпуске " RT_PORT_NAME " и показывает "
+    [UI_MENU_UPDATE_CHECK_DESC] = "При запуске игра один раз спрашивает у rekarina.dev о новом выпуске " RT_PORT_NAME " и показывает "
                                   "уведомление, если он есть. В запросе только версия порта, ничего о вас. "
                                   "Обновление ставит лаунчер.",
     [UI_MENU_PREVIEW] = "Живой просмотр",
@@ -1046,6 +1092,34 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
                                    "его при следующем запуске (несколько минут), или нажмите «Пересобрать игру сейчас».",
     [UI_MENU_CHEAT_UNSUPPORTED] = "не поддерживается",
     [UI_MENU_CHEAT_UNSUPPORTED_DESC] = "Этот чит нельзя использовать с этой версией игры:",
+
+    [UI_MENU_FPS_UNLIMITED] = "Без ограничения (240 FPS)",
+    [UI_MENU_BG_MUTE] = "Без звука в фоне",
+    [UI_MENU_BG_MUTE_DESC] = "Звука нет, пока впереди другое окно (например, после Alt+Tab). Он возвращается, когда "
+                             "окно игры снова впереди.",
+    [UI_MENU_PAD_FOLLOW] = "Контроллер, нажатый последним",
+    [UI_MENU_PAD_FOLLOW_DESC] = "Если подключено несколько контроллеров, игра читает тот, на котором вы что-то нажали "
+                                "последним; подписи кнопок, вибрация и гироскоп следуют за ним. Выкл.: читается только "
+                                "первый найденный контроллер. Помогает, когда приёмник, виртуальный контроллер Steam или "
+                                "вторая копия того же контроллера видны, но ничего не передают.",
+    [UI_MENU_PAD_DRIVER] = "Драйвер контроллера",
+    [UI_MENU_PAD_DRIVER_DESC] = "«Автоматически» читает контроллеры через собственные драйверы SDL: работают гироскоп, "
+                                "HD-вибрация и подписи кнопок PlayStation и Switch. Если контроллер найден, но его кнопки "
+                                "ничего не делают (некоторые 8BitDo, Xbox One S по Bluetooth), выберите «Совместимость»: "
+                                "контроллеры читаются так, как их читает система (XInput и DirectInput; в Linux — драйвер "
+                                "ядра), без гироскопа.",
+    [UI_MENU_PAD_DRIVER_AUTO] = "Автоматически", [UI_MENU_PAD_DRIVER_COMPAT] = "Совместимость",
+    [UI_MENU_CURSOR_HIDE] = "Скрывать неподвижный курсор",
+    [UI_MENU_CURSOR_HIDE_DESC] = "Указатель мыши над окном игры исчезает, если он столько времени не двигался (в этом "
+                                 "меню или с выключенной камерой мышью), и возвращается, как только мышь сдвинется. Пока "
+                                 "курсор у камеры мышью, он скрыт всегда.",
+    [UI_MENU_AFTER_SECONDS] = "через %d с",
+    [UI_PIC_UPSCALING] = "Апскейлинг", [UI_PIC_PAD_NONE] = "Контроллер не найден: подключите его и нажмите кнопку",
+    [UI_PIC_CPU_FRAME] = "CPU, отрисовка", [UI_PIC_GPU_FRAME] = "GPU",
+    [UI_PIC_DRIVER] = "Драйвер", [UI_PIC_DISPLAY] = "Дисплей", [UI_PIC_SYSTEM] = "Система", [UI_PIC_PROFILE] = "Профиль устройства",
+    [UI_PIC_PROFILE_DESKTOP] = "ПК: портативное устройство не найдено",
+    [UI_PIC_PROFILE_DECK] = "Steam Deck: определён по прошивке",
+    [UI_PIC_PROFILE_HANDHELD] = "Портативный ПК: определён по прошивке", [UI_PIC_PROFILE_SET] = " (задан в rekarina.ini)",
     [UI_MENU_CHEATS_REBUILD] = "Пересобрать игру сейчас",
     [UI_MENU_CHEATS_REBUILD_DESC] = "Некоторые читы меняют код игры и ещё не собраны в неё: они новые или изменены, "
                                     "либо прошлая пересборка не удалась или была отменена. Закрывает игру; установщик "
@@ -1057,6 +1131,25 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_MENU_MODS_EXEFS_ON] = "Патчи кода в работе: файлов: %d.",
     [UI_MENU_MODS_REPLACES_BUILTIN] = "Патчи кода в работе: файлов: %d. Они заменяют собственный патч порта %s, "
                                       "который выключен, пока этот мод включён.",
+    [UI_MENU_REPORT] = "Создать отчёт о проблеме",
+    [UI_MENU_REPORT_DESC] = "Записывает один zip в папку reports рядом с игрой и открывает её: журналы пяти последних запусков, ваши настройки и сведения о компьютере (видеокарта и драйвер, процессор, память, система). Без сохранений и файлов игры; имя пользователя убирается из всех путей. Ничего никуда не отправляется: приложите файл к сообщению.",
+    [UI_MENU_REPORT_DONE] = "Создан",
+    [UI_REPORT_LAST_RUN] = "Прошлый запуск завершился ошибкой.",
+    [UI_REPORT_LAST_RUN_HINT] = "Чтобы сообщить: Esc, затем Дополнительно > Создать отчёт о проблеме. Получится один файл для отправки.",
+    [UI_REPORT_CRASHED] = "Rekarina остановилась из-за ошибки.\n\nЧто случилось, записано в конце журнала:\n%s\n\nЧтобы сообщить, запустите игру снова и выберите Esc > Дополнительно > Создать отчёт о проблеме (или «Отчёт о проблеме» в лаунчере): журналы, настройки и сведения о системе соберутся в один zip. Ничего никуда не отправляется.",
+    [UI_MENU_KBM_OFF] = "Клавиатура и мышь выкл. при контроллере",
+    [UI_MENU_KBM_OFF_DESC] = "Пока подключён контроллер, игра ничего не берёт с клавиатуры и мыши (нажатая кем-то клавиша, задетая мышь). Это меню, F11 и клавиша снимка экрана работают.",
+    [UI_MENU_SHOT_KEY] = "Клавиша снимка экрана",
+    [UI_MENU_SHOT_KEY_DESC] = "Сохраняет картинку в PNG в папку screenshots рядом с игрой. У Steam и оверлеев драйвера видеокарты свои клавиши.",
+    [UI_MENU_SHOT_OVERLAY] = "Снимки с меню и оверлеями",
+    [UI_MENU_SHOT_OVERLAY_DESC] = "Выкл.: на снимке только игра. Вкл.: также это меню и оверлей производительности, если они открыты.",
+    // the entry step's progress picture (ui/prep_screen.cpp)
+    [UI_PREP_TITLE] = "Подготовка шейдеров…",
+    [UI_PREP_COUNT] = "%s из %s",
+    [UI_PREP_NOTE] = "Собирает всё, что игра будет рисовать, до начала игры, чтобы она потом не останавливалась. Долго — только в первый раз и после обновления драйвера видеокарты.",
+    [UI_PREP_SECONDS] = "%d с",
+    [UI_PREP_LEFT_MIN] = "осталось около %d мин",
+    [UI_PREP_LEFT_LT1] = "осталось меньше минуты",
 };
 
 static const char *const text_pt_br[UI_TEXT_COUNT] = {
@@ -1293,7 +1386,7 @@ static const char *const text_pt_br[UI_TEXT_COUNT] = {
     [UI_MENU_MENU_LANG] = "Idioma do menu", [UI_MENU_MENU_LANG_DESC] = "Idioma deste menu e do indicador.",
     [UI_MENU_MENU_LANG_AUTO] = "Automático (do Windows)",
     [UI_MENU_UPDATE_CHECK] = "Verificar atualizações",
-    [UI_MENU_UPDATE_CHECK_DESC] = "Ao iniciar, o jogo pergunta uma vez ao GitHub pela versão mais recente do " RT_PORT_NAME " e mostra "
+    [UI_MENU_UPDATE_CHECK_DESC] = "Ao iniciar, o jogo pergunta uma vez ao rekarina.dev pela versão mais recente do " RT_PORT_NAME " e mostra "
                                   "um aviso quando há uma. O pedido leva a versão do port e nada sobre você. "
                                   "O launcher instala a atualização.",
     [UI_UPDATE_AVAILABLE] = RT_PORT_NAME " %s está disponível",
@@ -1604,6 +1697,50 @@ static const char *const text_pt_br[UI_TEXT_COUNT] = {
     [UI_MENU_MODS_EXEFS_ON] = "Patches de código em uso: %d arquivos.",
     [UI_MENU_MODS_REPLACES_BUILTIN] = "Patches de código em uso: %d arquivos. Eles substituem o patch do próprio port "
                                       "%s, que fica desligado enquanto este mod está ligado.",
+    // added 2026-11-16
+    [UI_MENU_FPS_UNLIMITED] = "Sem limite (240 FPS)",
+    [UI_MENU_BG_MUTE] = "Sem som em segundo plano",
+    [UI_MENU_BG_MUTE_DESC] = "Nenhum som enquanto outra janela estiver na frente (depois de Alt+Tab, por exemplo). O som volta quando a janela do jogo ficar na frente de novo.",
+    [UI_MENU_PAD_FOLLOW] = "Usar o último controle pressionado",
+    [UI_MENU_PAD_FOLLOW_DESC] = "Com vários controles conectados, o jogo lê aquele em que você pressionou algo por último; os rótulos dos botões, a vibração e o giroscópio o acompanham. Desligado: só o primeiro controle encontrado é lido. Ajuda quando um receptor, o controle virtual da Steam ou uma segunda cópia do mesmo controle aparece mas não envia nada.",
+    [UI_MENU_PAD_DRIVER] = "Driver do controle",
+    [UI_MENU_PAD_DRIVER_DESC] = "Automático lê os controles pelos drivers do próprio SDL: giroscópio, vibração HD e os rótulos de PlayStation e Switch funcionam. Se um controle for encontrado mas os botões não fizerem nada (alguns 8BitDo, um controle Xbox One S por Bluetooth), escolha Compatibilidade: os controles são lidos como o sistema os lê (XInput e DirectInput; no Linux, o driver do kernel), sem giroscópio.",
+    [UI_MENU_PAD_DRIVER_AUTO] = "Automático",
+    [UI_MENU_PAD_DRIVER_COMPAT] = "Compatibilidade",
+    [UI_MENU_CURSOR_HIDE] = "Ocultar o cursor parado",
+    [UI_MENU_CURSOR_HIDE_DESC] = "O ponteiro do mouse sobre a janela do jogo some se não se mover por esse tempo (neste menu ou com a câmera pelo mouse desligada) e volta assim que se mover. Enquanto a câmera pelo mouse estiver com o cursor, ele fica sempre oculto.",
+    [UI_MENU_AFTER_SECONDS] = "após %d s",
+    [UI_PIC_UPSCALING] = "Upscaling",
+    [UI_PIC_PAD_NONE] = "Nenhum controle encontrado: conecte um e pressione um botão",
+    [UI_PIC_CPU_FRAME] = "CPU, desenho",
+    [UI_PIC_GPU_FRAME] = "GPU",
+    [UI_PIC_DRIVER] = "Driver",
+    [UI_PIC_DISPLAY] = "Tela",
+    [UI_PIC_SYSTEM] = "Sistema",
+    [UI_PIC_PROFILE] = "Perfil do dispositivo",
+    [UI_PIC_PROFILE_DESKTOP] = "Desktop: nenhum portátil encontrado",
+    [UI_PIC_PROFILE_DECK] = "Steam Deck: reconhecido pelo firmware",
+    [UI_PIC_PROFILE_HANDHELD] = "PC portátil: reconhecido pelo firmware",
+    [UI_PIC_PROFILE_SET] = " (definido no rekarina.ini)",
+    [UI_MENU_REPORT] = "Criar um relatório do problema",
+    [UI_MENU_REPORT_DESC] = "Grava um zip na pasta reports ao lado do jogo e abre a pasta: os logs das cinco últimas execuções, suas configurações e o que o jogo sabe deste computador (placa de vídeo e driver, processador, memória, sistema). Sem saves e sem arquivos do jogo; seu nome de usuário é retirado de todos os caminhos. Nada é enviado: anexe o arquivo ao seu relato.",
+    [UI_MENU_REPORT_DONE] = "Criado",
+    [UI_REPORT_LAST_RUN] = "A última execução terminou com um erro.",
+    [UI_REPORT_LAST_RUN_HINT] = "Para relatar: Esc, depois Avançado > Criar um relatório do problema. Isso gera um arquivo para anexar.",
+    [UI_REPORT_CRASHED] = "O Rekarina parou com um erro.\n\nO que aconteceu está escrito no fim do log:\n%s\n\nPara relatar, abra o jogo de novo e escolha Esc > Avançado > Criar um relatório do problema (ou Relatório do problema no launcher): logs, configurações e dados do sistema vão para um zip para anexar. Nada é enviado.",
+    [UI_MENU_KBM_OFF] = "Teclado e mouse desligados com controle",
+    [UI_MENU_KBM_OFF_DESC] = "Enquanto houver um controle conectado, o jogo não recebe nada do teclado nem do mouse (uma tecla apertada sem querer, um mouse esbarrado). Este menu, F11 e a tecla de captura continuam funcionando.",
+    [UI_MENU_SHOT_KEY] = "Tecla de captura de tela",
+    [UI_MENU_SHOT_KEY_DESC] = "Salva a imagem em PNG na pasta screenshots ao lado do jogo. A Steam e as sobreposições do driver de vídeo têm teclas próprias.",
+    [UI_MENU_SHOT_OVERLAY] = "Capturas com o menu e as sobreposições",
+    [UI_MENU_SHOT_OVERLAY_DESC] = "Desligado: a captura mostra só o jogo. Ligado: também este menu e a sobreposição de desempenho, se estiverem abertos.",
+    // the entry step's progress picture (ui/prep_screen.cpp)
+    [UI_PREP_TITLE] = "Preparando shaders…",
+    [UI_PREP_COUNT] = "%s de %s",
+    [UI_PREP_NOTE] = "Monta tudo o que o jogo vai desenhar antes de começar, para que ele nunca pare por isso. Só demora na primeira vez e após atualizar o driver de vídeo.",
+    [UI_PREP_SECONDS] = "%d s",
+    [UI_PREP_LEFT_MIN] = "faltam cerca de %d min",
+    [UI_PREP_LEFT_LT1] = "falta menos de um minuto",
 };
 
 // Simplified Chinese: this row covers the software keyboard and the whole menu, so the menu and the overlay read Chinese
@@ -1933,7 +2070,7 @@ static const char *const text_zh_hans[UI_TEXT_COUNT] = {
     [UI_MENU_MENU_LANG_DESC] = "本菜单和性能浮层的语言。",
     [UI_MENU_MENU_LANG_AUTO] = "自动（跟随 Windows）",
     [UI_MENU_UPDATE_CHECK] = "检查更新",
-    [UI_MENU_UPDATE_CHECK_DESC] = "游戏启动时向 GitHub 查询一次最新的 " RT_PORT_NAME " 版本，有新版本时显示通知。请求只包含移植版的版本号，"
+    [UI_MENU_UPDATE_CHECK_DESC] = "游戏启动时向 rekarina.dev 查询一次最新的 " RT_PORT_NAME " 版本，有新版本时显示通知。请求只包含移植版的版本号，"
                                   "不含任何与你有关的信息。更新由启动器安装。",
     [UI_UPDATE_AVAILABLE] = RT_PORT_NAME " %s 已发布",
     [UI_UPDATE_HINT] = "请打开启动器进行更新：它会自行重新构建着色器。",
@@ -2231,6 +2368,50 @@ static const char *const text_zh_hans[UI_TEXT_COUNT] = {
     [UI_MENU_MODS_EXEFS_OTHER] = "它的代码补丁（exefs）是为其他游戏版本制作的。",
     [UI_MENU_MODS_EXEFS_ON] = "正在使用的代码补丁：%d 个文件。",
     [UI_MENU_MODS_REPLACES_BUILTIN] = "正在使用的代码补丁：%d 个文件。它们取代本移植自带的补丁 %s，此模组开启时该补丁保持关闭。",
+    // added 2026-11-16
+    [UI_MENU_FPS_UNLIMITED] = "不限制 (240 FPS)",
+    [UI_MENU_BG_MUTE] = "后台时静音",
+    [UI_MENU_BG_MUTE_DESC] = "其他窗口在前台时不发出声音（例如按 Alt+Tab 之后）。游戏窗口回到前台时声音恢复。",
+    [UI_MENU_PAD_FOLLOW] = "使用最后按下的手柄",
+    [UI_MENU_PAD_FOLLOW_DESC] = "连接了多个手柄时，游戏读取你最后按过按键的那个；按键标识、振动和陀螺仪随之切换。关闭：只读取找到的第一个手柄。适用于接收器、Steam 虚拟手柄或同一手柄的第二个副本出现却不发送任何输入的情况。",
+    [UI_MENU_PAD_DRIVER] = "手柄驱动",
+    [UI_MENU_PAD_DRIVER_DESC] = "自动：通过 SDL 自己的驱动读取手柄，陀螺仪、HD 振动以及 PlayStation 和 Switch 按键标识都可用。如果找到了手柄但按键没有反应（部分 8BitDo、通过蓝牙连接的 Xbox One S 手柄），请选择兼容：按系统的方式读取手柄（XInput 和 DirectInput；Linux 上为内核驱动），不支持陀螺仪。",
+    [UI_MENU_PAD_DRIVER_AUTO] = "自动",
+    [UI_MENU_PAD_DRIVER_COMPAT] = "兼容",
+    [UI_MENU_CURSOR_HIDE] = "隐藏静止的光标",
+    [UI_MENU_CURSOR_HIDE_DESC] = "游戏窗口上的鼠标指针在这段时间内没有移动时会消失（在此菜单中，或关闭鼠标镜头时），一移动就会重新出现。鼠标镜头占用光标时，光标始终隐藏。",
+    [UI_MENU_AFTER_SECONDS] = "%d 秒后",
+    [UI_PIC_UPSCALING] = "超分辨率",
+    [UI_PIC_PAD_NONE] = "未找到手柄：请连接手柄并按任意键",
+    [UI_PIC_CPU_FRAME] = "CPU（绘制）",
+    [UI_PIC_GPU_FRAME] = "GPU",
+    [UI_PIC_DRIVER] = "驱动",
+    [UI_PIC_DISPLAY] = "显示器",
+    [UI_PIC_SYSTEM] = "系统",
+    [UI_PIC_PROFILE] = "设备配置",
+    [UI_PIC_PROFILE_DESKTOP] = "台式机：未发现掌机",
+    [UI_PIC_PROFILE_DECK] = "Steam Deck：由固件识别",
+    [UI_PIC_PROFILE_HANDHELD] = "掌上电脑：由固件识别",
+    [UI_PIC_PROFILE_SET] = "（在 rekarina.ini 中设置）",
+    [UI_MENU_REPORT] = "生成问题报告",
+    [UI_MENU_REPORT_DESC] = "在游戏旁的 reports 文件夹中写入一个 zip 并打开该文件夹：最近五次运行的日志、你的设置，以及游戏对这台电脑的了解（显卡和驱动、处理器、内存、系统）。不含存档和游戏文件；所有路径中的用户名都会被去掉。不会发送到任何地方：请把这个文件附在你的报告里。",
+    [UI_MENU_REPORT_DONE] = "已生成",
+    [UI_REPORT_LAST_RUN] = "上次运行因错误结束。",
+    [UI_REPORT_LAST_RUN_HINT] = "报告方法：按 Esc，然后选 高级 > 生成问题报告。会生成一个用于附加的文件。",
+    [UI_REPORT_CRASHED] = "Rekarina 因错误停止。\n\n发生了什么写在日志末尾：\n%s\n\n如需报告，请重新启动游戏并选择 Esc > 高级 > 生成问题报告（或启动器中的“问题报告”）：日志、设置和系统信息会放进一个 zip 供附加。不会发送到任何地方。",
+    [UI_MENU_KBM_OFF] = "连接手柄时关闭键盘和鼠标",
+    [UI_MENU_KBM_OFF_DESC] = "连接手柄期间，游戏不接收键盘和鼠标的输入（例如键被压住、鼠标被碰到）。此菜单、F11 和截图键仍然可用。",
+    [UI_MENU_SHOT_KEY] = "截图键",
+    [UI_MENU_SHOT_KEY_DESC] = "把画面以 PNG 格式保存到游戏旁的 screenshots 文件夹。Steam 和显卡驱动的叠加层有各自的按键。",
+    [UI_MENU_SHOT_OVERLAY] = "截图包含菜单和叠加层",
+    [UI_MENU_SHOT_OVERLAY_DESC] = "关闭：截图只有游戏画面。开启：如果打开着，也包含此菜单和性能叠加层。",
+    // the entry step's progress picture (ui/prep_screen.cpp)
+    [UI_PREP_TITLE] = "正在准备着色器…",
+    [UI_PREP_COUNT] = "%s / %s",
+    [UI_PREP_NOTE] = "在开始游戏前构建游戏将要绘制的内容，以免游戏中途停顿。只有第一次和更新显卡驱动后才会较久。",
+    [UI_PREP_SECONDS] = "%d 秒",
+    [UI_PREP_LEFT_MIN] = "约剩 %d 分钟",
+    [UI_PREP_LEFT_LT1] = "剩余不到一分钟",
 };
 
 // The other game languages: the software keyboard row here, the menu text in ui_text_<lang>.inc, which holds the

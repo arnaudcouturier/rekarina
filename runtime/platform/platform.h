@@ -43,6 +43,11 @@ int plat_cpu_cores(uint64_t *all, uint64_t *first);
 // one counts half, so a 4 + 8 core laptop chip is not taken for a 12-core desktop one.
 uint32_t plat_cpu_fast(uint32_t *slow);
 uint32_t plat_cpu_weighted(void);         // fast + slow / 2, at most plat_cpu_usable
+// DEBUG-HEAPCHECK: 1 when the process heap (the C runtime's malloc) is consistent. 0 when not: *at is then the end of
+// the last entry a walk of the heap read before the break (the broken header lies there), *n the entries walked.
+int plat_heap_check(uint64_t *at, uint64_t *n);
+// The calling thread's CPU time so far in ticks of the cycle counter (Windows: QueryThreadCycleTime); 0: unknown.
+uint64_t plat_thread_cycles(void);
 // The calling thread does work nobody waits for (a reader in the background): on a processor with slower cores the
 // system may keep it on those and at low clock (Windows: the thread's EcoQoS), away from the cores the frame needs.
 // Does nothing on a processor with one kind of core.
@@ -168,6 +173,7 @@ typedef struct { PlatMutex m; uint32_t owner, depth; } PlatRMutex;
 #define PLAT_RMUTEX_INIT {PLAT_MUTEX_INIT, 0, 0}
 void plat_rmutex_lock(PlatRMutex *m);
 void plat_rmutex_unlock(PlatRMutex *m);
+int plat_rmutex_trylock(PlatRMutex *m);   // 1 when acquired (or already this thread's)
 
 // One-time initialisation: the first caller runs fn(arg), every other caller waits until it returned. Zero-initialised
 // (PLAT_ONCE_INIT) has not run.
@@ -418,6 +424,9 @@ int plat_stderr_path(char *out, size_t cap);
 // ---- desktop: the in-game menu's "Copy system info" and "Open log folder"
 int plat_clipboard_set(const char *utf8);                 // replaces the clipboard's text; 1 on success
 int plat_open_folder(const char *path);                   // shows the folder in the file manager; 1 on success
+// A modal message box with an error icon, over every window (UTF-8 title and text); returns when it is closed. Windows
+// only: 0 elsewhere (the caller's message is in the log).
+int plat_message_box(const char *title, const char *text);
 
 // ---- dynamic libraries: a library some machines lack (a GPU vendor's), loaded at run time. A bare name is searched
 // in the system directories only. NULL when missing.

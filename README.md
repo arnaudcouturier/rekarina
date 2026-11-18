@@ -77,16 +77,23 @@ Numbers from another machine are welcome: [docs/performance.md](docs/performance
   launcher fetches each vendor's library from its official repository for the GPU it finds; nothing of theirs is
   bundled here
 - **Settings that apply while you play**: the in-game menu (Esc or F1) is drawn in the game's own menu style, with a
-  live picture beside the rows, so a change to the render scale, sharpening, colour or frame limit shows at once
+  live picture beside the rows, so a change to the render scale, sharpening, colour or frame limit shows at once.
+  Number settings are sliders you drag with the mouse or step with the keys and the pad, and pictures explain the
+  rest: the picture chain from the 3D scene to the window, your controller live, your keyboard with every bound key,
+  frame times with the CPU and GPU time per frame, and the graphics card, driver and device profile the game found
 - **Presets by hardware**: the first settings are chosen from your GPU and its video memory, and a texture quality
-  setting keeps 6 and 8 GB cards out of trouble
+  setting keeps 6 and 8 GB cards out of trouble. Every card starts with the game's sharp base picture; DLSS, FSR 3.1
+  and frame generation are switched on in the game's menu. An update keeps the settings you have
 - **Older cards and built-in graphics**: **AMD FSR 1** scales a smaller 3D scene up at the same small cost on any GPU
   (the first choice on built-in graphics and 4 GB cards), and the trees, bushes and grass are drawn on GPUs without
   mesh shaders
 - **Your save comes along**: the launcher's Saves page brings a save in from another port of the game or from an
   emulator (Ryujinx and its forks, the yuzu family), or from a folder or a .zip; the save it replaces is kept
 - **Controllers and the mouse**: Xbox and PlayStation pads, the console's own controllers with HD rumble and gyro,
-  and a raw mouse camera that turns exactly as far as the mouse moves, with its own speed for each axis
+  and a raw mouse camera that turns exactly as far as the mouse moves, with its own speed for each axis. With several
+  pads connected the one you press is the one read; a pad that is found but does nothing can be read the way Windows
+  does (Compatibility driver); the pointer hides when it rests; keyboard and mouse can be switched off while a pad is
+  connected
 - **Button prompts** for Xbox, PlayStation and Switch pads, a set drawn for this port, and the keyboard and mouse:
   they follow the device you use, change in the running game, and the keyboard prompts follow the keys you bind
 - **Skip what you have seen**: every cutscene can be skipped, the three the console keeps unskippable included, and
@@ -95,8 +102,12 @@ Numbers from another machine are welcome: [docs/performance.md](docs/performance
   the game itself tells you when one is out
 - **Menu and launcher in every language the game has**: English, Russian, Japanese, German, French, Spanish, Italian,
   Dutch, Portuguese, Korean, Simplified and Traditional Chinese
+- **A problem report in one press**: the menu (Advanced) or the launcher writes one zip with the logs, the settings
+  and the computer's details (no saves, your user name taken out of every path) to attach to a report; nothing is
+  sent anywhere. After a crash the game says so and points to it.
 - Mods with a manager (the launcher's Mods page and the game's Mods tab), HDR10 output (experimental), a performance
-  overlay (F10), Discord Rich Presence (off by default)
+  overlay (F10), a screenshot key (F12, PNG files in `screenshots`), mute in the background, Discord Rich Presence
+  (off by default)
 
 ## Requirements
 
@@ -108,6 +119,10 @@ Numbers from another machine are welcome: [docs/performance.md](docs/performance
 | Memory | 16 GB | 32 GB |
 | Disk | 30 GB free on an SSD (the game, its shader caches and the build) | |
 
+Memory, measured in two tours of eight places each: the game holds about 16-17 GB of the computer's memory in play
+and commits 24-27 GB. With 16 GB it runs, but pages to the disk and stutters, and Windows needs a page file large
+enough for the rest; 32 GB leaves room for it (not measured on a 16 GB or a 32 GB PC: the test PC has 62 GB).
+
 NVIDIA RTX cards are what the port is developed and tested on. AMD and Intel GPUs start and run, with the problems
 listed under [Known issues](#known-issues).
 
@@ -118,7 +133,14 @@ listed under [Known issues](#known-issues).
 2. Point it at the folder with your `.nup` dump and choose where the game goes.
 3. Press *Start*. The launcher checks the dump, recompiles the game's code, builds the executable, fetches the
    graphics components for your GPU and prepares the shaders. The first build takes about an hour, most of it the
-   shaders; each step shows how long it has left.
+   shaders; each step shows how long it has left. Its last step also builds every shader and pipeline the game is
+   known to use (about eight minutes), so play does not stop to build them; later starts take a few seconds. The
+   setup also prepares the textures for your graphics card (about 12 GB on the disk and about two minutes on a fast
+   card; the launcher's *Prepare textures* row can skip it), so the first visit of a place does not stutter while its
+   textures are converted: on an RTX 5070 the village's first visit ran at 96 fps with them prepared and at 53
+   without.
+   After a graphics driver update the game does this once at its next start and shows its progress (a few
+   programs that are not in the game's archives are still built the first time they appear, once per install).
 4. Press *Play*.
 
 <p align="center">
@@ -136,8 +158,8 @@ key is also in `rekarina.ini` beside the game ([the key list](rekarina.ini.examp
 ## Updates
 
 The launcher asks [rekarina.dev](https://rekarina.dev) for the newest release when it starts (GitHub when the site does
-not answer), and the game asks GitHub once at its own start (one request that carries the port's version and nothing
-else; *Interface > Check for updates* turns it off). When a release is out, the game shows a notice and the launcher
+not answer), and the game asks the site's release feed once at its own start (one request that carries the port's
+version and nothing else; *Menu > Check for updates* turns it off). When a release is out, the game shows a notice and the launcher
 offers *Update*: it downloads the new setup, checks its signature against the project's release keys, rebuilds only
 what changed and re-prepares the shaders, so the first minutes after an update do not stutter.
 
@@ -154,17 +176,29 @@ what changed and re-prepares the shaders, so the first minutes after an update d
 - A processor without AVX2 gets a slower build of the game, chosen by the launcher; that path has not been run on such
   a machine.
 - HDR10 output is experimental and off by default.
+- In the first dungeon's entrance room, in the base picture without DLSS, a light shaft can flicker.
 - With another program holding most of the video memory (a video editor, a second game) the frame rate collapses; the
   game says so at the top of the screen.
-- The first frames after a loading screen can hitch for a quarter of a second.
+- The first seconds after a loading screen run slower while the new place's textures arrive.
+- A rare GPU crash (device lost): the cause is not found. If it happens, the game stops with an error, and a crash
+  dump file is now left beside the log for the problem report.
+- On a PC with 16 GB of memory the game does not read the prepared textures ahead at its start (they would push the
+  game's own memory out), so a place's first visit after a restart of the PC reads them from the disk while it plays.
+- A shader combination or a grass and foliage pipeline that none of our runs met is built the first time it appears:
+  a few milliseconds for most, up to seconds for a foliage pipeline, whose patch is not drawn meanwhile. Our runs
+  went through 67 of the game's 79 maps, under a minute each from one start position; boss fights, cutscenes and the
+  rooms deep inside dungeons only partly.
+- Long sessions (many map changes in one run) were measured on a 12 GB card only; cards with 8 GB have not been.
 - The numbers above are with the camera turning in place. Running through the field or the Market gives 73 to 80
   fps on the same machine without the texture cache, with short hitches as new ground streams in; the texture cache
   (`tex_cache = 1`, the default) brings that to about 84 fps and removes most of the hitches.
-- There is no Linux release yet: the setup builds the game on Linux in development, but it has not been played on a
-  Linux PC or a Steam Deck.
+- Releases are Windows only for now: there is no Linux download. A native Linux build is in development; it has
+  not run on a Linux PC with a graphics card yet. The Steam Deck and the Windows handhelds (ROG Ally, Legion Go,
+  MSI Claw) are recognised and start with their own settings; [docs/tester-guide.md](docs/tester-guide.md) has a
+  checklist for them.
 
-Found something else? Open an issue with the form, and attach the log (`logs\rekarina.log` beside the game), or ask
-on the [Discord server](https://discord.gg/6N8PKr9zZA).
+Found something else? Make a problem report (Esc, Advanced, Make a problem report; or the launcher's Problem report
+button) and attach the zip to an issue or a post on the [Discord server](https://discord.gg/6N8PKr9zZA).
 
 ## Building from source
 

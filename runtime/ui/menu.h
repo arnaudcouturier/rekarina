@@ -10,7 +10,9 @@
 // "Continue" and "Quit game".
 // Test hooks (ui/menu.cpp): REKARINA_MENU_TEST=<frame>[:<frames per page>] opens the menu at that presented frame and saves
 // one swapchain shot per tab into REKARINA_MENU_TEST_DIR; REKARINA_MENU_TEST_SET=<frame>:<key>=<value>[,...][;...] sets settings
-// at given frames without input (SAVE=1 writes rekarina.ini).
+// at given frames without input (SAVE=1 writes rekarina.ini). REKARINA_MENU_SCRIPT=<file> drives the menu like a player
+// (keys, gamepad buttons, mouse moves and drags, tabs, rows, screenshots; the step list is above script_parse in
+// ui/menu.cpp).
 //
 // Threads: the event functions are called by the window thread, menu_toggle by whichever thread polls the pad, the
 // overlay functions by the present path under its lock. ImGui itself runs on the present path only.

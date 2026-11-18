@@ -66,6 +66,31 @@ static void warn_once(int key, const char *fmt, ...) {
     rt_log("vk: %s (logged once)", msg);
 }
 
+// What the replay leaves out while a shader is translated or a pipeline built beside it. Counted per frame for the
+// flight recorder (mesh_skip, cs_skip in frames.tsv; the other draws are draws_skip_shader and draws_skip_pipe); the
+// first of each kind in a frame gets a log line naming the program, at most 400 in a session. A frame where the
+// game's grass or its culling dispatch is left out shows the grass missing: these lines say which frames.
+enum { LO_MESH_SHADER, LO_MESH_PIPE, LO_CS_SHADER, LO_CS_PIPE, LO_N };
+static void left_out(int kind, uint64_t prog, const GfxShader *sh) {
+    perf_count(kind <= LO_MESH_PIPE ? PERF_CNT_MESH_SKIP : PERF_CNT_CS_SKIP);
+    static volatile uint64_t last[LO_N];
+    static volatile int32_t logs;
+    uint64_t f = __atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED) + 1;
+    if (__atomic_exchange_n(&last[kind], f, __ATOMIC_RELAXED) == f || __atomic_fetch_add(&logs, 1, __ATOMIC_RELAXED) >= 400)
+        return;
+    static const char *const what[LO_N] = {"mesh or geometry draw: a shader is being translated",
+                                           "mesh or geometry draw: its pipeline is being built",
+                                           "dispatch: its shader is being translated",
+                                           "dispatch: its pipeline is being built"};
+    char hx[17] = "-";
+    if (sh) {
+        const uint8_t *k8 = gfx_shader_key(sh);
+        for (int j = 0; j < 8; j++) snprintf(hx + 2 * j, 3, "%02x", k8[j]);
+    }
+    rt_log("vk_exec: frame %llu: left out: a %s (program %llu, shader %s)", (unsigned long long)f, what[kind],
+           (unsigned long long)prog, hx);
+}
+
 static void *grow(void *p, int *cap, size_t elem) {
     *cap = *cap ? *cap * 2 : 8;
     p = realloc(p, elem * (size_t)*cap);
@@ -78,13 +103,15 @@ static void vk_exec_slot_cache_drop(void);   // "descriptors kept per bound slot
 // ---- resources of one command buffer, freed by its completion callback
 
 typedef struct { VkBuffer buf; VmaAllocation alloc; uint8_t *map; uint64_t size, used; } Chunk;
+// The view cache's key: no padding (the bytes are hashed and compared whole), and the image's serial beside its handle,
+// so a view of a destroyed image is never the answer for a later image the driver gives the same handle.
 typedef struct {
     VkImage image;
     VkFormat format;
     VkImageViewType type;
-    uint32_t aspect, level0, levels, layer0, layers, swz;
+    uint32_t aspect, level0, levels, layer0, layers, swz, serial, zero;   // zero: always 0 (no padding)
 } ViewKey;
-_Static_assert(sizeof(ViewKey) == 40, "ViewKey is hashed as bytes: no padding");
+_Static_assert(sizeof(ViewKey) == 48, "ViewKey is hashed as bytes: no padding");
 typedef struct { uint64_t addr, size; int owned; } Range;   // owned: a mirror wrote it and copies it back whole
 typedef struct {
     Chunk *chunks;
@@ -391,6 +418,12 @@ static void make_dummy(int i, VkFormat fmt, const float *colour, int sampled_onl
         vi.viewType = VK_IMAGE_VIEW_TYPE_2D_ARRAY;
         if (vkCreateImageView(c->device, &vi, NULL, sview) != VK_SUCCESS) rt_fatal("vk: stand-in view failed");
     }
+    // DEBUG-LIVECHECK: a stand-in made during play (a fill-in colour's, colour_dummy) can get the handle of a view
+    // destroyed before; unannounced, the live check took every binding of it for a destroyed view (slot 258, the 4x4
+    // fill-in texture of colour 000000ff bound to a sampler of another kind: ec3 and the stress runs, 2026-11-16)
+    vk_live_check_born((uint64_t)(uintptr_t)*image);
+    vk_live_check_born((uint64_t)(uintptr_t)*view);
+    vk_live_check_born((uint64_t)(uintptr_t)*sview);
     VkImageMemoryBarrier2 bar = {.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
                                  .dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
                                  .dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT,
@@ -617,6 +650,11 @@ void vk_exec_last_view_log(void) {
 }
 static nvn_hmap view_of;                 // ViewKey -> VkImageView
 static nvn_hmap views_by_image;          // VkImage -> its first ViewNode
+// DEBUG-VIEWWATCH: REKARINA_VIEWWATCH=<hex addr>: the sampled views made for images of the texture at that address, and
+// their purges (a stale view the live check found handed out for a 4x4 texture, 2026-11-16)
+static uint64_t vw_addr = 1;
+static VkImage vw_img[64];
+static int vw_n;
 
 #ifdef GAME_NS2
 // Bytes of one texel of the uncompressed formats NVN2 views reinterpret between; 0 for any other format.
@@ -659,13 +697,15 @@ static VkFormat reinterpret_format(const VkTexImage *img, const view_t *v, int h
 }
 #endif
 
-// An image view of a registered texture for a shader resource of type `rtype` (GfxShaderRes.type); VK_NULL_HANDLE when
-// the image cannot serve it (the caller binds a stand-in). Texture lock held.
-static VkImageView get_view(VkExec *ex, const VkTexImage *img, const view_t *v, int hv, uint16_t rtype, int storage) {
+// The view cache's key of a sampled or storage view of img for a shader resource of type `rtype`, and the create info
+// of that view (ci->pNext points at *use when the view needs a usage of its own). 0: the image cannot serve it. Touches
+// no table: get_view and the views made ahead (vk_exec_views_ahead) share it.
+static int sampled_view_setup(const VkTexImage *img, const view_t *v, int hv, uint16_t rtype, int storage, ViewKey *kout,
+                              VkImageViewCreateInfo *ciout, VkImageViewUsageCreateInfo *useout) {
     VkImageViewType vt = res_view_type(rtype);
     int ms = (rtype & 0x200) != 0;
-    if ((img->samples > 1) != ms || (storage && ms)) return VK_NULL_HANDLE;
-    if (storage && !(img->usage & VK_IMAGE_USAGE_STORAGE_BIT)) return VK_NULL_HANDLE;
+    if ((img->samples > 1) != ms || (storage && ms)) return 0;
+    if (storage && !(img->usage & VK_IMAGE_USAGE_STORAGE_BIT)) return 0;
     int cube = vt == VK_IMAGE_VIEW_TYPE_CUBE || vt == VK_IMAGE_VIEW_TYPE_CUBE_ARRAY;
     int ok = 0;
     switch (vt) {
@@ -678,23 +718,23 @@ static VkImageView get_view(VkExec *ex, const VkTexImage *img, const view_t *v, 
         break;
     default: ok = img->type == VK_IMAGE_TYPE_2D; break;
     }
-    if (!ok) return VK_NULL_HANDLE;
+    if (!ok) return 0;
     uint32_t l0 = hv && v->set_levels ? v->base_level : 0;
-    if (l0 >= img->levels) return VK_NULL_HANDLE;
+    if (l0 >= img->levels) return 0;
     uint32_t nl = hv && v->set_levels && v->nlevels ? v->nlevels : img->levels - l0;
     if (l0 + nl > img->levels) nl = img->levels - l0;
     if (storage) nl = 1;
     uint32_t y0 = 0, ny = 1;
     if (vt != VK_IMAGE_VIEW_TYPE_3D) {
         y0 = hv && v->set_layers ? v->min_layer : 0;
-        if (y0 >= img->layers) return VK_NULL_HANDLE;
+        if (y0 >= img->layers) return 0;
         uint32_t rest = hv && v->set_layers && v->nlayers ? v->nlayers : img->layers - y0;
         if (y0 + rest > img->layers) rest = img->layers - y0;
         if (vt == VK_IMAGE_VIEW_TYPE_1D || vt == VK_IMAGE_VIEW_TYPE_2D) ny = 1;
         else if (vt == VK_IMAGE_VIEW_TYPE_CUBE) ny = 6;
         else if (vt == VK_IMAGE_VIEW_TYPE_CUBE_ARRAY) ny = rest / 6 * 6;
         else ny = rest;
-        if (!ny || y0 + ny > img->layers) return VK_NULL_HANDLE;
+        if (!ny || y0 + ny > img->layers) return 0;
     }
     if (storage && cube) vt = VK_IMAGE_VIEW_TYPE_2D_ARRAY;
     uint32_t aspect = vk_exec_view_aspect(img, v, hv);
@@ -715,38 +755,82 @@ static VkImageView get_view(VkExec *ex, const VkTexImage *img, const view_t *v, 
     // format of the same texel size replaces the image's (reinterpret_format).
     VkFormat rf = reinterpret_format(img, v, hv, storage);
     VkFormat vf = rf ? rf : storage ? vk_storage_format(img->format) : img->format;
-    ViewKey k = {img->image, vf, vt, aspect, l0, nl, y0, ny, swz};
+    *kout = (ViewKey){img->image, vf, vt, aspect, l0, nl, y0, ny, swz, img->serial, 0};
 #else
-    ViewKey k = {img->image, img->format, vt, aspect, l0, nl, y0, ny, swz};
+    *kout = (ViewKey){img->image, img->format, vt, aspect, l0, nl, y0, ny, swz, img->serial, 0};
 #endif
-    if (!view_of.klen) nvn_hm_init(&view_of, sizeof(ViewKey)), nvn_hm_init(&views_by_image, sizeof(VkImage));
-    if (__builtin_expect(vk_live_check_on(), 0) && !img->gone)   // DEBUG-LIVECHECK: a live record's image
-        vk_live_check_use((uint64_t)(uintptr_t)img->image, "a sampled view's image", img->addr);
-    VkImageView found = (VkImageView)nvn_hm_get(&view_of, &k);
-    if (found) return found;
     VkImageViewCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, .image = img->image, .viewType = vt,
                                 .format = img->format,
                                 .components = {swz_of(sw[0]), swz_of(sw[1]), swz_of(sw[2]), swz_of(sw[3])},
                                 .subresourceRange = {aspect, l0, nl, y0, ny}};
-    VkImageViewUsageCreateInfo use = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_USAGE_CREATE_INFO,
-                                      .usage = VK_IMAGE_USAGE_SAMPLED_BIT};
-    if (img->block_views) ci.pNext = &use;   // the image's COLOR_ATTACHMENT usage is its block views' (vk_texture.c)
+    *useout = (VkImageViewUsageCreateInfo){.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_USAGE_CREATE_INFO,
+                                           .usage = VK_IMAGE_USAGE_SAMPLED_BIT};
+    if (img->block_views) ci.pNext = useout;   // the image's COLOR_ATTACHMENT usage is its block views' (vk_texture.c)
 #ifdef GAME_NS2
     ci.format = vf;
     if (!storage && (img->usage & VK_IMAGE_USAGE_STORAGE_BIT) && vk_storage_format(vf) != vf) {
-        use.usage = VK_IMAGE_USAGE_SAMPLED_BIT | (img->usage & VK_IMAGE_USAGE_ATTACHMENT_FEEDBACK_LOOP_BIT_EXT);
-        ci.pNext = &use;   // an sRGB view has no storage usage to inherit
+        useout->usage = VK_IMAGE_USAGE_SAMPLED_BIT | (img->usage & VK_IMAGE_USAGE_ATTACHMENT_FEEDBACK_LOOP_BIT_EXT);
+        ci.pNext = useout;   // an sRGB view has no storage usage to inherit
     }
     if (rf) {   // a reinterpreting view has only the usage it is made for: RGB9E5 is no attachment or storage format
-        use.usage = storage ? VK_IMAGE_USAGE_STORAGE_BIT
-                            : VK_IMAGE_USAGE_SAMPLED_BIT | (img->usage & VK_IMAGE_USAGE_ATTACHMENT_FEEDBACK_LOOP_BIT_EXT);
-        ci.pNext = &use;
+        useout->usage = storage ? VK_IMAGE_USAGE_STORAGE_BIT
+                                : VK_IMAGE_USAGE_SAMPLED_BIT | (img->usage & VK_IMAGE_USAGE_ATTACHMENT_FEEDBACK_LOOP_BIT_EXT);
+        ci.pNext = useout;
     }
 #endif
+    *ciout = ci;
+    return 1;
+}
+
+// Views the replay thread created (vkCreateImageView in get_view and vk_exec_target_view), views taken from those made
+// ahead with their image (vk_exec_views_adopt) and made-ahead views no lookup would have named (dropped): the counters of
+// REKARINA_VIEWS_AHEAD, logged with the made-ahead images (vk_texture.c).
+static volatile int64_t n_views_replay, n_views_adopted, n_views_dropped;
+void vk_exec_views_stats(int64_t *replay, int64_t *adopted, int64_t *dropped) {
+    *replay = __atomic_exchange_n(&n_views_replay, 0, __ATOMIC_RELAXED);
+    *adopted = __atomic_exchange_n(&n_views_adopted, 0, __ATOMIC_RELAXED);
+    *dropped = __atomic_exchange_n(&n_views_dropped, 0, __ATOMIC_RELAXED);
+}
+
+static void view_cache_put(const VkTexImage *img, const ViewKey *k, VkImageView view) {   // texture lock held
+    if (!view_of.klen) nvn_hm_init(&view_of, sizeof(ViewKey)), nvn_hm_init(&views_by_image, sizeof(VkImage));
+    ViewNode *n = malloc(sizeof *n);
+    if (!n) rt_fatal("vk: out of memory");
+    *n = (ViewNode){nvn_hm_get(&views_by_image, &img->image), *k, view};
+    nvn_hm_put(&views_by_image, &img->image, n);
+    nvn_hm_put(&view_of, k, (void *)view);
+}
+
+// An image view of a registered texture for a shader resource of type `rtype` (GfxShaderRes.type); VK_NULL_HANDLE when
+// the image cannot serve it (the caller binds a stand-in). Texture lock held.
+static VkImageView get_view(VkExec *ex, const VkTexImage *img, const view_t *v, int hv, uint16_t rtype, int storage) {
+    (void)ex;
+    ViewKey k;
+    VkImageViewCreateInfo ci;
+    VkImageViewUsageCreateInfo use;
+    if (!sampled_view_setup(img, v, hv, rtype, storage, &k, &ci, &use)) return VK_NULL_HANDLE;
+    if (!view_of.klen) nvn_hm_init(&view_of, sizeof(ViewKey)), nvn_hm_init(&views_by_image, sizeof(VkImage));
+    if (__builtin_expect(vw_addr == 1, 0)) { const char *e = cfg_get("REKARINA_VIEWWATCH"); vw_addr = e && *e ? strtoull(e, NULL, 16) : 0; }
+    if (__builtin_expect(vk_live_check_on(), 0) && !img->gone)   // DEBUG-LIVECHECK: a live record's image
+        vk_live_check_use((uint64_t)(uintptr_t)img->image, "a sampled view's image", img->addr);
+    if (__builtin_expect(vk_live_check_on(), 0)) {   // DEBUG-VIEWLOCK: the cache's tables are the texture lock's
+        int vk_texture_lock_held(void);
+        static volatile int32_t n_unlocked;
+        if (!vk_texture_lock_held() && plat_inc32(&n_unlocked) <= 8)
+            rt_log("LIVE CHECK: the view cache is used without the texture lock (caller %p, worker %d, image %#llx addr %#llx)",
+                   __builtin_return_address(0), vk_par_worker, (unsigned long long)(uintptr_t)img->image,
+                   (unsigned long long)img->addr);
+    }
+    VkImageView found = (VkImageView)nvn_hm_get(&view_of, &k);
+    if (found) return found;
     VkImageView view;
     last_view = (typeof(last_view)){ci, *img, 1};   // DEBUG-LASTVIEW
-    if (vkCreateImageView(vk_ctx()->device, &ci, NULL, &view) != VK_SUCCESS) return VK_NULL_HANDLE;
+    vk_drv_urgent(1);   // the frame waits for this call: the image-ahead thread and the reaper let it go first
+    VkResult vr = vkCreateImageView(vk_ctx()->device, &ci, NULL, &view);
+    vk_drv_urgent(-1);
+    if (vr != VK_SUCCESS) return VK_NULL_HANDLE;
     last_view.in_call = 0;
+    __atomic_fetch_add(&n_views_replay, 1, __ATOMIC_RELAXED);
     vk_live_check_born((uint64_t)(uintptr_t)view);   // DEBUG-LIVECHECK
     // An image that is already gone (destroy_tex keeps its record for the command buffer being recorded) gets a view for
     // this use only. Its views were purged when it went (vk_exec_views_gone); one cached now would stay under the image's
@@ -758,24 +842,49 @@ static VkImageView get_view(VkExec *ex, const VkTexImage *img, const view_t *v, 
         RS.volatile_ = 1;
         return view;
     }
-    ViewNode *n = malloc(sizeof *n);
-    if (!n) rt_fatal("vk: out of memory");
-    *n = (ViewNode){nvn_hm_get(&views_by_image, &img->image), k, view};
-    nvn_hm_put(&views_by_image, &img->image, n);
-    nvn_hm_put(&view_of, &k, (void *)view);
+    view_cache_put(img, &k, view);
+    if (__builtin_expect(vw_addr > 1, 0) && img->addr == vw_addr) {   // DEBUG-VIEWWATCH
+        if (vw_n < 64) vw_img[vw_n++] = img->image;
+        rt_log("VIEWWATCH frame %llu: view %#llx made for image %#llx serial %u addr %#llx (worker %d)",
+               (unsigned long long)__atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED), (unsigned long long)(uintptr_t)view,
+               (unsigned long long)(uintptr_t)img->image, img->serial, (unsigned long long)img->addr, vk_par_worker);
+    }
     return view;
+}
+
+// The key and create info of an attachment view (vk_exec_target_view, vk_exec_views_ahead). Attachment keys carry a
+// swizzle word no sampled key has (those hold four NVN selectors, each below 8).
+static void target_view_setup(const VkTexImage *img, VkFormat format, VkImageViewType type, uint32_t aspect, uint32_t level,
+                              uint32_t base, uint32_t layers, int blocks, ViewKey *kout, VkImageViewCreateInfo *ciout,
+                              VkImageViewUsageCreateInfo *useout) {
+    *kout = (ViewKey){img->image, format, type, aspect, level, 1, base, layers, blocks ? 0xfffffffeu : 0xffffffffu, img->serial, 0};
+    VkImageViewCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, .image = img->image,
+                                .viewType = type, .format = format, .subresourceRange = {aspect, level, 1, base, layers}};
+    *useout = (VkImageViewUsageCreateInfo){.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_USAGE_CREATE_INFO,
+                                           .usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT};
+    if (blocks) ci.pNext = useout;   // not the BC image's sampling and transfer usages
+#ifdef GAME_NS2
+    if (!blocks && (img->usage & VK_IMAGE_USAGE_STORAGE_BIT) && vk_storage_format(format) != format) {
+        useout->usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | (img->usage & VK_IMAGE_USAGE_ATTACHMENT_FEEDBACK_LOOP_BIT_EXT);
+        ci.pNext = useout;   // an sRGB view of an NVN2 image with storage usage (vk_texture.c) leaves that usage out
+    }
+#endif
+    *ciout = ci;
 }
 
 // An attachment view of a registered texture, kept with its sampled views for the image's lifetime: made per command
 // buffer, every render target's views were created again each frame (vkCreateImageView under vk_exec_pass_begin, 2%
-// of the fight replay on the 7900X). Attachment keys carry a swizzle word no sampled key has (those hold four NVN
-// selectors, each below 8). The texture lock guards the tables, as for get_view; vk_exec_pass_begin may already hold it.
+// of the fight replay on the 7900X). The texture lock guards the tables, as for get_view; vk_exec_pass_begin may already
+// hold it.
 VkImageView vk_exec_target_view(const VkTexImage *img, VkFormat format, VkImageViewType type, uint32_t aspect,
                                 uint32_t level, uint32_t base, uint32_t layers, int blocks) {
     vk_texture_lock();   // destroy_tex sets gone and purges the image's views with it held
     if (__builtin_expect(vk_live_check_on(), 0) && !img->gone)   // DEBUG-LIVECHECK
         vk_live_check_use((uint64_t)(uintptr_t)img->image, "a render target's image", img->addr);
-    ViewKey k = {img->image, format, type, aspect, level, 1, base, layers, blocks ? 0xfffffffeu : 0xffffffffu};
+    ViewKey k;
+    VkImageViewCreateInfo ci;
+    VkImageViewUsageCreateInfo use;
+    target_view_setup(img, format, type, aspect, level, base, layers, blocks, &k, &ci, &use);
     if (!view_of.klen) nvn_hm_init(&view_of, sizeof(ViewKey)), nvn_hm_init(&views_by_image, sizeof(VkImage));
     // A texture destroyed while a command buffer or DLSS still held it (img->gone): its image lives on until the GPU is
     // past the submission being recorded (vk_defer_image), so a view for this use is made, and goes the same way. Cached,
@@ -783,33 +892,128 @@ VkImageView vk_exec_target_view(const VkTexImage *img, VkFormat format, VkImageV
     // and the GPU faulted reading it at the start of a pass.
     VkImageView view = img->gone ? VK_NULL_HANDLE : (VkImageView)nvn_hm_get(&view_of, &k);
     if (!view) {
-        VkImageViewCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, .image = img->image,
-                                    .viewType = type, .format = format, .subresourceRange = {aspect, level, 1, base, layers}};
-        VkImageViewUsageCreateInfo use = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_USAGE_CREATE_INFO,
-                                          .usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT};
-        if (blocks) ci.pNext = &use;   // not the BC image's sampling and transfer usages
-#ifdef GAME_NS2
-        if (!blocks && (img->usage & VK_IMAGE_USAGE_STORAGE_BIT) && vk_storage_format(format) != format) {
-            use.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | (img->usage & VK_IMAGE_USAGE_ATTACHMENT_FEEDBACK_LOOP_BIT_EXT);
-            ci.pNext = &use;   // an sRGB view of an NVN2 image with storage usage (vk_texture.c) leaves that usage out
-        }
-#endif
-        if (vkCreateImageView(vk_ctx()->device, &ci, NULL, &view) != VK_SUCCESS)
-            rt_fatal("vk: render target view (format %d) could not be created", (int)format);
+        vk_drv_urgent(1);
+        VkResult vr = vkCreateImageView(vk_ctx()->device, &ci, NULL, &view);
+        vk_drv_urgent(-1);
+        if (vr != VK_SUCCESS) rt_fatal("vk: render target view (format %d) could not be created", (int)format);
+        __atomic_fetch_add(&n_views_replay, 1, __ATOMIC_RELAXED);
         vk_live_check_born((uint64_t)(uintptr_t)view);   // DEBUG-LIVECHECK
         if (img->gone) {
             vk_defer_view(view);
             vk_texture_unlock();
             return view;
         }
-        ViewNode *n = malloc(sizeof *n);
-        if (!n) rt_fatal("vk: out of memory");
-        *n = (ViewNode){nvn_hm_get(&views_by_image, &img->image), k, view};
-        nvn_hm_put(&views_by_image, &img->image, n);
-        nvn_hm_put(&view_of, &k, (void *)view);
+        view_cache_put(img, &k, view);
     }
     vk_texture_unlock();
     return view;
+}
+
+// ---- Views made ahead with their image (REKARINA_VIEWS_AHEAD)
+// A new image is cheap for the replay since the images in pool memory are made ahead (vk_texture.c pm_main), but its
+// views were still made by the replay thread at their first use (get_view, vk_exec_target_view), and while the thread
+// that makes the images ahead and the reaper that destroys the old ones are inside the driver, vkCreateImageView waits
+// for them: NVIDIA's driver makes kernel calls for an image's address space with its object lock held. While the hero
+// turns, the game gives its transient render targets new sizes and addresses every frame (~15 new images a frame) and
+// the replay waited there for ~8 ms a frame, with the texture lock held (the game's registrations waited behind it):
+// scripted half turns 46 frames over 25 ms in 1,300 (2026-11-17, profile slow-frame dumps). So the thread that makes an
+// image ahead also makes the views its first uses ask for: the whole-image sampled view of its own type (with the
+// texture's swizzle) and, for an attachable image, the whole-image attachment view. The replay takes them into the
+// view cache when it takes the image (vk_exec_views_adopt), keyed as get_view and vk_exec_target_view would key them;
+// one whose key the image's record does not give is destroyed (never handed out). No table is touched ahead.
+
+// The shader resource type (GfxShaderRes.type) of an image's own view type.
+static uint16_t rtype_of(const VkTexImage *img) {
+    uint16_t ms = img->samples > 1 ? 0x200 : 0;
+    switch (img->view_type) {
+    case VK_IMAGE_VIEW_TYPE_1D: return 1;
+    case VK_IMAGE_VIEW_TYPE_1D_ARRAY: return 0x101;
+    case VK_IMAGE_VIEW_TYPE_3D: return 4;
+    case VK_IMAGE_VIEW_TYPE_CUBE: return 5;
+    case VK_IMAGE_VIEW_TYPE_CUBE_ARRAY: return 0x105;
+    case VK_IMAGE_VIEW_TYPE_2D_ARRAY: return (uint16_t)(0x102 | ms);
+    default: return (uint16_t)(2 | ms);
+    }
+}
+
+// The default views of img: 0 the sampled one, 1 the attachment one (as vk_exec.c resolve_target names a target bound
+// without a texture view), 2 for a single-sample 2D image its whole-image 2D array view, which the texture pool's
+// array set asks for (vk_texpool.c resolve_slot: vk_exec_pool_view of type 0x103; after the first two the views the
+// replay still made for these images, 2026-11-17 REKARINA_VIEWLOG). 0: that view is not made ahead.
+static int ahead_setup(const VkTexImage *img, int which, ViewKey *k, VkImageViewCreateInfo *ci, VkImageViewUsageCreateInfo *use) {
+    if (!which) return (img->usage & VK_IMAGE_USAGE_SAMPLED_BIT) && sampled_view_setup(img, NULL, 0, rtype_of(img), 0, k, ci, use);
+    if (which == 2)
+        return (img->usage & VK_IMAGE_USAGE_SAMPLED_BIT) && img->view_type == VK_IMAGE_VIEW_TYPE_2D && img->samples <= 1 &&
+               sampled_view_setup(img, NULL, 0, 0x102, 0, k, ci, use);
+    int depth = (img->aspect & (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT)) != 0;
+    VkImageUsageFlags need = depth ? VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT : VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+    if (!(img->usage & need) || img->block_views || img->type != VK_IMAGE_TYPE_2D || !img->layers) return 0;
+    uint32_t aspect = depth ? img->aspect & (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT) : VK_IMAGE_ASPECT_COLOR_BIT;
+    target_view_setup(img, img->format, img->layers > 1 ? VK_IMAGE_VIEW_TYPE_2D_ARRAY : VK_IMAGE_VIEW_TYPE_2D, aspect, 0, 0,
+                      img->layers, 0, k, ci, use);
+    return 1;
+}
+
+int vk_exec_views_ahead_on(void) {
+    static int on = -1;
+    if (on < 0) on = rt_knob("VIEWS_AHEAD", "1");
+    return on;
+}
+
+// The thread that makes images ahead (vk_texture.c pm_main), right after the bind: img is the record the image will get
+// (serial 0). Fills va; no lock, no table.
+void vk_exec_views_ahead(const VkTexImage *img, VkViewsAhead *va) {
+    memset(va, 0, sizeof *va);
+    if (!vk_exec_views_ahead_on() || !img->image) return;
+    va->image = img->image;
+    for (int w = 0; w < VK_VIEWS_AHEAD; w++) {
+        ViewKey k;
+        VkImageViewCreateInfo ci;
+        VkImageViewUsageCreateInfo use;
+        if (!ahead_setup(img, w, &k, &ci, &use)) continue;
+        if (vkCreateImageView(vk_ctx()->device, &ci, NULL, &va->view[w]) != VK_SUCCESS) {
+            va->view[w] = VK_NULL_HANDLE;
+            continue;
+        }
+        vk_live_check_born((uint64_t)(uintptr_t)va->view[w]);   // DEBUG-LIVECHECK
+        _Static_assert(sizeof va->key[w] == sizeof k, "VkViewsAhead.key holds a ViewKey");
+        memcpy(va->key[w], &k, sizeof k);
+    }
+}
+
+// Views made ahead that nobody took: destroyed at once (never handed out, so no submission names them).
+void vk_exec_views_ahead_drop(VkViewsAhead *va) {
+    VkCtx *c = vk_ctx();
+    for (int w = 0; w < VK_VIEWS_AHEAD; w++)
+        if (va->view[w]) {
+            if (c) vkDestroyImageView(c->device, va->view[w], NULL);
+            va->view[w] = VK_NULL_HANDLE;
+            __atomic_fetch_add(&n_views_dropped, 1, __ATOMIC_RELAXED);
+        }
+    va->image = VK_NULL_HANDLE;
+}
+
+// create_tex took the image made ahead and gave img its record (texture lock held): the views go into the cache under
+// the keys get_view and vk_exec_target_view compute for that record, where they match what was made; the rest is dropped.
+void vk_exec_views_adopt(const VkTexImage *img, VkViewsAhead *va) {
+    if (!view_of.klen) nvn_hm_init(&view_of, sizeof(ViewKey)), nvn_hm_init(&views_by_image, sizeof(VkImage));
+    if (va->image != img->image || img->gone) {
+        vk_exec_views_ahead_drop(va);
+        return;
+    }
+    for (int w = 0; w < VK_VIEWS_AHEAD; w++) {
+        if (!va->view[w]) continue;
+        ViewKey k, made;
+        VkImageViewCreateInfo ci;
+        VkImageViewUsageCreateInfo use;
+        memcpy(&made, va->key[w], sizeof made);
+        made.serial = img->serial;   // the record's serial is given when the image is taken
+        if (!ahead_setup(img, w, &k, &ci, &use) || memcmp(&k, &made, sizeof k) || nvn_hm_get(&view_of, &k)) continue;
+        view_cache_put(img, &k, va->view[w]);
+        va->view[w] = VK_NULL_HANDLE;
+        __atomic_fetch_add(&n_views_adopted, 1, __ATOMIC_RELAXED);
+    }
+    vk_exec_views_ahead_drop(va);
 }
 
 int vk_exec_image_gone(VkImage image) {
@@ -821,9 +1025,14 @@ int vk_exec_image_gone(VkImage image) {
 
 int vk_exec_views_gone(VkImage image) {
     if (!views_by_image.klen) return 0;
-    int purged = 0;
+    int purged = 0, watched = 0;
+    for (int i = 0; vw_addr > 1 && i < vw_n && !watched; i++) watched = vw_img[i] == image;   // DEBUG-VIEWWATCH
     for (ViewNode *n = nvn_hm_del(&views_by_image, &image), *next; n; n = next, purged++) {
         next = n->next;
+        if (watched)
+            rt_log("VIEWWATCH frame %llu: view %#llx of image %#llx (key image %#llx serial %u) purged",
+                   (unsigned long long)__atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED), (unsigned long long)(uintptr_t)n->view,
+                   (unsigned long long)(uintptr_t)image, (unsigned long long)(uintptr_t)n->k.image, n->k.serial);
         nvn_hm_del(&view_of, &n->k);
         vk_defer_view(n->view);
         free(n);
@@ -935,6 +1144,39 @@ static int slot_still(uint32_t *egen, uint64_t etok, uint64_t h, uint32_t gen) {
 }
 static int shader_memo_on(void);
 
+// ---- shared lookups (REKARINA_TEX_MEMO_SHARED, with the shared descriptor memo TDS below): small results of texture slot
+// lookups that each recording thread kept in a memo of its own (a slot's texture and image types for answers_for, the
+// sampled subresource for feedback_scan), shared between threads the same way: written under the texture lock, read
+// without it under a sequence word, valid while the slot's token and the generation hold (slot_still).
+#define SHM_N 8192
+typedef struct { volatile uint32_t seq; uint32_t gen; uint64_t key, tok; uint8_t data[24]; } Shm;
+static Shm shm_ac[SHM_N], shm_fm[SHM_N];
+static int tds_mode(void);
+static inline Shm *shm_at(Shm *t, uint64_t key) { return &t[(key * 0x9E3779B97F4A7C15ull) >> 51]; }   // 13 bits: SHM_N
+static int shm_get(Shm *t, uint64_t key, uint64_t h, uint32_t gen, uint64_t *tok, void *out, size_t n) {
+    Shm *s = shm_at(t, key);
+    uint32_t q = __atomic_load_n(&s->seq, __ATOMIC_ACQUIRE);
+    if (!q || (q & 1)) return 0;
+    uint32_t g = s->gen;
+    uint64_t k = s->key, tk = s->tok;
+    uint8_t d[24];
+    memcpy(d, s->data, n);
+    __atomic_thread_fence(__ATOMIC_ACQUIRE);
+    if (__atomic_load_n(&s->seq, __ATOMIC_RELAXED) != q || k != key || !slot_still(&g, tk, h, gen)) return 0;
+    memcpy(out, d, n);
+    *tok = tk;
+    return 1;
+}
+static void shm_put(Shm *t, uint64_t key, uint64_t tok, uint32_t gen, const void *data, size_t n) {   // texture lock held
+    Shm *s = shm_at(t, key);
+    uint32_t q = __atomic_load_n(&s->seq, __ATOMIC_RELAXED);
+    __atomic_store_n(&s->seq, q + 1, __ATOMIC_RELAXED);
+    __atomic_thread_fence(__ATOMIC_RELEASE);
+    s->gen = gen, s->key = key, s->tok = tok;
+    memcpy(s->data, data, n);
+    __atomic_store_n(&s->seq, q + 2, __ATOMIC_RELEASE);
+}
+
 // The slots of (program, stage) whose types its translation reads (gfx_shader_slot_mask), learned from its first
 // shader; ~0u while unknown. The types of other slots select the same shader, so answers_for leaves them zero instead
 // of looking up all 64 handles. Direct-mapped by serial and stage; a collision only relearns.
@@ -953,11 +1195,25 @@ static void slot_mask_learn(uint64_t serial, int st, const GfxShader *s) {
     slotm[slotm_idx(serial, st)] = (typeof(slotm[0])){serial, st, gfx_shader_slot_mask(s)};
 }
 
-static uint8_t type_of_handle(uint64_t h) {   // texture lock held
+// Slot lookup for the helpers below: without the texture lock when the slot's resolution is current
+// (vk_texture_by_id_fast), else under it, taken here once (*locked).
+static const VkTexImage *by_id_try(uint64_t h, view_t *v, int *hv, int *locked) {
+    int hit;
+    const VkTexImage *img = vk_texture_by_id_fast((int)(h & 0xfffff), v, hv, &hit);
+    if (hit) return img;
+    if (!*locked) vk_texture_lock(), *locked = 1;
+    return vk_texture_by_id_locked((int)(h & 0xfffff), v, hv);
+}
+
+static uint8_t type_of_handle_(uint64_t h, int *locked) {
     view_t v;
     int hv;
-    const VkTexImage *img = h ? vk_texture_by_id_locked((int)(h & 0xfffff), &v, &hv) : NULL;
+    const VkTexImage *img = h ? by_id_try(h, &v, &hv, locked) : NULL;
     return img ? (uint8_t)gfx_type_of(img, &v, hv) : 0;
+}
+static uint8_t type_of_handle(uint64_t h) {   // texture lock held
+    int locked = 1;
+    return type_of_handle_(h, &locked);
 }
 
 #ifdef GAME_NS2
@@ -965,10 +1221,10 @@ static uint8_t type_of_handle(uint64_t h) {   // texture lock held
 // gfx_shader.c fmt_names): the view's format when it reinterprets the texture (reinterpret_format), else the image's.
 // Without it the translator takes every formatted store as R8G8B8A8Unorm: OoT's 3D frame stores RGB9E5 words through
 // R32UI views of r11g11b10f and rgba8 images (translator patch 0027 declares the image from this answer). Texture lock.
-static uint8_t img_format_of_handle(uint64_t h) {
+static uint8_t img_format_of_handle_(uint64_t h, int *locked) {
     view_t v;
     int hv;
-    const VkTexImage *img = h ? vk_texture_by_id_locked((int)(h & 0xfffff), &v, &hv) : NULL;
+    const VkTexImage *img = h ? by_id_try(h, &v, &hv, locked) : NULL;
     if (!img) return 0;
     VkFormat f = reinterpret_format(img, &v, hv, 1);
     if (!f) f = vk_storage_format(img->format);
@@ -1032,13 +1288,35 @@ static void answers_for(VkExec *ex, int st, const uint8_t *ctl, uint32_t mask, G
         uint64_t h = ex->tex[st][slot], hi = ex->img[st][slot];
         int tmiss = c->tex[slot] != h || !c->ttok[slot] || !slot_still(&c->tgen[slot], c->ttok[slot], h, gen);
         int imiss = c->img[slot] != hi || !c->itok[slot] || !slot_still(&c->igen[slot], c->itok[slot], hi, gen);
-        uint64_t tt = tmiss ? token_of(h) : 0, it = imiss ? token_of(hi) : 0;
-        if ((tmiss || imiss || check) && !locked) vk_texture_lock(), locked = 1, BS.ac_miss++;
-        if (tmiss) c->tt[slot] = type_of_handle(h), c->tex[slot] = h, c->ttok[slot] = tt, c->tgen[slot] = gen;
-        if (imiss) c->it[slot] = type_of_handle(hi), c->img[slot] = hi, c->itok[slot] = it, c->igen[slot] = gen;
+        if ((tmiss || imiss) && !check && tds_mode()) {   // what another thread looked up (shm_ac), without the lock
+            uint8_t d[2];
+            uint64_t tk;
+            if (tmiss && h && shm_get(shm_ac, h << 1, h, gen, &tk, d, 1))
+                c->tt[slot] = d[0], c->tex[slot] = h, c->ttok[slot] = tk, c->tgen[slot] = gen, tmiss = 0;
+            if (imiss && hi && shm_get(shm_ac, hi << 1 | 1, hi, gen, &tk, d, 2)) {
+                c->it[slot] = d[0], c->img[slot] = hi, c->itok[slot] = tk, c->igen[slot] = gen, imiss = 0;
 #ifdef GAME_NS2
-        if (imiss) c->ifmt[slot] = c->it[slot] ? img_format_of_handle(hi) : 0;
+                c->ifmt[slot] = d[1];
 #endif
+            }
+        }
+        uint64_t tt = tmiss ? token_of(h) : 0, it = imiss ? token_of(hi) : 0;
+        if ((tmiss || imiss || check) && !locked) BS.ac_miss++;
+        if (check && !locked) vk_texture_lock(), locked = 1;
+        // (the lookups take the lock only when a slot's resolution is not current: by_id_try)
+        if (tmiss) c->tt[slot] = type_of_handle_(h, &locked), c->tex[slot] = h, c->ttok[slot] = tt, c->tgen[slot] = gen;
+        if (imiss) c->it[slot] = type_of_handle_(hi, &locked), c->img[slot] = hi, c->itok[slot] = it, c->igen[slot] = gen;
+#ifdef GAME_NS2
+        if (imiss) c->ifmt[slot] = c->it[slot] ? img_format_of_handle_(hi, &locked) : 0;
+#endif
+        if (tds_mode() && locked && tmiss && h && tt) shm_put(shm_ac, h << 1, tt, gen, &c->tt[slot], 1);   // (writers hold the lock)
+        if (tds_mode() && locked && imiss && hi && it) {
+            uint8_t d[2] = {c->it[slot], 0};
+#ifdef GAME_NS2
+            d[1] = c->ifmt[slot];
+#endif
+            shm_put(shm_ac, hi << 1 | 1, it, gen, d, 2);
+        }
         if (check && (type_of_handle(h) != c->tt[slot] || type_of_handle(hi) != c->it[slot]))   // REKARINA_SHADER_MEMO=check
             rt_fatal("vk_exec: kept texture types of stage %d slot %d differ from a lookup", st, slot);
         a->tex_type[slot] = c->tt[slot], a->img_type[slot] = c->it[slot];
@@ -1398,20 +1676,37 @@ static struct {
     struct { uint64_t lo, hi; const uint8_t *data; } u[UPD_N];
 } UPD;
 
+// A chunk of a draw stretch reads the updates noted before its stretch was handed out (vk_exec_draw_upd_limit): the
+// replay thread may note later ones meanwhile (it no longer waits for the chunks at an update).
+static _Thread_local uint32_t upd_lim = UINT32_MAX;
+// (the ring holds another submission's updates until this one notes its first: none of this one's then)
+uint32_t vk_exec_draw_upd_count(uint64_t fence) { return UPD.fence == fence ? UPD.n : 0; }
+void vk_exec_draw_upd_limit(uint32_t n) { upd_lim = n; }
+
 static void upd_note(const VkExec *ex, const p_update_ub *u) {
     if (UPD.fence != ex->fence) UPD.fence = ex->fence, UPD.n = 0;
-    UPD.u[UPD.n++ % UPD_N] = (typeof(UPD.u[0])){u->dst, u->dst + u->size, u->data};
+    UPD.u[UPD.n % UPD_N] = (typeof(UPD.u[0])){u->dst, u->dst + u->size, u->data};
+    __atomic_store_n(&UPD.n, UPD.n + 1, __ATOMIC_RELEASE);
 }
 
 // 1 when an update of this submission supplied [a, a+n).
 static int upd_read(const VkExec *ex, uint64_t a, void *out, size_t n) {
     if (UPD.fence != ex->fence) return 0;
-    for (uint32_t i = UPD.n, end = UPD.n > UPD_N ? UPD.n - UPD_N : 0; i-- > end;) {
+    uint32_t top = __atomic_load_n(&UPD.n, __ATOMIC_ACQUIRE), win = UPD_N;
+    if (upd_lim != UINT32_MAX) {
+        if (top - upd_lim >= UPD_N / 2) return 0;   // the ring went round meanwhile (never seen): memory
+        top = upd_lim;
+        win = UPD_N / 2;   // the replay thread writes the entries above the limit: those of the older half are kept
+    }
+    for (uint32_t i = top, end = top > win ? top - win : 0; i-- > end;) {
         const typeof(UPD.u[0]) *e = &UPD.u[i % UPD_N];
-        if (a >= e->hi || a + n <= e->lo) continue;
-        if (a < e->lo || a + n > e->hi) return 0;   // partly covered: memory
-        memcpy(out, e->data + (a - e->lo), n);
-        return 1;
+        uint64_t lo = e->lo, hi = e->hi;
+        const uint8_t *d = e->data;
+        if (a >= hi || a + n <= lo) continue;
+        if (a < lo || a + n > hi) return 0;   // partly covered: memory
+        memcpy(out, d + (a - lo), n);
+        // (a chunk: the entry it read was not written again meanwhile)
+        return upd_lim == UINT32_MAX || __atomic_load_n(&UPD.n, __ATOMIC_ACQUIRE) - upd_lim < UPD_N / 2;
     }
     return 0;
 }
@@ -1988,12 +2283,24 @@ static uint32_t feedback_scan(VkExec *ex, const GfxShader *fs) {
                 m |= attached_as(ex, &f->r);
                 continue;
             }
+            if (memo == 1 && clean && tds_mode()) {   // what another thread looked up (shm_fm), without the lock
+                SubRange sr;
+                uint64_t tk;
+                if (shm_get(shm_fm, h, h, gen, &tk, &sr, sizeof sr)) {
+                    m |= attached_as(ex, &sr);
+                    *f = (typeof(*f)){.h = h, .tok = tk, .gen = gen, .r = sr};
+                    continue;
+                }
+            }
             uint64_t tok = token_of(h);   // before the lookup
-            if (!locked) vk_texture_lock(), locked = 1;
-            SubRange sr = sampled_sub(h);
+            view_t sv;
+            int shv;
+            const VkTexImage *simg = by_id_try(h, &sv, &shv, &locked);
+            SubRange sr = simg ? sub_of(simg, &sv, shv) : (SubRange){0};
             m |= attached_as(ex, &sr);
             if (tok && clean) *f = (typeof(*f)){.h = h, .tok = tok, .gen = gen, .r = sr};
             else f->h = 0;
+            if (tok && clean && tds_mode() && locked) shm_put(shm_fm, h, tok, gen, &sr, sizeof sr);   // (writers hold the lock)
         }
     }
     if (locked) vk_texture_unlock();
@@ -2109,8 +2416,128 @@ void vk_exec_draw_who_names(uint64_t image) {
     rt_log("  descriptor memos: %d entries of %d threads hold it", hits, n);
 }
 
+// A memo hit's per-submission storage check (the slot's first binding in a submission) on a thread that records the
+// chunks of a draw stretch: the slot is queued here, lock-free, and the replay thread checks the queued slots at the
+// join (vk_exec_par_join, before the part and its uploads are submitted), under one hold of the texture lock and with
+// each one's "as of" limit. The draw keeps the memo's descriptor either way: the check re-uploads into the same image.
+// So the chunk threads no longer take the texture lock for these (about a thousand checks a frame; the replay thread
+// waited 0.3 ms a frame for chunk threads' holds, RL_TEX). REKARINA_CHUNK_TEXCHECK=0: the chunk checks for itself.
+#define TCHK_N 16384
+static struct { uint32_t id; uint64_t asof; } tchk[TCHK_N];
+static volatile uint32_t tchk_n;
+static volatile uint64_t tchk_queued, tchk_full, chunk_miss_locks;   // REKARINA_TRACE=perf
+static volatile uint64_t tds_hits, tds_misses, tds_hold_cuts;   // the shared memo and the short holds (below), racy counts
+static uint64_t tchk_drained, tchk_drains;
+static int tchk_on(void) {
+    static int on = -1;
+    if (on < 0) on = rt_knob("CHUNK_TEXCHECK", "1");
+    return on;
+}
+static int tchk_push(uint64_t h) {
+    uint32_t i = __atomic_fetch_add(&tchk_n, 1, __ATOMIC_RELAXED);
+    if (i >= TCHK_N) {
+        __atomic_fetch_add(&tchk_full, 1, __ATOMIC_RELAXED);
+        return 0;
+    }
+    tchk[i].id = (uint32_t)(h & 0xfffff), tchk[i].asof = vk_texture_asof_limit();
+    __atomic_fetch_add(&tchk_queued, 1, __ATOMIC_RELAXED);
+    return 1;
+}
+// vk_exec_par_join, on the replay thread once every chunk is done (their pushes are ordered before their done flags)
+void vk_exec_draw_tchk_drain(void) {
+    uint32_t n = __atomic_load_n(&tchk_n, __ATOMIC_ACQUIRE);
+    if (!n) return;
+    if (n > TCHK_N) n = TCHK_N;
+    vk_texture_lock();
+    uint64_t was = vk_texture_asof_limit();
+    for (uint32_t i = 0; i < n; i++) {
+        vk_texture_asof(tchk[i].asof);
+        vk_texture_by_id_locked((int)tchk[i].id, NULL, NULL);
+    }
+    vk_texture_asof(was);
+    vk_texture_unlock();
+    __atomic_store_n(&tchk_n, 0, __ATOMIC_RELEASE);
+    tchk_drained += n, tchk_drains++;
+}
+void vk_exec_draw_tchk_log(void) {
+    rt_log("perf: chunk texture lookups: storage checks left to the replay thread %llu (%.1f per join, %llu queue full), "
+           "texture lock taken by a chunk for a memo miss or an uncached binding %llu; shared memo %llu hits, %llu misses; "
+           "holds ended after a texture binding %llu",
+           (unsigned long long)tchk_queued, tchk_drains ? (double)tchk_drained / (double)tchk_drains : 0.0,
+           (unsigned long long)tchk_full, (unsigned long long)chunk_miss_locks, (unsigned long long)tds_hits,
+           (unsigned long long)tds_misses, (unsigned long long)tds_hold_cuts);
+    tchk_queued = tchk_full = chunk_miss_locks = 0, tchk_drained = tchk_drains = 0, tds_hits = tds_misses = tds_hold_cuts = 0;
+}
+
+// ---- the shared descriptor memo (TDS; REKARINA_TEX_MEMO_SHARED=0: each thread its own, as before)
+// A second level behind each thread's memo (TD): what one thread resolved under the texture lock, another takes without
+// the lock while the same conditions hold (the slot's token and generation, the sampler generation; the per-submission
+// storage check stays per thread, or queued for a chunk thread, as on a TD hit). The threads that record the chunks of a
+// draw stretch each kept a memo of their own and resolved under the lock what another thread had resolved a moment
+// before, and the replay thread waited for those holds: 4.5 s of a 175 s tour behind chunk threads in tex_info_lookup_
+// (the lock-holder record, 2026-11-17). Entries are written with the texture lock held (writers are serialized by it) and read
+// under a sequence word: an odd word (a write in progress) or one that moved during the read is a miss.
+#define TDS_N 16384
+typedef struct {
+    uint64_t h, tok;
+    uint32_t gen, epoch, sgen;
+    uint16_t type;
+    uint8_t separate;
+    VkImage image;
+    VkDescriptorImageInfo out;
+} TdsEnt;
+static struct { volatile uint32_t seq; TdsEnt e; } TDS[TDS_N];
+
+static int tds_mode(void) {
+    static int on = -1;
+    if (on < 0) on = rt_knob("TEX_MEMO_SHARED", "1");
+    return on;
+}
+
+static inline uint32_t tds_idx(uint64_t h, uint16_t type, int separate) {
+    return (uint32_t)((h * 0x9E3779B97F4A7C15ull ^ (uint64_t)type << 7 ^ (uint64_t)separate) >> 50);   // 14 bits: TDS_N
+}
+
+// 1 with *o filled when the entry for (h, type, separate) holds under generation gen and sampler generation sg.
+static int tds_get(uint64_t h, uint16_t type, int separate, uint32_t sg, uint32_t gen, TdsEnt *o) {
+    typeof(TDS[0]) *s = &TDS[tds_idx(h, type, separate)];
+    uint32_t q = __atomic_load_n(&s->seq, __ATOMIC_ACQUIRE);
+    if (!q || (q & 1)) return 0;
+    memcpy(o, (const void *)&s->e, sizeof *o);
+    __atomic_thread_fence(__ATOMIC_ACQUIRE);
+    if (__atomic_load_n(&s->seq, __ATOMIC_RELAXED) != q) return 0;
+    return o->h == h && o->type == type && o->separate == separate && o->sgen == sg && slot_still(&o->gen, o->tok, h, gen);
+}
+
+static void tds_put(uint64_t h, uint16_t type, int separate, uint64_t tok, uint32_t gen, uint32_t ep, uint32_t sg, VkImage image,
+                    const VkDescriptorImageInfo *out) {   // texture lock held
+    typeof(TDS[0]) *s = &TDS[tds_idx(h, type, separate)];
+    uint32_t q = __atomic_load_n(&s->seq, __ATOMIC_RELAXED);
+    __atomic_store_n(&s->seq, q + 1, __ATOMIC_RELAXED);
+    __atomic_thread_fence(__ATOMIC_RELEASE);
+    TdsEnt e = {.h = h, .tok = tok, .gen = gen, .epoch = ep, .sgen = sg, .type = type, .separate = (uint8_t)separate,
+                .image = image, .out = *out};
+    memcpy((void *)&s->e, &e, sizeof e);
+    __atomic_store_n(&s->seq, q + 2, __ATOMIC_RELEASE);
+}
+
 static void tex_info_lookup_(VkExec *ex, const GfxShaderRes *r, uint64_t h, int storage, int separate,
                              VkDescriptorImageInfo *out, int *memo_hit);
+
+// A memo hit's per-submission storage check of slot h: nothing to do when the slot was already checked and noted as
+// drawn in this submission (by any thread: vk_texture_by_id_fast, no lock); else a chunk leaves it to the replay
+// thread (tchk) and the replay thread does it under the texture lock. Each slot's first binding in a submission took
+// the lock in every thread that bound it, and the chunks queued it for the replay thread again and again: at the
+// Market's square the replay waited behind tex_info_lookup_ 753 times in 5,200 frames (REKARINA_LOCKMAP, 2026-11-18).
+static void memo_storage_check(uint64_t h) {
+    int hit;
+    vk_texture_by_id_fast((int)(h & 0xfffff), NULL, NULL, &hit);
+    if (hit) return;
+    if (vk_par_worker && tchk_on() && tchk_push(h)) return;
+    TD_LOCK();
+    vk_texture_by_id_locked((int)(h & 0xfffff), NULL, NULL);
+}
+
 static void tex_info_lookup(VkExec *ex, const GfxShaderRes *r, uint64_t h, int storage, int separate,
                             VkDescriptorImageInfo *out) {
     int hit = 0;
@@ -2140,7 +2567,10 @@ static void tex_info_lookup_(VkExec *ex, const GfxShaderRes *r, uint64_t h, int 
     // (a chunk whose limit leaves out a GPU write at the slot's storage resolves for itself and keeps nothing:
     // vk_texture.c "lookups as of a place")
     if (!h || storage || !td_on || !vk_texture_asof_clean((int)(h & 0xfffff))) {
-        if (h) TD_LOCK();
+        if (h) {
+            if (vk_par_worker && td_lock && !*td_lock) __atomic_fetch_add(&chunk_miss_locks, 1, __ATOMIC_RELAXED);
+            TD_LOCK();
+        }
         return tex_info_full(ex, r, h, storage, separate, out, &image);
     }
     uint32_t gen = vk_texture_slots_gen(), ep = vk_texture_epoch(), sg = vk_sampler_gen();   // before any lookup
@@ -2149,8 +2579,7 @@ static void tex_info_lookup_(VkExec *ex, const GfxShaderRes *r, uint64_t h, int 
         slot_still(&m->gen, m->tok, h, gen)) {
         *memo_hit = 1;
         if (m->epoch != ep) {   // the slot's first binding in this submission: only its storage check is due
-            TD_LOCK();
-            vk_texture_by_id_locked((int)(h & 0xfffff), NULL, NULL);
+            memo_storage_check(h);
             m->epoch = ep;
         }
         *out = m->out;
@@ -2189,11 +2618,28 @@ static void tex_info_lookup_(VkExec *ex, const GfxShaderRes *r, uint64_t h, int 
         }
         return;
     }
+    if (tds_mode()) {   // what another thread resolved under the same conditions, without the lock (TDS)
+        TdsEnt s;
+        if (tds_get(h, r->type, separate, sg, gen, &s)) {
+            *memo_hit = 1;
+            if (s.epoch != ep) memo_storage_check(h);   // this submission's storage check
+            *m = (typeof(*m)){.h = h, .tok = s.tok, .gen = s.gen, .epoch = ep, .sgen = sg, .type = r->type,
+                              .separate = (uint8_t)separate, .valid = 1, .image = s.image, .out = s.out};
+            *out = s.out;
+            out->imageLayout = s.image && ex->nfbl && in_fbl(ex, s.image) ? VK_IMAGE_LAYOUT_ATTACHMENT_FEEDBACK_LOOP_OPTIMAL_EXT
+                                                                          : VK_IMAGE_LAYOUT_GENERAL;
+            __atomic_fetch_add(&tds_hits, 1, __ATOMIC_RELAXED);
+            return;
+        }
+        __atomic_fetch_add(&tds_misses, 1, __ATOMIC_RELAXED);
+    }
     uint64_t tok = token_of(h);   // before the lookup
+    if (vk_par_worker && td_lock && !*td_lock) __atomic_fetch_add(&chunk_miss_locks, 1, __ATOMIC_RELAXED);
     TD_LOCK();
     tex_info_full(ex, r, h, storage, separate, out, &image);
     *m = (typeof(*m)){.h = h, .tok = tok, .gen = gen, .epoch = ep, .sgen = sg, .type = r->type,
                       .separate = (uint8_t)separate, .valid = 1, .image = image, .out = *out};
+    if (tds_mode()) tds_put(h, r->type, separate, tok, gen, ep, sg, image, out);   // texture lock held (TD_LOCK)
 }
 
 static void tex_info_full(VkExec *ex, const GfxShaderRes *r, uint64_t h, int storage, int separate,
@@ -2356,6 +2802,8 @@ static Twin *twin_update(VkExec *ex, const VkTexImage *img) {
             *t = (Twin){0};
             return NULL;
         }
+        vk_addr_label((uint64_t)(uintptr_t)t->img, "depth twin of %#llx %ux%u", (unsigned long long)(uintptr_t)img->image,
+                      img->width, img->height);
         for (int k = 0; k < 2; k++) {
             VkImageViewCreateInfo vi = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, .image = t->img,
                                         .viewType = k ? VK_IMAGE_VIEW_TYPE_2D_ARRAY : VK_IMAGE_VIEW_TYPE_2D, .format = df,
@@ -2799,7 +3247,13 @@ static void bind_resources_(VkExec *ex, const VkPipeInfo *info);
 static void bind_resources(VkExec *ex, const VkPipeInfo *info) {
     uint64_t t = sec_begin();
     bind_resources_(ex, info);
-    sec_end(SEC_BIND_RES, t);
+    sec_end(info->bind_point == VK_PIPELINE_BIND_POINT_COMPUTE ? SEC_BIND_CS : SEC_BIND_RES, t);   // BIND_CS: dispatches
+}
+
+static int tex_hold_short(void) {   // REKARINA_TEX_HOLD: binding (the default since 2026-11-17) or draw (as before)
+    static int on = -1;
+    if (on < 0) { const char *e = cfg_get("REKARINA_TEX_HOLD"); on = !(e && !strcmp(e, "draw")); }
+    return on;
 }
 
 static void bind_resources_(VkExec *ex, const VkPipeInfo *info) {
@@ -2949,6 +3403,10 @@ static void bind_resources_(VkExec *ex, const VkPipeInfo *info) {
                     o[k].w[2] = (uint32_t)o[k].image.imageLayout;   // zero the tail padding
                     if (e) *e = (ScTex){SC.stamp, h, r->type, r->separate, o[k].image}, SC.misses++;
                 }
+                // REKARINA_TEX_HOLD=binding: the lock a lookup of this binding took goes now, not at the draw's last
+                // binding: the buffers resolved after it (uniform and storage ranges, the mirrors' notes) ran with the
+                // texture lock held, and the replay thread waited behind chunk threads' holds (A's LOCKWHO 2026-11-17).
+                if (tlocked && tex_hold_short()) vk_texture_unlock(), tlocked = 0, tds_hold_cuts++;
             }
         } else {
             rt_fatal("vk: binding %u has an unknown kind %d", (unsigned)b->binding, (int)b->kind);
@@ -4878,7 +5336,7 @@ static int prepare_stages(VkExec *ex, int mesh, int prim, int restart) {
         sh[2] = shader_for(ex, NVN_STAGE_FS, &h2, &w2, 0);
     }
     sec_end(SEC_SHADER_MESH, sec1);
-    if (w0 || w1 || w2) return vk_exec_oq_draw_lost(ex), 0;
+    if (w0 || w1 || w2) return left_out(LO_MESH_SHADER, ex->prog->serial, NULL), vk_exec_oq_draw_lost(ex), 0;
     if (mesh == 2 ? !sh[0] || (h2 && !sh[2]) : !h1 || !sh[1] || (h0 && !sh[0]) || (h2 && !sh[2]) || (!mesh && !sh[0])) {
         static uint8_t once[2];
         if (!__atomic_exchange_n(&once[mesh & 1], 1, __ATOMIC_RELAXED))
@@ -4904,6 +5362,8 @@ static int prepare_stages(VkExec *ex, int mesh, int prim, int restart) {
     sec1 = sec_begin();
     VkPipeline p = vk_pipeline_stages(&s, sh, mesh, &info);
     sec_end(SEC_PIPE_MESH, sec1);
+    if (!p && vk_pipeline_stages_pending())
+        return left_out(LO_MESH_PIPE, ex->prog->serial, sh[1] ? sh[1] : sh[0]), vk_exec_oq_draw_lost(ex), 0;
     if (!p || !info) return vk_exec_oq_draw_lost(ex), warn_once(W_PIPELINE, "a geometry or mesh pipeline could not be created: draws with it are skipped"), 0;
     bind_pipeline(ex, VK_PIPELINE_BIND_POINT_GRAPHICS, p);
     if (mesh == 2) {   // its vertex input and topology are static: the dynamic state is set without them, and forgotten after
@@ -5577,10 +6037,13 @@ static void op_dispatch(VkExec *ex, const p_dispatch *d) {
     // out meanwhile. Waiting for either on the replay thread froze the game for half a second (2026-11-14).
     int cs_wait = 0;
     const GfxShader *cs = shader_for(ex, NVN_STAGE_CS, &present, &cs_wait, 0);
-    if (!cs) return;
+    if (!cs) {
+        if (cs_wait) left_out(LO_CS_SHADER, ex->prog->serial, NULL);
+        return;
+    }
     const VkPipeInfo *info = NULL;
     VkPipeline p = vk_pipeline_compute(cs, &info);
-    if (vk_pipeline_compute_pending()) return;   // a shader never run here is being compiled beside (vk_pipeline.c)
+    if (vk_pipeline_compute_pending()) return left_out(LO_CS_PIPE, ex->prog->serial, cs);   // being compiled beside (vk_pipeline.c)
     if (!p || !info) return warn_once(W_PIPELINE, "a compute pipeline could not be created: dispatches with it are skipped");
     {   // DEBUG-SKIPCS: REKARINA_SKIP_CS=<input id prefix, 16 hex>[,...]: these dispatches are not run, to measure what they cost
         static const char *want;
@@ -5673,10 +6136,13 @@ static void op_dispatch_ind(VkExec *ex, const p_dispatch_ind *d) {
     int present;
     int cs_wait = 0;   // as in op_dispatch: translated and built beside the replay, left out meanwhile
     const GfxShader *cs = shader_for(ex, NVN_STAGE_CS, &present, &cs_wait, 0);
-    if (!cs) return;
+    if (!cs) {
+        if (cs_wait) left_out(LO_CS_SHADER, ex->prog->serial, NULL);
+        return;
+    }
     const VkPipeInfo *info = NULL;
     VkPipeline p = vk_pipeline_compute(cs, &info);
-    if (vk_pipeline_compute_pending()) return;   // being compiled beside (vk_pipeline.c)
+    if (vk_pipeline_compute_pending()) return left_out(LO_CS_PIPE, ex->prog->serial, cs);   // being compiled beside (vk_pipeline.c)
     if (!p || !info) return warn_once(W_PIPELINE, "a compute pipeline could not be created: dispatches with it are skipped");
     vk_exec_barrier(ex);
     VK_MEM_USE(ip);
@@ -5723,8 +6189,14 @@ static void op_update_ub(VkExec *ex, const p_update_ub *u) {
     VK_MEM_PICK(sp);
     VkBufferCopy cp = {o, sp.offset, u->size};
     vkCmdCopyBuffer(ex->cb, b, sp.buffer, 1, &cp);
+    // Chunks of a draw stretch may still be recording (vk_exec.c par_join_op: an update no longer waits for them): the
+    // write-back note under the lock they note theirs with, and the snapshot's copy of the range dropped only for
+    // draws after this point (vk_usnap_drop_update).
+    plat_mutex_lock(&vk_par_lock);
     int owned = vk_mem_gpu_wrote(&sp, u->size);
-    vk_usnap_drop(u->dst, u->size);
+    if (vk_exec_ub_nojoin()) vk_usnap_drop_update(u->dst, u->size);
+    else vk_usnap_drop(u->dst, u->size);
+    plat_mutex_unlock(&vk_par_lock);
     ex->recorded++;
     vk_mem_count(sp.cls, VK_MUSE_GPU_WRITE, u->size);
     note_written(ex, u->dst, u->size, owned, 0);

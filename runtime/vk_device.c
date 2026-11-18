@@ -41,7 +41,7 @@ static VKAPI_ATTR VkBool32 VKAPI_CALL debug_cb(VkDebugUtilsMessageSeverityFlagBi
 #define AB_N (1u << 17)
 #define AL_N (1u << 16)
 typedef struct { uint64_t base, size, handle, t_ns; uint32_t type; uint8_t bind; } AddrEv;
-typedef struct { uint64_t handle; char text[56]; } AddrLabel;
+typedef struct { uint64_t handle; char text[248]; } AddrLabel;   // DEBUG-IMGWATCH: 88 cut the notes short   // the label, then its notes (vk_addr_note)
 static AddrEv *ab_ring;
 static AddrLabel *ab_labels;
 static uint32_t ab_next;
@@ -85,6 +85,36 @@ void vk_addr_label(uint64_t handle, const char *fmt, ...) {
     plat_mutex_unlock(&ab_lock);
 }
 
+// What became of a labelled object, appended to its label while there is room: a texture image's end and whether it was
+// parked, held or freed, its drop from the park and its adoption by a new texture, each with the frame (vk_texture.c
+// destroy_tex, park_drop, adopt_released). The fault report then says what each image that lay at the address went
+// through and when, against the report's own frame.
+void vk_addr_note(uint64_t handle, const char *fmt, ...) {
+    if (!ab_labels || !handle) return;
+    char add[32];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(add, sizeof add, fmt, ap);
+    va_end(ap);
+    plat_mutex_lock(&ab_lock);
+    AddrLabel *l = &ab_labels[(handle * 0x9E3779B97F4A7C15ull) >> 48];
+    if (l->handle != handle) *l = (AddrLabel){.handle = handle};
+    size_t n = strlen(l->text);
+    if (n + 1 < sizeof l->text) snprintf(l->text + n, sizeof l->text - n, "%s", add);
+    plat_mutex_unlock(&ab_lock);
+}
+
+// DEBUG-IMGWATCH: an image's label and notes, logged (vk_texture.c vk_texture_reap_check).
+void vk_addr_label_print(uint64_t handle) {
+    if (!ab_labels || !handle) return;
+    char text[sizeof ab_labels[0].text] = "";
+    plat_mutex_lock(&ab_lock);
+    const AddrLabel *l = &ab_labels[(handle * 0x9E3779B97F4A7C15ull) >> 48];
+    if (l->handle == handle) memcpy(text, l->text, sizeof text);
+    plat_mutex_unlock(&ab_lock);
+    rt_log("IMGWATCH   image %#llx: %s", (unsigned long long)handle, text[0] ? text : "(no label)");
+}
+
 // The binding events whose range holds the fault's address range, newest first (at most 12 lines).
 static void addr_fault_report(uint64_t addr, uint64_t precision) {
     if (!ab_ring) return;
@@ -94,9 +124,11 @@ static void addr_fault_report(uint64_t addr, uint64_t precision) {
         uint64_t seen = vk_mem_lost_seen_ns();
         if (seen) rt_log("vk: fault address %#llx: the device was first seen lost %.1f ms before the report",
                          (unsigned long long)addr, (now - seen) / 1e6);
+        rt_log("vk: fault address %#llx: the report comes at frame %llu (the frames in the labels below count the same way)",
+               (unsigned long long)addr, (unsigned long long)__atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED));
     }
     int shown = 0, nwho = 0;
-    uint64_t who[3];
+    uint64_t who[24];
     plat_mutex_lock(&ab_lock);
     uint32_t n = ab_next < AB_N ? ab_next : AB_N;
     for (uint32_t k = 0; k < n && shown < 12; k++) {
@@ -108,7 +140,7 @@ static void addr_fault_report(uint64_t addr, uint64_t precision) {
                (unsigned long long)e->handle, l->handle == e->handle ? l->text : "no label", e->bind ? "bound at" : "UNBOUND from",
                (unsigned long long)e->base, (unsigned long long)e->size, (now - e->t_ns) / 1e6);
         shown++;
-        if (e->type == VK_OBJECT_TYPE_IMAGE && nwho < 3 && (!nwho || who[nwho - 1] != e->handle)) who[nwho++] = e->handle;
+        if (e->type == VK_OBJECT_TYPE_IMAGE && nwho < 24 && (!nwho || who[nwho - 1] != e->handle)) who[nwho++] = e->handle;
     }
     plat_mutex_unlock(&ab_lock);
     // DEBUG-WHONAMES: REKARINA_FAULT_WHO=1: what still names an image that lay at the address (the tables take their
@@ -120,6 +152,8 @@ static void addr_fault_report(uint64_t addr, uint64_t precision) {
         void vk_exec_draw_who_names(uint64_t image);
         void vk_exec_who_names(uint64_t image);
         rt_log("vk: fault address: who still names image %#llx:", (unsigned long long)who[i]);
+        void vk_mem_defer_who(uint64_t handle);
+        vk_mem_defer_who(who[i]);
         vk_tpool_who_names(who[i]);
         vk_exec_draw_who_names(who[i]);
         vk_exec_who_names(who[i]);
@@ -127,6 +161,36 @@ static void addr_fault_report(uint64_t addr, uint64_t precision) {
     }
     if (!shown)
         rt_log("vk: fault address %#llx: no image or buffer was bound there in the last %u binding events", (unsigned long long)addr, n);
+}
+
+// DEBUG-FAULTIP: the binding events whose range holds a faulting shader's instruction pointer, of any object type (the
+// driver may report the allocation that holds shader code, with the pipeline or another object as its owner), newest
+// first; and the nearest event below it, to show where the code heap lies.
+static void addr_ip_report(uint64_t ip) {
+    if (!ab_ring) return;
+    int shown = 0;
+    uint64_t now = plat_now_ns(), best_lo = 0;
+    const AddrEv *below = NULL;
+    plat_mutex_lock(&ab_lock);
+    uint32_t n = ab_next < AB_N ? ab_next : AB_N;
+    for (uint32_t k = 0; k < n; k++) {
+        const AddrEv *e = &ab_ring[(ab_next - 1 - k) % AB_N];
+        if (e->base <= ip && e->base + e->size > ip) {
+            if (shown++ < 8)
+                rt_log("vk: instruction pointer %#llx: object type %u handle %#llx %s %#llx+%#llx %.1f ms before the report",
+                       (unsigned long long)ip, e->type, (unsigned long long)e->handle, e->bind ? "bound at" : "UNBOUND from",
+                       (unsigned long long)e->base, (unsigned long long)e->size, (now - e->t_ns) / 1e6);
+        } else if (e->base <= ip && e->base >= best_lo) {
+            best_lo = e->base, below = e;
+        }
+    }
+    if (!shown && below)
+        rt_log("vk: instruction pointer %#llx is in no reported range; the nearest below: object type %u handle %#llx %#llx+%#llx",
+               (unsigned long long)ip, below->type, (unsigned long long)below->handle, (unsigned long long)below->base,
+               (unsigned long long)below->size);
+    else if (!shown)
+        rt_log("vk: instruction pointer %#llx: no reported range below it in the last %u binding events", (unsigned long long)ip, n);
+    plat_mutex_unlock(&ab_lock);
 }
 
 static int has_ext(const VkExtensionProperties *e, uint32_t n, const char *name) {
@@ -205,6 +269,9 @@ static int create_instance(void) {
     if (validate || ((vk_dlssg_wanted() || addr_report_wanted()) && utils)) ext[n_ext++] = VK_EXT_DEBUG_UTILS_EXTENSION_NAME;
     if (vk_hdr_wanted() && instance_ext_present(VK_EXT_SWAPCHAIN_COLOR_SPACE_EXTENSION_NAME))   // HDR10 surface formats
         ext[n_ext++] = VK_EXT_SWAPCHAIN_COLOR_SPACE_EXTENSION_NAME;
+    // DEBUG-PRESENTTIMING: VK_KHR_present_id2, which present timing builds on, asks for surface capabilities 2
+    if (cfg_get("REKARINA_PRESENT_TIMING") && n_ext < 12 && instance_ext_present(VK_KHR_GET_SURFACE_CAPABILITIES_2_EXTENSION_NAME))
+        ext[n_ext++] = VK_KHR_GET_SURFACE_CAPABILITIES_2_EXTENSION_NAME;
     vk_dlaa_instance_exts(ext, &n_ext, 12);
     VkApplicationInfo app = {.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO, .pApplicationName = RT_PORT_NAME,
                              .pEngineName = RT_PORT_NAME, .apiVersion = VK_API_VERSION_1_3};
@@ -375,6 +442,8 @@ typedef struct {
     VkPhysicalDeviceShaderAtomicFloatFeaturesEXT af;
     VkPhysicalDevicePipelineExecutablePropertiesFeaturesKHR pep;   // DEBUG-PIPESTATS
     VkPhysicalDeviceCooperativeMatrixFeaturesNV cm;
+    VkPhysicalDevicePresentTimingFeaturesEXT pt;      // DEBUG-PRESENTTIMING
+    VkPhysicalDevicePresentId2FeaturesKHR pid2;
 #ifdef GAME_NS2
     VkPhysicalDeviceMeshShaderFeaturesEXT mesh;
     VkPhysicalDeviceFragmentShadingRateFeaturesKHR vrs;
@@ -531,11 +600,26 @@ static int create_device(void) {
         gpl_link = tail;
         CHAIN(gpl, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_GRAPHICS_PIPELINE_LIBRARY_FEATURES_EXT);
     }
+    // DEBUG-PRESENTTIMING: REKARINA_PRESENT_TIMING=1: when each present's first pixel became visible, from the
+    // presentation engine, for the pacing log (gfx_present.c)
+    if (cfg_get("REKARINA_PRESENT_TIMING") && has_ext(ep, ne, VK_EXT_PRESENT_TIMING_EXTENSION_NAME) &&
+        has_ext(ep, ne, VK_KHR_PRESENT_ID_2_EXTENSION_NAME) && n_ext + 2 <= sizeof ext / sizeof *ext) {
+        ext[n_ext++] = VK_EXT_PRESENT_TIMING_EXTENSION_NAME;
+        ext[n_ext++] = VK_KHR_PRESENT_ID_2_EXTENSION_NAME;
+        CHAIN(pt, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_TIMING_FEATURES_EXT);
+        CHAIN(pid2, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_ID_2_FEATURES_KHR);
+        g_vk.has_present_timing = 1;
+    }
     free(ep);
 
     // The driver fills the chain with what it supports; the same chain then enables all of it (robustBufferAccess
     // stays on: guest shaders index constant buffers freely and out-of-range reads must stay harmless).
     vkGetPhysicalDeviceFeatures2(g_vk.phys, &c->f2);
+    if (g_vk.has_present_timing && !(c->pt.presentTiming && c->pid2.presentId2)) g_vk.has_present_timing = 0;
+    if (cfg_get("REKARINA_PRESENT_TIMING"))
+        rt_log("vk: present timing %s (presentTiming %d, presentAtAbsoluteTime %d, presentId2 %d)",
+               g_vk.has_present_timing ? "on" : "not available", (int)c->pt.presentTiming, (int)c->pt.presentAtAbsoluteTime,
+               (int)c->pid2.presentId2);
     vk_caps_driver(g_vk.phys);
     vk_caps_features(&c->f2.features);
     if (gpl_link) {
@@ -658,12 +742,15 @@ static int create_device(void) {
     sec_init();
     static VmaVulkanFunctions vma_fn;
     vma_fn.vkAllocateMemory = sec_on ? timed_alloc : NULL;   // REKARINA_SECTIONS: VMA's vkAllocateMemory is timed
-    // Blocks of 64 MiB (REKARINA_VMA_BLOCK_MB; the allocator's own default is 256): a block goes back to the system only
+    // Blocks of 16 MiB (REKARINA_VMA_BLOCK_MB; the allocator's own default is 256): a block goes back to the system only
     // when nothing is left in it, and the textures of a map the player left (vk_texture.c evict_cold) were made
     // together, so they empty small blocks whole where they left a quarter-gigabyte block a tenth full: after four
-    // map changes the blocks held 1.9 GiB with no allocation in it, counted against the video memory budget.
+    // map changes the blocks held 1.9 GiB with no allocation in it, counted against the video memory budget. 64 MiB
+    // blocks still held 0.7-1.2 GiB free late in a 4-map tour: a texture that stayed or a mirror pinned each one. With
+    // 16 MiB the free space inside blocks after the tour was 495 MiB against 884 (the driver's count 8,910 against
+    // 9,274), and 721-843 against 928-1,155 in another pair, with no more frames over 25 ms (2026-11-17).
     const char *bm = cfg_get("REKARINA_VMA_BLOCK_MB");
-    int block_mb = bm && atoi(bm) >= 16 ? atoi(bm) : 64;
+    int block_mb = bm && atoi(bm) >= 16 ? atoi(bm) : 16;
     VmaAllocatorCreateInfo ai = {.physicalDevice = g_vk.phys, .device = g_vk.device, .instance = g_vk.instance,
                                  .vulkanApiVersion = VK_API_VERSION_1_3,
                                  .preferredLargeHeapBlockSize = (VkDeviceSize)block_mb << 20,
@@ -781,8 +868,34 @@ void vk_device_fault_report(VkResult r) {
     VkDeviceFaultVendorInfoEXT *vi = calloc(n.vendorInfoCount + 1, sizeof *vi);
     VkDeviceFaultInfoEXT info = {.sType = VK_STRUCTURE_TYPE_DEVICE_FAULT_INFO_EXT, .pAddressInfos = ai, .pVendorInfos = vi};
     uint64_t binary = n.vendorBinarySize;
-    n.vendorBinarySize = 0;   // the vendor binary is not fetched; its size alone is logged
+    // The vendor binary (NVIDIA: a GPU crash dump that names the faulting shader for tools that read it) is written beside
+    // the log as rekarina-device-fault.bin, or into the working folder when the log goes elsewhere; it costs nothing
+    // until a device is lost, and a lost device in anyone's play then leaves it for the problem report.
+    // REKARINA_FAULT_BIN=<file> names another file, =0 writes none.
+    const char *bin_path = cfg_env("REKARINA_FAULT_BIN");
+    static char def_path[1024];
+    if (!bin_path || !*bin_path) {
+        const char *lp = rt_log_path();
+        snprintf(def_path, sizeof def_path, "%s", lp ? lp : "");
+        char *cut = strrchr(def_path, '/'), *cut2 = strrchr(def_path, '\\');
+        if (cut2 > cut) cut = cut2;
+        if (cut) snprintf(cut + 1, sizeof def_path - (size_t)(cut + 1 - def_path), RT_FILE_STEM "-device-fault.bin");
+        else snprintf(def_path, sizeof def_path, RT_FILE_STEM "-device-fault.bin");
+        bin_path = def_path;
+    } else if (!strcmp(bin_path, "0")) {
+        bin_path = NULL;
+    }
+    void *bin = bin_path && *bin_path && binary ? malloc(binary) : NULL;
+    info.pVendorBinaryData = bin;
+    if (!bin) n.vendorBinarySize = 0;
     if (q == VK_SUCCESS && ai && vi) q = get(c->device, &n, &info);
+    if (bin && (q == VK_SUCCESS || q == VK_INCOMPLETE)) {
+        FILE *f = fopen(bin_path, "wb");
+        size_t w = f ? fwrite(bin, 1, (size_t)n.vendorBinarySize, f) : 0;
+        if (f) fclose(f);
+        rt_log("vk: device fault vendor binary: %zu of %llu bytes written to %s", w, (unsigned long long)binary, bin_path);
+    }
+    free(bin);
     if (q != VK_SUCCESS && q != VK_INCOMPLETE) {
         rt_log("vk: device lost; vkGetDeviceFaultInfoEXT failed (%d)", (int)q);
     } else {
@@ -797,6 +910,8 @@ void vk_device_fault_report(VkResult r) {
                 ai[i].addressType != VK_DEVICE_FAULT_ADDRESS_TYPE_INSTRUCTION_POINTER_INVALID_EXT &&
                 ai[i].addressType != VK_DEVICE_FAULT_ADDRESS_TYPE_INSTRUCTION_POINTER_FAULT_EXT)
                 vk_mem_fault_report(ai[i].reportedAddress, ai[i].addressPrecision), addr_fault_report(ai[i].reportedAddress, ai[i].addressPrecision);
+            else
+                addr_ip_report(ai[i].reportedAddress);   // DEBUG-FAULTIP
         for (uint32_t i = 0; i < n.vendorInfoCount; i++)
             rt_log("vk: device fault vendor info %u: \"%s\" code %#llx data %#llx", i, vi[i].description,
                    (unsigned long long)vi[i].vendorFaultCode, (unsigned long long)vi[i].vendorFaultData);

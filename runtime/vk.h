@@ -39,7 +39,8 @@ typedef struct VkCtx {
         has_astc_ldr,                       // textureCompressionASTC_LDR (enabled when reported)
         has_calibrated,                     // VK_KHR/EXT_calibrated_timestamps (GPU idle split in the perf line)
         has_hdr_metadata,                   // VK_EXT_hdr_metadata (vk_hdr.c vk_hdr_metadata)
-        has_atomic_float;                   // VK_EXT_shader_atomic_float with shaderBufferFloat32AtomicAdd
+        has_atomic_float,                   // VK_EXT_shader_atomic_float with shaderBufferFloat32AtomicAdd
+        has_present_timing;                 // DEBUG-PRESENTTIMING: VK_EXT_present_timing + VK_KHR_present_id2 (REKARINA_PRESENT_TIMING=1)
 #ifdef GAME_NS2
     int has_mesh_shader;                    // VK_EXT_mesh_shader with task and mesh shaders (NVN2 mesh draws)
     int has_vrs;                            // VK_KHR_fragment_shading_rate, the rate set per draw (vk_exec_draw.c mesh_shading_rate)
@@ -87,6 +88,8 @@ int vk_selftest(void);                      // 0 on success
 void vk_device_fault_report(VkResult r);
 // vk_device.c: what a GPU object is, for the fault report (address bindings on; any thread). printf arguments.
 void vk_addr_label(uint64_t handle, const char *fmt, ...);
+void vk_addr_note(uint64_t handle, const char *fmt, ...);   // appended to the label (vk_device.c)
+void vk_addr_label_print(uint64_t handle);   // DEBUG-IMGWATCH
 void vk_mem_fault_report(uint64_t addr, uint64_t precision);   // vk_memory.c: the pool buffer a fault address lies in
 
 // ---- GPU breadcrumbs (vk_crumbs.c): with VK_AMD_buffer_marker, each crumb has the GPU write its code into host memory
@@ -286,7 +289,16 @@ int vk_mem_gpu_wrote_adds(const VkMemSpan *sp, uint64_t size);
 // Uniform blocks as of the submit call (vk_usnap.c): vk_exec_record copies the uniform ranges a submission binds before
 // it records, ubo bindings take the copy (0: not copied, bind memory), GPU writes of the replay drop the copies they touch.
 void vk_usnap_begin(const uint64_t *handles, int n, uint64_t fence);
+uint64_t vk_sync_reserved(void);   // vk_sync.c: the newest timeline value handed out (issued or reserved)
+int vk_exec_ub_nojoin(void);              // vk_exec.c: an inline uniform update does not wait for a stretch's chunks
+uint32_t vk_exec_draw_upd_count(uint64_t fence);   // vk_exec_draw.c: inline uniform updates noted in that submission so far
+void vk_exec_draw_upd_limit(uint32_t n);  // this thread reads only the first n of them (UINT32_MAX: all)
+uint32_t vk_usnap_update_serial(void);    // vk_usnap.c: snapshot drops by inline uniform updates so far
+void vk_usnap_view_limit(uint32_t useq);  // this chunk thread counts only those up to useq (UINT32_MAX: all)
+void vk_usnap_drop_update(uint64_t addr, uint64_t n);
+void vk_tpool_slot_registered(int id);   // vk_texpool.c: vk_texture_register changed the slot (texture lock held)
 int vk_pipeline_compute_pending(void);   // vk_pipeline.c: this thread's last vk_pipeline_compute is still being built
+int vk_pipeline_stages_pending(void);    // vk_pipeline.c: this thread's last vk_pipeline_stages is still being built
 void vk_usnap_end(uint64_t fence);
 // After a wait for the CPU in the command stream: the uniform ranges bound from op record `from` on (to the end of its
 // recording) and in the recordings rest[0..nrest) are copied again; the draws recorded before keep the earlier copy.
@@ -318,6 +330,7 @@ void vk_mvprev_want(uint32_t index_mask);   // also keep these binding indices' 
 int vk_mvprev_find(int index, uint64_t addr, uint64_t size, uint64_t *prev, int *how);
 void vk_mvprev_frame(void);   // each present, beside vk_dlaa_frame
 void vk_mem_mirror_begin(void);
+void vk_mem_mirror_begin_ex(int presnap);   // presnap 0: no batched write-watch queries ahead (vk_memory.c)
 int vk_mem_mirror_end(VkCommandBuffer cb, uint64_t fence);
 int vk_mem_mirror_pending(void);
 void vk_mem_mirror_prologue(VkCommandBuffer cb);
@@ -377,6 +390,8 @@ void vk_mem_census(uint64_t frame);               // at each present: pool censu
 // VRAM in use and its budget, summed over the DEVICE_LOCAL heaps. exact 1: VK_EXT_memory_budget (the whole process),
 // 0: this allocator's own allocations against the heap sizes. 0 when unknown.
 int vk_mem_vram(uint64_t *used, uint64_t *budget, int *exact);
+void vk_mem_footprint_log(const char *when);   // one "mem: footprint" line: the driver's count against VMA's
+void vk_vma_name(VmaAllocation a, const char *fmt, ...);   // DEBUG-VMANAME: a name in VMA's map under REKARINA_VMA_DUMP
 // VRAM headroom (vk_headroom.c): the VMA callbacks that see new device memory, and the thread that allocates the next
 // block of each memory type in use ahead of the render thread.
 const VmaDeviceMemoryCallbacks *vk_headroom_callbacks(void);
@@ -429,10 +444,17 @@ void vk_defer_call(void (*fn)(void *), void *arg);   // vk_memory.c: fn(arg) onc
 uint64_t vk_upload_flush(int wait);
 // Deferred destruction: freed once the upload batches recorded so far and the timeline value last noted have completed.
 void vk_defer_image(VkImage img, VmaAllocation alloc);   // alloc NULL: vkDestroyImage only
+// vk_memory.c: an image bound into a pool's memory (alloc NULL, mem the pool's block or its twin) whose texture went is
+// held for REKARINA_POOL_IMAGE_HOLD_MS (a depth image: REKARINA_POOL_IMAGE_HOLD_DEPTH_MS, 500) before its deferral, or until
+// that memory goes; 1: held (the caller defers nothing)
+int vk_mem_pool_image_hold(VkImage img, VmaAllocation mem, int depth);
 void vk_defer_view(VkImageView view);
 // free(p) once the GPU is past the submission being recorded, as vk_defer_image: a host record other threads may still
 // read (a destroyed texture's, vk_texture.c destroy_tex).
 void vk_defer_free(void *p);
+// The deferrals this thread makes until vk_defer_past_reserved(0) wait for the GPU to pass every timeline value handed
+// out so far (vk_sync_reserved): textures evicted or dropped under memory pressure (vk_texture.c sweep_pressure).
+void vk_defer_past_reserved(int on);
 int vk_exec_image_gone(VkImage image);   // texture lock held: the replay's views of image go with it; returns how many
 int vk_exec_views_gone(VkImage image);   // the same for the views alone (a new image whose handle a destroyed one had)
 void vk_defer_buffer(VkBuffer buf, VmaAllocation alloc);
@@ -456,6 +478,13 @@ int vk_astc_record(VkCommandBuffer cb, VkBuffer src, VkDeviceSize src_size, cons
 // The next vk_astc_record of this thread with bc also copies the BC3 blocks it makes into buf (host-visible,
 // TRANSFER_DST), region after region, each vk_astc_bc_bytes long: what the texture cache keeps (vk_texture.c).
 void vk_astc_bc_readback(VkBuffer buf);
+// vk_texture.c, for tex_prepare.c: the texture cache's key of a storage (its file name begins with it) and its folder
+// (NULL with tex_cache off)
+uint64_t vk_texture_content_hash(const void *p, uint64_t n);
+const char *vk_texture_cache_dir(void);
+// 1 when every BC3 block (n bytes) has the opaque alpha half the encoder writes; the colour halves (BC1 blocks, n / 2
+// bytes) are then written to out, which may be blocks itself (vk_texture.c, the BC1 section)
+int vk_texture_bc3_to_bc1(const uint8_t *blocks, uint64_t n, uint8_t *out);
 VkDeviceSize vk_astc_bc_bytes(uint32_t w, uint32_t h, uint32_t slices);
 void vk_astc_stats(uint64_t *dispatches, uint64_t *texels);   // since start
 // REKARINA_ASTC_TIME=1: GPU timestamps around each vk_astc_record's dispatches (logged per footprint and the largest one)
@@ -498,7 +527,27 @@ typedef struct {
     uint8_t scale;                 // 1, or REKARINA_SHADOW_SCALE for a shadow map made larger than the game's (vk_texture.c
                                    // shadow_scale_of): width and height above are the larger ones, the game's regions
                                    // are multiplied by it
+    uint32_t serial;               // new for every image this record is given (vk_texture_image_serial): the view cache keys
+                                   // by it with the handle, as Vulkan hands a destroyed image's handle to a later image
 } VkTexImage;
+uint32_t vk_texture_image_serial(void);   // vk_texture.c: the next image serial (never 0)
+// Views made ahead with an image (vk_exec_draw.c "Views made ahead with their image", REKARINA_VIEWS_AHEAD): the
+// whole-image sampled view (0), attachment view (1) and 2D array view of a 2D image (2), each with the view cache key it
+// was made for (a ViewKey).
+#define VK_VIEWS_AHEAD 3
+typedef struct { VkImage image; VkImageView view[VK_VIEWS_AHEAD]; uint64_t key[VK_VIEWS_AHEAD][6]; } VkViewsAhead;
+int vk_exec_views_ahead_on(void);
+void vk_exec_views_ahead(const VkTexImage *img, VkViewsAhead *va);    // any thread, no lock: makes them
+void vk_exec_views_adopt(const VkTexImage *img, VkViewsAhead *va);    // texture lock held: into the view cache
+void vk_exec_views_ahead_drop(VkViewsAhead *va);                      // never handed out: destroyed at once
+void vk_exec_views_stats(int64_t *replay, int64_t *adopted, int64_t *dropped);   // since the last call
+// gfx_present.c "driver turns": a background thread that makes or destroys Vulkan objects (images made ahead, the
+// reaper) calls this before each such call, so that a thread holding or waiting for the queue lock goes first.
+int vk_drv_turns_on(void);
+void vk_drv_bg_turn(void);
+void vk_drv_reap_turn(void);   // the reaper before each destruction: queue calls and images made ahead go first
+int vk_texture_premake_pending(void);   // vk_texture.c: an image is queued or being made ahead
+void vk_drv_urgent(int d);   // +1 before a queue call (submission, present), -1 after it
 // The window texture the backend presents (vk_backend.c): *image and *format become the float picture the game copied
 // into it, when the last draw into it was that copy and the swapchain is HDR10.
 void vk_hdr_present_source(const VkTexImage *win, VkImage *image, VkFormat *format);
@@ -509,8 +558,12 @@ const VkTexImage *vk_texture_by_id(int id, view_t *view, int *has_view);
 // The replay looks up many slots per draw: it takes the texture lock once around them (vk_texture_lock) and uses the
 // _locked lookups; vk_texture_slots_gen changes whenever a slot may resolve to another image or view.
 void vk_texture_lock(void);
+void vk_texture_lock_from(const char *fn);   // the same, naming the caller for REKARINA_SECTIONS' LOCKHOLD lines
+#define vk_texture_lock() vk_texture_lock_from(__func__)
 void vk_texture_unlock(void);
 const VkTexImage *vk_texture_by_id_locked(int id, view_t *view, int *has_view);
+// The same without the texture lock when the slot's kept resolution is current (*hit 1); *hit 0: ask the locked one.
+const VkTexImage *vk_texture_by_id_fast(int id, view_t *view, int *has_view, int *hit);
 VkSampler vk_sampler_compare_by_id_locked(int id);   // the slot's sampler with its compare on (vk_texture.c), for a depth-compare read
 VkSampler vk_sampler_by_id_locked(int id);
 // The slot's sampler with nearest filtering and no anisotropy: a depth texture read without a compare lands on one texel
@@ -556,6 +609,7 @@ typedef struct { uint64_t live, released, own_live, own_released, bytes_live, by
 void vk_texture_census(VkTexCensus *s);
 void vk_texture_shutdown(void);                     // vk_mem_shutdown calls it
 void vk_texture_new_submit(void);                   // a queue submit starts: draw bindings check storage again
+void vk_texture_room_for(uint64_t bytes);           // a buffer pool's mirror waits for this much room (vk_memory.c)
 uint32_t vk_texture_epoch(void);                    // the write-watch snapshot epoch vk_texture_new_submit started
 // vk_texture.c "lookups as of a place in the command stream": a draw stretch's mark, a thread's limit (returns the one
 // before), the limit in force, and whether slot id resolves under it as it does without one.
@@ -610,6 +664,7 @@ int vk_sync_sub_work(uint64_t value);      // DEBUG-LIVECHECK (vk_sync.c)
 int vk_live_check_on(void);                // DEBUG-LIVECHECK (vk_memory.c): REKARINA_LIVE_CHECK
 int vk_live_check_use(uint64_t handle, const char *what, uint64_t id);
 void vk_live_check_born(uint64_t handle);
+void vk_live_check_dead(uint64_t handle);   // an image whose texture went lives on (vk_texture.c park_image)
 void vk_live_check_log(void);
 void vk_sync_finish(void);                 // every submitted value done
 void vk_sync_shutdown(void);               // finish, stop the completion thread, free the command buffers
@@ -725,11 +780,19 @@ void vk_tpool_image_gone(VkImage image);            // destroy_tex (texture lock
 int vk_texture_slot_count(void);                    // texture slot ids below this may be registered
 // vk_texture_by_id_locked for vk_texpool.c: NULL as well when the slot's storage is no longer in a live memory pool.
 const VkTexImage *vk_texture_pool_slot_locked(int id, view_t *view, int *has_view);
+// vk_texpool.c, texture lock held: 1 when the texture stream is still preparing slot id's texture (asked less than 30
+// frames ago); the update leaves a slot that shows the stand-in for a later one then.
+int vk_texture_stream_defer(int id);
+// vk_backend.c, the game's thread registering t in its texture pool: the texture stream prepares t (REKARINA_TEX_STREAM).
+void vk_texture_stream_ask(const tex_t *t);
 // vk_texpool.c (REKARINA_TPOOL_HIDE, a test of what shaders read through the pool): 1 a texture decoded from ASTC, 2 another
 // single-layer texture the CPU provides, 4 an array or a volume the CPU provides, 0 anything else; with 8 added when
 // a draw has bound the texture. Texture lock held.
 int vk_texture_pool_class(const VkTexImage *img);
 uint64_t vk_mem_vma_free(void);   // vk_memory.c: free room inside the allocator's device-local blocks
+// vk_memory.c: the allocator's device-local blocks (count, bytes) and the bytes allocated in them, e.g. before and after a
+// bulk free (blocks emptied = memory back to the driver; the rest is holes)
+void vk_mem_vma_blocks(uint64_t *blocks, uint64_t *block_bytes, uint64_t *alloc_bytes);
 uint64_t vk_mem_vram_cap(void);   // DEBUG-VRAMCAP (vk_memory.c)
 uint32_t vk_pipeline_compute_trim(void);   // vk_pipeline.c: drops the prebuilt compute pipelines nothing dispatched
 // vk_exec_draw.c for vk_texpool.c: a sampled view of a registered texture for a resource type (GfxShaderRes.type),
@@ -751,6 +814,9 @@ int vk_pipeline_async_on(void);   // 1 after vk_pipeline_async_enable: graphics 
 // cached under the current translator from their stored inputs, and builds every recorded pipeline, on all cores.
 // No-op without vk_pipeline_async_enable, with REKARINA_PIPE_PREBUILD=0 or with REKARINA_GPU=null.
 void vk_pipeline_prewarm(void);
+// A normal exit while the entry step builds: its journal is cleared, so the next start does not take the builds in
+// flight for a driver crash (vk_pipeline.c, "the entry step"; prep_report).
+void vk_pipeline_prewarm_quit(void);
 VkPipeline vk_pipeline_compute(const GfxShader *cs, const VkPipeInfo **info);
 #ifdef GAME_NS2
 // NVN2 (GAME_NS2): a pipeline with stages the library path does not know, built whole on the calling thread and cached.

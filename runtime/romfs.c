@@ -37,6 +37,7 @@
 #include "input.h"
 #include "input_map.h"
 #include "mods.h"
+#include "prep.h"
 #include "romfs_config.h"
 #include "romfs_path.h"
 #include "platform/platform.h"
@@ -1634,6 +1635,7 @@ uint32_t romfs_mount(const char *name) {
 
 uint32_t romfs_open(uint64_t *out, const char *path, int mode) {
     fs_trace("rom", path);
+    prep_map_open(path);   // the in-play build ledger names the map (prep.c)
     if (!out || mode != FS_OPEN_READ) return FS_R_UNSUPPORTED_OPEN;
     char rel[4096];
     const char *p = romfs_path_relative(mount_of(path), path, rel, sizeof rel);

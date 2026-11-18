@@ -52,8 +52,11 @@
 # the CPU threads).
 # lib_prebuild = 1
 # lib_prebuild_threads = 4
-# Build known pipelines ahead of time.
+# Build known pipelines ahead of time: before the game starts, every shader and pipeline the earlier sessions and the
+# release recorded is built (seconds when the caches have them; longer after an install or a driver update).
 # pipe_prebuild = 1
+# The picture with the count while that takes longer than about a second; 0 keeps the window closed until then.
+# prep_screen = 1
 # Threads that translate known shaders at start (1 to 64; default: half the CPU threads, at most 16).
 # prewarm_xlate = 8
 # Vulkan graphics pipeline library, 0 or 1. Default: on.
@@ -284,6 +287,9 @@
 # Speakers: stereo, 5.1 or auto (5.1 when the Windows speaker setup has six or more channels, stereo otherwise). The
 # game is told the same channel count and mixes for it. Takes effect at the next start.
 # audio_channels = stereo
+# 1: no sound while another window is in front (after Alt+Tab, say); it comes back with the game window. Changes while
+# the game runs.
+# bg_mute = 0
 
 [input]
 # Gamepad motion controls (0 = off) and vibration (0 = off).
@@ -326,6 +332,23 @@
 # menu_cursor = 1
 # Mouse camera sensitivity (0 to 10; 0 = no mouse camera and no cursor capture).
 # mouse_sens = 1
+# A cursor that is not captured (the settings menu, after Esc, mouse camera off) hides after resting this many seconds
+# over the window and shows again when it moves: 0 (never), 1, 3, 5 or 10. Changes while the game runs.
+# cursor_hide = 3
+# With several gamepads connected, 1 reads the one pressed last (its labels, rumble and gyro go with it); 0 reads only
+# the first one found. Changes while the game runs.
+# pad_follow = 1
+# auto reads gamepads through SDL's own drivers (gyro, HD rumble, PlayStation and Switch labels); compat through the
+# system's XInput / DirectInput (Linux: the kernel's driver), for a controller that is found but whose buttons do
+# nothing. Read at start.
+# pad_driver = auto
+# 1: while a gamepad is connected the game takes nothing from the keyboard and the mouse (the menu, F11 and the
+# screenshot key still work). Changes while the game runs.
+# kbm_off = 0
+# The screenshot key: f12, f9, f7, f6, f5 or none. A press saves the next frame as screenshots\rekarina-<date>-<time>.png
+# beside the game; screenshot_overlay = 1 keeps the settings menu and the overlays in the picture.
+# screenshot_key = f12
+# screenshot_overlay = 0
 # The mouse camera's vertical speed against the horizontal (0.1 to 3) and its inversion. Both change while the game runs.
 # mouse_sens_y = 1
 # mouse_invert_y = 0

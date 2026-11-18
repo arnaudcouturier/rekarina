@@ -30,6 +30,11 @@ SP = 31   # index of SP in the register sets
 # Markers gen.py puts where the Cpu must be current, resolved by Plan.resolve(): spill before; reload all, or reload
 # what a call may change, after.
 SPILL, RELOAD, RELOAD_CALL = '\x00S', '\x00R', '\x00C'
+# The spill before a call (gen.py call sites): as SPILL, except that with Plan.temps_unsaved the temporaries X9-X15 are
+# not stored. AAPCS64 makes them neither arguments nor preserved: a callee the compiler made never reads them before it
+# writes them, and the caller reloads them after the call (RELOAD_CALL) without reading them first.
+SPILL_CALL = '\x00K'
+TEMPS = frozenset(range(9, 16))
 CALLEE_SAVED = frozenset(range(19, 30)) | {SP}
 # Locals per function: the most used registers. More cost more than they save, as clang then spills them to the stack
 # and the syncs stay (300 hot TotK functions: fewest instructions and memory operands at 4-6).
@@ -59,6 +64,7 @@ class Plan:
         self.local = set(regs)
         self.spill = spill   # per instruction: registers to store at its sync points
         self.kept = kept     # registers a call leaves as they were (CALLEE_SAVED, or none)
+        self.temps_unsaved = False   # SPILL_CALL leaves TEMPS out (gen.py --temps-unsaved)
 
     def decl(self):
         """Locals at the top of the function, loaded from the Cpu."""
@@ -72,18 +78,27 @@ class Plan:
 
         text = REG.sub(local, text)
         spill = ''.join(f'{cpu(r)} = {name(r)}; ' for r in sorted(self.spill[i]))
+        spill_call = ''.join(f'{cpu(r)} = {name(r)}; ' for r in sorted(self.spill[i])
+                             if not (self.temps_unsaved and r in TEMPS))
         reload = ''.join(f' {name(r)} = {cpu(r)};' for r in self.regs)
         reload_call = ''.join(f' {name(r)} = {cpu(r)};' for r in self.regs if r not in self.kept)
-        return text.replace(SPILL, spill).replace(RELOAD, reload).replace(RELOAD_CALL, reload_call)
+        return (text.replace(SPILL_CALL, spill_call).replace(SPILL, spill).replace(RELOAD, reload)
+                .replace(RELOAD_CALL, reload_call))
 
 
-def plan(texts, succ, clean, n_locals=LOCALS, kept=CALLEE_SAVED):
+def plan(texts, succ, clean, n_locals=LOCALS, kept=CALLEE_SAVED, kept_uses=0):
     """texts[i]: instruction i's C with markers; succ[i]: successor indices inside the function; clean: instructions
     after which every local equals the Cpu (a call or an SVC that spills and reloads on every path through it);
-    n_locals: how many registers to keep in locals; kept: registers a call does not reload."""
+    n_locals: how many registers to keep in locals; kept: registers a call does not reload; kept_uses: when above 0,
+    every register of kept the function names at least that often is a local too, beside the n_locals most used.
+    Such a register costs nothing after a call (it is not reloaded) and is stored only where it changed since the
+    last sync, while in the Cpu it is loaded again after every guest store (a guest store may alias the Cpu), which
+    puts a memory load on the address chain of every access through it (pointers in X19-X28, the stack via SP)."""
     n = len(texts)
     uses = Counter(r for t in texts for r in refs(t))
     regs = {r for r, _ in sorted(uses.items(), key=lambda kv: (-kv[1], kv[0]))[:n_locals]}
+    if kept_uses > 0:
+        regs |= {r for r, u in uses.items() if r in kept and u >= kept_uses}
     writes = [written(t) & regs for t in texts]
     dirty = [set() for _ in range(n)]
     seen = [False] * n
@@ -104,4 +119,5 @@ def plan(texts, succ, clean, n_locals=LOCALS, kept=CALLEE_SAVED):
             dirty[i] = every
     # A sync point stores what was dirty on entry to its instruction and what the instruction wrote before it
     # (c->x[30] of a call): all the instruction's writes, which is at most a little more.
-    return Plan(sorted(regs), [dirty[i] | writes[i] if SPILL in texts[i] else set() for i in range(n)], kept)
+    return Plan(sorted(regs), [dirty[i] | writes[i] if SPILL in texts[i] or SPILL_CALL in texts[i] else set()
+                               for i in range(n)], kept)

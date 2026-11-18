@@ -44,6 +44,25 @@ def recomp_tree():
                           text=True).stdout.strip() or None
 
 
+# What the generated code is made of besides recomp/: the headers every chunk includes and inlines (a change there
+# changes the compiled functions as much as a generator change does).
+GEN_HEADERS = ('runtime/cpu.h', 'runtime/simd.h', 'runtime/simd_fp.h')
+
+
+def code_identity():
+    """One id for recomp/ and GEN_HEADERS at HEAD (git object ids joined); None when any has uncommitted changes.
+    A profile fits the generated code only while this is unchanged: tools/make_release.py and
+    tools/make_rekarina_release.py compare it with the profile's record."""
+    paths = ['recomp', *GEN_HEADERS]
+    dirty = subprocess.run(['git', '-C', str(ROOT), 'status', '--porcelain', '--', *paths], capture_output=True,
+                           text=True).stdout.strip()
+    if dirty:
+        return None
+    ids = [subprocess.run(['git', '-C', str(ROOT), 'rev-parse', f'HEAD:{p}'], capture_output=True, text=True).stdout.strip()
+           for p in paths]
+    return '-'.join(i[:12] for i in ids) if all(ids) else None
+
+
 def merge(build, out, version, toolchain):
     raw = sorted((build / 'pgo').glob('*.profraw'))
     if not raw:
@@ -59,8 +78,8 @@ def merge(build, out, version, toolchain):
         tmp.unlink(missing_ok=True)
         sys.exit(f'llvm-profdata merge failed: {(p.stdout + p.stderr).strip()[-2000:]}')
     tmp.replace(out)
-    record = {'version': version, 'recomp_tree': tree, 'merged': datetime.date.today().isoformat(),
-              'raw_files': len(raw)}
+    record = {'version': version, 'recomp_tree': tree, 'code': code_identity(),
+              'merged': datetime.date.today().isoformat(), 'raw_files': len(raw)}
     out.with_suffix('.json').write_text(json.dumps(record, indent=1) + '\n', encoding='utf-8')
     size = sum(f.stat().st_size for f in raw)
     print(f'{out}: {len(raw)} raw files ({size / 2**20:.1f} MiB) -> {out.stat().st_size / 2**20:.1f} MiB; '

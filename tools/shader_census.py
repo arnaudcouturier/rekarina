@@ -173,7 +173,10 @@ def sharcb_shaders(data, rejected):
     if not 32 <= start <= pool or pool + pool_size > len(data):
         raise ValueError('agl shader package layout outside the file')
     seen = set()
-    for size in (b'\x80\x08\x00\x00', b'\x8c\x08\x00\x00', b'\xe0\x00\x00\x00'):
+    # NVN2 records give their control section as 0xe0 or 0xf8 bytes (the runtime keeps the first 0xe0 of either): the
+    # scan read only 0xe0 ones, and 8 programs of the agl and foliage packages that play dispatches or draws (7
+    # compute, 1 vertex) were missing from the setup's preparation and translated in play (2026-11-16).
+    for size in (b'\x80\x08\x00\x00', b'\x8c\x08\x00\x00', b'\xe0\x00\x00\x00', b'\xf8\x00\x00\x00'):
         at = start
         while (at := data.find(size, at, pool)) >= 0:
             record, at = at - 8, at + 4
@@ -181,7 +184,7 @@ def sharcb_shaders(data, rejected):
                 continue
             code_off = struct.unpack_from('<Q', data, record)[0]
             control_at = record + struct.unpack_from('<i', data, record + 12)[0]
-            if size[0] == NVN2_CONTROL:   # NVN2 (Switch 2) packages: the same records with a 0xe0-byte control section
+            if size[0] in (NVN2_CONTROL, 0xf8):   # NVN2 (Switch 2) packages: the same records, a 0xe0/0xf8-byte control
                 found = nvn2_sharcb_record(data, start, pool, pool_size, code_off, control_at)
                 if found and found[0] not in seen:
                     seen.add(found[0])

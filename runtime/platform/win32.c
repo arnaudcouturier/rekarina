@@ -385,6 +385,27 @@ uint32_t plat_cpu_usable(void) {
     return plat_cpu_count();
 }
 
+uint64_t plat_thread_cycles(void) {
+    ULONG64 c = 0;
+    return QueryThreadCycleTime(GetCurrentThread(), &c) ? (uint64_t)c : 0;
+}
+
+// DEBUG-HEAPCHECK (perf.c heap_check). HeapValidate walks every block of the heap under its lock.
+int plat_heap_check(uint64_t *at, uint64_t *n) {
+    HANDLE h = GetProcessHeap();
+    *at = 0, *n = 0;
+    if (HeapValidate(h, 0, NULL)) return 1;
+    PROCESS_HEAP_ENTRY e = {0};
+    if (HeapLock(h)) {
+        while (HeapWalk(h, &e)) {
+            *at = (uint64_t)(uintptr_t)e.lpData + e.cbData + e.cbOverhead;
+            ++*n;
+        }
+        HeapUnlock(h);
+    }
+    return 0;
+}
+
 // PLAT_PRIO_* are the THREAD_PRIORITY_* values.
 void plat_thread_priority(int prio) { SetThreadPriority(GetCurrentThread(), prio); }
 void plat_process_priority(int level) {
@@ -1607,6 +1628,14 @@ int plat_open_folder(const char *path) {
     return 1;
 }
 
+int plat_message_box(const char *title, const char *text) {
+    wchar_t t[256], *w = malloc(8192 * sizeof *w);
+    if (!w || !widen(title, t, 256) || !widen(text, w, 8192)) return free(w), 0;
+    MessageBoxW(NULL, w, t, MB_OK | MB_ICONERROR | MB_TOPMOST | MB_SETFOREGROUND);
+    free(w);
+    return 1;
+}
+
 // ---- dynamic libraries
 
 void *plat_lib_open(const char *name) {
@@ -1793,6 +1822,19 @@ void plat_mem_info(float *used_mb, float *total_mb, float *proc_mb) {
     if (GlobalMemoryStatusEx(&ms)) {
         *total_mb = (float)(ms.ullTotalPhys >> 20);
         *used_mb = (float)((ms.ullTotalPhys - ms.ullAvailPhys) >> 20);
+    }
+    // REKARINA_TEST_RAM_MB=<n> (test runs): the machine has n MiB of memory as far as the game's choices go (the
+    // small-machine paths below 20 GiB: the snapshot ring, the compute prebuild, texture quality), for a run standing
+    // in for a 16 GB PC. The process's commit can be capped as well from outside (a job object).
+    static long test_ram = -1;
+    if (test_ram < 0) {
+        char v[32];
+        DWORD n = GetEnvironmentVariableA("REKARINA_TEST_RAM_MB", v, sizeof v);
+        test_ram = n && n < sizeof v ? atol(v) : 0;
+    }
+    if (test_ram > 0 && *total_mb > (float)test_ram) {
+        *total_mb = (float)test_ram;
+        if (*used_mb > *total_mb) *used_mb = *total_mb;
     }
     PROCESS_MEMORY_COUNTERS pmc;
     if (K32GetProcessMemoryInfo(GetCurrentProcess(), &pmc, sizeof pmc)) *proc_mb = (float)(pmc.WorkingSetSize >> 20);

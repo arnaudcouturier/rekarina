@@ -35,7 +35,9 @@ static int g_font_bad;
 #pragma clang diagnostic pop
 #include "ui/amiibo_page.h"
 #include "ui/binds_page.h"
+#include "ui/menu_pictures.h"
 #include "ui/option_rows.h"
+#include "ui/prep_screen.h"
 
 extern "C" {
 #include "amiibo.h"
@@ -46,7 +48,9 @@ extern "C" {
 #include "input_map.h"
 #include "mods.h"
 #include "perfmon.h"
+#include "report.h"
 #include "platform/platform.h"
+#include "prep.h"
 #include "sysinfo.h"
 #include "ui/menu.h"
 #include "ui_text.h"
@@ -178,10 +182,14 @@ static int stick_to_dpad(int32_t lx, int32_t ly) {
     return fabsf(x) > fabsf(y) ? (x < 0 ? B_LEFT : B_RIGHT) : (y > 0 ? B_UP : B_DOWN);
 }
 
-static void pad_events(ImGuiIO &io, int reset) {
-    uint64_t b;
-    int32_t lx, ly;
-    int have = input_pad_read(&b, &lx, &ly);
+static uint64_t script_pad_bits(uint64_t frame);
+static bool script_running(void);
+
+static void pad_events(ImGuiIO &io, int reset, uint64_t frame) {
+    uint64_t b = 0;
+    int32_t lx = 0, ly = 0;
+    // a menu script presses the gamepad's buttons in place of the real one
+    int have = script_running() ? (b = script_pad_bits(frame), 1) : input_pad_read(&b, &lx, &ly);
     if (have) io.BackendFlags |= ImGuiBackendFlags_HasGamepad;
     else io.BackendFlags &= ~ImGuiBackendFlags_HasGamepad;
     stick_dir = stick_to_dpad(lx, ly);
@@ -626,6 +634,186 @@ static void test_parse(void) {
                (unsigned long long)g_test.at, (unsigned long long)g_test.per_page, g_test.n_sets);
 }
 
+// REKARINA_MENU_SCRIPT=<file>: drives the menu like a player, for test runs that check rows with screenshots. One step
+// a line, "<frame> <action> [args]"; <frame> is a presented frame, or +N frames after the line before. # at the
+// start of a line or after a blank starts a comment (a binding cell is "BIND_A#0"). While a script runs, the real keyboard, mouse and gamepad do not reach the menu.
+//   open | close                    the menu opens (on the tab it had) or closes
+//   tab <screen|game|sound|controls|menu|mods|advanced>
+//   focus <setting or row id>       the cursor on that row of the open tab (opt_focus_key; a row "##report" is "report")
+//   key <name> [frames]             a key held for that many frames (default 2): left right up down enter esc delete
+//                                   backspace space tab q e pageup pagedown home end
+//   pad <button> [frames]           a gamepad button: a b x y l r zl zr left right up down (the menu's Switch names)
+//   mouse <x> <y>                   the pointer at that place: fractions of the window (0..1) or pixels
+//   press | release                 the left mouse button
+//   drag <x0> <y0> <x1> <y1> [frames]   press at the first place, move to the second over the frames, release
+//   dragbar <from> <to> [frames]    the same along the value bar of the slider row the cursor is on (0..1 of its width)
+//   set <KEY>=<value>               cfg_set (REKARINA_ optional), as REKARINA_MENU_TEST_SET does
+//   shot <name>                     this frame's swapchain image as <REKARINA_MENU_TEST_DIR>/<name>.png
+//   log <text>                      a line in the log
+enum { SCRIPT_MAX = 512 };
+struct ScriptStep { uint64_t frame; char op[12]; char arg[96]; };
+static struct {
+    int parsed, n, next;
+    ScriptStep steps[SCRIPT_MAX];
+    uint64_t pad_held[16];   // pad_keys index -> the frame its press ends; 0 none
+    struct { ImGuiKey key; uint64_t until; } keys[8];
+    struct { uint64_t from, until; float x0, y0, x1, y1; } drag;
+    bool active;             // a script was read: the real input stays out of the menu
+} g_script;
+
+static const struct { const char *name; ImGuiKey key; } kScriptKeys[] = {
+    {"left", ImGuiKey_LeftArrow}, {"right", ImGuiKey_RightArrow}, {"up", ImGuiKey_UpArrow}, {"down", ImGuiKey_DownArrow},
+    {"enter", ImGuiKey_Enter}, {"esc", ImGuiKey_Escape}, {"delete", ImGuiKey_Delete}, {"backspace", ImGuiKey_Backspace},
+    {"space", ImGuiKey_Space}, {"tab", ImGuiKey_Tab}, {"q", ImGuiKey_Q}, {"e", ImGuiKey_E}, {"pageup", ImGuiKey_PageUp},
+    {"pagedown", ImGuiKey_PageDown}, {"home", ImGuiKey_Home}, {"end", ImGuiKey_End},
+};
+
+static void script_parse(void) {
+    g_script.parsed = 1;
+    const char *path = cfg_get("REKARINA_MENU_SCRIPT");
+    if (!path || !*path) return;
+    FILE *f = fopen(path, "r");
+    if (!f) {
+        rt_log("menu: script %s cannot be read", path);
+        return;
+    }
+    char line[256];
+    uint64_t last = 0;
+    while (fgets(line, sizeof line, f) && g_script.n < SCRIPT_MAX) {
+        line[strcspn(line, "\r\n")] = 0;
+        for (char *h = line; (h = strchr(h, '#')); h++)   // a comment: # at the start or after a blank (BIND_A#0 is a row)
+            if (h == line || h[-1] == ' ' || h[-1] == '\t') { *h = 0; break; }
+        char fr[24] = "", op[12] = "";
+        int used = 0;
+        if (sscanf(line, " %23s %11s %n", fr, op, &used) < 2) continue;
+        ScriptStep &s = g_script.steps[g_script.n++];
+        uint64_t at = fr[0] == '+' ? last + strtoull(fr + 1, NULL, 10) : strtoull(fr, NULL, 10);
+        s.frame = last = at;
+        snprintf(s.op, sizeof s.op, "%s", op);
+        snprintf(s.arg, sizeof s.arg, "%s", line + used);
+        size_t k = strlen(s.arg);
+        while (k && (s.arg[k - 1] == ' ' || s.arg[k - 1] == '\t')) s.arg[--k] = 0;
+    }
+    fclose(f);
+    g_script.active = g_script.n > 0;
+    rt_log("menu: script %s: %d steps, the last at frame %llu", path, g_script.n, (unsigned long long)last);
+}
+
+// A place of the script: a fraction of the window when both numbers are at most 1, else pixels.
+static ImVec2 script_point(float x, float y, const MenuTarget *t) {
+    if (x <= 1 && y <= 1) return ImVec2(x * (float)t->width, y * (float)t->height);
+    return ImVec2(x, y);
+}
+
+static int tab_of_name(const char *name);
+static void request_tab(int tab);
+
+// This frame's steps: what changes the menu state (open, tab, focus, settings) at once, input as ImGui events of the
+// frame laid out next. *shot: a path when a step asks for a picture.
+static void script_frame(uint64_t frame, const MenuTarget *t, const char **shot) {
+    if (!g_script.parsed) script_parse();
+    if (!g_script.active) return;
+    ImGuiIO *io = g_ctx_ok ? &ImGui::GetIO() : nullptr;
+    for (; g_script.next < g_script.n && g_script.steps[g_script.next].frame <= frame; g_script.next++) {
+        const ScriptStep &s = g_script.steps[g_script.next];
+        rt_log("menu: script frame %llu: %s %s", (unsigned long long)frame, s.op, s.arg);
+        if (!strcmp(s.op, "open")) set_open(1);
+        else if (!strcmp(s.op, "close")) set_open(0);
+        else if (!strcmp(s.op, "tab")) {
+            int k = tab_of_name(s.arg);
+            if (k >= 0) request_tab(k);
+        } else if (!strcmp(s.op, "focus")) opt_focus_key(s.arg);
+        else if (!strcmp(s.op, "set")) {
+            const char *eq = strchr(s.arg, '=');
+            if (eq) {
+                char key[80];
+                snprintf(key, sizeof key, "%s%.*s", strncmp(s.arg, "REKARINA_", 9) ? "REKARINA_" : "", (int)(eq - s.arg), s.arg);
+                cfg_set(key, eq + 1);
+            }
+        } else if (!strcmp(s.op, "shot")) {
+            static char path[512];
+            const char *dir = cfg_get("REKARINA_MENU_TEST_DIR");
+            snprintf(path, sizeof path, "%s/%s.png", dir ? dir : ".", s.arg);
+            *shot = path;
+        } else if (!strcmp(s.op, "log")) {
+            rt_log("menu: script: %s", s.arg);
+        } else if (!strcmp(s.op, "key") && io) {
+            char name[24] = "";
+            int frames = 2;
+            sscanf(s.arg, "%23s %d", name, &frames);
+            for (const auto &k : kScriptKeys)
+                if (!strcmp(k.name, name))
+                    for (auto &slot : g_script.keys)
+                        if (!slot.until) {
+                            io->AddKeyEvent(k.key, true);
+                            slot.key = k.key, slot.until = frame + (uint64_t)(frames > 0 ? frames : 1);
+                            break;
+                        }
+        } else if (!strcmp(s.op, "pad")) {
+            static const char *const names[] = {"a", "b", "x", "y", "l", "r", "zl", "zr", "left", "up", "right", "down"};
+            char name[24] = "";
+            int frames = 2;
+            sscanf(s.arg, "%23s %d", name, &frames);
+            for (int i = 0; i < (int)(sizeof names / sizeof *names); i++)   // the order of pad_keys
+                if (!strcmp(names[i], name)) g_script.pad_held[i] = frame + (uint64_t)(frames > 0 ? frames : 1);
+        } else if (!strcmp(s.op, "mouse") && io) {
+            float x = 0, y = 0;
+            if (sscanf(s.arg, "%f %f", &x, &y) == 2) {
+                ImVec2 p = script_point(x, y, t);
+                io->AddMousePosEvent(p.x, p.y);
+            }
+        } else if ((!strcmp(s.op, "press") || !strcmp(s.op, "release")) && io) {
+            io->AddMouseButtonEvent(0, s.op[0] == 'p');
+        } else if (!strcmp(s.op, "dragbar") && io) {   // dragbar <from> <to> [frames]: along the focused slider's bar
+            float f0 = 0, f1 = 0;
+            int frames = 20;
+            ImVec2 a, bb;
+            if (sscanf(s.arg, "%f %f %d", &f0, &f1, &frames) >= 2 && opt_focused_bar(&a, &bb)) {
+                float y = (a.y + bb.y) * 0.5f;
+                g_script.drag = {frame, frame + (uint64_t)(frames > 1 ? frames : 2), a.x + (bb.x - a.x) * f0, y,
+                                 a.x + (bb.x - a.x) * f1, y};
+                io->AddMousePosEvent(g_script.drag.x0, y);
+                io->AddMouseButtonEvent(0, true);
+            } else {
+                rt_log("menu: script: dragbar: no slider row under the cursor");
+            }
+        } else if (!strcmp(s.op, "drag") && io) {
+            float v[4];
+            int frames = 20;
+            if (sscanf(s.arg, "%f %f %f %f %d", &v[0], &v[1], &v[2], &v[3], &frames) >= 4) {
+                ImVec2 a = script_point(v[0], v[1], t), b = script_point(v[2], v[3], t);
+                g_script.drag = {frame, frame + (uint64_t)(frames > 1 ? frames : 2), a.x, a.y, b.x, b.y};
+                io->AddMousePosEvent(a.x, a.y);
+                io->AddMouseButtonEvent(0, true);
+            }
+        } else {
+            rt_log("menu: script: unknown step '%s'", s.op);
+        }
+    }
+    if (!io) return;
+    for (auto &slot : g_script.keys)
+        if (slot.until && frame >= slot.until) io->AddKeyEvent(slot.key, false), slot.until = 0;
+    if (g_script.drag.until) {
+        auto &d = g_script.drag;
+        float u = (float)(frame - d.from) / (float)(d.until - d.from);
+        if (u > 1) u = 1;
+        io->AddMousePosEvent(d.x0 + (d.x1 - d.x0) * u, d.y0 + (d.y1 - d.y0) * u);
+        if (frame >= d.until) io->AddMouseButtonEvent(0, false), d.until = 0;
+    }
+}
+
+static bool script_running(void) { return g_script.active; }
+
+// The gamepad buttons the script holds this frame, as Switch button bits (pad_events adds them).
+static uint64_t script_pad_bits(uint64_t frame) {
+    uint64_t b = 0;
+    static const int bits[] = {B_A, B_B, B_X, B_Y, B_L, B_R, B_ZL, B_ZR, B_LEFT, B_UP, B_RIGHT, B_DOWN};
+    for (int i = 0; i < (int)(sizeof bits / sizeof *bits); i++)
+        if (g_script.pad_held[i] > frame) b |= 1ull << bits[i];
+        else g_script.pad_held[i] = 0;
+    return b;
+}
+
 static void test_apply_sets(uint64_t frame) {
     for (; g_test.next_set < g_test.n_sets && g_test.sets[g_test.next_set].frame <= frame; g_test.next_set++) {
         const TestSet &t = g_test.sets[g_test.next_set];
@@ -791,9 +979,10 @@ static void row_game_lang(void) {
 // The frame limit (frame_rate.c): unset, the older fps60 = 0 still means 30. The monitor choice shows the rate it gives.
 static void row_fps_limit() {
     // 40 and 45: the Steam Deck's screen runs at 40 to 60 Hz (the OLED to 90); 40 divides 40 and 120 Hz evenly
-    static const char *const vals[] = {"30", "40", "45", "60", "90", "120", "144", "display"};
-    static const UiTextId ids[] = {UI_MENU_FPS_30, UI_MENU_FPS_40,  UI_MENU_FPS_45,  UI_MENU_FPS_60,
-                                   UI_MENU_FPS_90, UI_MENU_FPS_120, UI_MENU_FPS_144, UI_MENU_FPS_DISPLAY};
+    // 240: the most the game's physics takes (frame_rate.c LIMIT_MAX_HZ), "no limit" for every monitor up to 240 Hz
+    static const char *const vals[] = {"30", "40", "45", "60", "90", "120", "144", "240", "display"};
+    static const UiTextId ids[] = {UI_MENU_FPS_30,  UI_MENU_FPS_40,  UI_MENU_FPS_45,       UI_MENU_FPS_60,     UI_MENU_FPS_90,
+                                   UI_MENU_FPS_120, UI_MENU_FPS_144, UI_MENU_FPS_UNLIMITED, UI_MENU_FPS_DISPLAY};
     enum { N = sizeof vals / sizeof *vals };
     const char *names[N];
     for (int i = 0; i < N; i++) names[i] = menu_text(ids[i]);
@@ -850,7 +1039,7 @@ static void rows_color(void) {
                             "%+.0f %%");
     moved |= opt_slider("REKARINA_COLOR_CONTRAST", UI_MENU_COLOR_CONTRAST, 70, 150, UI_MENU_COLOR_CONTRAST_DESC, 5, "%.0f %%");
     moved |= opt_slider("REKARINA_COLOR_SATURATION", UI_MENU_COLOR_SATURATION, 50, 200, UI_MENU_COLOR_SATURATION_DESC, 5,
-                        "%.0f %%");
+                        "%.0f %%", nullptr, nullptr, true);   // a factor: logarithmic, 100 % in the middle
     moved |= opt_slider("REKARINA_COLOR_GAMMA", UI_MENU_COLOR_GAMMA, 0.8f, 1.2f, UI_MENU_COLOR_GAMMA_DESC, 0.02f, "%.2f");
     if (moved && strcmp(cfg_value("REKARINA_COLOR_PRESET"), "custom")) {
         cfg_set("REKARINA_COLOR_PRESET", "custom");
@@ -892,9 +1081,10 @@ static void tab_screen(float scale) {
         static const char *const shape[] = {"16:9", "window", "21:9", "32:9"};
         const char *shape_names[] = {"16:9", menu_text(UI_MENU_GAME_RES_NATIVE), "21:9", "32:9"};
         opt_choice_list("REKARINA_GAME_ASPECT", UI_MENU_GAME_ASPECT, shape, shape_names, 4, UI_MENU_GAME_ASPECT_DESC);
-        static const char *const pic_res[] = {"1080", "1440", "1800", "2160", "2880", "window"};
-        const char *pic_res_names[] = {"1080p", "1440p", "1800p", "2160p (4K)", "2880p (5K)", menu_text(UI_MENU_GAME_RES_NATIVE)};
-        opt_choice_list("REKARINA_GAME_RES", UI_MENU_GAME_RES, pic_res, pic_res_names, 6, UI_MENU_GAME_RES_DESC);
+        static const char *const pic_res[] = {"720", "900", "1080", "1440", "1800", "2160", "2880", "window"};
+        const char *pic_res_names[] = {"720p", "900p", "1080p", "1440p", "1800p", "2160p (4K)", "2880p (5K)",
+                                       menu_text(UI_MENU_GAME_RES_NATIVE)};
+        opt_choice_list("REKARINA_GAME_RES", UI_MENU_GAME_RES, pic_res, pic_res_names, 8, UI_MENU_GAME_RES_DESC);
     }
 #ifndef GAME_OOT   // the field of view and the shadow settings are patches of TotK
     opt_slider("REKARINA_FOV", UI_MENU_FOV, 70, 140, UI_MENU_FOV_DESC, 5, "%.0f %%");
@@ -942,9 +1132,10 @@ static void tab_screen(float scale) {
 #endif
     opt_group(UI_MENU_HDR_GROUP);
     opt_toggle("REKARINA_HDR", UI_MENU_HDR, UI_MENU_HDR_DESC);
-    opt_slider("REKARINA_HDR_PEAK_NITS", UI_MENU_HDR_PEAK, 400, 10000, UI_MENU_HDR_PEAK_DESC, 50, "%.0f");
-    opt_slider("REKARINA_HDR_GAME_NITS", UI_MENU_HDR_GAME, 80, 500, UI_MENU_HDR_GAME_DESC, 5, "%.0f");
-    opt_slider("REKARINA_HDR_UI_NITS", UI_MENU_HDR_UI, 80, 500, UI_MENU_HDR_UI_DESC, 5, "%.0f");
+    opt_slider("REKARINA_HDR_PEAK_NITS", UI_MENU_HDR_PEAK, 400, 10000, UI_MENU_HDR_PEAK_DESC, 50, "%.0f", nullptr, nullptr, true);
+    // brightness in nits: logarithmic bars, as the eye takes light; the 203 default near the middle
+    opt_slider("REKARINA_HDR_GAME_NITS", UI_MENU_HDR_GAME, 80, 500, UI_MENU_HDR_GAME_DESC, 5, "%.0f", nullptr, nullptr, true);
+    opt_slider("REKARINA_HDR_UI_NITS", UI_MENU_HDR_UI, 80, 500, UI_MENU_HDR_UI_DESC, 5, "%.0f", nullptr, nullptr, true);
     opt_slider("REKARINA_HDR_HUE", UI_MENU_HDR_HUE, 0, 100, UI_MENU_HDR_HUE_DESC, 5, "%.0f %%");
     opt_end();
 }
@@ -959,6 +1150,12 @@ static void tab_game(float scale) {
     static const UiTextId mode[] = {UI_MENU_MODE_DOCKED, UI_MENU_MODE_HANDHELD};
     opt_choice("REKARINA_OPERATION_MODE", UI_MENU_OPERATION_MODE, mode, 2, UI_MENU_OPERATION_MODE_DESC);
     opt_toggle("REKARINA_ASSUME_FOCUS", UI_MENU_ASSUME_FOCUS, UI_MENU_ASSUME_FOCUS_DESC);
+    {   // our own screenshot key (input.c screenshot_key): a PNG into screenshots/ beside the game
+        static const char *const keys[] = {"none", "f12", "f9", "f7", "f6", "f5"};
+        const char *names[] = {menu_text(UI_MENU_OFF), "F12", "F9", "F7", "F6", "F5"};
+        opt_choice_list("REKARINA_SCREENSHOT_KEY", UI_MENU_SHOT_KEY, keys, names, 6, UI_MENU_SHOT_KEY_DESC);
+        opt_toggle("REKARINA_SCREENSHOT_OVERLAY", UI_MENU_SHOT_OVERLAY, UI_MENU_SHOT_OVERLAY_DESC);
+    }
     opt_end();
 }
 
@@ -967,6 +1164,7 @@ static void tab_sound(float scale) {
     opt_slider("REKARINA_VOLUME", UI_MENU_VOLUME, 0, 100, UI_MENU_VOLUME_DESC, 5, "%.0f %%");
     static const UiTextId channels[] = {UI_MENU_CHANNELS_AUTO, UI_MENU_CHANNELS_STEREO, UI_MENU_CHANNELS_51};
     opt_choice("REKARINA_AUDIO_CHANNELS", UI_MENU_AUDIO_CHANNELS, channels, 3, UI_MENU_AUDIO_CHANNELS_DESC);
+    opt_toggle("REKARINA_BG_MUTE", UI_MENU_BG_MUTE, UI_MENU_BG_MUTE_DESC);
     opt_end();
 }
 
@@ -1118,9 +1316,16 @@ static void tab_controls(float scale) {
     opt_choice("REKARINA_PROMPTS", UI_MENU_PROMPTS, prompts, 5, UI_MENU_PROMPTS_DESC, note);
 #endif
     bool ask = restart && opt_button("##restart", UI_MENU_RESTART, UI_MENU_RESTART_DESC);
+    {   // the controller: which one is read, and through which driver (the pane's controller picture names it)
+        opt_toggle("REKARINA_PAD_FOLLOW", UI_MENU_PAD_FOLLOW, UI_MENU_PAD_FOLLOW_DESC);
+        static const UiTextId drivers[] = {UI_MENU_PAD_DRIVER_AUTO, UI_MENU_PAD_DRIVER_COMPAT};
+        opt_choice("REKARINA_PAD_DRIVER", UI_MENU_PAD_DRIVER, drivers, 2, UI_MENU_PAD_DRIVER_DESC);
+    }
+    opt_toggle("REKARINA_KBM_OFF", UI_MENU_KBM_OFF, UI_MENU_KBM_OFF_DESC);
     opt_toggle("REKARINA_MOTION", UI_MENU_MOTION, UI_MENU_MOTION_DESC);
     opt_slider("REKARINA_RUMBLE_STRENGTH", UI_MENU_RUMBLE_STRENGTH, 0, 300, UI_MENU_RUMBLE_STRENGTH_DESC, 10, "%.0f %%");
-    opt_slider("REKARINA_RUMBLE_CURVE", UI_MENU_RUMBLE_CURVE, 0.2f, 1.5f, UI_MENU_RUMBLE_CURVE_DESC, 0.05f, "%.2f");
+    opt_slider("REKARINA_RUMBLE_CURVE", UI_MENU_RUMBLE_CURVE, 0.2f, 1.5f, UI_MENU_RUMBLE_CURVE_DESC, 0.05f, "%.2f", nullptr, nullptr,
+               true);   // an exponent: logarithmic, the 0.6 default near the middle
     opt_toggle("REKARINA_RUMBLE_TRIGGERS", UI_MENU_RUMBLE_TRIGGERS, UI_MENU_RUMBLE_TRIGGERS_DESC);
     {   // the direct mouse camera needs the patch set mouse_direct (mouse_direct.c direct_mode): TotK 1.4.3 and OoT have it
         static const UiTextId mouse_modes[] = {UI_MENU_MOUSE_STICK, UI_MENU_MOUSE_DIRECT};
@@ -1130,8 +1335,11 @@ static void tab_controls(float scale) {
         opt_choice("REKARINA_MOUSE_MODE", UI_MENU_MOUSE_MODE, mouse_modes, 2, UI_MENU_MOUSE_MODE_DESC);
 #endif
     }
-    opt_slider("REKARINA_MOUSE_SENS", UI_MENU_MOUSE_SENS, 0, 10, UI_MENU_MOUSE_SENS_DESC, 0.1f, "%.1f");
-    opt_slider("REKARINA_MOUSE_SENS_Y", UI_MENU_MOUSE_SENS_Y, 0.1f, 3, UI_MENU_MOUSE_SENS_Y_DESC, 0.05f, "%.2f");
+    // multipliers: on a logarithmic bar the default 1 sits in the middle of the mouse speed's 0.1..10 and fine steps
+    // stay reachable at both ends (0 at the left end turns the mouse camera off)
+    opt_slider("REKARINA_MOUSE_SENS", UI_MENU_MOUSE_SENS, 0, 10, UI_MENU_MOUSE_SENS_DESC, 0.05f, "%.2f", nullptr, nullptr, true);
+    opt_slider("REKARINA_MOUSE_SENS_Y", UI_MENU_MOUSE_SENS_Y, 0.25f, 3, UI_MENU_MOUSE_SENS_Y_DESC, 0.05f, "%.2f", nullptr, nullptr,
+               true);   // from 0.25: the default 1 near the middle (rekarina.ini still takes 0.1)
     opt_toggle("REKARINA_MOUSE_INVERT_Y", UI_MENU_MOUSE_INVERT_Y, UI_MENU_MOUSE_INVERT_Y_DESC);
 #ifdef _WIN32   // read by input_win.c mouse_raw only: the SDL back end (input_sdl.c) always takes relative motion
     opt_toggle("REKARINA_MOUSE_RAW", UI_MENU_MOUSE_RAW, UI_MENU_MOUSE_RAW_DESC);
@@ -1139,6 +1347,13 @@ static void tab_controls(float scale) {
 #ifndef GAME_OOT   // the pointer in TotK 1.4.3's menu screens (menu_cursor.c)
     opt_toggle("REKARINA_MENU_CURSOR", UI_MENU_MENU_CURSOR, UI_MENU_MENU_CURSOR_DESC);
 #endif
+    {   // the idle cursor (input_win.c, input_sdl.c)
+        static const char *const vals[] = {"0", "1", "3", "5", "10"};
+        static char secs[4][32];
+        const char *names[5] = {menu_text(UI_MENU_OFF), secs[0], secs[1], secs[2], secs[3]};
+        for (int i = 0; i < 4; i++) snprintf(secs[i], sizeof secs[i], menu_text(UI_MENU_AFTER_SECONDS), atoi(vals[i + 1]));
+        opt_choice_list("REKARINA_CURSOR_HIDE", UI_MENU_CURSOR_HIDE, vals, names, 5, UI_MENU_CURSOR_HIDE_DESC);
+    }
     row_walk_key();
     opt_slider("REKARINA_WALK_SCALE", UI_MENU_WALK_SCALE, 0.2f, 0.9f, UI_MENU_WALK_SCALE_DESC, 0.01f, "%.2f");
     // Analog sticks: one dead zone row per stick, falling back to REKARINA_STICK_DEADZONE (both sticks) while unset. With
@@ -1164,6 +1379,8 @@ static void tab_controls(float scale) {
     restart_confirm();
 }
 
+static void row_report(void);
+
 static void tab_menu(float scale) {
     opt_begin("##menu", scale);
     // the order of REKARINA_MENU_LANG's values (cfg.c metas[])
@@ -1175,8 +1392,11 @@ static void tab_menu(float scale) {
     opt_choice("REKARINA_MENU_LANG", UI_MENU_MENU_LANG, langs, sizeof langs / sizeof *langs, UI_MENU_MENU_LANG_DESC);
     opt_toggle("REKARINA_DISCORD_RPC", UI_MENU_DISCORD_RPC, UI_MENU_DISCORD_RPC_DESC);
 #ifdef GAME_OOT
-    opt_toggle("REKARINA_UPDATE_CHECK", UI_MENU_UPDATE_CHECK, UI_MENU_UPDATE_CHECK_DESC);
+    // switched on in the running game: the check runs now rather than at the next start
+    if (opt_toggle("REKARINA_UPDATE_CHECK", UI_MENU_UPDATE_CHECK, UI_MENU_UPDATE_CHECK_DESC) && cfg_bool("REKARINA_UPDATE_CHECK"))
+        update_note_start();
 #endif
+    row_report();
     opt_end();
 }
 
@@ -1232,6 +1452,30 @@ static const char *action_value(const ActionNote &a, UiTextId done_text) {
 }
 
 static void action_done(ActionNote &a, bool ok) { a = {plat_now_ns() + 3000000000ull, ok ? 1 : -1}; }
+
+// "Make a problem report" (report.c): one zip into the reports folder, which then opens. On the Advanced tab beside the
+// log folder and the system info, and on the Menu tab where a player looks first.
+// The report is made on a thread of its own: it reads the logs and walks the cache folders (the shader cache holds
+// hundreds of thousands of files), seconds the present path must not wait for.
+static std::atomic<int> g_report_state;   // 0 idle, 1 being made, 2 made, 3 failed
+
+static void report_thread(void *arg) {
+    (void)arg;
+    char path[1024], dir[1024];
+    bool ok = report_make(path, sizeof path) != 0;
+    if (ok && report_folder(dir, sizeof dir) && !cfg_get("REKARINA_REPORT_NO_OPEN")) plat_open_folder(dir);
+    g_report_state.store(ok ? 2 : 3);
+}
+
+static void row_report(void) {
+    static ActionNote note;
+    int st = g_report_state.load();
+    if (st >= 2) action_done(note, st == 2), g_report_state.store(0);
+    const char *value = st == 1 ? "\xe2\x80\xa6" : action_value(note, UI_MENU_REPORT_DONE);   // an ellipsis while it runs
+    if (!opt_button("##report", UI_MENU_REPORT, UI_MENU_REPORT_DESC, value) || st == 1) return;
+    g_report_state.store(1);
+    if (!plat_thread_spawn(report_thread, NULL, "report", 256 * 1024)) g_report_state.store(3);
+}
 
 static void tab_advanced(float scale) {
     static ActionNote copy_note, log_note;
@@ -1315,6 +1559,7 @@ static void tab_advanced(float scale) {
         static char text[16384];
         action_done(copy_note, sysinfo_text(text, sizeof text) > 0 && plat_clipboard_set(text));
     }
+    row_report();
     bool ask = opt_button("##reset", UI_MENU_RESET, UI_MENU_RESET_DESC);
     opt_end();
     if (ask) ImGui::OpenPopup("##reset_confirm");   // at the level BeginPopupModal looks it up
@@ -1354,6 +1599,20 @@ static const UiTextId kTabNames[TAB_COUNT] = {UI_MENU_TAB_SCREEN,   UI_MENU_TAB_
 static int g_tab;               // the tab shown
 static int g_tab_request = -1;  // select this tab at the next layout; -1 none
 static int g_focus_page = -1;   // this tab's first row takes the cursor once it is shown; -1 none
+
+static void request_tab(int tab) { g_tab_request = tab; }
+
+// A tab by the script's name for it (REKARINA_MENU_SCRIPT), -1 for none this game shows.
+static int tab_of_name(const char *name) {
+    static const struct { const char *name; int tab; } names[] = {
+        {"screen", TAB_SCREEN}, {"game", TAB_GAME}, {"sound", TAB_SOUND}, {"controls", TAB_CONTROLS},
+        {"amiibo", TAB_AMIIBO}, {"menu", TAB_MENU}, {"advanced", TAB_ADVANCED}, {"mods", TAB_MODS}, {"cheats", TAB_CHEATS}};
+    for (const auto &n : names)
+        if (!strcmp(n.name, name))
+            for (int t : kTabs)
+                if (t == n.tab) return t;
+    return -1;
+}
 
 // A row of another tab: that tab opens with the row under the cursor.
 static void go_to(int tab, const char *key) {
@@ -1469,6 +1728,7 @@ static const ImU32 kMenuNote = IM_COL32(255, 210, 122, 255);
 // menu): {x, y, w, h} in pixels while the menu shows it.
 static int g_preview[4];
 static std::atomic<int> g_preview_on;
+static MenuPicture g_pic_shown;   // the picture the description pane drew this frame (ui/menu_pictures.h)
 
 extern "C" int menu_preview_rect(int out[4]) {
     if (!g_preview_on.load(std::memory_order_relaxed) || !g_open.load(std::memory_order_relaxed)) return 0;
@@ -1774,10 +2034,16 @@ static void layout_menu(const MenuTarget *t, float scale) {
             fg->AddLine(ImVec2(da.x + px, y), ImVec2(db.x - px, y), IM_COL32(92, 74, 46, 255), 1.0f);
             y += floorf(10 * scale);
         }
-        // the prompts row shows the chosen set's buttons as the game will draw them
+        // the prompts row shows the chosen set's buttons as the game will draw them; other rows a picture of what they
+        // set (ui/menu_pictures.cpp)
+        g_pic_shown = PIC_NONE;
         if (!strcmp(opt_desc_key(), "REKARINA_PROMPTS")) {
             float ph = prompts_preview(fg, da.x + px, y + floorf(6 * scale), wrap, floorf(fs * 2.5f));
             if (ph > 0) y += ph + floorf(22 * scale);
+        } else if (MenuPicture pic = menu_picture_for(opt_desc_key()); pic != PIC_NONE) {
+            g_pic_shown = pic;
+            float ph = menu_picture_draw(pic, opt_desc_key(), fg, da.x + px, y + floorf(4 * scale), wrap, scale, t);
+            if (ph > 0) y += ph + floorf(16 * scale);
         }
         float dfs = floorf(fs * 0.86f);
         // a long description at a smaller size, down to 70 %, so it stays inside the box
@@ -2168,6 +2434,31 @@ static void update_notice_draw(float scale) {
     dl->AddText(ImVec2(p.x + pad, p.y + pad + s0.y + 4 * scale), IM_COL32(246, 239, 214, (int)(255 * a)), line[1]);
 }
 
+// After a run that ended with an error (report.c report_last_run_failed): two lines on a plate at the top left for
+// the first REPORT_NOTICE_S seconds, below the update notice's place, saying how to make a problem report.
+enum { REPORT_NOTICE_S = 20 };
+static uint64_t g_report_since;
+
+static bool report_notice_active(void) {
+    if (!report_last_run_failed()) return false;
+    uint64_t now = plat_now_ns();
+    if (!g_report_since) g_report_since = now;
+    return now - g_report_since < REPORT_NOTICE_S * 1000000000ull;
+}
+
+static void report_notice_draw(float scale) {
+    const char *l0 = menu_text(UI_REPORT_LAST_RUN), *l1 = menu_text(UI_REPORT_LAST_RUN_HINT);
+    float left = REPORT_NOTICE_S - (float)((plat_now_ns() - g_report_since) / 1e9), a = left < 1 ? (left < 0 ? 0 : left) : 1;
+    ImDrawList *dl = ImGui::GetForegroundDrawList();
+    ImVec2 s0 = ImGui::CalcTextSize(l0), s1 = ImGui::CalcTextSize(l1);
+    float pad = 12 * scale, w = (s0.x > s1.x ? s0.x : s1.x) + pad * 2, h = s0.y + s1.y + pad * 2 + 4 * scale;
+    ImVec2 p(18 * scale, 18 * scale + (update_notice_active() ? h + 12 * scale : 0));
+    dl->AddRectFilled(p, ImVec2(p.x + w, p.y + h), IM_COL32(49, 35, 24, (int)(240 * a)));
+    dl->AddRect(p, ImVec2(p.x + w, p.y + h), IM_COL32(140, 118, 72, (int)(255 * a)), 0, 0, 1.0f);
+    dl->AddText(ImVec2(p.x + pad, p.y + pad), IM_COL32(255, 196, 120, (int)(255 * a)), l0);
+    dl->AddText(ImVec2(p.x + pad, p.y + pad + s0.y + 4 * scale), IM_COL32(246, 239, 214, (int)(255 * a)), l1);
+}
+
 static void perf_draw(const MenuTarget *t, float scale) {
     if (g_perf_mode == 2) return perf_full_draw(t, scale);
     float w = (float)t->width;
@@ -2185,12 +2476,48 @@ static void perf_draw(const MenuTarget *t, float scale) {
     dl->AddText(font, fs, p, IM_COL32(246, 239, 214, 255), g_perf_text);
 }
 
+// The performance and system pictures read perfmon's numbers: while one shows, its sampling runs as in the overlay's full
+// mode; once none shows (or the menu closes), the overlay's own mode again.
+static void pic_sampling(const MenuTarget *t, bool open) {
+    static bool on;
+    static int mode_seen = -1;
+    if (mode_seen != g_perf_mode) mode_seen = g_perf_mode, on = false;   // perf_tick set the overlay's mode itself
+    bool want = open && (g_pic_shown == PIC_PERF || g_pic_shown == PIC_SYSTEM) && g_perf_mode != 2;
+    if (want == on) return;
+    on = want;
+    if (want) perf_gpu_once(t);
+    perfmon_mode(want ? 2 : g_perf_mode);
+}
+
+// The entry step's progress picture before the guest runs (ui/prep_screen.cpp, prep.h): the menu's ImGui set-up and
+// font, none of its pages, input or per-frame hooks (the cheats would touch guest memory that is not running yet).
+static int prep_frame(const MenuTarget *t) {
+    if (g_failed_flag()) return 0;
+    if (!g_ctx_ok) make_context();
+    float scale = menu_scale(t->height);
+    if (!vk_up(t) || ((g_font_scale != scale || strcmp(g_font_lang, menu_text_lang())) && !fonts_up(scale))) {
+        rt_log("menu: Dear ImGui Vulkan back end set-up failed; no progress picture and the menu stays closed");
+        g_failed.store(1);
+        return 0;
+    }
+    ImGuiIO &io = ImGui::GetIO();
+    io.DisplaySize = ImVec2((float)t->width, (float)t->height);
+    io.DeltaTime = 0.1f;
+    ImGui_ImplVulkan_NewFrame();
+    ImGui::NewFrame();
+    prep_screen_draw((float)t->width, (float)t->height, scale);
+    ImGui::Render();
+    return ImGui::GetDrawData()->TotalVtxCount > 0;
+}
+
 extern "C" int menu_overlay_frame(uint64_t frame, const MenuTarget *t, const char **shot) {
     *shot = NULL;
+    if (prep_screen_active()) return prep_frame(t);
     cheats_frame(frame);   // the data cheats and the buttons of the cheats that need them held
     if (!g_test.parsed) test_parse();
     if (g_test.next_set < g_test.n_sets && frame >= g_test.sets[g_test.next_set].frame) test_apply_sets(frame);
     if (g_perf_save.exchange(0)) cfg_save();
+    script_frame(frame, t, shot);
     perf_tick(plat_now_ns(), t);
     amiibo_tick();
     {
@@ -2206,7 +2533,8 @@ extern "C" int menu_overlay_frame(uint64_t frame, const MenuTarget *t, const cha
             g_tab_request = kTabs[0];
             set_open(1);
             open = true;
-        } else if (!g_perf_mode && !g_vram_short && !update_notice_active()) {
+        } else if (!g_perf_mode && !g_vram_short && !update_notice_active() && !report_notice_active() && !g_script.active) {
+            pic_sampling(t, false);
             return 0;
         }
     }
@@ -2244,9 +2572,14 @@ extern "C" int menu_overlay_frame(uint64_t frame, const MenuTarget *t, const cha
     io.DeltaTime = (float)(dt < 1e-4 ? 1e-4 : dt > 0.1 ? 0.1 : dt);
     g_last_ns = t0;
     if (!open) {   // the overlay alone: no input reaches ImGui
-    } else if (g_test.page < 0) {
+    } else if (g_test.page < 0 && !g_script.active) {
         drain_events(io);
-        pad_events(io, reset);
+        pad_events(io, reset, frame);
+    } else if (g_script.active) {   // a menu script: its own input only (script_frame queued it), the real queue dropped
+        plat_mutex_lock(&ev_lock);
+        ev_n = 0;
+        plat_mutex_unlock(&ev_lock);
+        pad_events(io, reset, frame);
     } else {   // the test hook's pages: the user's input in a background test window must not change settings
         plat_mutex_lock(&ev_lock);
         ev_n = 0;
@@ -2261,10 +2594,12 @@ extern "C" int menu_overlay_frame(uint64_t frame, const MenuTarget *t, const cha
     }
     ImGui::NewFrame();
     if (open) layout_menu(t, scale);
-    else g_preview_on.store(0, std::memory_order_relaxed);
+    else g_preview_on.store(0, std::memory_order_relaxed), g_pic_shown = PIC_NONE;
+    pic_sampling(t, open);
     perf_draw(t, scale);
     if (g_vram_short) vram_notice_draw(t, scale);
     if (update_notice_active()) update_notice_draw(scale);
+    if (report_notice_active() && !open) report_notice_draw(scale);
     ImGui::Render();
     if (open) g_save_pending = opt_save_tick(0);
     g_cost_ns += plat_now_ns() - t0;

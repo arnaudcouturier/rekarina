@@ -1,10 +1,10 @@
 // Map changes on request, for the performance runs and their videos (OoT 1.1.1, main build e0f3ccfa).
 //
 // REKARINA_WARP_AT=<seconds>:<place>[;<seconds>:<place>...] sends the hero to each place when the game has run that many
-// seconds (counted from the first pad read). Places: forest, field, market, castle, village, or one spelled out as
-// <map>/<start position>/<arrival event> with the game's own names (<map>_Child/<a start of that map>/
-// Dm_SY_BancChangeArrive; the arrival event may be left out). A request the game is not ready for (an event playing,
-// the event manager not there yet) is asked again each second.
+// seconds (counted from the first pad read). Places: forest, field, market, castle, village, the tour's (places[]),
+// or one spelled out as <map>/<start position>/<arrival event> with the game's own names (<map>_Child/<a start of
+// that map>/Dm_SY_BancChangeArrive; the arrival event may be left out). A request the game is not ready for (an event
+// playing, the event manager not there yet) is asked again each second.
 //
 // The game changes maps through an event: an entrance asks the event manager for "Dm_SY_BancChangeGo" with the next
 // map (a "banc"), the start position in it and the event that plays on arrival, and the sequence loads the map when
@@ -28,6 +28,7 @@
 #include "cfg.h"
 #include "cpu.h"
 #include "host.h"
+#include "nvn_api.h"
 #include "platform/platform.h"
 
 void *rt_patch_page(void);
@@ -62,6 +63,49 @@ static Place places[] = {
     {"castle", {"UlehyrPnfgyr", "UlehyrPnfgyr"}, "UlehyrPnfgyr_Ragenapr", "Qz_FL_OnapPunatrNeevir_UlehyrPnfgyr_01"},
     {"village", {"XnxnevxbIvyyntr_Nqhyg", "XnxnevxbIvyyntr_Puvyq"}, "XnxnevxbIvyyntr_Ragenapr",
      "Qz_FL_OnapPunatrNeevir_XnxnevxbIvyyntr_01"},
+    // For the location tour (every map the game has, for the correctness runs): the forest from the woods' side (the
+    // bridge start above plays a scene that holds the later warps), the other outdoor maps, the dungeons in the order
+    // the game reaches them, the side dungeons, then the boss rooms in the same order. A child save sent to a map of
+    // the grown-up part gets the one map there is.
+    {"forest2", {"XbxvevSberfg_Nqhyg", "XbxvevSberfg_Puvyq"}, "XbxvevSberfg_SebagBsYbfgJbbq", "Qz_FL_OnapPunatrNeevir"},
+    {"woods", {"YbfgJbbq_Nqhyg", "YbfgJbbq_Puvyq"}, "YbfgJbbq_Ragenapr", "Qz_FL_OnapPunatrNeevir"},
+    {"meadow", {"FnperqSberfgZrnqbj_Nqhyg", "FnperqSberfgZrnqbj_Puvyq"}, "FnperqSberfgZrnqbj_SebagBsYbfgJbbq", "Qz_FL_OnapPunatrNeevir"},
+    {"graveyard", {"Tenirlneq_Nqhyg", "Tenirlneq_Puvyq"}, "TenirLneq_XnxnevxbFvqr", "Qz_FL_OnapPunatrNeevir"},
+    {"trail", {"QrnguZbhagnvaGenvy_Nqhyg", "QrnguZbhagnvaGenvy_Puvyq"}, "ZbhagnvaGenvy_XnxnevxbFvqr", "Qz_FL_OnapPunatrNeevir"},
+    {"city", {"TbebaPvgl_Nqhyg", "TbebaPvgl_Puvyq"}, "TbebaPvgl_ZbhagnvaGenvyFvqr", "Qz_FL_OnapPunatrNeevir"},
+    {"crater", {"QrnguZbhagnvaPengre_Nqhyg", "QrnguZbhagnvaPengre_Puvyq"}, "Pengre_ZbhagnvaGenvyFvqr", "Qz_FL_OnapPunatrNeevir"},
+    {"river", {"MbenEvire_Nqhyg", "MbenEvire_Puvyq"}, "MbenEvire_SebzMbenQbznva", "Qz_FL_OnapPunatrNeevir"},
+    {"domain", {"MbenQbznva_Nqhyg", "MbenQbznva_Puvyq"}, "MbenQbznva_SebzMbenEvire", "Qz_FL_OnapPunatrNeevir"},
+    {"fountain", {"MbenSbhagnva_Nqhyg", "MbenSbhagnva_Puvyq"}, "MbenSbhagnva_SebzMbenQbznva", "Qz_FL_OnapPunatrNeevir"},
+    {"lake", {"UlehyrSvryq_Nqhyg", "UlehyrSvryq_Puvyq"}, "YnxrUlyvn_SebzTrehqbInyyrl", "Qz_FL_OnapPunatrNeevir"},
+    {"valley", {"TrehqbInyyrl_Nqhyg", "TrehqbInyyrl_Puvyq"}, "TrehqbInyyrl_Ragenapr", "Qz_FL_OnapPunatrNeevir"},
+    {"fortress", {"TrehqbSbegerff_Nqhyg", "TrehqbSbegerff_Nqhyg"}, "TrehqbSbegerff_SebzTrehqbInyyrl", "Qz_FL_OnapPunatrNeevir"},
+    {"wasteland", {"UbhagrqJnfgrynaq_Nqhyg", "UbhagrqJnfgrynaq_Puvyq"}, "UbhagrqJnfgrynaq_SebzQrfregPbybffhf", "Qz_FL_OnapPunatrNeevir"},
+    {"desert", {"QrfregPbybffhf_Nqhyg", "QrfregPbybffhf_Puvyq"}, "QrfregPbybffhf_SebzUbhagrqJnfgrynaq", "Qz_FL_OnapPunatrNeevir"},
+    {"dungeon1", {"VafvqrGurQrxhGerr", "VafvqrGurQrxhGerr"}, "Ragenapr", "Qz_FL_OnapPunatrNeevir"},
+    {"dungeon2", {"QbqbatbPnirea", "QbqbatbPnirea"}, "QbqbatbPnirea_ZbhagnvaGenvyFvqr", "Qz_FL_OnapPunatrNeevir"},
+    {"dungeon3", {"VafvqrWnohWnohOryyl", "VafvqrWnohWnohOryyl"}, "VafvqrWnohWnohOryyl_SebzMbenSbhagnva", "Qz_FL_OnapPunatrNeevir"},
+    {"dungeon4", {"SberfgGrzcyr", "SberfgGrzcyr"}, "SberfgGrzcyr", "Qz_FL_OnapPunatrNeevir"},
+    {"dungeon5", {"SverGrzcyr", "SverGrzcyr"}, "SverGrzcyr", "Qz_FL_OnapPunatrNeevir"},
+    {"dungeon6", {"JngreGrzcyr", "JngreGrzcyr"}, "JngreGrzcyr_SebzYnxrUlyvn", "Qz_FL_OnapPunatrNeevir"},
+    {"dungeon7", {"FunqbjGrzcyr", "FunqbjGrzcyr"}, "Ragenapr", "Qz_FL_OnapPunatrNeevir"},
+    {"dungeon8", {"FcvevgGrzcyr", "FcvevgGrzcyr"}, "FcvevgGrzcyr_Ragenapr", "Qz_FL_OnapPunatrNeevir"},
+    {"well", {"ObggbzBsGurJryy", "ObggbzBsGurJryy"}, "Jryy_XnxnevxbFvqr", "Qz_FL_OnapPunatrNeevir"},
+    {"cave", {"VprPnirea", "VprPnirea"}, "VprPnirea_SebzMbenSbhagnva", "Qz_FL_OnapPunatrNeevir"},
+    {"training", {"TrehqbGenvavatTebhaq", "TrehqbGenvavatTebhaq"}, "TrehqbGenvavatTebhaq_SebzTrehqbSbegerff", "Qz_FL_OnapPunatrNeevir"},
+    {"tower", {"TnabaPnfgyr", "TnabaPnfgyr"}, "TnabaPnfgyrRagenapr", "Qz_FL_OnapPunatrNeevir"},
+    {"towerin", {"VafvqrTnabaPnfgyr", "VafvqrTnabaPnfgyr"}, "Ragenapr", "Qz_FL_OnapPunatrNeevir"},
+    {"boss1", {"TbuznFgntr", "TbuznFgntr"}, "TbuznFgntr", "Qz_FL_OnapPunatrNeevir"},
+    {"boss2", {"QbqbatbFgntr", "QbqbatbFgntr"}, "QbqbatbFgntr", "Qz_FL_OnapPunatrNeevir"},
+    {"boss3", {"OnevanqrFgntr", "OnevanqrFgntr"}, "OnevanqrFgntr", "Qz_FL_OnapPunatrNeevir"},
+    {"boss4", {"CunagbzTnabaFgntr", "CunagbzTnabaFgntr"}, "CunagbzTnabaFgntr", "Qz_FL_OnapPunatrNeevir"},
+    {"boss5", {"IbyintvnFgntr", "IbyintvnFgntr"}, "IbyintvnFgntr", "Qz_FL_OnapPunatrNeevir"},
+    {"boss6", {"ZbecunFgntr", "ZbecunFgntr"}, "ZbecunFgntr", "Qz_FL_OnapPunatrNeevir"},
+    {"boss7", {"ObatbObatbFgntr", "ObatbObatbFgntr"}, "ObatbObatbFgntr", "Qz_FL_OnapPunatrNeevir"},
+    {"boss8", {"GjvaebinFgntr", "GjvaebinFgntr"}, "GjvaebinFgntr", "Qz_FL_OnapPunatrNeevir"},
+    {"boss9", {"TnabaqbesFgntr", "TnabaqbesFgntr"}, "TnabaqbesFgntr", "Qz_FL_OnapPunatrNeevir"},
+    {"boss10", {"TnabaFgntr", "TnabaFgntr"}, "TnabaFgntr", "Qz_FL_OnapPunatrNeevir"},
+    {"mini1", {"QnexYvaxFgntr", "QnexYvaxFgntr"}, "QnexYvaxFgntr", "Qz_FL_OnapPunatrNeevir"},
 };
 
 static const char *letters_back(const char *t) {
@@ -122,16 +166,27 @@ static int add_argument(uint64_t arg, const char *name, uint32_t type, uint64_t 
     return 1;
 }
 
+// REKARINA_WARP_TRACE=1 logs each step of a request before it is taken, to find where one stops (a warp asked from
+// inside a dungeon hung the game with no line logged).
+static void step(const char *what) {
+    static int on = -1;
+    if (on < 0) on = cfg_get("REKARINA_WARP_TRACE") != NULL;
+    if (on) rt_log("warp: step: %s", what);
+}
+
 // 1 sent and taken, 0 the game is not ready (ask again), -1 it cannot be done.
 static int warp(Cpu *c, const Place *p) {
     places_init();
+    step("start");
     const RtLoaded *m = ldr_module(0);
     uint8_t *page = rt_patch_page();
     if (!m || !page) return -1;
     uint64_t base = m->base, events = singleton(base, EVENT_MGR_SLOT);
     if (!events || rd64(events + EVENT_PLAYING)) return 0;
     int loading = 0, child = 1;
+    step("the loading flag");
     if (game_flag(c, base, HASH_IS_LOADING, &loading) && loading) return 0;
+    step("the age flag");
     game_flag(c, base, HASH_IS_CHILD, &child);
 
     char *strings = (char *)page + STRINGS_AT;   // read by the event after this returns: memory that stays
@@ -143,6 +198,7 @@ static int warp(Cpu *c, const Place *p) {
     Cpu saved = *c;
     uint64_t arg = (c->sp - ARG_BYTES - 0x100) & ~0xfull;
     c->sp = arg;
+    step("the argument's constructor");
     rt_call(c, base + FN_ARG_MAKE, 1, arg);
     static const char event[] = "Dm_SY_BancChangeGo";
     uint64_t name = rd64(arg + ARG_EVENT_NAME);
@@ -154,8 +210,10 @@ static int warp(Cpu *c, const Place *p) {
     uint64_t taken = 0;
     if (ok) {
         c->sp = arg;
+        step("the event request");
         taken = rt_call(c, base + FN_EVENT_REQUEST, 2, events, arg);
     }
+    step("the links' release");
     static const uint32_t links[] = {ARG_LINK_A, ARG_LINK_B};
     for (int i = 0; i < 2; i++) {
         wr64(arg + links[i], base + LINK_VTABLE);
@@ -163,16 +221,19 @@ static int warp(Cpu *c, const Place *p) {
         rt_call(c, base + FN_LINK_RELEASE, 1, arg + links[i]);
     }
     *c = saved;
-    rt_log("warp: %s (%s at %s, arrival %s): %s, the event manager answered %#llx", p->name, p->banc[child], p->start,
+    rt_log("warp: frame %llu: %s (%s at %s, arrival %s): %s, the event manager answered %#llx",
+           (unsigned long long)__atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED), p->name, p->banc[child], p->start,
            p->boot, ok ? "asked" : "the request could not be built", (unsigned long long)taken);
     return ok ? (taken ? 1 : 0) : -1;
 }
 
+static int warps_made;
+
 void oot_warp_tick(Cpu *c) {
-    enum { MAX = 8 };
+    enum { MAX = 64 };
     static struct { double at; const Place *place; } plan[MAX];
     static Place spelled[MAX];        // places given as <map>/<start position>/<arrival event>
-    static char spelled_text[256];    // their names: the request's text, cut at the slashes
+    static char spelled_text[4096];   // their names: the request's text, cut at the slashes
     static int n = -1, next;
     static uint64_t t0, retry_at, tries;
     if (n < 0) {   // the plan, once
@@ -209,6 +270,10 @@ void oot_warp_tick(Cpu *c) {
         return;
     }
     if (r <= 0) rt_log("warp: %s given up", plan[next].place->name);
+    else __atomic_add_fetch(&warps_made, 1, __ATOMIC_RELAXED);
     next++, tries = 0, retry_at = now + 8000000000ull;   // the game needs a few seconds between two map changes
 }
+
+// The map changes a warp asked for so far (input.c: the "+" script lines count from the arrival after the latest).
+int oot_warps_made(void) { return __atomic_load_n(&warps_made, __ATOMIC_RELAXED); }
 #endif

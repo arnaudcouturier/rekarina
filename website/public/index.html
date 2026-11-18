@@ -50,7 +50,7 @@
       <div class="get rv d2" id="release">
         <!-- release:hero -->
         <a class="plate play cursor" href="/download">Download for Windows</a>
-        <span class="meta">Rekarina.exe &middot; version 1.1.0 &middot; 152 MB &middot; Windows 10 or 11, 64-bit</span>
+        <span class="meta">Rekarina.exe &middot; version 1.2.0 &middot; 155 MB &middot; Windows 10 or 11, 64-bit</span>
         <!-- /release:hero -->
         <div class="more">
           <a class="plate" href="#install">How it works</a>
@@ -76,14 +76,17 @@
         <li><h3>DLSS, DLAA and FSR 4.1</h3><p>NVIDIA DLSS and DLAA with a choice of model, and DLSS Frame Generation on RTX 40 and 50 cards. AMD FSR 4.1 on the Radeon cards that run it and FSR 3.1 on any other GPU, both with frame generation. For older cards and handhelds, AMD FSR 1 scales a smaller 3D scene up without motion vectors or history, at the same small cost on every GPU. The launcher fetches each vendor's library from its official repository; nothing of theirs is bundled.</p></li>
         <li><h3>Your save comes along</h3><p>The launcher's Saves page finds a save in the folders of another port of the game or of an emulator, or takes one from a folder or a .zip you pick, and copies it into the game. The save it replaces is kept, and one press brings it back.</p></li>
         <li><h3>Mods, with a manager</h3><p>Turn mods on and off and set their order in the launcher or on the game's own Mods tab; add one from a .zip or a folder. Texture, model and text mods load as they are, cheats turn on one by one, and code patches (.ips, .pchtxt) are built into the game by a rebuild of a few minutes that keeps saves, settings and shaders.</p></li>
-        <li><h3>Settings that apply while you play</h3><p>The in-game menu (Esc or F1) is drawn in the game's own menu style, with a live picture beside the rows, so a change to the render scale, sharpening, colour or frame limit shows at once.</p></li>
-        <li><h3>Your pad, or the keyboard and mouse</h3><p>Xbox and PlayStation pads, and the console's own controllers with HD rumble and gyro. The mouse turns the camera by raw input, exactly as far as you move it, with its own speed for each axis. The button prompts follow the device you use, change in the running game, and the keyboard prompts show the keys you bind.</p></li>
+        <li><h3>Shaders ready before you play</h3><p>The launcher prepares the game's shaders and pipelines while it builds, and its textures if you leave that step on, so the game starts in a few seconds and does not stop to build them in the middle of play.</p></li>
+        <li><h3>Settings that apply while you play</h3><p>The in-game menu (Esc or F1) is drawn in the game's own menu style, with a live picture beside the rows, so a change to the render scale, sharpening, colour or frame limit shows at once. Number settings are bars you drag with the mouse or step with the keys and the pad.</p></li>
+        <li><h3>Settings that explain themselves</h3><p>Where the menu used to describe, it now draws: the picture's whole chain with your values, from the 3D scene through the upscaler to the window; your controller, live, with its sticks over their dead zones; the keyboard with the button each bound key presses; frame times with CPU and GPU time and memory; the card, driver and profile the game runs on.</p></li>
+        <li><h3>Your pad, or the keyboard and mouse</h3><p>Xbox and PlayStation pads, and the console's own controllers with HD rumble and gyro. With several connected, the one you press is the one the game reads. The mouse turns the camera by raw input, exactly as far as you move it, with its own speed for each axis. The button prompts follow the device you use, change in the running game, and the keyboard prompts show the keys you bind.</p></li>
         <li><h3>Older cards and built-in graphics</h3><p>The launcher picks the first settings from your GPU and its video memory. FSR 1 scales a smaller scene up for built-in graphics and 4 GB cards, and the trees, bushes and grass are drawn on GPUs without mesh shaders.</p></li>
         <li><h3>Skip what you have seen</h3><p>Every cutscene can be skipped, the three the console keeps unskippable included. An option runs the dialogue on without the pauses between phrases.</p></li>
         <li><h3>Voice acting, music and movies</h3><p>As on the console: Opus voice lines in nine languages, AV1 cutscenes.</p></li>
         <li><h3>A launcher with updates</h3><p>It builds the game, shows each step with the time it takes, and installs new releases after checking their signature, rebuilding only what changed; the game itself tells you when one is out.</p></li>
+        <li><h3>A problem report in one press</h3><p>If something goes wrong, the menu or the launcher writes one .zip with the logs, the settings and the computer's details: no saves, no game files, your user name taken out of every path, and nothing is sent anywhere. You attach it where you ask for help.</p></li>
       </ul>
-      <p class="also">Also: a texture cache, so ground you have crossed before streams in with far fewer hitches; the menu and the launcher in every language the game has; HDR10 output (experimental); a performance overlay (F10); Discord Rich Presence (off by default). Rekarina is free software under the GPL-3.0.</p>
+      <p class="also">Also: a texture cache, so ground you have crossed before streams in with far fewer hitches; a screenshot key of its own (F12); a pointer that hides when it rests; sound that can mute while the window is in the background; the menu and the launcher in every language the game has; HDR10 output (experimental); a performance overlay (F10); Discord Rich Presence (off by default). Rekarina is free software under the GPL-3.0.</p>
     </div>
   </div>
 </section>
@@ -117,7 +120,7 @@
           <p>Start <b>Rekarina.exe</b>. It is the whole launcher in one file: at its first start it unpacks its tools, once. Choose the folder with your game dump and where the game goes.</p>
         </li>
         <li>
-          <div class="row"><div class="n">2</div><div class="l">It builds the game</div><div class="c">about an hour, once</div></div>
+          <div class="row"><div class="n">2</div><div class="l">It builds the game</div><div class="c">a little over an hour, once</div></div>
           <p>Press <b>Start</b>. The launcher checks the dump, recompiles the game's code, builds the executable, fetches the graphics components for your GPU and prepares the shaders. Each step shows how long it has left.</p>
         </li>
         <li>
@@ -158,7 +161,7 @@
       <div class="row"><div class="l">GPU</div><div class="c">Vulkan 1.3, 6 GB</div><div class="c">NVIDIA RTX with 8 GB or more</div></div>
       <div class="row"><div class="l">CPU</div><div class="c">6 cores with AVX2</div><div class="c">8 cores</div></div>
       <div class="row"><div class="l">Memory</div><div class="c">16 GB</div><div class="c">32 GB</div></div>
-      <div class="row"><div class="l">Disk</div><div class="c wide">30 GB free on an SSD (the game, its shader caches and the build)</div></div>
+      <div class="row"><div class="l">Disk</div><div class="c wide">40 GB free on an SSD (the game, its shader caches, the prepared textures and the build); 30 GB with the texture preparation turned off</div></div>
       <p class="foot">NVIDIA RTX cards are what the port is developed and tested on. For AMD and Intel GPUs, see the known issues below.</p>
     </div>
   </div>
@@ -173,7 +176,7 @@
         <p>Every release is signed with the project's key. The launcher installs an update only when that signature fits, so a changed file is refused wherever it came from.</p>
         <!-- release:sums -->
         <p>Rekarina.exe has no code-signing certificate, so Windows SmartScreen shows an &ldquo;unknown publisher&rdquo; page until enough people have run the file. To be sure the file is the one published here, compare its SHA-256 with the line below.</p>
-        <div class="sum"><b>SHA-256 of Rekarina.exe 1.1.0</b><code>b0b25de794cf0c731c99ee61bd2e5525294f733ceac359bbc3436f91f012dafc</code></div>
+        <div class="sum"><b>SHA-256 of Rekarina.exe 1.2.0</b><code>c60b0a70b2ab448e613427d2cc9acebb9a925f8aa8f6d382375ee1b1245b01d2</code></div>
         <p class="how">In a terminal: <code>certutil -hashfile Rekarina.exe SHA256</code></p>
         <!-- /release:sums -->
       </div>
@@ -183,10 +186,13 @@
           <li><b>AMD GPUs</b> have been run on one integrated Radeon only. A discrete Radeon, a Steam Deck and a ROG Ally have not been run.</li>
           <li><b>Intel GPUs</b> have never been run.</li>
           <li>On GPUs without mesh shaders the trees, bushes and grass are drawn by a compute stand-in; it has been checked on an NVIDIA card with mesh shaders turned off, not yet on such a GPU.</li>
+          <li>A rare GPU crash (&ldquo;device lost&rdquo;) in long sessions with many map changes. Its cause is not found yet; the problem report made by the launcher carries what we need to look at it.</li>
           <li>The first frames after a loading screen can hitch for a quarter of a second.</li>
+          <li>A shader combination or a foliage pipeline that none of our runs met is built the first time it appears: a few milliseconds for most, up to seconds for a patch of foliage, which is not drawn meanwhile. Our runs went through every map once; boss fights and the rooms deep inside dungeons only partly.</li>
+          <li>With 16 GB of memory the prepared textures are not read ahead at the start, so the first visit to a place after a restart of the PC reads them from the disk while you play.</li>
           <li>With another program holding most of the video memory (a video editor, a second game) the frame rate collapses; the game says so at the top of the screen.</li>
           <li>HDR10 output is experimental and off by default.</li>
-          <li>Linux: the setup builds the game on Linux in development, but there is no Linux release yet and it has not been played on a Linux PC or a Steam Deck.</li>
+          <li>Releases are Windows only for now. A native Linux build is in development; it has not run on a Linux PC with a graphics card or on a Steam Deck yet.</li>
         </ul>
         <a class="plate" href="https://discord.gg/6N8PKr9zZA" rel="noopener">Ask on Discord</a>
         <p class="cap">One post per problem in the help forum, with the log file from the <code>logs</code> folder beside the game.</p>

@@ -148,14 +148,58 @@ void input_cursor_suspend(int on) {
     cursor_update(gfx_window_handle());
 }
 
+// The idle cursor (REKARINA_CURSOR_HIDE seconds, default 3, 0 never; live): a cursor that is not captured (the menu is
+// open, Esc released it, the mouse camera is off) and rests over the client area that long is hidden until it moves,
+// so a player on a gamepad does not keep an arrow in the middle of the picture. Window thread.
+enum { IDLE_TIMER = 0x52, IDLE_TICK_MS = 250 };
+static ULONGLONG idle_since;   // GetTickCount64 of the last move in the client area
+static LPARAM idle_pos = -1;   // its position (WM_MOUSEMOVE's lParam): a message without a move does not count
+static int idle_hidden;
+
+static int idle_due(void) {
+    int s = cfg_int("REKARINA_CURSOR_HIDE");
+    return s > 0 && GetTickCount64() - idle_since >= (ULONGLONG)s * 1000;
+}
+
 // Window procedure hook (gfx_window_win.c calls it first). Returns 1 with *res set when the message is fully handled.
 int input_window_msg(HWND h, UINT m, WPARAM w, LPARAM l, LRESULT *res) {
     switch (m) {
     case WM_CREATE: {
         RAWINPUTDEVICE rid = {.usUsagePage = 1, .usUsage = 2, .dwFlags = 0, .hwndTarget = h};   // generic mouse
         if (!RegisterRawInputDevices(&rid, 1, sizeof rid)) rt_log("input: raw mouse registration failed (%lu)", GetLastError());
+        idle_since = GetTickCount64();
+        SetTimer(h, IDLE_TIMER, IDLE_TICK_MS, NULL);
         break;
     }
+    case WM_MOUSEMOVE:
+        if (l != idle_pos) {
+            idle_pos = l;
+            idle_since = GetTickCount64();
+            // WM_SETCURSOR came before this move and kept it hidden: the arrow back now, not at the next move
+            if (idle_hidden && !cur_captured) SetCursor(LoadCursorW(NULL, (LPCWSTR)IDC_ARROW));
+            idle_hidden = 0;
+        }
+        break;
+    case WM_TIMER:
+        if (w != IDLE_TIMER) break;
+        if (!idle_hidden && !cur_captured && idle_due()) {
+            POINT p;
+            int over = 0;
+            if (GetCursorPos(&p) && WindowFromPoint(p) == h && ScreenToClient(h, &p)) {
+                RECT r;
+                over = GetClientRect(h, &r) && PtInRect(&r, p);
+            }
+            static int logged;   // the first few decisions, for a check from the log
+            if (logged < 4 && (over || !logged))
+                logged++, rt_log("input: idle cursor: %d s without a move, %s", cfg_int("REKARINA_CURSOR_HIDE"),
+                                 over ? "hidden" : "the pointer is outside the window (left alone)");
+            if (over) {
+                idle_hidden = 1;
+                SetCursor(NULL);
+            }
+        }
+        *res = 0;
+        return 1;
     case WM_INPUT: {
         RAWINPUT ri;
         UINT sz = sizeof ri;
@@ -171,7 +215,7 @@ int input_window_msg(HWND h, UINT m, WPARAM w, LPARAM l, LRESULT *res) {
         break;   // DefWindowProc must see WM_INPUT for cleanup
     }
     case WM_SETCURSOR:
-        if (cur_captured && LOWORD(l) == HTCLIENT) { SetCursor(NULL); *res = TRUE; return 1; }
+        if ((cur_captured || idle_hidden) && LOWORD(l) == HTCLIENT) { SetCursor(NULL); *res = TRUE; return 1; }
         break;
     case WM_SYSCOMMAND:   // Alt pressed alone would enter the window menu loop, which stalls the game: Alt is a game key
         if ((w & 0xFFF0) == SC_KEYMENU && l == 0) { *res = 0; return 1; }

@@ -24,6 +24,8 @@
 #include "gfx.h"
 #include "gfx_wsys.h"
 #include "nvn_api.h"
+#include "pacelog.h"   // DEBUG-PACELOG, DEBUG-PRESENTTIMING
+#include "prep.h"
 #include "platform/platform.h"
 #include "ui/menu.h"
 #include "vk.h"
@@ -49,6 +51,77 @@ void vk_queue_lock(void) {
 void vk_queue_unlock(void) {
     g_ql_depth--;
     plat_rmutex_unlock(&g_ql);
+}
+
+// ---- driver turns (REKARINA_DRIVER_TURNS, on by default; 0 = the old free-for-all)
+// NVIDIA's driver makes kernel calls under one object lock for every image it binds into memory or destroys, and its
+// queue submission and present take that lock too; its lock lets a thread that just left take it again at once. While
+// the hero turns, the game re-sizes and re-places its transient render targets every frame (~15 new images a frame):
+// the thread that makes images ahead (vk_texture.c pm_main) and the reaper (vk_memory.c) went from one such call to
+// the next, and the submitter thread's vkQueueSubmit2 waited behind the whole run (profile dumps of the turn's slow
+// frames, 2026-11-18: the submitter blocked inside the driver while the reaper and the image-ahead thread were in
+// it), so the GPU got the frame late. Those two threads now let queue work go first: before each object call they
+// wait while a queue call (a submission or a present) is under way, at most DRV_TURN_MAX_NS. A driver without such a
+// lock loses nothing: a queue call takes microseconds.
+// Only the queue call itself counts, not the whole hold of the queue lock: the first version counted every thread
+// that held or waited for the lock, and a holder that waited for something the image-ahead thread was to make kept
+// that thread at 20 ms a call, which froze the picture for up to 3.6 s (2026-11-18).
+#define DRV_TURN_MAX_NS 3000000ull
+static volatile int32_t g_drv_urgent;
+void vk_drv_urgent(int d) {
+    if (d > 0) plat_inc32(&g_drv_urgent);
+    else plat_dec32(&g_drv_urgent);
+}
+int vk_drv_turns_on(void) {
+    static int on = -1;
+    if (on < 0) on = rt_knob("DRIVER_TURNS", "1");
+    return on;
+}
+// What the turns cost the two threads, logged every 10 s while they wait: waits, their time, the longest, how many
+// reached the bound and the most bound hits in one frame (a frame whose object work kept hitting the bound would mean
+// the turns stall the thread the frame waits for).
+static struct { volatile int64_t n[2], ns[2], max_ns[2], bound[2], frame_bound, frame_max, frame_at, log_ns; } DT;
+static PlatMutex dt_lock = PLAT_MUTEX_INIT;
+static void dt_note(int who, uint64_t ns, int hit) {
+    uint64_t now = plat_now_ns(), f = __atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED);
+    plat_mutex_lock(&dt_lock);
+    DT.n[who]++, DT.ns[who] += (int64_t)ns;
+    if ((int64_t)ns > DT.max_ns[who]) DT.max_ns[who] = (int64_t)ns;
+    if (hit) {
+        DT.bound[who]++;
+        if ((int64_t)f != DT.frame_at) DT.frame_at = (int64_t)f, DT.frame_bound = 0;
+        if (++DT.frame_bound > DT.frame_max) DT.frame_max = DT.frame_bound;
+    }
+    if (!DT.log_ns) DT.log_ns = (int64_t)now;
+    if ((int64_t)now - DT.log_ns >= 10000000000ll) {
+        rt_log("vk: driver turns, last %.0f s: images ahead waited %lld times (%.1f ms, longest %.2f ms, %lld at the "
+               "bound), the reaper %lld times (%.1f ms, longest %.2f ms, %lld at the bound); at most %lld bound hits in "
+               "one frame", ((int64_t)now - DT.log_ns) / 1e9, (long long)DT.n[0], DT.ns[0] / 1e6, DT.max_ns[0] / 1e6,
+               (long long)DT.bound[0], (long long)DT.n[1], DT.ns[1] / 1e6, DT.max_ns[1] / 1e6, (long long)DT.bound[1],
+               (long long)DT.frame_max);
+        memset((void *)&DT, 0, sizeof DT);
+        DT.log_ns = (int64_t)now, DT.frame_at = (int64_t)f;
+    }
+    plat_mutex_unlock(&dt_lock);
+}
+void vk_drv_bg_turn(void) {
+    if (!vk_drv_turns_on() || !__atomic_load_n(&g_drv_urgent, __ATOMIC_ACQUIRE)) return;
+    uint64_t t0 = plat_now_ns(), t = t0;
+    while (__atomic_load_n(&g_drv_urgent, __ATOMIC_ACQUIRE) && (t = plat_now_ns()) - t0 < DRV_TURN_MAX_NS) plat_yield();
+    dt_note(0, t - t0, t - t0 >= DRV_TURN_MAX_NS);
+}
+// The reaper's turn: destruction is the one driver object work nothing waits for, so it also lets the images being
+// made ahead go first (the replay waits for those while the hero turns: ~20 a frame), again at most DRV_TURN_MAX_NS
+// a call; what it holds back is done when the burst is over.
+void vk_drv_reap_turn(void) {
+    if (!vk_drv_turns_on()) return;
+    uint64_t t0 = 0, t = 0;
+    while (__atomic_load_n(&g_drv_urgent, __ATOMIC_ACQUIRE) || vk_texture_premake_pending()) {
+        if (!t0) t0 = t = plat_now_ns();
+        else if ((t = plat_now_ns()) - t0 >= DRV_TURN_MAX_NS) break;
+        plat_yield();
+    }
+    if (t0) dt_note(1, t - t0, t - t0 >= DRV_TURN_MAX_NS);
 }
 
 // ---- window state shared with the back end
@@ -86,6 +159,7 @@ void gfx_window_closed(void) {
     rt_log("gfx: window closed; %s", restart ? "restarting" : "exiting");
     fs_save_flush();
     vk_pipeline_save();
+    prep_report();   // what play still had to build (prep.c)
     prof_write();   // plat_exit runs no atexit handlers
     if (restart) {
         plat_setenv("REKARINA_REEXEC", NULL);   // the new process counts its own address-space retries (memory.c)
@@ -297,6 +371,65 @@ const char *gfx_window_present_mode(void) { return __atomic_load_n(&g_present_go
 // Only the Windows window paints before the first frame (gfx_window_win.c overrides this).
 __attribute__((weak)) void gfx_window_presented(void) {}
 
+// ---- DEBUG-PRESENTTIMING (REKARINA_PRESENT_TIMING=1; vk_device.c enables VK_EXT_present_timing): the presentation
+// engine's own time at which each present's first pixel became visible, into the pacing log (PL_VIS), and once the
+// swap chain's refresh duration and interval (a fixed refresh shows a duration; a variable one says so). Only the plain
+// swap chain (not frame generation's).
+static int pt_on;                 // the swap chain was made with the timing flag and its queue is sized
+static uint64_t pt_domain_id;     // the time domain asked for
+static int pt_qpc;                // ... the performance counter (convertible to plat_now_ns); else times are not kept
+static uint64_t pt_next_frame;    // the frame the next flip presents (present_main)
+static PlatScale pt_scale;
+void gfx_present_frame(uint64_t frame) { pt_next_frame = frame; }
+
+static void pt_setup(VkDevice d, VkSwapchainKHR sc) {
+    PFN_vkSetSwapchainPresentTimingQueueSizeEXT qs = (PFN_vkSetSwapchainPresentTimingQueueSizeEXT)vkGetDeviceProcAddr(d, "vkSetSwapchainPresentTimingQueueSizeEXT");
+    PFN_vkGetSwapchainTimeDomainPropertiesEXT td = (PFN_vkGetSwapchainTimeDomainPropertiesEXT)vkGetDeviceProcAddr(d, "vkGetSwapchainTimeDomainPropertiesEXT");
+    PFN_vkGetSwapchainTimingPropertiesEXT tp = (PFN_vkGetSwapchainTimingPropertiesEXT)vkGetDeviceProcAddr(d, "vkGetSwapchainTimingPropertiesEXT");
+    pt_on = 0;
+    if (!qs || !td || qs(d, sc, 64) != VK_SUCCESS) { rt_log("gfx: present timing: no timing queue"); return; }
+    VkTimeDomainKHR doms[16];
+    uint64_t ids[16];
+    VkSwapchainTimeDomainPropertiesEXT p = {.sType = VK_STRUCTURE_TYPE_SWAPCHAIN_TIME_DOMAIN_PROPERTIES_EXT, .timeDomainCount = 16,
+                                            .pTimeDomains = doms, .pTimeDomainIds = ids};
+    uint64_t counter = 0;
+    if (td(d, sc, &p, &counter) != VK_SUCCESS && !p.timeDomainCount) { rt_log("gfx: present timing: no time domains"); return; }
+    char list[160] = "";
+    size_t n = 0;
+    pt_qpc = 0, pt_domain_id = p.timeDomainCount ? ids[0] : 0;
+    for (uint32_t i = 0; i < p.timeDomainCount && i < 16; i++) {
+        n += (size_t)snprintf(list + n, sizeof list - n, "%s%d", i ? "," : "", (int)doms[i]);
+        if (doms[i] == VK_TIME_DOMAIN_QUERY_PERFORMANCE_COUNTER_KHR) pt_qpc = 1, pt_domain_id = ids[i];
+    }
+    pt_scale = plat_scale(1000000000u, plat_counter_hz());
+    VkSwapchainTimingPropertiesEXT t = {.sType = VK_STRUCTURE_TYPE_SWAPCHAIN_TIMING_PROPERTIES_EXT};
+    uint64_t tc = 0;
+    VkResult tr = tp ? tp(d, sc, &t, &tc) : VK_ERROR_FEATURE_NOT_PRESENT;
+    rt_log("gfx: present timing on: time domains %s (%s); refresh duration %.4f ms, interval %.4f ms (%d)", list,
+           pt_qpc ? "the performance counter is used" : "the engine's own clock: the log keeps its times as they are, for intervals", t.refreshDuration / 1e6,
+           t.refreshInterval / 1e6, (int)tr);
+    pt_on = 1;
+}
+
+// The timings the engine has completed since the last call, into the pacing log.
+static void pt_collect(VkDevice d) {
+    static PFN_vkGetPastPresentationTimingEXT get;
+    if (!get) get = (PFN_vkGetPastPresentationTimingEXT)vkGetDeviceProcAddr(d, "vkGetPastPresentationTimingEXT");
+    if (!get) return;
+    VkPresentStageTimeEXT st[16];
+    VkPastPresentationTimingEXT pt[16];
+    for (int i = 0; i < 16; i++)
+        pt[i] = (VkPastPresentationTimingEXT){.sType = VK_STRUCTURE_TYPE_PAST_PRESENTATION_TIMING_EXT, .presentStageCount = 1,
+                                              .pPresentStages = &st[i]};
+    VkPastPresentationTimingInfoEXT in = {.sType = VK_STRUCTURE_TYPE_PAST_PRESENTATION_TIMING_INFO_EXT, .swapchain = g_sc};
+    VkPastPresentationTimingPropertiesEXT out = {.sType = VK_STRUCTURE_TYPE_PAST_PRESENTATION_TIMING_PROPERTIES_EXT,
+                                                  .presentationTimingCount = 16, .pPresentationTimings = pt};
+    if (get(d, &in, &out) < 0) return;
+    for (uint32_t i = 0; i < out.presentationTimingCount && i < 16; i++)
+        if (pt[i].reportComplete && pt[i].presentStageCount && st[i].time)
+            pacelog_mark(PL_VIS, pt[i].presentId, pt_qpc ? plat_scaled(pt_scale, st[i].time) : st[i].time);
+}
+
 static void flip_locked(void) {
     if (!g_flip_on) return;
     g_flip_on = 0;
@@ -304,14 +437,25 @@ static void flip_locked(void) {
     VkPresentInfoKHR pi = {.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR, .waitSemaphoreCount = 1,
                            .pWaitSemaphores = &g_render_done[g_flip_idx], .swapchainCount = 1, .pSwapchains = &g_sc,
                            .pImageIndices = &g_flip_idx};
+    uint64_t pt_id = pt_next_frame;   // DEBUG-PRESENTTIMING
+    VkPresentId2KHR pid = {.sType = VK_STRUCTURE_TYPE_PRESENT_ID_2_KHR, .swapchainCount = 1, .pPresentIds = &pt_id};
+    VkPresentTimingInfoEXT ti = {.sType = VK_STRUCTURE_TYPE_PRESENT_TIMING_INFO_EXT, .timeDomainId = pt_domain_id,
+                                 .presentStageQueries = VK_PRESENT_STAGE_IMAGE_FIRST_PIXEL_VISIBLE_BIT_EXT};
+    VkPresentTimingsInfoEXT tis = {.sType = VK_STRUCTURE_TYPE_PRESENT_TIMINGS_INFO_EXT, .pNext = &pid, .swapchainCount = 1,
+                                   .pTimingInfos = &ti};
+    int timed = pt_on && pt_id && !vk_dlssg_active() && !vk_fg_active();
+    if (timed) pi.pNext = &tis;
     FT(FT_NOTE, 1, 0, 0);
     vk_queue_lock();
+    vk_drv_urgent(1);
     VkResult r = vk_dlssg_active() ? vk_dlssg_present(vk_ctx()->gfx_queue, &pi)
                : vk_fg_active()    ? vk_fg_present(&pi) : vkQueuePresentKHR(vk_ctx()->gfx_queue, &pi);
+    vk_drv_urgent(-1);
     vk_queue_unlock();
     FT(FT_NOTE, 2, 0, 0);
     vk_device_fault_report(r);
     if (r == VK_SUCCESS) gfx_window_presented();
+    if (timed && r >= 0) pt_collect(vk_ctx()->device);   // DEBUG-PRESENTTIMING
     if (r == VK_ERROR_OUT_OF_DATE_KHR || r == VK_SUBOPTIMAL_KHR) plat_xchg32(&g_dirty, 1);
 }
 
@@ -388,7 +532,20 @@ static int create_swapchain(void) {
         }
     }
     if (r != VK_SUCCESS && vk_dlssg_active()) r = vk_dlssg_create_swapchain(c->device, &ci, &g_sc);   // Streamline's hook
-    else if (r != VK_SUCCESS) r = vkCreateSwapchainKHR(c->device, &ci, NULL, &g_sc);
+    else if (r != VK_SUCCESS) {
+        // DEBUG-PRESENTTIMING: the plain swap chain asks for present timing; without it when the driver refuses
+        int want_pt = c->has_present_timing;
+        if (want_pt) ci.flags |= VK_SWAPCHAIN_CREATE_PRESENT_TIMING_BIT_EXT | VK_SWAPCHAIN_CREATE_PRESENT_ID_2_BIT_KHR;
+        r = vkCreateSwapchainKHR(c->device, &ci, NULL, &g_sc);
+        if (r != VK_SUCCESS && want_pt) {
+            rt_log("gfx: swap chain with present timing refused (%d): without it", (int)r);
+            ci.flags &= ~(VkSwapchainCreateFlagsKHR)(VK_SWAPCHAIN_CREATE_PRESENT_TIMING_BIT_EXT | VK_SWAPCHAIN_CREATE_PRESENT_ID_2_BIT_KHR);
+            want_pt = 0;
+            r = vkCreateSwapchainKHR(c->device, &ci, NULL, &g_sc);
+        }
+        if (r == VK_SUCCESS && want_pt) pt_setup(c->device, g_sc);
+        else pt_on = 0;
+    }
     if (r != VK_SUCCESS) {
         rt_log("gfx: vkCreateSwapchainKHR failed (%d)", (int)r);
         g_sc = old;
@@ -406,6 +563,11 @@ static int create_swapchain(void) {
     g_sc_hdr = hdr;
     vk_hdr_set_active(hdr);
     if (hdr) vk_hdr_metadata(g_sc, 1);
+    {   // the first one is in gfx_window_start's line; a remade one (a resize, a mode change) says its size here
+        static int made;
+        if (made++ && (ext.width != g_sc_ext.width || ext.height != g_sc_ext.height))
+            rt_log("gfx: swap chain made again: %ux%u (at least %u images)", ext.width, ext.height, count);
+    }
     g_sc_ext = ext;
     g_sc_n = MAX_IMAGES;
     if (vk_fg_active()) {   // AMD's swapchain: the count first (a larger capacity is not cut down to it)
@@ -695,6 +857,35 @@ static void video_frame(const uint8_t *frame, int cap_w, int cap_h) {
     g_video.frames++;
 }
 
+// The screenshot key (input.c screenshot_key, REKARINA_SCREENSHOT_KEY): the next present saves its image as
+// screenshots/rekarina-<date>-<time>.png beside the game, without the menu and the overlays unless
+// REKARINA_SCREENSHOT_OVERLAY=1. Any thread.
+static volatile int32_t g_shot_req;
+void gfx_screenshot_request(void) { plat_xchg32(&g_shot_req, 1); }
+
+static const char *screenshot_path(void) {
+    static char path[PLAT_PATH_MAX * 3 + 64];
+    char dir[PLAT_PATH_MAX * 3];
+    if (!plat_exe_path(dir, sizeof dir)) return NULL;
+    char *cut = plat_last_sep(dir), *f = strrchr(dir, '/');
+    if (f > cut) cut = f;
+    if (!cut) return NULL;
+    strcpy(cut, "/screenshots");
+    plat_file_mkdir_p(dir);
+    struct tm t;
+    plat_local_time(&t);
+    static int same;   // two in one second get a number
+    static char last[32];
+    char stamp[32];
+    snprintf(stamp, sizeof stamp, "%04d%02d%02d-%02d%02d%02d", t.tm_year + 1900, t.tm_mon + 1, t.tm_mday, t.tm_hour,
+             t.tm_min, t.tm_sec);
+    same = strcmp(stamp, last) ? 0 : same + 1;
+    snprintf(last, sizeof last, "%s", stamp);
+    if (same) snprintf(path, sizeof path, "%s/" RT_FILE_STEM "-%s-%d.png", dir, stamp, same);
+    else snprintf(path, sizeof path, "%s/" RT_FILE_STEM "-%s.png", dir, stamp);
+    return path;
+}
+
 // The captured swapchain image as a PNG (the menu's test hook), RGBA with opaque alpha.
 static void save_capture(const char *path) {
     size_t n = (size_t)g_cap_w * (size_t)g_cap_h * 4;
@@ -804,6 +995,101 @@ static VkImage hudless_record(VkCommandBuffer cb, int w, int h, const int rect[4
     return g_hl;
 }
 
+// ---- the present blit's GPU end, a timestamp query per blit (a ring of BT_N), read by the completion thread's
+// callback for the frame (vk_backend.c frame_blit_done) and converted to the host clock with a calibrated (GPU tick,
+// host counter) pair taken there every 250 ms: the frame clock's "shown" moment (perf.c) and the pacing log's PL_GTS.
+// The callback itself runs late at times (it waits behind the value's other callbacks and whatever they wait for: up
+// to 27 ms in a forest run, 2026-11-17), and the time it ran made frames the GPU had finished on time count as long.
+// Off with REKARINA_FRAME_CLOCK=call or =seen (the callback's time, as before).
+#define BT_N 64
+static VkQueryPool bt_pool;
+static int bt_state;                       // 0 not set up, 1 on, -1 off
+static uint64_t bt_frame_next, bt_frame[BT_N];
+static double bt_period;
+static uint64_t bt_mask;
+static PFN_vkGetCalibratedTimestampsKHR bt_cal_fn;
+static int64_t bt_cal_tick, bt_cal_kns, bt_cal_at;
+
+void gfx_blit_frame(uint64_t frame) { bt_frame_next = frame; }
+
+static int bt_ready(void) {
+    if (bt_state) return bt_state > 0;
+    bt_state = -1;
+    VkCtx *c = vk_ctx();
+    const char *fc = cfg_get("REKARINA_FRAME_CLOCK");
+    if ((fc && (!strcmp(fc, "call") || !strcmp(fc, "seen"))) || !c->has_calibrated || c->props.limits.timestampPeriod <= 0)
+        return 0;
+    VkPhysicalDeviceVulkan12Features f12 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES};
+    VkPhysicalDeviceFeatures2 f2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &f12};
+    vkGetPhysicalDeviceFeatures2(c->phys, &f2);
+    uint32_t nq = 0;
+    vkGetPhysicalDeviceQueueFamilyProperties(c->phys, &nq, NULL);
+    VkQueueFamilyProperties qp[16];
+    if (nq > 16) nq = 16;
+    vkGetPhysicalDeviceQueueFamilyProperties(c->phys, &nq, qp);
+    uint32_t bits = c->gfx_family < nq ? qp[c->gfx_family].timestampValidBits : 0;
+    if (!f12.hostQueryReset || !bits) return 0;
+    bt_cal_fn = (PFN_vkGetCalibratedTimestampsKHR)vkGetDeviceProcAddr(
+        c->device, c->has_calibrated == 2 ? "vkGetCalibratedTimestampsKHR" : "vkGetCalibratedTimestampsEXT");
+    VkQueryPoolCreateInfo qi = {.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO, .queryType = VK_QUERY_TYPE_TIMESTAMP,
+                                .queryCount = BT_N};
+    if (!bt_cal_fn || vkCreateQueryPool(c->device, &qi, NULL, &bt_pool) != VK_SUCCESS) return 0;
+    vkResetQueryPool(c->device, bt_pool, 0, BT_N);
+    bt_period = c->props.limits.timestampPeriod;
+    bt_mask = bits >= 64 ? ~0ull : (1ull << bits) - 1;
+    bt_state = 1;
+    rt_log("frametime: a frame counts as shown at its present blit's GPU timestamp (REKARINA_FRAME_CLOCK=seen: when the "
+           "completion thread saw it)");
+    return 1;
+}
+
+int perf_frame_clock_wanted(void);   // perf.c
+static void bt_write(VkCommandBuffer cb) {   // at the blit's end, under g_pl (the present thread)
+    // only while the overlay, the frame-time file or the pacing log reads the clock (perf.c perf_frame_clock_wanted)
+    if (!bt_frame_next || !perf_frame_clock_wanted() || !bt_ready()) return;
+    uint32_t q = (uint32_t)(bt_frame_next % BT_N);
+    bt_frame[q] = bt_frame_next;
+    // reset on the GPU, in the blit's own command buffer (also a slot whose frame was never read: a skipped present): a
+    // host reset here and another after each read were two driver calls a frame on the present and completion threads,
+    // and the paired turn runs with this clock were 2-4 % slower by the present calls (2026-11-18)
+    vkCmdResetQueryPool(cb, bt_pool, q, 1);
+    vkCmdWriteTimestamp2(cb, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, bt_pool, q);
+    if (__builtin_expect(pacelog_on(), 0)) pacelog_mark(PL_BLIT, bt_frame_next, kern_now_ns());   // DEBUG-PACELOG
+    bt_frame_next = 0;
+}
+
+uint64_t gfx_blit_gpu_ns(uint64_t frame) {   // the completion thread
+    if (bt_state <= 0) return 0;
+    uint32_t q = (uint32_t)(frame % BT_N);
+    if (bt_frame[q] != frame) return 0;
+    VkDevice dev = vk_ctx()->device;
+    uint64_t v[2] = {0, 0};
+    VkResult r = vkGetQueryPoolResults(dev, bt_pool, q, 1, sizeof v, v, sizeof v,
+                                       VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WITH_AVAILABILITY_BIT);
+    bt_frame[q] = 0;   // (the slot is reset by the command buffer that writes it next: bt_write)
+    if (r != VK_SUCCESS || !v[1]) return 0;
+    int64_t now = (int64_t)kern_now_ns();
+    if (!bt_cal_at || now - bt_cal_at >= 250000000) {
+        VkCalibratedTimestampInfoKHR ci[2] = {
+            {.sType = VK_STRUCTURE_TYPE_CALIBRATED_TIMESTAMP_INFO_KHR, .timeDomain = VK_TIME_DOMAIN_DEVICE_KHR},
+#ifdef _WIN32
+            {.sType = VK_STRUCTURE_TYPE_CALIBRATED_TIMESTAMP_INFO_KHR, .timeDomain = VK_TIME_DOMAIN_QUERY_PERFORMANCE_COUNTER_KHR}};
+#else
+            {.sType = VK_STRUCTURE_TYPE_CALIBRATED_TIMESTAMP_INFO_KHR, .timeDomain = VK_TIME_DOMAIN_CLOCK_MONOTONIC_KHR}};
+#endif
+        uint64_t cv[2], dv;
+        int64_t k0 = (int64_t)kern_now_ns(), p0 = (int64_t)plat_now_ns();
+        if (bt_cal_fn(dev, 2, ci, cv, &dv) == VK_SUCCESS) {
+            bt_cal_tick = (int64_t)(cv[0] & bt_mask);
+            bt_cal_kns = (int64_t)((double)cv[1] * 1e9 / (double)plat_counter_hz()) + (k0 - p0);
+            bt_cal_at = now;
+        }
+    }
+    if (!bt_cal_at) return 0;
+    int64_t t = bt_cal_kns + (int64_t)((double)((int64_t)(v[0] & bt_mask) - bt_cal_tick) * bt_period);
+    return t > 0 && t <= now ? (uint64_t)t : 0;
+}
+
 static void present_image(VkImage src, VkImageLayout layout, VkFormat fmt, int w, int h, const int crop[4], int defer) {
     int general = layout == VK_IMAGE_LAYOUT_GENERAL;
     {   // DEBUG-FOCUS: REKARINA_TEST_FOCUS=<frame>,<frame>: the window "loses" the focus at the first frame and gains it at
@@ -816,6 +1102,26 @@ static void present_image(VkImage src, VkImageLayout layout, VkFormat fmt, int w
         long f = (long)__atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED);
         if (lose >= 0 && f == lose) gfx_window_focus_changed(0);
         if (gain >= 0 && f == gain) gfx_window_focus_changed(1);
+    }
+    {   // DEBUG-FAULT: REKARINA_TEST_FAULT=<crash|fatal|lost>:<frame>: at that presented frame the game ends as it would
+        // on a crash (an access violation), a fatal error, or a lost GPU device (the fault report, then the fatal error
+        // the submit path raises), for a check of what the player is left with (report.c)
+        static long at = -2;
+        static char kind[8];
+        if (at == -2) {
+            const char *e = cfg_get("REKARINA_TEST_FAULT"), *c = e ? strchr(e, ':') : NULL;
+            at = c ? atol(c + 1) : -1;
+            if (c) snprintf(kind, sizeof kind, "%.*s", (int)(c - e), e);
+        }
+        if (at >= 0 && (long)__atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED) == at) {
+            rt_log("gfx: REKARINA_TEST_FAULT=%s at frame %ld", kind, at);
+            if (!strcmp(kind, "crash")) *(volatile int *)(uintptr_t)16 = 1;
+            if (!strcmp(kind, "lost")) {
+                vk_device_fault_report(VK_ERROR_DEVICE_LOST);
+                rt_fatal("vk: vkQueueSubmit failed (%d; device lost) [REKARINA_TEST_FAULT]", (int)VK_ERROR_DEVICE_LOST);
+            }
+            rt_fatal("test: a fatal error [REKARINA_TEST_FAULT]");
+        }
     }
     gfx_window_start();
     VkCtx *c = vk_ctx();
@@ -867,6 +1173,10 @@ static void present_image(VkImage src, VkImageLayout layout, VkFormat fmt, int w
                      g_sc_ext.height, cw, ch, g_scaler};
     int overlay = g_sc_view[idx] &&
                   menu_overlay_frame(__atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED), &mt, &menu_shot);
+    if (plat_xchg32(&g_shot_req, 0) && !menu_shot) {   // the screenshot key (input.c): this frame into screenshots/
+        menu_shot = screenshot_path();
+        if (menu_shot && !cfg_bool("REKARINA_SCREENSHOT_OVERLAY")) overlay = 0;   // the picture alone, the menu left out
+    }
     {   // DEBUG-SCSHOT: REKARINA_SC_SHOT=lo-hi:step saves the swapchain image of those frames (REKARINA_SHOTS_DIR)
         static char scp[512];
         const char *e = cfg_get("REKARINA_SC_SHOT"), *dir = cfg_get("REKARINA_SHOTS_DIR");
@@ -1012,6 +1322,7 @@ static void present_image(VkImage src, VkImageLayout layout, VkFormat fmt, int w
     if (src) vk_dlssg_frame(cb, g_sc_ext, hudless, g_hl_view, g_sc_fmt);                // DLSS Frame Generation: constants and tags (vk_dlssg.c)
     sync_barrier(cb, dst, last, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, last_stage, last_write, VK_PIPELINE_STAGE_2_NONE, 0);
     vk_crumb(cb, VK_CRUMB_PRESENT_END, crumb);
+    bt_write(cb);   // the frame clock's shown moment
     vkEndCommandBuffer(cb);
 
     VkSemaphoreSubmitInfo wait = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO, .semaphore = g_acquire[slot],
@@ -1023,7 +1334,9 @@ static void present_image(VkImage src, VkImageLayout layout, VkFormat fmt, int w
                         .commandBufferInfoCount = 1, .pCommandBufferInfos = &cbi, .signalSemaphoreInfoCount = 1,
                         .pSignalSemaphoreInfos = &sig};
     vk_queue_lock();
+    vk_drv_urgent(1);
     r = vkQueueSubmit2(c->gfx_queue, 1, &si, g_fence[slot]);
+    vk_drv_urgent(-1);
     vk_queue_unlock();
     FT(FT_NOTE, 4, 0, 0);
     if (r == VK_SUCCESS) {
@@ -1139,4 +1452,127 @@ void gfx_window_start(void) {
     }
     plat_rmutex_unlock(&g_start_lock);
     vsync_ensure();
+}
+
+// ---- the entry step's progress picture (boot.c prep_wait, before the guest starts)
+// The window opens before the game's first frame, the swapchain image is cleared to the menu's dark brown and the menu
+// overlay draws the progress panel (ui/prep_screen.cpp, laid out by menu_overlay_frame while prep_screen_active), so
+// a long preparation shows its progress instead of no window or a black one. REKARINA_PREP_SHOT=<file.png> saves the
+// first frame drawn once the step is past REKARINA_PREP_SHOT_AT percent (default 40), for a look at the design.
+void gfx_present_prep_frame(void) {
+    gfx_window_start();
+    VkCtx *c = vk_ctx();
+    plat_rmutex_lock(&g_pl);
+    flip_locked();
+    if (!g_sc || plat_cas32(&g_dirty, 0, 0)) {
+        if (!wsys_minimized() && !create_swapchain() && !g_sc) goto out;
+    }
+    if (wsys_minimized() || !g_sc) goto out;
+    unsigned slot = g_frame % FRAMES;
+    if (vkWaitForFences(c->device, 1, &g_fence[slot], VK_TRUE, 5000000000ull) != VK_SUCCESS) goto out;
+    uint32_t idx = 0;
+    // as present_image: a frame generation swapchain (set at its start from the settings) hands out its own images
+    VkResult r = vk_dlssg_active() ? vk_dlssg_acquire(c->device, g_sc, 1000000000ull, g_acquire[slot], &idx)
+               : vk_fg_active() ? vk_fg_acquire(g_sc, 1000000000ull, g_acquire[slot], &idx)
+                                : vkAcquireNextImageKHR(c->device, g_sc, 1000000000ull, g_acquire[slot], VK_NULL_HANDLE, &idx);
+    if (r == VK_ERROR_OUT_OF_DATE_KHR) {
+        plat_xchg32(&g_dirty, 1);
+        if (!create_swapchain()) goto out;
+        r = vk_dlssg_active() ? vk_dlssg_acquire(c->device, g_sc, 1000000000ull, g_acquire[slot], &idx)
+          : vk_fg_active() ? vk_fg_acquire(g_sc, 1000000000ull, g_acquire[slot], &idx)
+                           : vkAcquireNextImageKHR(c->device, g_sc, 1000000000ull, g_acquire[slot], VK_NULL_HANDLE, &idx);
+    }
+    if (r != VK_SUCCESS && r != VK_SUBOPTIMAL_KHR) goto out;
+    if (r == VK_SUBOPTIMAL_KHR) plat_xchg32(&g_dirty, 1);
+    vkResetFences(c->device, 1, &g_fence[slot]);
+    MenuTarget mt = {c->instance, c->phys, c->device, c->gfx_family, c->gfx_queue,
+                     g_sc_hdr ? VK_FORMAT_R8G8B8A8_UNORM : g_sc_fmt, g_sc_ext.width, g_sc_ext.height,
+                     (int)g_sc_ext.width, (int)g_sc_ext.height, 0};
+    const char *menu_shot = NULL;
+    int overlay = g_sc_view[idx] && menu_overlay_frame(0, &mt, &menu_shot);
+    {
+        static int shot_done;
+        const char *sp = cfg_get("REKARINA_PREP_SHOT"), *at = cfg_get("REKARINA_PREP_SHOT_AT");
+        int64_t done, total;
+        prep_progress(&done, &total, NULL);
+        if (sp && *sp && !shot_done && overlay && total && done * 100 >= total * (at && *at ? atoi(at) : 40))
+            menu_shot = sp, shot_done = 1;
+    }
+    int cap = menu_shot && ensure_capture_buffer();
+    VkCommandBuffer cb = g_cb[slot];
+    vkResetCommandBuffer(cb, 0);
+    VkCommandBufferBeginInfo bi = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+                                   .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT};
+    vkBeginCommandBuffer(cb, &bi);
+    VkImage dst = g_sc_img[idx];
+    sync_barrier(cb, dst, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_2_TRANSFER_BIT, 0,
+                 VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT);
+    VkClearColorValue bg = {.float32 = {0.035f, 0.024f, 0.016f, 1}};   // the panel's surround, darker than its plate
+    VkImageSubresourceRange all = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    vkCmdClearColorImage(cb, dst, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &bg, 1, &all);
+    VkImageLayout last = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    VkPipelineStageFlags2 last_stage = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
+    VkAccessFlags2 last_write = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+    VkImageView menu_view = overlay && g_sc_hdr ? vk_hdr_ui_target(cb, g_sc_ext.width, g_sc_ext.height) : VK_NULL_HANDLE;
+    if (overlay && g_sc_hdr && !menu_view) overlay = 0;
+    if (overlay) {
+        sync_barrier(cb, dst, last, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, last_stage, last_write,
+                     VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                     VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
+        VkRenderingAttachmentInfo ca = {.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+                                        .imageView = menu_view ? menu_view : g_sc_view[idx],
+                                        .imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                                        .loadOp = menu_view ? VK_ATTACHMENT_LOAD_OP_CLEAR : VK_ATTACHMENT_LOAD_OP_LOAD,
+                                        .storeOp = VK_ATTACHMENT_STORE_OP_STORE};
+        VkRenderingInfo ri = {.sType = VK_STRUCTURE_TYPE_RENDERING_INFO, .renderArea = {{0, 0}, g_sc_ext}, .layerCount = 1,
+                              .colorAttachmentCount = 1, .pColorAttachments = &ca};
+        vkCmdBeginRendering(cb, &ri);
+        menu_overlay_draw(cb);
+        vkCmdEndRendering(cb);
+        if (menu_view) vk_hdr_ui_compose(cb, g_sc_view[idx], g_sc_fmt, g_sc_ext.width, g_sc_ext.height);
+        last = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        last_stage = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+        last_write = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
+    }
+    if (cap) {
+        sync_barrier(cb, dst, last, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, last_stage, last_write,
+                     VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_READ_BIT);
+        VkBufferImageCopy bc = {.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+                                .imageExtent = {g_sc_ext.width, g_sc_ext.height, 1}};
+        vkCmdCopyImageToBuffer(cb, dst, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, g_cap_buf, 1, &bc);
+        last = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+        last_stage = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
+        last_write = 0;
+    }
+    sync_barrier(cb, dst, last, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, last_stage, last_write, VK_PIPELINE_STAGE_2_NONE, 0);
+    vkEndCommandBuffer(cb);
+    VkSemaphoreSubmitInfo wait = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO, .semaphore = g_acquire[slot],
+                                  .stageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT};
+    VkSemaphoreSubmitInfo sig = {.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO, .semaphore = g_render_done[idx],
+                                 .stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT};
+    VkCommandBufferSubmitInfo cbi = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO, .commandBuffer = cb};
+    VkSubmitInfo2 si = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2, .waitSemaphoreInfoCount = 1, .pWaitSemaphoreInfos = &wait,
+                        .commandBufferInfoCount = 1, .pCommandBufferInfos = &cbi, .signalSemaphoreInfoCount = 1,
+                        .pSignalSemaphoreInfos = &sig};
+    vk_queue_lock();
+    vk_drv_urgent(1);
+    r = vkQueueSubmit2(c->gfx_queue, 1, &si, g_fence[slot]);
+    vk_drv_urgent(-1);
+    vk_queue_unlock();
+    if (r == VK_SUCCESS) {
+        g_flip_on = 1;
+        g_flip_idx = idx;
+        flip_locked();
+    }
+    g_frame++;
+    if (cap && r == VK_SUCCESS) {
+        vkWaitForFences(c->device, 1, &g_fence[slot], VK_TRUE, 5000000000ull);
+        vmaInvalidateAllocation(c->vma, g_cap_alloc, 0, VK_WHOLE_SIZE);
+        g_cap_w = (int)g_sc_ext.width;
+        g_cap_h = (int)g_sc_ext.height;
+        g_cap_valid = 1;
+        save_capture(menu_shot);
+    }
+out:
+    plat_rmutex_unlock(&g_pl);
 }

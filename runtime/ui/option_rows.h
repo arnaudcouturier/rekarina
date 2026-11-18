@@ -77,9 +77,16 @@ void opt_text_str(const char *text, bool warn = false);
 // lo..hi in steps of step (left and right held for a second go ten times as fast); fmt formats the value ("%.0f %%").
 // note: a short line under the value in place of the "default" mark (NULL: none). fallback: the setting that applies
 // while key is unset; the row shows its value then, and a change sets key. A key with no table default of its own takes
-// the "default" mark from the fallback's default, and a step onto the fallback's value unsets key again.
+// the "default" mark from the fallback's default, and a step onto the fallback's value unsets key again. log_scale: the
+// bar's places follow the value's logarithm (a multiplier such as the mouse speed: 0.1, 1 and 10 equally far apart);
+// a range from 0 keeps 0 at the left end.
 bool opt_slider(const char *key, UiTextId label, float lo, float hi, UiTextId desc, float step = 1,
-                const char *fmt = "%g", const char *note = nullptr, const char *fallback = nullptr);
+                const char *fmt = "%g", const char *note = nullptr, const char *fallback = nullptr,
+                bool log_scale = false);
+
+// The value bar of the slider row the cursor is on, as last drawn (screen pixels); false when the cursor is on no slider
+// row since the menu opened. For the menu's test script (REKARINA_MENU_SCRIPT dragbar).
+bool opt_focused_bar(ImVec2 *a, ImVec2 *b);
 
 // Binding rows (remapping on the Controls tab): a label and three cells, each selectable on its own (left / right move between them).
 // opt_bind_header: the column titles above them. opt_bind_row: key is the setting's name without REKARINA_ (BIND_A; the

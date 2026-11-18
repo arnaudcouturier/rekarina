@@ -134,15 +134,33 @@ static void text_centred(ImDrawList *dl, float x0, float x1, float y, float h, I
 }
 
 // What a row shows besides its label.
-enum { ROW_TEXT, ROW_STEP, ROW_SWITCH_ON, ROW_SWITCH_OFF };
+enum { ROW_TEXT, ROW_STEP, ROW_SWITCH_ON, ROW_SWITCH_OFF, ROW_SLIDER };
 struct RowView {
     const char *value;   // right side; "" for none
     bool is_default;     // the value is the setting's default; a changed setting gets the white corner the game draws
     bool arrows;         // a stepper: < value >, the arrows click too
     const char *note;    // beside the label; NULL for none
-    int kind = ROW_TEXT; // ROW_SWITCH_*: the two segments On / Off of the game's switches; ROW_STEP: the amber bar
+    int kind = ROW_TEXT; // ROW_SWITCH_*: the two segments On / Off of the game's switches; ROW_STEP: the amber bar;
+                         // ROW_SLIDER: the amber bar filled to `fill` of its width, dragged with the mouse
     bool setting = false;   // has a default to compare with: the corner mark applies
+    float fill = 0;         // ROW_SLIDER: the value's place in its range, 0..1
+    float def_fill = -1;    // ROW_SLIDER: the default's place, a small mark under the bar; -1 none
 };
+
+// ROW_SLIDER: where the mouse holds the bar this frame, 0..1 of its width; -1 when it does not. Set by row_text for the
+// row it draws, read by opt_slider right after.
+static float g_drag = -1;
+// The slider row the mouse pressed on its bar (ImGui id), so a drag that leaves the bar keeps moving it; 0 none.
+static ImGuiID g_drag_id;
+// The bar of the slider row the cursor is on, for the menu's test script (opt_focused_bar); valid from its draw on.
+static ImVec2 g_bar[2];
+static bool g_bar_valid;
+
+bool opt_focused_bar(ImVec2 *a, ImVec2 *b) {
+    if (!g_bar_valid) return false;
+    *a = g_bar[0], *b = g_bar[1];
+    return true;
+}
 
 // One row: draws it, handles A / click and left / right while selected. Returns 2 (A / click), -1 / +1 (left / right),
 // 3 / 4 (move up / down, movable rows only) or 0; always 0 for a row the environment fixes (greyed out, still selectable
@@ -151,6 +169,7 @@ static int row_text(const char *key, const char *label, const char *desc, const 
     const CfgMeta *m = cfg_meta(key);
     const char *disabled = g_disable_next ? g_disable_note : NULL;
     g_disable_next = false;
+    g_drag = -1;
     bool off = disabled || cfg_from_env(key) != 0;
     ImGui::PushID(key);
     ImVec2 p = ImGui::GetCursorScreenPos();
@@ -161,15 +180,21 @@ static int row_text(const char *key, const char *label, const char *desc, const 
     ImGui::PushStyleColor(ImGuiCol_NavCursor, ImVec4(0, 0, 0, 0));   // the row's own border shows the selection
     bool clicked = ImGui::InvisibleButton("##row", ImVec2(w, h), ImGuiButtonFlags_EnableNav);
     ImGui::PopStyleColor();
-    bool to_key = g_focus_key[0] && !strcmp(key, g_focus_key);
+    // a row without a setting has an ImGui id "##name": the menu script names it without the "##" (a comment there)
+    bool to_key = g_focus_key[0] && (!strcmp(key, g_focus_key) || (!strncmp(key, "##", 2) && !strcmp(key + 2, g_focus_key)));
     if (g_take_first || to_key) {
         ImGui::SetFocusID(ImGui::GetItemID(), ImGui::GetCurrentWindow());
         ImGui::SetNavCursorVisible(true);
+        // the row the cursor was put on is the one described, not one the resting mouse happens to be over
+        ImGui::GetCurrentContext()->NavHighlightItemUnderNav = true;
         if (g_take_first) ImGui::SetScrollY(0);   // the page's top: text and a heading above the first row show
         else ImGui::ScrollToItem(ImGuiScrollFlags_KeepVisibleEdgeY);   // as a cursor move would (the last row whole)
         g_take_first = false;
         if (to_key) g_focus_key[0] = 0;
     }
+    // A row clicked with the mouse keeps the cursor: the keys and the pad then step it and Delete resets it at once,
+    // where ImGui would first want a key press to show its cursor again.
+    if (clicked && ImGui::IsMouseReleased(0)) ImGui::SetNavCursorVisible(true);
     bool hov = ImGui::IsItemHovered(), foc = ImGui::IsItemFocused() && ImGui::GetCurrentContext()->NavCursorVisible;
     int step = clicked && !off ? 2 : 0;
     g_held = false;
@@ -231,6 +256,41 @@ static int row_text(const char *key, const char *label, const char *desc, const 
                 float mouse = ImGui::GetIO().MousePos.x;
                 if (mouse >= va.x && (mouse < mid) == on) step = 0;
             }
+        } else if (kind == ROW_SLIDER) {
+            // The game's amber segment as a gauge: filled from the left to the value's place, a cream tab at its edge,
+            // the number over it. The mouse sets the value where it presses the bar and drags it; left / right step.
+            float x0 = ia.x, x1 = ib.x, fx = floorf(x0 + (x1 - x0) * fminf(fmaxf(v.fill, 0), 1));
+            dl->AddRectFilled(ia, ib, IM_COL32(52, 43, 28, 255));   // the empty part: the inset a shade lighter
+            if (fx > x0) amber_bar(dl, ia, ImVec2(fx, ib.y));
+            if (v.def_fill >= 0) {   // the default's place: a small notch at the bottom edge
+                float dx = floorf(x0 + (x1 - x0) * fminf(fmaxf(v.def_fill, 0), 1)), nh = fmaxf(3, floorf((ib.y - ia.y) * 0.22f));
+                dl->AddTriangleFilled(ImVec2(dx, ib.y - nh), ImVec2(dx - nh, ib.y), ImVec2(dx + nh, ib.y),
+                                      IM_COL32(246, 239, 214, 150));
+            }
+            float tw = fmaxf(2, floorf(3 * g_scale));
+            float kx = fminf(fmaxf(fx - tw * 0.5f, x0), x1 - tw);
+            dl->AddRectFilled(ImVec2(kx - 1, ia.y - 1), ImVec2(kx + tw + 1, ib.y + 1), IM_COL32(30, 22, 12, 200));
+            dl->AddRectFilled(ImVec2(kx, ia.y), ImVec2(kx + tw, ib.y), off ? kGrey : kCream);
+            // the number with the game's soft shadow, on the wider side of the tab so the tab never cuts through it
+            float gap = fs * 0.4f, tx0 = v.fill >= 0.5f ? x0 : kx + tw + gap, tx1 = v.fill >= 0.5f ? kx - gap : x1;
+            text_centred(dl, tx0 + 1, tx1 + 1, ia.y + 1, ib.y - ia.y, IM_COL32(30, 20, 10, 190), v.value);
+            text_centred(dl, tx0, tx1, ia.y, ib.y - ia.y, off ? kGrey : kCream, v.value);
+            if (foc) g_bar[0] = ia, g_bar[1] = ib, g_bar_valid = true;
+            ImGuiIO &io = ImGui::GetIO();
+            ImGuiID id = ImGui::GetItemID();
+            if (!off && ImGui::IsItemActive() && io.MouseDown[0]) {
+                ImVec2 at = io.MouseClickedPos[0];
+                if (g_drag_id == id || (at.x >= va.x && at.x <= vb.x && at.y >= va.y && at.y <= vb.y)) {
+                    g_drag_id = id;
+                    g_drag = (io.MousePos.x - x0) / fmaxf(1, x1 - x0);
+                    g_drag = g_drag < 0 ? 0 : g_drag > 1 ? 1 : g_drag;
+                }
+            } else if (g_drag_id == id) {
+                g_drag_id = 0;
+            }
+            // A mouse click (its release) set the value on the bar already, and on the label it only selects the row:
+            // neither steps. A and Enter still step it.
+            if (clicked && ImGui::IsMouseReleased(0)) step = 0;
         } else if (kind == ROW_STEP) {   // the amber bar with an arrow at each end; a click on one steps
             amber_bar(dl, ia, ib);
             float aw = fs * 0.34f, cy = (ia.y + ib.y) * 0.5f, lx = ia.x + fs * 0.35f, rx = ib.x - fs * 0.35f - aw;
@@ -398,9 +458,22 @@ bool opt_choice_list(const char *key, UiTextId label, const char *const *values,
     int step = row(key, label, desc, v);
     if (!step || n <= 0) return false;
     int nv;
-    if (cur < 0) nv = 0;
-    else if (step == 2) nv = (cur + 1) % n;               // A / click: the next value, round to the first
-    else nv = cur + step < 0 ? 0 : cur + step >= n ? n - 1 : cur + step;   // left / right stop at the ends
+    if (cur < 0) {   // a value not in the list (set by hand, as fps_limit = 75): the next listed number that way
+        double v = atof(now);
+        nv = 0;
+        for (int i = 0; v > 0 && i < n; i++) {
+            double e = atof(values[i]);
+            if (e <= 0) continue;
+            if (step < 0 ? e < v : e > v) {
+                nv = i;
+                if (step >= 0) break;   // right / A: the first one above; left: the last one below
+            }
+        }
+    } else if (step == 2) {
+        nv = (cur + 1) % n;   // A / click: the next value, round to the first
+    } else {
+        nv = cur + step < 0 ? 0 : cur + step >= n ? n - 1 : cur + step;   // left / right stop at the ends
+    }
     if (nv == cur) return false;
     apply(key, values[nv]);
     return true;
@@ -425,8 +498,23 @@ bool opt_choice(const char *key, UiTextId label, const UiTextId *names, int n, U
     return opt_choice_list(key, label, values, shown, n, desc, -1, note);
 }
 
+// The place of x on a slider's bar, 0..1, and the value at a place; a logarithmic bar spreads from log_lo (the bottom
+// of its log part: lo when lo > 0, else twice the step) to hi, and keeps the first 2 % for lo itself (0 = off).
+static double slider_fill(double x, double lo, double hi, double log_lo, bool log_scale) {
+    if (!log_scale) return hi > lo ? (x - lo) / (hi - lo) : 0;
+    if (x <= log_lo) return lo < log_lo && x <= lo ? 0 : 0.02;
+    return 0.02 + 0.98 * log(x / log_lo) / log(hi / log_lo);
+}
+
+static double slider_value(double f, double lo, double hi, double log_lo, bool log_scale) {
+    if (!log_scale) return lo + f * (hi - lo);
+    if (f < 0.02) return lo;
+    return log_lo * pow(hi / log_lo, (f - 0.02) / 0.98);
+}
+
 bool opt_slider(const char *key, UiTextId label, float lo, float hi, UiTextId desc, float step, const char *fmt,
-                const char *note, const char *fallback) {
+                const char *note, const char *fallback, bool log_scale) {
+    const double log_lo = lo > 0 ? lo : step * 2;
     const char *set = cfg_get(key);
     const char *src = fallback && !(set && *set) ? fallback : key;   // unset: show the value in effect, the fallback's
     const CfgMeta *m = cfg_meta(src);
@@ -436,12 +524,22 @@ bool opt_slider(const char *key, UiTextId label, float lo, float hi, UiTextId de
     double v = cfg_double(src), def = m && m->def[0] ? strtod(m->def, NULL) : lo;
     char shown[48];
     snprintf(shown, sizeof shown, fmt, v);
-    RowView rv = {shown, fabs(v - def) < step * 0.01, true, note, ROW_STEP, true};
+    RowView rv = {shown, fabs(v - def) < step * 0.01, true, note, ROW_SLIDER, true};
+    rv.fill = (float)slider_fill(v, lo, hi, log_lo, log_scale);
+    rv.def_fill = hi > lo && def >= lo && def <= hi ? (float)slider_fill(def, lo, hi, log_lo, log_scale) : -1;
     int s = row(key, label, desc, rv);
-    if (!s) return false;
-    int steps = g_held && (hi - lo) > 40 * step ? 10 : 1;   // held: ten steps at a time over a long range
-    double n = round(v / step) * step + (s == 2 ? step : s * step * steps);
-    if (s == 2 && n > hi + step * 0.01) n = lo;   // A / click past the top goes round; left / right stop at the ends
+    double n;
+    if (g_drag >= 0) {   // the mouse on the bar: the value under it, on the step grid
+        n = round(slider_value(g_drag, lo, hi, log_lo, log_scale) / step) * step;
+    } else {
+        if (!s) return false;
+        int steps = g_held && (hi - lo) > 40 * step ? 10 : 1;   // held: ten steps at a time over a long range
+        // From a value off the step grid (a default such as 203 with steps of 5, a profile's 0.95) the first step lands
+        // on the next grid point in that direction rather than one beyond the rounded value.
+        double up = floor(v / step + 1e-6) * step, down = ceil(v / step - 1e-6) * step;
+        n = s == 2 ? up + step : s < 0 ? down - step * steps : up + step * steps;
+        if (s == 2 && n > hi + step * 0.01) n = lo;   // A past the top goes round; left / right stop at the ends
+    }
     n = n < lo ? lo : n > hi ? hi : n;
     if (fabs(n - v) < step * 0.01) return false;
     char out[32];
@@ -546,9 +644,9 @@ int opt_bind_row(const char *key, const char *label, UiTextId desc, const char *
     }
     char k[64];
     snprintf(k, sizeof k, "REKARINA_%s", key);
-    if (row_foc) desc_set(g_focus, menu_text(desc), k, NULL, NULL);
-    if (row_hov) desc_set(g_hover, menu_text(desc), k, NULL, NULL);
-    if (!g_first.text[0]) desc_set(g_first, menu_text(desc), k, NULL, NULL);
+    if (row_foc) desc_set(g_focus, menu_text(desc), k, NULL, NULL, label);   // the button's name as the pane's title
+    if (row_hov) desc_set(g_hover, menu_text(desc), k, NULL, NULL, label);
+    if (!g_first.text[0]) desc_set(g_first, menu_text(desc), k, NULL, NULL, label);
     if (note && (row_foc || row_hov)) {   // e.g. what moved here, after the description
         Desc &d = row_hov ? g_hover : g_focus;
         size_t n = strlen(d.text);

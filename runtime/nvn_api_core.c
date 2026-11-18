@@ -11,6 +11,7 @@
 #include <string.h>
 
 #include "cfg.h"
+#include "frame_start.h"
 #include "ftrace.h"
 #include "gfx.h"
 #include "host.h"
@@ -656,7 +657,9 @@ NVN_API(nvnSyncWait) {
     int ok;
     {
         NVN_BLOCKING();
+        uint64_t w0 = kern_now_ns();
         ok = b->results_wait ? b->results_wait(sf, timeout) : b->fence_wait(sf, timeout);
+        frame_start_host_wait(kern_now_ns() - w0);
     }
     FT(FT_SW1, ok ? 1 : 2, 0, 0);
     if (ok) {

@@ -43,6 +43,7 @@
 #include "gfx.h"
 #include "host.h"
 #include "nvn_ctl.h"
+#include "prep.h"
 #include "platform/platform.h"
 
 #define CONTROL_SIZE 0x880
@@ -2066,7 +2067,10 @@ static const GfxShader *translate(const Req *r, int stage, const uint8_t *contro
     int away = kern_core_away();
     const uint8_t *id = r->final ? r->key : r->code_hash;
     flight_enter(id);
+    uint64_t t0 = plat_now_ns(), x0 = (uint64_t)n_xlated;
     const GfxShader *s = translate_one(r, stage, control, code, a);
+    if ((uint64_t)n_xlated != x0)   // translated here, not found in a cache: in play it goes into the ledger (prep.c)
+        prep_note(PREP_XLATE, 0, (double)(plat_now_ns() - t0) / 1e6);
     flight_leave(id);
     kern_core_back(&away);
     return s;

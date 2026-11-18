@@ -29,6 +29,10 @@ int rt_linked_modules(RtModule *out, int max);
 // rt_dispatch_init; the registry is fixed afterwards.
 void rt_register_host(uint64_t addr, GuestFn fn);
 
+// An indirect branch to the lifted function at addr calls fn instead (direct calls inside the lifted code still reach
+// the lifted one, which fn may call itself). Only before rt_dispatch_init; addr must be a lifted function start.
+void rt_dispatch_replace(uint64_t addr, GuestFn fn);
+
 // Build the table from the modules (kept by pointer; they must outlive the process). Call it once, before any guest
 // thread starts: thread creation publishes the table to the threads. Fatal on a malformed table:
 // unsorted or duplicate starts, a start outside its module, overlapping modules, host code spread over 4 GiB.

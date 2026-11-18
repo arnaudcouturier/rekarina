@@ -52,6 +52,7 @@
 #include "cfg.h"
 #include "gfx.h"
 #include "host.h"
+#include "pacelog.h"   // DEBUG-PACELOG
 #include "layout.h"
 #include "platform/platform.h"
 
@@ -118,6 +119,7 @@ void frame_step_init(void) {
 }
 
 int frame_step_realtime(void) { return step_word != NULL; }
+double frame_step_now(void) { return step_now; }   // DEBUG-PACELOG: the step the patch page holds
 
 // The frame limit (menu, REKARINA_FPS_LIMIT, live): 30, 60, 90, 120, 144, any whole rate from 30 to 240, or display (the
 // refresh rate of the window's monitor, at most 240). A higher number gives 240, the rate of the shortest step the
@@ -357,10 +359,82 @@ static void world_clock(double dt, double step) {
     atomic_store_explicit(&world_us, w + (int64_t)(step * 1e6 + 0.5), memory_order_relaxed);
 }
 
+// ---- DEBUG-PACELOG: REKARINA_PACELOG=<file>, CSV at exit: frame, the moments in microseconds from the first acquire
+// (acquire, call, return, flip, gpu, visible, blit, GPU timestamp; 0: not seen; pacelog.h), the step in microseconds. A store or two per moment.
+#define PL_CAP (1u << 18)   // about 45 minutes at 95 fps; later frames overwrite the oldest
+static struct PlRec { uint64_t t[PL_N]; uint64_t frame; float step, d[PLD_N]; } *pl;
+static int pl_state = -1;
+static uint64_t pl_t0;
+
+int pacelog_on(void) {
+    if (__builtin_expect(pl_state < 0, 0)) {
+        const char *e = cfg_get("REKARINA_PACELOG");
+        pl_state = e && *e && (pl = calloc(PL_CAP, sizeof *pl)) != NULL;
+        if (pl_state) rt_log("frame rate: pacing log on (REKARINA_PACELOG=%s)", e);
+    }
+    return pl_state;
+}
+
+static struct PlRec *pl_rec(uint64_t frame) {
+    struct PlRec *r = &pl[frame % PL_CAP];
+    if (r->frame != frame) memset(r, 0, sizeof *r), r->frame = frame;
+    return r;
+}
+
+void pacelog_mark(int what, uint64_t frame, uint64_t ns) {
+    if (!pacelog_on() || what < 0 || what >= PL_N || !frame) return;
+    if (!pl_t0 && what != PL_VIS) pl_t0 = ns;
+    pl_rec(frame)->t[what] = ns;
+}
+
+void pacelog_dur(int what, uint64_t frame, uint64_t ns) {
+    if (!pacelog_on() || what < 0 || what >= PLD_N || !frame) return;
+    pl_rec(frame)->d[what] = (float)(ns / 1e3);
+}
+
+void pacelog_step(uint64_t frame, double step_s) {
+    if (!pacelog_on() || !frame) return;
+    pl_rec(frame)->step = (float)(step_s * 1e6);
+}
+
+void pacelog_write(void) {
+    if (pl_state <= 0) return;
+    FILE *f = fopen(cfg_get("REKARINA_PACELOG"), "w");
+    if (!f) return;
+    fprintf(f, "frame,acq_us,call_us,ret_us,flip_us,gpu_us,vis_us,blit_us,gts_us,step_us,pad_us,upd_us,hold_us,mwait_us,qwait_us,psync_us,gwait_us,glast_us\n");
+    uint64_t lo = ~0ull, hi = 0;
+    for (uint32_t i = 0; i < PL_CAP; i++)
+        if (pl[i].frame) lo = pl[i].frame < lo ? pl[i].frame : lo, hi = pl[i].frame > hi ? pl[i].frame : hi;
+    for (uint64_t fr = lo; hi && fr <= hi; fr++) {
+        const struct PlRec *r = &pl[fr % PL_CAP];
+        if (r->frame != fr) continue;
+        fprintf(f, "%llu", (unsigned long long)fr);
+        for (int k = 0; k < PL_N; k++) {   // the step after PL_GTS, so the columns before it keep their places
+            if (k == PL_PAD) fprintf(f, ",%.1f", r->step);
+            fprintf(f, ",%.1f", k == PL_VIS ? r->t[k] / 1e3   // the presentation engine's clock (it may not be ours): as it is
+                                : r->t[k] && r->t[k] >= pl_t0 ? (r->t[k] - pl_t0) / 1e3 : 0.0);
+        }
+        for (int k = 0; k < PLD_N; k++) fprintf(f, ",%.1f", r->d[k]);
+        fprintf(f, "\n");
+    }
+    fclose(f);
+    rt_log("frame rate: pacing log of frames %llu-%llu written", (unsigned long long)lo, (unsigned long long)hi);
+    pl_state = 0;
+}
+
+// vk_arrive.c: while a scene's first frames are held unshown, each steps the game by the shortest step, so its opening
+// animation and fade barely move before the first frame is shown; the average starts again after.
+static int step_hold;
+void frame_step_hold(int on) { step_hold = on; }
+
 void frame_step_present(uint64_t display_ns, int interval) {
     frame_limit_live();
     double step = 0, dt = last_ns ? (double)(display_ns - last_ns) * 1e-9 : 0;
-    if (step_word && last_ns) {
+    if (step_word && step_hold) {
+        sample_count = sample_next = 0;
+        step = STEP_MIN_S;
+        step_store((float)step);
+    } else if (step_word && last_ns) {
         if (dt > STEP_RESET_S || dt < 0.001) {
             sample_count = sample_next = 0;
         } else {

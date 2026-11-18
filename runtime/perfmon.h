@@ -49,6 +49,12 @@ void perfmon_frame(uint64_t now_ns, uint64_t interval_ns, const uint64_t *wait_n
                    int64_t tex_uploads);
 // The latest numbers (the overlay, present path).
 void perfmon_snapshot(PerfStats *out);
+// The last long frame in play (perf.c "Long frames": 25 ms or more while a scene is on screen): its frame number (0:
+// none yet), its length and the cause that took the largest share of it. For an overlay line; the wording shown to the
+// player is not decided yet.
+enum { PERF_LONG_GAME, PERF_LONG_REPLAY, PERF_LONG_GPU, PERF_LONG_PIPELINE, PERF_LONG_SHADER, PERF_LONG_TEXTURE,
+       PERF_LONG_DECODE, PERF_LONG_PACING, PERF_LONG_N };
+void perf_last_long(uint64_t *frame, float *ms, int *cause);
 
 #ifdef __cplusplus
 }

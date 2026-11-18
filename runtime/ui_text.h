@@ -251,7 +251,30 @@ typedef enum {
     UI_MENU_CHEAT_CODE_DESC, UI_MENU_CHEAT_KEY_DESC /* "%s": the buttons */, UI_MENU_CHEAT_DATA_DESC,
     UI_MENU_CHEAT_MASTER, UI_MENU_CHEAT_MASTER_DESC, UI_MENU_CHEAT_RESTORE, UI_MENU_CHEAT_RESTORE_DESC,
     UI_MENU_CHEAT_REBUILD, UI_MENU_CHEAT_REBUILD_DESC, UI_MENU_CHEAT_UNSUPPORTED, UI_MENU_CHEAT_UNSUPPORTED_DESC,
-    UI_MENU_LAST_ID = UI_MENU_CHEAT_UNSUPPORTED_DESC,
+    // Added 2026-11-16 (QoL rows and the description pane's pictures, ui/menu_pictures.cpp)
+    UI_MENU_FPS_UNLIMITED,
+    UI_MENU_BG_MUTE, UI_MENU_BG_MUTE_DESC,
+    UI_MENU_PAD_FOLLOW, UI_MENU_PAD_FOLLOW_DESC,
+    UI_MENU_PAD_DRIVER, UI_MENU_PAD_DRIVER_DESC, UI_MENU_PAD_DRIVER_AUTO, UI_MENU_PAD_DRIVER_COMPAT,
+    UI_MENU_CURSOR_HIDE, UI_MENU_CURSOR_HIDE_DESC,
+    UI_MENU_AFTER_SECONDS,    // "%d": seconds
+    UI_PIC_UPSCALING, UI_PIC_PAD_NONE, UI_PIC_CPU_FRAME, UI_PIC_GPU_FRAME,
+    UI_PIC_DRIVER, UI_PIC_DISPLAY, UI_PIC_SYSTEM, UI_PIC_PROFILE,
+    UI_PIC_PROFILE_DESKTOP, UI_PIC_PROFILE_DECK, UI_PIC_PROFILE_HANDHELD,
+    UI_PIC_PROFILE_SET,       // appended to the profile's line when rekarina.ini or the environment chose it
+    // the problem report (report.c): the menu's row, its result, the notice after a run that failed, the crash box
+    UI_MENU_REPORT, UI_MENU_REPORT_DESC, UI_MENU_REPORT_DONE, UI_REPORT_LAST_RUN, UI_REPORT_LAST_RUN_HINT,
+    UI_REPORT_CRASHED,        // "%s": the log's path
+    UI_MENU_KBM_OFF, UI_MENU_KBM_OFF_DESC, UI_MENU_SHOT_KEY, UI_MENU_SHOT_KEY_DESC, UI_MENU_SHOT_OVERLAY,
+    UI_MENU_SHOT_OVERLAY_DESC,
+    UI_MENU_LAST_ID = UI_MENU_SHOT_OVERLAY_DESC,
+    // The entry step's progress picture (ui/prep_screen.cpp, before the game's first frame): a text in every catalog language
+    UI_PREP_TITLE,            // the step's name
+    UI_PREP_COUNT,            // "%s of %s": done and total
+    UI_PREP_NOTE,             // why the wait, and how often
+    UI_PREP_SECONDS,          // "%d s": seconds so far
+    UI_PREP_LEFT_MIN,         // "about %d min left": the count's rate over the last seconds
+    UI_PREP_LEFT_LT1,         // under a minute left
     UI_TEXT_COUNT
 } UiTextId;
 

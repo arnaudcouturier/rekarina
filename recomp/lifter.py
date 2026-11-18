@@ -334,6 +334,12 @@ class Lifter:
             if crn == 3 and op1 == 3 and rt == 31:  # barriers
                 if op2 == 2:
                     return Insn('op', 'c->excl_addr = ~0ull;')
+                # The host is x86-64, whose memory model (TSO) keeps every order but a store before a later load. A DMB
+                # or DSB that orders only loads (CRm LD domains 1, 5, 9, 13) or only stores (ST domains 2, 6, 10, 14),
+                # and ISB, which orders no memory access, therefore need no fence instruction: only the compiler must
+                # not move accesses across them. A full barrier keeps the fence.
+                if (op2 in (4, 5) and crm & 3 in (1, 2)) or op2 == 6:
+                    return Insn('op', '__atomic_signal_fence(__ATOMIC_SEQ_CST);')
                 return Insn('op', '__atomic_thread_fence(__ATOMIC_SEQ_CST);')
             raise Unsupported(f'pstate/system {w:08x}')
         if op0 == 1:  # SYS
