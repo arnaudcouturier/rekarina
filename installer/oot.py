@@ -40,6 +40,7 @@ import signal
 import subprocess
 import sys
 import time
+import traceback
 import urllib.request
 import zipfile
 from dataclasses import dataclass
@@ -685,8 +686,12 @@ class Prepare(Step):
         keys it by. A new exe therefore costs the compile and the package step, not half an hour of preparation."""
         layout = ctx.layout
         xid = layout.xlate.with_suffix('.id')
+        # The dump's key is in ctx.keys once ctx.plan() ran. shader_mode also asks for this key before that (main's
+        # estimate, which runs before run_steps plans): the extraction's key reads no other step's, so it is computed
+        # here the way plan computes it.
+        dump = ctx.keys['oot_extract'] if 'oot_extract' in ctx.keys else Extract().key(ctx)
         # (the identity file under the name it had before the translator was renamed)
-        return fingerprint('oot-prepare-4', SHADER_FORMAT, mode or shader_mode(ctx), ctx.keys['oot_extract'],
+        return fingerprint('oot-prepare-4', SHADER_FORMAT, mode or shader_mode(ctx), dump,
                            ('totk_xlate.id', xid) if xid.is_file() else tree_stamp(layout.xlate),
                            tree_stamp(*(layout.tools / n for n in SHADER_TOOLS), *(layout.tools / 'data' / n for n in SHADER_DATA)))
 
@@ -944,38 +949,49 @@ def main(argv=None):
     for name in ('SIGBREAK', 'SIGTERM'):
         if hasattr(signal, name):
             signal.signal(getattr(signal, name), cancel)
-    dest = args.dest.resolve()
-    layout = find_layout(args.root, args.toolchain)
-    temp, moved = work_folder(layout.temp, args.temp, dest)
-    log = temp / 'logs' / time.strftime('install-%Y%m%d-%H%M%S.log')
-    rep = TimedReporter(log_path=log)
-    if moved:
-        rep.log(f'The disk of the setup has {moved} GiB free and the working files need about {NEED_TEMP >> 30}: they go '
-                f'into the game folder, {temp}')
-    t0 = time.monotonic()
+    rep, t0 = None, time.monotonic()
     try:
-        state = statefile.load(dest)
-    except statefile.StateError as e:
-        rep.error(e.id, {'path': str(e.path)})
-        rep.emit('end', result='failed', seconds=0)
-        return 1
-    ctx = Context(layout, dest, temp, rep, args, state=state)
-    steps = all_steps()
-    if args.until:
-        steps = steps[:[s.id for s in steps].index(args.until) + 1]
-    rep.emit('start', release=layout.release, mode=ctx.mode, dev=layout.dev, dest=str(dest), log=str(log),
-             steps=[s.id for s in steps], game='oot')
-    # How long each step should take (eta.py): "first" for a step this folder has not finished before, "rerun" for
-    # one it has (its caches are there). The window counts down from these; each finished step's real time is kept
-    # for the next run on this machine.
-    rep.cases = {s.id: 'rerun' if state and (s.always or s.id in state['steps']) else 'first' for s in steps}
-    # every variant of the shaders is an all-or-nothing amount of work whatever the folder had before (a folder that
-    # prepared the variants play met has the record, and still needs the rest): its own estimate, no recorded timing
-    prepared = (state or {}).get('steps', {}).get('oot_prepare')
-    if shader_mode(ctx) == 'all' and not (prepared and prepared.get('shaders', 'all') == 'all'):
-        rep.cases['oot_prepare'] = 'all'
-    rep.emit('eta', **eta.estimates(rep.cases))
-    result = run_steps(steps, ctx)
+        dest = args.dest.resolve()
+        layout = find_layout(args.root, args.toolchain)
+        temp, moved = work_folder(layout.temp, args.temp, dest)
+        log = temp / 'logs' / time.strftime('install-%Y%m%d-%H%M%S.log')
+        rep = TimedReporter(log_path=log)
+        if moved:
+            rep.log(f'The disk of the setup has {moved} GiB free and the working files need about {NEED_TEMP >> 30}: '
+                    f'they go into the game folder, {temp}')
+        t0 = time.monotonic()
+        try:
+            state = statefile.load(dest)
+        except statefile.StateError as e:
+            rep.error(e.id, {'path': str(e.path)})
+            rep.emit('end', result='failed', seconds=0)
+            return 1
+        ctx = Context(layout, dest, temp, rep, args, state=state)
+        steps = all_steps()
+        if args.until:
+            steps = steps[:[s.id for s in steps].index(args.until) + 1]
+        rep.emit('start', release=layout.release, mode=ctx.mode, dev=layout.dev, dest=str(dest), log=str(log),
+                 steps=[s.id for s in steps], game='oot')
+        # How long each step should take (eta.py): "first" for a step this folder has not finished before, "rerun" for
+        # one it has (its caches are there). The window counts down from these; each finished step's real time is kept
+        # for the next run on this machine.
+        rep.cases = {s.id: 'rerun' if state and (s.always or s.id in state['steps']) else 'first' for s in steps}
+        # every variant of the shaders is an all-or-nothing amount of work whatever the folder had before (a folder that
+        # prepared the variants play met has the record, and still needs the rest): its own estimate, no recorded timing
+        prepared = (state or {}).get('steps', {}).get('oot_prepare')
+        if shader_mode(ctx) == 'all' and not (prepared and prepared.get('shaders', 'all') == 'all'):
+            rep.cases['oot_prepare'] = 'all'
+        rep.emit('eta', **eta.estimates(rep.cases))
+        result = run_steps(steps, ctx)
+    except Exception as e:
+        # A failure outside the steps (run_steps reports its own): the traceback goes to the log, and the window gets
+        # an error and the end of the run instead of a process that ended without either ("stopped unexpectedly").
+        if rep is None:   # no log yet: stderr, which the window reads with stdout
+            rep = TimedReporter()
+            traceback.print_exc()
+        rep.log(traceback.format_exc())
+        rep.error('internal', {'exception': type(e).__name__, 'detail': str(e)})
+        result = 'failed'
     rep.emit('end', result=result, seconds=round(time.monotonic() - t0, 1))
     rep.close()
     return EXIT[result]

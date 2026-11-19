@@ -3,6 +3,7 @@ with a newer release, rekarina.ini and the event stream. No game files, no tools
 
 Run: python tests/installer_test.py
 """
+import contextlib
 import http.client
 import io
 import json
@@ -737,6 +738,111 @@ class OotShaderStepsTest(unittest.TestCase):
         (self.base / 'root' / 'runtime' / 'main.c').write_text('a new runtime')
         self.assertNotEqual(self.oot.Package().key(ctx), before)
         self.assertEqual(self.oot.Prepare().key(ctx), ctx.keys['oot_prepare'])
+
+
+class OotMainTest(unittest.TestCase):
+    """installer/oot.py main() up to the steps, started the way the launcher's run screen starts it (--shaders-later) on
+    folders that earlier setups made. The estimate before the steps runs before ctx.plan() fills the steps' keys: 1.2.1
+    stopped there with a KeyError on every folder whose shaders were prepared all, before its first step. And a failure
+    outside the steps reaches the window as an error and the end of the run, with the traceback in the log."""
+
+    def setUp(self):
+        from installer import oot
+        self.oot = oot
+        self.tmp = tempfile.TemporaryDirectory()
+        base = self.base = Path(self.tmp.name)
+        root = self.root = base / 'release'   # a release folder: VERSION, its own Python, the translator
+        python = root / 'python' / ('python.exe' if oot.WIN else 'bin/python3')
+        python.parent.mkdir(parents=True)
+        python.write_bytes(b'')
+        (root / 'VERSION').write_text('1.2.1\n')
+        (root / 'bin').mkdir()
+        xlate = root / 'bin' / ('rekarina_xlate' + oot.EXE)
+        xlate.write_bytes(b'x')
+        xlate.with_suffix('.id').write_text('identity-1')
+        (root / 'tools' / 'data').mkdir(parents=True)
+        (root / 'tools' / 'data' / 'expected-oot.json').write_text(json.dumps({'version': '1.0.0', 'exefs': {'main': '00'}}))
+        self.dest, self.temp, self.toolchain = base / 'game', base / 'work', base / 'toolchain'
+        self.dest.mkdir()
+        # the copy of the translator's identity that the shader step left beside the build (Prepare.adopts)
+        self.build = oot.work_folder(None, self.temp, self.dest.resolve())[0] / 'build'
+        self.build.mkdir(parents=True)
+        (self.build / 'rekarina_xlate.id').write_text('identity-1')
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def start(self, saved):
+        """main() with --shaders-later and the steps left out: (exit code, events, what the steps were handed)."""
+        if saved is not None:
+            (self.dest / state.NAME).write_text(json.dumps(saved), encoding='utf-8')
+        seen = {}
+
+        def steps(steps, ctx):
+            seen['ctx'], seen['mode'] = ctx, self.oot.shader_mode(ctx)
+            return 'ok'
+        out, err = io.StringIO(), io.StringIO()
+        with mock.patch.object(self.oot, 'run_steps', steps), mock.patch.object(self.oot.eta, 'load_timings', return_value={}), \
+                contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = self.oot.main(['--dest', str(self.dest), '--root', str(self.root), '--temp', str(self.temp),
+                                  '--toolchain', str(self.toolchain), '--shaders-later'])
+        self.stderr = err.getvalue()
+        return code, [json.loads(line) for line in out.getvalue().splitlines() if line.startswith('{')], seen
+
+    def prepared_all_key(self):
+        """The shader step's key for every variant, computed after the keys of the steps before it exist."""
+        layout = self.oot.find_layout(self.root, self.toolchain)
+        ctx = runner.Context(layout, self.dest, self.build.parent, Reporter(out=io.StringIO()),
+                             SimpleNamespace(all_shaders=True), state=None)
+        ctx.keys['oot_extract'] = self.oot.Extract().key(ctx)
+        return self.oot.Prepare().key(ctx, 'all')
+
+    def test_shaders_later_on_every_kind_of_folder_reaches_the_steps(self):
+        old = {'format': 1, 'release': '1.2.0', 'inputs': {}, 'steps': {   # 1.2.0 wrote no 'shaders' field: all
+            'oot_prepare': {'key': 'the old form', 'release': '1.2.0', 'finished': 't', 'seconds': 1.0}}}
+
+        def prepared(shaders, key='k'):
+            return {'format': 1, 'release': '1.2.1', 'inputs': {}, **({'shaders': 'all'} if shaders == 'all' else {}),
+                    'steps': {'oot_prepare': {'key': key, 'release': '1.2.1', 'shaders': shaders}}}
+        cases = (
+            ('a 1.2.0 folder, the translator that prepared it', old, 'all', 'rerun'),
+            ('all, the inputs unchanged', prepared('all', self.prepared_all_key()), 'all', 'rerun'),
+            ('all, the inputs changed', prepared('all'), 'met', 'rerun'),
+            ('the variants play met', prepared('met'), 'met', 'rerun'),
+            ('a new folder', None, 'met', 'first'),
+        )
+        for name, saved, mode, case in cases:
+            with self.subTest(name):
+                (self.dest / state.NAME).unlink(missing_ok=True)
+                code, events, seen = self.start(saved)
+                self.assertEqual(code, 0, self.stderr)
+                self.assertEqual([e['type'] for e in events], ['start', 'eta', 'end'])
+                self.assertEqual(events[-1]['result'], 'ok')
+                self.assertEqual(events[1]['steps']['oot_prepare']['case'], case)
+                self.assertEqual(seen['mode'], mode)   # the decision for --shaders-later, as before the steps' keys
+        (self.build / 'rekarina_xlate.id').write_text('identity-0')   # another translator prepared the old folder
+        self.assertEqual(self.start(old)[2]['mode'], 'met')
+
+    def test_a_failure_before_the_steps_is_reported_with_its_traceback(self):
+        with mock.patch.object(self.oot.eta, 'estimates', side_effect=RuntimeError('a broken estimate')):
+            code, events, seen = self.start(None)
+        self.assertEqual(code, 1)
+        self.assertNotIn('ctx', seen)
+        error = next(e for e in events if e['type'] == 'error')
+        self.assertEqual((error['id'], error['params']['exception'], error['params']['detail']),
+                         ('internal', 'RuntimeError', 'a broken estimate'))
+        self.assertEqual((events[-1]['type'], events[-1]['result']), ('end', 'failed'))
+        log = Path(events[0]['log']).read_text(encoding='utf-8')
+        self.assertIn('Traceback', log)
+        self.assertIn('a broken estimate', log)
+
+    def test_a_failure_before_the_log_is_reported_too(self):
+        with mock.patch.object(self.oot, 'find_layout', side_effect=OSError('no layout')):
+            code, events, _ = self.start(None)
+        self.assertEqual(code, 1)
+        self.assertEqual([(e['type'], e.get('id'), e.get('result')) for e in events],
+                         [('error', 'internal', None), ('end', None, 'failed')])
+        self.assertIn('Traceback', self.stderr)   # no log file yet: the traceback goes to stderr, which the window logs
 
 
 class ShaderJobTest(unittest.TestCase):
