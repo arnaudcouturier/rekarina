@@ -713,6 +713,48 @@ class OotShaderStepsTest(unittest.TestCase):
         self.assertEqual(ctx.state['shaders'], 'met')                               # the background job has work again
         self.assertTrue(self.oot.shaders_only_met(ctx.state | {'steps': {'oot_prepare': {'shaders': 'met'}}}))
 
+    def test_a_fresh_temp_folder_prepares_what_play_met_and_leaves_the_rest_to_the_background(self):
+        """A folder whose record says every variant was prepared, run from the launcher's run screen (--shaders-later)
+        with no prepared output in the temp folder (the setup unpacked again, the temp folder cleaned, a run cut
+        short): the step prepares the variants play met and records that, so the launcher offers the rest to its
+        background job; the output in place, it is skipped as before; --all-shaders prepares every variant."""
+        build = self.base / 'temp' / 'build'
+        self.options.all_shaders = True
+        key_all = self.oot.Prepare().key(self.ctx(), 'all')
+        self.options.all_shaders, self.options.shaders_later = False, True
+        extract = SimpleNamespace(id='oot_extract', transient=False, always=False, key=lambda ctx: 'dump-1',
+                                  current=lambda ctx, rec: True, adopts=lambda ctx, rec: False, run=lambda ctx: {})
+
+        def folder():
+            return {'format': 1, 'release': '1.2.1', 'inputs': {}, 'shaders': 'all', 'steps': {
+                'oot_extract': {'key': 'dump-1'}, 'oot_prepare': {'key': key_all, 'release': '1.2.1', 'shaders': 'all'}}}
+
+        def run(saved):
+            ctx = self.ctx(saved)
+            ctx.keys.clear()
+            self.calls.clear()
+            self.assertEqual(self.runner.run_steps([extract, self.oot.Prepare()], ctx), 'ok')
+            prepare = [args for name, args in self.calls if name == 'oot_prepare_shaders.py']
+            return ctx, (None if not prepare else 'met' if '--met-only' in prepare[0] else 'all')
+
+        ctx, prepared = run(folder())                                               # nothing in the temp folder
+        self.assertEqual(prepared, 'met')
+        rec = ctx.state['steps']['oot_prepare']
+        self.assertEqual((rec['shaders'], ctx.state['shaders']), ('met', 'met'))   # nothing claims all
+        self.assertTrue(self.oot.shaders_only_met(ctx.state))                     # the launcher's job takes the rest
+        self.assertFalse((build / self.oot.Prepare.PREPARING).exists())
+        self.assertIsNone(run(ctx.state)[1])                                        # and the met record stands
+        self.assertIsNone(run(folder())[1])                                         # all prepared, the output there
+        for leftover in (self.oot.Prepare.PREPARING, self.oot.Prepare.JOURNAL):    # a run cut short
+            (build / leftover).write_bytes(b'')
+            self.assertEqual(run(folder())[1], 'met')
+            self.assertFalse((build / self.oot.Prepare.PREPARING).exists())       # the run finished
+            (build / leftover).unlink(missing_ok=True)
+        self.options.shaders_later, self.options.all_shaders = False, True        # the background job
+        ctx, prepared = run(ctx.state)
+        self.assertEqual((prepared, ctx.state['steps']['oot_prepare']['shaders'], ctx.state['shaders']), ('all', 'all', 'all'))
+        self.assertFalse(self.oot.shaders_only_met(ctx.state))
+
     def test_only_met_is_offered_the_rest(self):
         met = {'steps': {'oot_prepare': {'shaders': 'met'}}}
         self.assertTrue(self.oot.shaders_only_met(met))
@@ -743,8 +785,11 @@ class OotShaderStepsTest(unittest.TestCase):
 class OotMainTest(unittest.TestCase):
     """installer/oot.py main() up to the steps, started the way the launcher's run screen starts it (--shaders-later) on
     folders that earlier setups made. The estimate before the steps runs before ctx.plan() fills the steps' keys: 1.2.1
-    stopped there with a KeyError on every folder whose shaders were prepared all, before its first step. And a failure
-    outside the steps reaches the window as an error and the end of the run, with the traceback in the log."""
+    stopped there with a KeyError on every folder whose shaders were prepared all, before its first step. The shader
+    step prepares every variant in the foreground only when it has nothing to do: 1.2.2 prepared them all, for an hour
+    and more under a "2 min" estimate, when a setup unpacked again (a fresh temp folder) met a folder that had prepared
+    all. And a failure outside the steps reaches the window as an error and the end of the run, with the traceback in
+    the log."""
 
     def setUp(self):
         from installer import oot
@@ -768,12 +813,13 @@ class OotMainTest(unittest.TestCase):
         self.build = oot.work_folder(None, self.temp, self.dest.resolve())[0] / 'build'
         self.build.mkdir(parents=True)
         (self.build / 'rekarina_xlate.id').write_text('identity-1')
+        (self.build / 'shader-prepared.bin').write_bytes(b'p')   # the output of a finished preparation
 
     def tearDown(self):
         self.tmp.cleanup()
 
-    def start(self, saved):
-        """main() with --shaders-later and the steps left out: (exit code, events, what the steps were handed)."""
+    def start(self, saved, flag='--shaders-later'):
+        """main() with the launcher's flag and the steps left out: (exit code, events, what the steps were handed)."""
         if saved is not None:
             (self.dest / state.NAME).write_text(json.dumps(saved), encoding='utf-8')
         seen = {}
@@ -785,7 +831,7 @@ class OotMainTest(unittest.TestCase):
         with mock.patch.object(self.oot, 'run_steps', steps), mock.patch.object(self.oot.eta, 'load_timings', return_value={}), \
                 contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
             code = self.oot.main(['--dest', str(self.dest), '--root', str(self.root), '--temp', str(self.temp),
-                                  '--toolchain', str(self.toolchain), '--shaders-later'])
+                                  '--toolchain', str(self.toolchain), flag])
         self.stderr = err.getvalue()
         return code, [json.loads(line) for line in out.getvalue().splitlines() if line.startswith('{')], seen
 
@@ -804,24 +850,48 @@ class OotMainTest(unittest.TestCase):
         def prepared(shaders, key='k'):
             return {'format': 1, 'release': '1.2.1', 'inputs': {}, **({'shaders': 'all'} if shaders == 'all' else {}),
                     'steps': {'oot_prepare': {'key': key, 'release': '1.2.1', 'shaders': shaders}}}
+        unchanged = prepared('all', self.prepared_all_key())
+        # (name, state, what the temp folder's build holds, the mode, the estimate's case of the shader step)
         cases = (
-            ('a 1.2.0 folder, the translator that prepared it', old, 'all', 'rerun'),
-            ('all, the inputs unchanged', prepared('all', self.prepared_all_key()), 'all', 'rerun'),
-            ('all, the inputs changed', prepared('all'), 'met', 'rerun'),
-            ('the variants play met', prepared('met'), 'met', 'rerun'),
-            ('a new folder', None, 'met', 'first'),
+            ('a 1.2.0 folder, the translator that prepared it', old, 'output', 'all', 'rerun'),
+            ('all, the inputs unchanged', unchanged, 'output', 'all', 'rerun'),
+            ('all, the inputs unchanged, a fresh temp folder', unchanged, '', 'met', 'first'),
+            ('all, the inputs unchanged, a run cut short', unchanged, 'output marker', 'met', 'first'),
+            ("all, the inputs unchanged, the driver's phase of an earlier setup cut short", unchanged, 'output journal',
+             'met', 'first'),
+            ('all, the inputs changed', prepared('all'), 'output', 'met', 'first'),
+            ('the variants play met', prepared('met'), 'output', 'met', 'first'),
+            ('a new folder', None, '', 'met', 'first'),
         )
-        for name, saved, mode, case in cases:
+        files = {'output': 'shader-prepared.bin', 'marker': self.oot.Prepare.PREPARING, 'journal': self.oot.Prepare.JOURNAL}
+        for name, saved, holds, mode, case in cases:
             with self.subTest(name):
                 (self.dest / state.NAME).unlink(missing_ok=True)
+                for what, file in files.items():
+                    (self.build / file).unlink(missing_ok=True)
+                    if what in holds.split():
+                        (self.build / file).write_bytes(b'p')
                 code, events, seen = self.start(saved)
                 self.assertEqual(code, 0, self.stderr)
                 self.assertEqual([e['type'] for e in events], ['start', 'eta', 'end'])
                 self.assertEqual(events[-1]['result'], 'ok')
                 self.assertEqual(events[1]['steps']['oot_prepare']['case'], case)
                 self.assertEqual(seen['mode'], mode)   # the decision for --shaders-later, as before the steps' keys
+        (self.build / 'shader-prepared.bin').write_bytes(b'p')
         (self.build / 'rekarina_xlate.id').write_text('identity-0')   # another translator prepared the old folder
         self.assertEqual(self.start(old)[2]['mode'], 'met')
+
+    def test_the_background_job_prepares_all_whatever_the_temp_folder_holds(self):
+        """--all-shaders (installer/shaderjob.py): every variant, with the estimate of every variant unless the step has
+        nothing to do."""
+        met = {'format': 1, 'release': '1.2.1', 'inputs': {}, 'steps': {'oot_prepare': {'key': 'k', 'shaders': 'met'}}}
+        code, events, seen = self.start(met, '--all-shaders')
+        self.assertEqual((code, seen['mode'], events[1]['steps']['oot_prepare']['case']), (0, 'all', 'all'))
+        done = {'format': 1, 'release': '1.2.1', 'inputs': {}, 'shaders': 'all',
+                'steps': {'oot_prepare': {'key': self.prepared_all_key(), 'shaders': 'all'}}}
+        self.assertEqual(self.start(done, '--all-shaders')[1][1]['steps']['oot_prepare']['case'], 'rerun')
+        (self.build / 'shader-prepared.bin').unlink()
+        self.assertEqual(self.start(done, '--all-shaders')[1][1]['steps']['oot_prepare']['case'], 'all')
 
     def test_a_failure_before_the_steps_is_reported_with_its_traceback(self):
         with mock.patch.object(self.oot.eta, 'estimates', side_effect=RuntimeError('a broken estimate')):

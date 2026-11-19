@@ -651,9 +651,11 @@ LEGACY_PREPARED_BY = ('1.2.0', '1.2.1')
 def shader_mode(ctx):
     """'met' (the variants play met: a first install) or 'all' (every variant of the dump). A folder that has
     prepared all stays on 'all' (state 'shaders'), and so does one an earlier setup prepared: that one always did.
-    --shaders-later (the launcher's run screen) never prepares the rest in the foreground: it keeps 'all' while the
-    shaders' inputs did not change and otherwise prepares the variants play met only, which the launcher's background
-    job (--all-shaders) then completes."""
+    --shaders-later (the launcher's run screen) never prepares the rest in the foreground: it keeps 'all' only while
+    the step has nothing to do (the shaders' inputs did not change and the prepared output is in the temp folder) and
+    otherwise prepares the variants play met only, which the launcher's background job (--all-shaders) then completes.
+    The output matters as much as the inputs: a setup unpacked again, or a temp folder that was cleaned, has none, and
+    'all' then prepared every variant in the foreground (35 minutes on 16 threads, hours on a weak machine)."""
     state = getattr(ctx, 'state', None) or {}
     opt = ctx.options
     if getattr(opt, 'all_shaders', False):
@@ -662,8 +664,24 @@ def shader_mode(ctx):
     prepared_all = state.get('shaders') == 'all' or bool(rec and rec.get('shaders', 'all') == 'all')
     if getattr(opt, 'shaders_later', False):
         step = Prepare()
-        return 'all' if prepared_all and rec and (rec.get('key') == step.key(ctx, 'all') or step.adopts(ctx, rec)) else 'met'
+        stands = prepared_all and rec and step.current(ctx, rec) and \
+            (rec.get('key') == step.key(ctx, 'all') or step.adopts(ctx, rec))
+        return 'all' if stands else 'met'
     return 'all' if prepared_all else 'met'
+
+
+def shader_case(ctx):
+    """The shader step's case for the estimate (eta.py), from what it will do in this run: 'rerun' when it will be
+    skipped (its record stands and its output is in the temp folder, as Context.plan decides), else what it prepares:
+    'all' (every variant) or 'first' (the variants play met, the amount of a first install). A folder that prepared
+    before but has no prepared output in the temp folder does that work in full, which a 'rerun' estimate (a minute)
+    hid: the window counted down to a couple of minutes and stayed there."""
+    rec = ctx.record('oot_prepare')
+    step = Prepare()
+    mode = shader_mode(ctx)
+    if rec and step.current(ctx, rec) and (rec.get('key') == step.key(ctx, mode) or step.adopts(ctx, rec)):
+        return 'rerun'
+    return 'all' if mode == 'all' else 'first'
 
 
 def shaders_only_met(state):
@@ -695,8 +713,17 @@ class Prepare(Step):
                            ('totk_xlate.id', xid) if xid.is_file() else tree_stamp(layout.xlate),
                            tree_stamp(*(layout.tools / n for n in SHADER_TOOLS), *(layout.tools / 'data' / n for n in SHADER_DATA)))
 
+    PREPARING = '.shader-prepare-running'   # in the build folder from the start of run() until its end
+    JOURNAL = 'shader-prepare-journal.bin'   # the runtime's, while the driver builds (vk_pipeline.c lb_warm_prepared)
+
     def current(self, ctx, record):
-        return (ctx.temp / 'build' / 'shader-prepared.bin').is_file()
+        """The output of a run that finished. --prepare-shaders writes shader-prepared.bin after the translation, before
+        the driver's long phase, so a run cut short later leaves it: such a run also leaves PREPARING behind, and,
+        cut short while the driver built (also by a setup from before PREPARING), the runtime's journal of that phase,
+        which only a finished build removes."""
+        build = ctx.temp / 'build'
+        return (build / 'shader-prepared.bin').is_file() and not (build / self.PREPARING).exists() and \
+            not (build / self.JOURNAL).exists()
 
     def adopts(self, ctx, record):
         """A record of the old key form is kept when its release prepared what this one would and the translator is the
@@ -726,6 +753,7 @@ class Prepare(Step):
             shutil.copy2(layout.xlate.with_suffix('.id'), build / layout.xlate.with_suffix('.id').name)
         for lib in layout.libs:   # Linux: the game finds libSDL3.so.0 beside itself ($ORIGIN), here as in the package
             shutil.copy2(lib, build / lib.name)
+        (build / self.PREPARING).write_text(mode + '\n', encoding='ascii')   # a run cut short leaves it (current)
         phase = ['seed']
 
         def parse(line):
@@ -757,6 +785,7 @@ class Prepare(Step):
         code, log = run_tool(ctx, self.id, layout.tools / 'pack_shader_cache.py', [build / 'shader-cache'])
         if code:
             raise InstallError('oot.shaders_failed', code=code, log=str(log))
+        (build / self.PREPARING).unlink(missing_ok=True)
         ctx.state['shaders'] = mode   # 'all' is kept through later updates (shader_mode)
         return {'shaders': mode}
 
@@ -975,12 +1004,15 @@ def main(argv=None):
         # How long each step should take (eta.py): "first" for a step this folder has not finished before, "rerun" for
         # one it has (its caches are there). The window counts down from these; each finished step's real time is kept
         # for the next run on this machine.
-        rep.cases = {s.id: 'rerun' if state and (s.always or s.id in state['steps']) else 'first' for s in steps}
-        # every variant of the shaders is an all-or-nothing amount of work whatever the folder had before (a folder that
-        # prepared the variants play met has the record, and still needs the rest): its own estimate, no recorded timing
-        prepared = (state or {}).get('steps', {}).get('oot_prepare')
-        if shader_mode(ctx) == 'all' and not (prepared and prepared.get('shaders', 'all') == 'all'):
-            rep.cases['oot_prepare'] = 'all'
+        # A step whose output left the temp folder (a setup unpacked again, a cleaned temp folder) does its first run's
+        # work again, whatever the record says.
+        done = (state or {}).get('steps', {})
+        rep.cases = {s.id: 'rerun' if state and (s.always or (s.id in done and s.current(ctx, done[s.id]))) else 'first'
+                     for s in steps}
+        # the shader step by what it will prepare: nothing, the variants play met, or every variant (an all-or-nothing
+        # amount of work whatever the folder had before: its own estimate, no recorded timing)
+        if 'oot_prepare' in rep.cases:
+            rep.cases['oot_prepare'] = shader_case(ctx)
         rep.emit('eta', **eta.estimates(rep.cases))
         result = run_steps(steps, ctx)
     except Exception as e:

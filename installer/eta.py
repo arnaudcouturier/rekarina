@@ -17,6 +17,8 @@ Where an estimate comes from, in rising order of trust:
     divided by the share done. A step with several phases gives each a share of its time (PHASES). The remaining
     time moves towards that figure at a bounded speed (SMOOTH), so a counter that starts slowly or jumps does not
     throw the estimate around; until a quarter of the step is done the figure is mixed with the step's estimate.
+    Without a counter, the clock: the estimate minus the time taken, and past the estimate a share of the time taken
+    (OVERRUN), so a step that takes longer than estimated shows a figure that grows instead of one that stands still.
 
 Events (events.py) carry it between the two processes: after "start" the command line emits
 
@@ -69,7 +71,7 @@ PHASES = {
     'oot_compile': (('compile', 0.95), ('link', 0.05)),
     'oot_components': (('detect', 0.05), ('fsr', 0.95), ('dlss', 0.95), ('dlssg', 0.95)),   # one byte counter over the three
     'oot_prompts': (('prompts', 1.0),),
-    'oot_prepare': (('seed', 0.05), ('translate', 0.15), ('libraries', 0.80)),
+    'oot_prepare': (('seed', 0.05), ('translate', 0.15), ('libraries', 0.78), ('pack', 0.02)),
     'oot_package': (('copy', 0.15), ('warm', 0.85)),
     'update_download': (('download', 1.0),),
     'update_unpack': (('unpack', 1.0),),
@@ -80,6 +82,10 @@ TRUST_AT = 0.25        # the share of a step after which its counter alone decid
 # that is more (half an hour may lose 36 s a second: a wrong first guess is gone within a minute, never in one jump).
 SMOOTH = ((4.0, 0.02), (2.0, 0.01))
 FLOOR = 0.05           # a running step never shows less than this share of its estimate (and 5 s)
+# A step past its estimate that no counter speaks for: the estimate was wrong, and the clock is all there is. The rest
+# is put at this share of the time the step has taken so far, which grows while it runs: a fixed floor showed the same
+# couple of minutes for an hour (a shader step estimated as a rerun that prepared every variant).
+OVERRUN = 0.25
 FORMAT = 1
 
 
@@ -182,14 +188,16 @@ class Tracker:
 
     def reset(self):
         self.steps = []          # ids in order
-        self.info = {}           # id -> dict(state, estimate, started, taken, phase, done, total, unit, seen, shown, shown_at)
+        self.info = {}           # id -> dict(state, estimate, started, taken, phase, phase_at, done, total, unit, seen, shown,
+                                 #             shown_at)
         self.started = None
         self.ended = None
         self.cores = None
 
     def blank(self, step):
         return {'state': 'pending', 'estimate': estimate(step, 'first', self.cores)[0], 'started': None, 'taken': None,
-                'phase': None, 'done': None, 'total': None, 'unit': None, 'seen': [], 'shown': None, 'shown_at': None}
+                'phase': None, 'phase_at': None, 'done': None, 'total': None, 'unit': None, 'seen': [], 'shown': None,
+                'shown_at': None}
 
     def step(self, step):
         if step not in self.info:
@@ -217,7 +225,8 @@ class Tracker:
         elif kind == 'step':
             i, state = self.step(event.get('step')), event.get('state')
             if state == 'started':
-                i.update(state='running', started=now, phase=None, done=None, total=None, unit=None, seen=[], shown=None)
+                i.update(state='running', started=now, phase=None, phase_at=None, done=None, total=None, unit=None, seen=[],
+                         shown=None)
             elif state == 'done':
                 taken = event.get('seconds')
                 i.update(state='done', taken=float(taken) if isinstance(taken, (int, float))
@@ -231,6 +240,8 @@ class Tracker:
             phase = event.get('phase')
             if phase and phase not in i['seen']:
                 i['seen'].append(phase)
+            if phase != i['phase']:
+                i['phase_at'] = now
             i.update(phase=phase, done=event.get('done'), total=event.get('total'), unit=event.get('unit'))
         elif kind == 'error':
             if event.get('step') in self.info:
@@ -247,7 +258,7 @@ class Tracker:
         est = i['estimate']
         floor = max(5.0, FLOOR * est)
         fraction = step_fraction(step, i['phase'], i['done'], i['total'], i['seen'])
-        by_clock = max(est - elapsed, floor)
+        by_clock = max(est - elapsed, floor, OVERRUN * elapsed)
         if fraction is None or fraction <= 0 or elapsed < 3:
             target = by_clock
         else:
@@ -257,6 +268,10 @@ class Tracker:
                 by_counter = elapsed * (1 - fraction) / fraction
             trust = min(1.0, fraction / TRUST_AT)
             target = max(trust * by_counter + (1 - trust) * max(est * (1 - fraction), floor), 0.0)
+            # a phase without a counter of its own is put at its share of the step, which says nothing once it runs
+            # long (the pack of every shader on a slow disk): its own clock then, as the whole step's above
+            if not i['total'] and i['phase_at'] is not None:
+                target = max(target, OVERRUN * (now - i['phase_at']))
         if i['shown'] is not None:
             dt = max(0.0, now - i['shown_at'])
             fall = max(SMOOTH[0][0], SMOOTH[0][1] * i['shown']) * dt

@@ -1,29 +1,29 @@
 {
- "tag_name": "v1.2.2",
- "name": "Rekarina 1.2.2",
+ "tag_name": "v1.2.3",
+ "name": "Rekarina 1.2.3",
  "html_url": "https://rekarina.dev/",
- "body": "## Rekarina 1.2.2: the update works again\n\n1.2.1 could not update an existing install: the setup stopped at once with \"The setup stopped unexpectedly (exit code 1)\". My mistake, I tested the update the wrong way. Your game folder was never touched. 1.2.2 fixes it: open the launcher and update, or download it again. Everything from 1.2.1 is below.\n\n**Install anywhere, and much faster**\n- At its first start Rekarina.exe asks where to put everything: the launcher, its build files and the game go into the folder you pick. C: is not needed any more.\n- A first install takes about 25-35 minutes instead of 85 on my PC. It prepares the shaders the game is known to use; the launcher prepares the rarer ones in the background while the game is closed.\n- An update no longer prepares every shader again, and the prepared shaders take about 5 GB less on your disk.\n\n**Frame generation that works**\n- Turn it on from the default mode and it switches on what it needs by itself (applies at the next start).\n- RTX 40 and 50 get DLSS Frame Generation; every other card (RTX 20 and 30, GTX, AMD, Intel) gets AMD FSR 3.1 frame generation.\n\n**Weaker PCs**\n- On a CPU with fewer than six threads the game's own threads no longer fight for it. With my CPU held to four threads at 1080p the 1% low in the open field doubled (22 to 44 fps). Not a steady 60 on four threads yet.\n\n**New**\n- Dash on its own input: the left stick's press while you move, or a key (V by default). Off by default, in Controls.\n- The song screen shows your controller's buttons (or your keys).\n- The action hint shows its buttons where your Xbox or PlayStation pad has them.\n- Render scale in steps of 5% (50 to 100) in the default mode.\n- The controller's Guide / PS button opens the Rekarina menu.\n\n**Fixed**\n- The game froze after closing the ocarina's \"audio input\" notice with voice playing on.\n- The setup stopped at its first step when your Windows user name has a space in it.\n- A \"Fatal Error: alloc: invalid block\" box when starting the game from the launcher.\n- Above 60 fps: the first dungeon's boss circling the ceiling, the day passing too slowly, the sound job (music, song notes), the horse's fence jumps, moving floors, recording a song, twitching looped poses, cloth, the rigid web. Each fix only acts above 60 fps.\n\n**Still open, I'm on it**\n- Flickering shadows and trees in the distance, the light inside the great tree, a shadow at the castle.\n- Memory: too much RAM on 16 GB PCs (15+ GB). Being worked on now.\n- A glitchy sound right after playing the ocarina: not reproduced yet. A problem report right after it happens would help a lot.\n- DLSS ghosting on the hero's tunic and hat.\n- The action hint's big button can keep the keyboard's key after you switch a pad on, until the next start.\n- Sharpness for every upscaler, HDR live preview, PsychoV35: coming. Linux and Steam Deck: not ready yet.\n\nSomething broken? Esc, Advanced, Make a problem report, and post the zip in #bug-reports.\n",
+ "body": "## Rekarina 1.2.3: no more hour-long shader step\n\n- If you downloaded Rekarina again instead of updating in the launcher, the setup prepared every shader before you could play. That took an hour or more on some PCs, and the timer sat at \"2 mins\" the whole time. Now it prepares only the shaders the game is known to use, and the launcher does the rest in the background while the game is closed.\n- The timer follows the real progress now.\n- 1.2.2 fixed the update from 1.2.1, which stopped at once with \"The setup stopped unexpectedly (exit code 1)\".\n\nThe easiest way to get it: open the launcher, it offers the update. Everything new since 1.2.0 is below.\n\n**Install anywhere, and much faster**\n- At its first start Rekarina.exe asks where to put everything: the launcher, its build files and the game go into the folder you pick. C: is not needed any more.\n- A first install takes about 25-35 minutes instead of 85 on my PC. It prepares the shaders the game is known to use; the launcher prepares the rarer ones in the background while the game is closed.\n- An update no longer prepares every shader again, and the prepared shaders take about 5 GB less on your disk.\n\n**Frame generation that works**\n- Turn it on from the default mode and it switches on what it needs by itself (applies at the next start).\n- RTX 40 and 50 get DLSS Frame Generation; every other card (RTX 20 and 30, GTX, AMD, Intel) gets AMD FSR 3.1 frame generation.\n\n**Weaker PCs**\n- On a CPU with fewer than six threads the game's own threads no longer fight for it. With my CPU held to four threads at 1080p the 1% low in the open field doubled (22 to 44 fps). Not a steady 60 on four threads yet.\n\n**New**\n- Dash on its own input: the left stick's press while you move, or a key (V by default). Off by default, in Controls.\n- The song screen shows your controller's buttons (or your keys).\n- The action hint shows its buttons where your Xbox or PlayStation pad has them.\n- Render scale in steps of 5% (50 to 100) in the default mode.\n- The controller's Guide / PS button opens the Rekarina menu.\n\n**Fixed**\n- The game froze after closing the ocarina's \"audio input\" notice with voice playing on.\n- The setup stopped at its first step when your Windows user name has a space in it.\n- A \"Fatal Error: alloc: invalid block\" box when starting the game from the launcher.\n- Above 60 fps: the first dungeon's boss circling the ceiling, the day passing too slowly, the sound job (music, song notes), the horse's fence jumps, moving floors, recording a song, twitching looped poses, cloth, the rigid web. Each fix only acts above 60 fps.\n\n**Still open, I'm on it**\n- Flickering shadows and trees in the distance, the light inside the great tree, a shadow at the castle.\n- Memory: too much RAM on 16 GB PCs (15+ GB). Being worked on now.\n- A glitchy sound right after playing the ocarina: not reproduced yet. A problem report right after it happens would help a lot.\n- DLSS ghosting on the hero's tunic and hat.\n- The action hint's big button can keep the keyboard's key after you switch a pad on, until the next start.\n- Sharpness for every upscaler, HDR live preview, PsychoV35: coming. Linux and Steam Deck: not ready yet.\n\nSomething broken? Esc, Advanced, Make a problem report, and post the zip in #bug-reports.\n",
  "assets": [
   {
-   "name": "Rekarina-Setup-1.2.2-windows.zip",
-   "browser_download_url": "https://dl.rekarina.dev/releases/1.2.2/Rekarina-Setup-1.2.2-windows.zip",
-   "size": 154785317,
-   "digest": "sha256:0064717ee581ba56816f3b2d65b289c2371662fbe3b071a1822598d75fe36628"
+   "name": "Rekarina-Setup-1.2.3-windows.zip",
+   "browser_download_url": "https://dl.rekarina.dev/releases/1.2.3/Rekarina-Setup-1.2.3-windows.zip",
+   "size": 154787321,
+   "digest": "sha256:4cf5c867b51d8fbc59f108fedd315b58c4220edaa33c80a51b99680d021d27c6"
   },
   {
    "name": "Rekarina.exe",
-   "browser_download_url": "https://dl.rekarina.dev/releases/1.2.2/Rekarina.exe",
-   "size": 155217529,
-   "digest": "sha256:a09da29b4a22d07800f20ac1974c7d53973c35139ffbb4ed1149ec21602047b4"
+   "browser_download_url": "https://dl.rekarina.dev/releases/1.2.3/Rekarina.exe",
+   "size": 155219533,
+   "digest": "sha256:3f08d06a50be8e55bbb1892725eed20f628b8330e2d16c8ac42a8af4026e34e3"
   },
   {
    "name": "SHA256SUMS",
-   "browser_download_url": "https://dl.rekarina.dev/releases/1.2.2/SHA256SUMS",
+   "browser_download_url": "https://dl.rekarina.dev/releases/1.2.3/SHA256SUMS",
    "size": 178
   },
   {
    "name": "SHA256SUMS.sig",
-   "browser_download_url": "https://dl.rekarina.dev/releases/1.2.2/SHA256SUMS.sig",
+   "browser_download_url": "https://dl.rekarina.dev/releases/1.2.3/SHA256SUMS.sig",
    "size": 129
   }
  ]

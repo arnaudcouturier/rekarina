@@ -768,12 +768,15 @@ class EtaTest(Sandbox):
         self.assertIsNone(rows['oot_prepare']['remaining'])                        # a skipped step costs nothing
         self.assertEqual((v['elapsed'], v['remaining'], v['index'], v['count'], v['running']), (30, 1080.0, 3, 5, 'oot_compile'))
 
-    def test_clock_only_counts_down_and_never_reaches_zero(self):
+    def test_clock_counts_down_then_grows_past_the_estimate(self):
         t = self.run_to_compile()
         t.view(now=30)
         self.assertAlmostEqual(t.view(now=130)['steps'][2]['remaining'], 620.0)
+        self.assertAlmostEqual(t.view(now=30 + 576)['steps'][2]['remaining'], 144.0)   # at 80 % the clock's two rules meet
         late = t.view(now=30 + 3000)['steps'][2]['remaining']                      # far over the estimate, still running
-        self.assertEqual(late, 36.0)                                               # 5 % of the estimate, not 0 or less
+        self.assertAlmostEqual(late, eta.OVERRUN * 3000)                           # a share of the time taken, not 0
+        later = t.view(now=30 + 3600)['steps'][2]['remaining']
+        self.assertAlmostEqual(later, eta.OVERRUN * 3600)                          # and it grows with it
 
     def test_progress_refines(self):
         t = self.run_to_compile(estimate=720.0)
@@ -810,19 +813,58 @@ class EtaTest(Sandbox):
     def test_slow_step_raises_slowly(self):
         t = self.run_to_compile(estimate=100.0)
         t.view(now=30)
-        self.assertEqual(t.view(now=229.9)['steps'][2]['remaining'], 5.0)          # over its estimate: the floor
+        self.assertAlmostEqual(t.view(now=229.9)['steps'][2]['remaining'], eta.OVERRUN * 199.9)   # over its estimate
         t.feed({'type': 'progress', 'step': 'oot_compile', 'phase': 'compile', 'done': 100, 'total': 400, 'unit': 'objects'}, now=230)
-        first = t.view(now=230)['steps'][2]['remaining']                           # the counter says 640 s; shown: the floor
-        self.assertLess(first, 20)
+        first = t.view(now=230)['steps'][2]['remaining']                           # the counter says 640 s; shown: 50 s
+        self.assertLess(first, 60)
         second = t.view(now=231)['steps'][2]['remaining']
         self.assertLessEqual(second - first, 2.0 + 1e-6)                           # up by at most 2 s per second
         self.assertGreater(second, first)
+
+    def test_a_long_step_past_its_estimate_never_stands_still(self):
+        """A shader step estimated as a rerun (a minute) that prepares every variant for 80 minutes, with the phases
+        and counters the real step reports (installer/oot.py Prepare.run): 10 minutes of seed without a counter, the
+        translation's counter, a moment of 'libraries' without one in the middle of it (a line that names pipelines),
+        the driver's counter every 4,000 variants, and 20 minutes of packing without a counter. The shown time follows
+        the counters while they run and is never the same figure for ten minutes (it stood at "2 min" for an hour)."""
+        t = eta.Tracker(clock=lambda: 0.0)
+        t.feed({'type': 'start', 'steps': ['oot_prepare', 'oot_package']}, now=0)
+        t.feed({'type': 'eta', 'cores': 16, 'steps': {'oot_prepare': {'seconds': 60}, 'oot_package': {'seconds': 90}}}, now=0)
+        t.feed({'type': 'step', 'step': 'oot_prepare', 'state': 'started'}, now=0)
+        events = [(0, 'seed', None, None), (600, 'translate', None, None), (601, 'libraries', None, None)]
+        events += [(s, 'translate', round(72621 * (s - 600) / 1200), 72621) for s in range(605, 1800, 5)]
+        events += [(1800, 'translate', None, None), (1800.5, 'libraries', None, None)]
+        events += [(1800 + 1800 * n / 56402, 'libraries', n, 56402) for n in [*range(4000, 56402, 4000), 56402]]
+        events += [(3600, 'pack', None, None)]
+        shown, at, k = [], 0.0, 0
+        while at < 4800:
+            while k < len(events) and events[k][0] <= at:
+                _, phase, done, total = events[k]
+                t.feed({'type': 'progress', 'step': 'oot_prepare', 'phase': phase, 'done': done, 'total': total}, now=at)
+                k += 1
+            row = t.view(now=at)['steps'][0]
+            shown.append((at, row['remaining'], row['fraction']))
+            at += 0.5
+        # half way through the driver's phase, just before each new count (the figure moves to a count at a bounded
+        # speed): what the counter says, give or take
+        counts = [s for s, phase, done, _ in events if phase == 'libraries' and done and 2400 <= s <= 3400]
+        self.assertGreater(len(counts), 5)
+        for s in counts:
+            start, left, fraction = shown[int((s - 1) * 2)]
+            self.assertLess(abs(left - start * (1 - fraction) / fraction), 0.15 * start * (1 - fraction) / fraction)
+        minutes = [(s, round(left / 60)) for s, left, _ in shown]
+        for i, (start, m) in enumerate(minutes):
+            if start + 600 <= 4800:
+                window = {mm for s, mm in minutes[i:i + 1200]}
+                self.assertGreater(len(window), 1, f'"{m} min" from {start} s on for ten minutes')
+        self.assertGreater(shown[-1][1], shown[2 * 3700][1])   # the long pack: the figure grows with it
 
     def test_phases(self):
         f = eta.step_fraction
         self.assertIsNone(f('oot_compile', 'compile', None, None, ['compile']))    # no counter yet, nothing behind it
         self.assertAlmostEqual(f('oot_compile', 'link', None, None, ['compile', 'link']), 0.95)
-        self.assertAlmostEqual(f('oot_prepare', 'libraries', 500, 1000, []), 0.03 + 0.02 + 0.15 + 0.40)
+        self.assertAlmostEqual(f('oot_prepare', 'libraries', 500, 1000, []), 0.05 + 0.15 + 0.39)
+        self.assertAlmostEqual(f('oot_prepare', 'pack', None, None, []), 0.98)     # the pack after the driver's phase
         self.assertAlmostEqual(f('oot_prepare', 'translate', 50, 100, []), 0.05 + 0.075)
         self.assertAlmostEqual(f('oot_components', 'dlssg', 60, 100, []), 0.05 + 0.95 * 0.6)   # one counter over the groups
         self.assertAlmostEqual(f('oot_package', 'warm', None, None, []), 0.15)
