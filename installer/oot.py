@@ -14,7 +14,8 @@ did not change since it was recorded is skipped, so a second run continues or up
     oot_compile   the C and the runtime to totk.exe (tools/build_game.py --version oot)
     oot_components  the upscaler libraries this machine's graphics card can use (DLSS, frame generation, FSR 3.1),
                   downloaded from NVIDIA's and AMD's own repositories (components.py); a failure only warns
-    oot_prepare   the button prompt overlays and fonts, and every shader translated before play
+    oot_prompts   the button prompt overlays and fonts (a minute)
+    oot_prepare   the shaders translated and built before play: the variants play met, or with --all-shaders every one
     oot_package   the folder to play from (tools/package_oot.py): Rekarina.exe, its libraries, caches and rekarina.ini,
                   a new rekarina.ini with first settings for the graphics card (components.preset)
 
@@ -99,6 +100,36 @@ def fingerprint(*parts):
             h.update(str(p).encode())
         h.update(b'\1')
     return h.hexdigest()
+
+
+WORK_IN_DEST = '.setup-work'   # in the game folder: the working files of a setup whose own disk has no room for them
+
+
+def work_folder(default, asked, dest):
+    """(the folder of this game folder's working files, the free GiB of the setup's disk when that sent them into the
+    game folder, else None). The files (the generated C, the objects, the build's caches: NEED_TEMP) live with the
+    setup, in its temp folder, one sub-folder per game folder; --temp names another place. A setup that was unpacked on
+    a disk without room for them (the single-file Rekarina.exe unpacks into the user's application data, on the system
+    disk) puts them into the game folder instead, when that is on another disk with room for both: the game folder is
+    the one place the player chose. Later runs go where the objects of the earlier one are, wherever the free space
+    is by then, so an update compiles only what changed."""
+    tag = f'oot-{hashlib.sha256(str(dest).lower().encode()).hexdigest()[:8]}'
+    if asked:
+        return Path(asked).resolve() / tag, None
+    base = Path(default).resolve() if default else dest / WORK_IN_DEST
+    here, there = base / tag, dest / WORK_IN_DEST / tag
+    if here == there or (here / 'build' / 'obj').is_dir():
+        return here, None
+    if (there / 'build' / 'obj').is_dir():
+        return there, None
+    try:
+        drive = lambda p: os.path.splitdrive(str(p))[0].lower()
+        free, room = free_bytes(here), free_bytes(dest)
+        if drive(here) != drive(dest.resolve()) and free < NEED_TEMP + (1 << 30) and room >= NEED_DEST + NEED_TEMP:
+            return there, round(free / 2**30, 1)
+    except OSError:
+        pass
+    return here, None
 
 
 def free_bytes(path):
@@ -255,7 +286,7 @@ def ensure_zbic(ctx, step):
     ctx.reporter.progress(step, 'zbic', force=True)
     probe = subprocess.run([python, '-c', 'import sys, sysconfig; print(f"cp{sys.version_info[0]}{sys.version_info[1]}"); '
                             'print(sysconfig.get_paths()["purelib"])'], **quiet)
-    lines = probe.stdout.split()
+    lines = probe.stdout.splitlines()   # one per line: the folder may hold spaces
     try:
         # the wheel of this platform: win_amd64, or on x86-64 Linux the manylinux one (glibc 2.17, older than the
         # setup's own floor of 2.34)
@@ -570,58 +601,120 @@ class Components(Step):
                 'failed': sorted(failed), 'preset': {'id': chosen['id'], 'tex': chosen['tex']}}
 
 
-class Prepare(Step):
-    id = 'oot_prepare'
+class Prompts(Step):
+    """The button prompt overlays and the fonts that carry them: a minute of drawing, redone when the drawing tools or
+    the dump change. It is a step of its own because it once shared a key with the shader preparation, and a change
+    to a prompt then ran the shaders again (half an hour or more)."""
+
+    id = 'oot_prompts'
 
     def key(self, ctx):
-        layout = ctx.layout
-        xid = layout.xlate.with_suffix('.id')
-        # (the identity file under the name it had before the translator was renamed: the step stays done for a
-        # folder prepared by an earlier setup)
-        return fingerprint('oot-prepare-3', compile_base_key(ctx),
-                           ('totk_xlate.id', xid) if xid.is_file() else tree_stamp(layout.xlate),
-                           tree_stamp(*(layout.tools / n for n in ('make_oot_prompts.py', 'button_icons.py', 'make_ext_font.py',
-                                                                  'oot_prepare_shaders.py', 'prepare_shaders.py'))))
+        return fingerprint('oot-prompts-2', ctx.keys['oot_extract'],
+                           tree_stamp(*(ctx.layout.tools / n for n in ('make_oot_prompts.py', 'oot_hint_layout.py', 'button_icons.py',
+                                                                      'make_ext_font.py'))))
 
     def current(self, ctx, record):
         build = ctx.temp / 'build'
-        return (build / 'shader-prepared.bin').is_file() and (build / 'romfs-patches-xbox' / 'manifest.tsv').is_file() and \
+        return (build / 'romfs-patches-xbox' / 'manifest.tsv').is_file() and \
             all((build / f'shared-fonts-{d}' / '5-nintendo-extension.bfttf').is_file() for d, _ in STYLES)
-
-    PROMPTS_DONE = '.prompts-done'   # in the build folder: the fingerprint the prompts and fonts there were drawn under
-
-    def prompts_done(self, ctx, build):
-        """The prompts and fonts of an earlier run of this step that was cut short later on (the shader preparation is
-        the long part: a player who closes the launcher during it would pay a minute of drawing again at the resume)."""
-        stamp = build / self.PROMPTS_DONE
-        try:
-            ok = stamp.read_text(encoding='ascii').strip() == self.prompts_key(ctx)
-        except OSError:
-            return False
-        return ok and (build / 'romfs-patches-xbox' / 'manifest.tsv').is_file() and \
-            all((build / f'shared-fonts-{d}' / '5-nintendo-extension.bfttf').is_file() for d, _ in STYLES)
-
-    def prompts_key(self, ctx):
-        return fingerprint('oot-prompts-1', self.key(ctx), str(ctx.nup))
 
     def run(self, ctx):
         layout, rep, build = ctx.layout, ctx.reporter, ctx.temp / 'build'
         rep.progress(self.id, 'prompts', force=True)
-        if self.prompts_done(ctx, build):
-            rep.log('The button prompts and fonts are there from the run before: not drawn again')
-        else:
-            (build / self.PROMPTS_DONE).unlink(missing_ok=True)
-            code, log = run_tool(ctx, self.id, layout.tools / 'make_oot_prompts.py', ['--out', build, '--nup', ctx.nup])
+        code, log = run_tool(ctx, self.id, layout.tools / 'make_oot_prompts.py', ['--out', build, '--nup', ctx.nup])
+        if code:
+            raise InstallError('oot.prompts_failed', code=code, log=str(log))
+        for folder, style in STYLES:
+            out = build / f'shared-fonts-{folder}'
+            out.mkdir(parents=True, exist_ok=True)
+            code, log = run_tool(ctx, self.id, layout.tools / 'make_ext_font.py',
+                                 [out / '5-nintendo-extension.bfttf', '--style', style])
             if code:
                 raise InstallError('oot.prompts_failed', code=code, log=str(log))
-            for folder, style in STYLES:
-                out = build / f'shared-fonts-{folder}'
-                out.mkdir(parents=True, exist_ok=True)
-                code, log = run_tool(ctx, self.id, layout.tools / 'make_ext_font.py',
-                                     [out / '5-nintendo-extension.bfttf', '--style', style])
-                if code:
-                    raise InstallError('oot.prompts_failed', code=code, log=str(log))
-            (build / self.PROMPTS_DONE).write_text(self.prompts_key(ctx) + '\n', encoding='ascii')
+        return {}
+
+
+# Bump when a change to the runtime (or anything else the shader key does not read) alters what --prepare-shaders makes
+# from the same inputs: every folder then prepares its shaders again. The compile key is not in the shader key on
+# purpose (see Prepare.key), so this is the one hand switch.
+SHADER_FORMAT = 1
+# The tools the prepared shaders follow from, and the seed of variants play met (tools/data).
+SHADER_TOOLS = ('oot_prepare_shaders.py', 'prepare_shaders.py', 'oot_romfs.py', 'shader_census.py')
+SHADER_DATA = ('shader-answers-oot.bin.gz',)
+# A folder that an earlier setup prepared has the old form of this step's key (it took in the compile key and the
+# prompt tools, so it cannot be recomputed from what is on disk). The releases below prepared exactly what this setup
+# would (every variant, the same seed and translator rules), so their record is taken over; any other release's is not.
+LEGACY_PREPARED_BY = ('1.2.0', '1.2.1')
+
+
+def shader_mode(ctx):
+    """'met' (the variants play met: a first install) or 'all' (every variant of the dump). A folder that has
+    prepared all stays on 'all' (state 'shaders'), and so does one an earlier setup prepared: that one always did.
+    --shaders-later (the launcher's run screen) never prepares the rest in the foreground: it keeps 'all' while the
+    shaders' inputs did not change and otherwise prepares the variants play met only, which the launcher's background
+    job (--all-shaders) then completes."""
+    state = getattr(ctx, 'state', None) or {}
+    opt = ctx.options
+    if getattr(opt, 'all_shaders', False):
+        return 'all'
+    rec = (state.get('steps') or {}).get('oot_prepare')
+    prepared_all = state.get('shaders') == 'all' or bool(rec and rec.get('shaders', 'all') == 'all')
+    if getattr(opt, 'shaders_later', False):
+        step = Prepare()
+        return 'all' if prepared_all and rec and (rec.get('key') == step.key(ctx, 'all') or step.adopts(ctx, rec)) else 'met'
+    return 'all' if prepared_all else 'met'
+
+
+def shaders_only_met(state):
+    """True for a folder whose shaders were prepared for the variants play met only (and has not prepared all since): the
+    launcher offers the rest. A record of the old form (no 'shaders' field) prepared all."""
+    rec = ((state or {}).get('steps') or {}).get('oot_prepare')
+    return bool(rec) and rec.get('shaders') == 'met' and (state or {}).get('shaders') != 'all'
+
+
+class Prepare(Step):
+    """Every shader translated, and the driver's cache filled, before play (tools/oot_prepare_shaders.py)."""
+
+    id = 'oot_prepare'
+
+    def key(self, ctx, mode=None):
+        """What the prepared shaders follow from, and nothing else: the dump, the translator's identity (the shader
+        cache is keyed by it), the preparation tools and the seed, the mode. Not the compile key: the exe only carries
+        the --prepare-shaders command, the shaders it makes follow from the translator and these inputs, and the
+        package step builds the driver's cache again for the exe it copies (--warm-shaders), under the name the driver
+        keys it by. A new exe therefore costs the compile and the package step, not half an hour of preparation."""
+        layout = ctx.layout
+        xid = layout.xlate.with_suffix('.id')
+        # (the identity file under the name it had before the translator was renamed)
+        return fingerprint('oot-prepare-4', SHADER_FORMAT, mode or shader_mode(ctx), ctx.keys['oot_extract'],
+                           ('totk_xlate.id', xid) if xid.is_file() else tree_stamp(layout.xlate),
+                           tree_stamp(*(layout.tools / n for n in SHADER_TOOLS), *(layout.tools / 'data' / n for n in SHADER_DATA)))
+
+    def current(self, ctx, record):
+        return (ctx.temp / 'build' / 'shader-prepared.bin').is_file()
+
+    def adopts(self, ctx, record):
+        """A record of the old key form is kept when its release prepared what this one would and the translator is the
+        one that prepared it (the copy the step left in the build folder): a changed key form alone is no reason to
+        prepare again."""
+        if 'shaders' in record or record.get('release') not in LEGACY_PREPARED_BY:
+            return False
+        xid = ctx.layout.xlate.with_suffix('.id')
+        for name in (xid.name, 'totk_xlate.id'):
+            try:
+                if xid.is_file() and (ctx.temp / 'build' / name).read_bytes() == xid.read_bytes():
+                    return True
+            except OSError:
+                pass
+        return False
+
+    def adopted(self, ctx, record):
+        record['shaders'] = 'all'   # what an old record means, kept in the new form
+        ctx.state['shaders'] = 'all'
+
+    def run(self, ctx):
+        layout, rep, build = ctx.layout, ctx.reporter, ctx.temp / 'build'
+        mode = shader_mode(ctx)
         # the translator beside the exe, where --prepare-shaders and the game look for it
         shutil.copy2(layout.xlate, build / layout.xlate.name)
         if layout.xlate.with_suffix('.id').is_file():
@@ -647,7 +740,8 @@ class Prepare(Step):
 
         rep.progress(self.id, 'seed', force=True)
         code, log = run_tool(ctx, self.id, layout.tools / 'oot_prepare_shaders.py',
-                             [build, '--nup', ctx.nup, '--exefs', ctx.dest / 'exefs', '--exe-name', GAME_EXE], parse)
+                             [build, '--nup', ctx.nup, '--exefs', ctx.dest / 'exefs', '--exe-name', GAME_EXE,
+                              *(['--met-only'] if mode == 'met' else [])], parse)
         if code or not (build / 'shader-prepared.bin').is_file():
             raise InstallError('oot.shaders_failed', code=code, log=str(log))
         # One shader-cache.pack instead of four files per shader (about 250,000 after the preparation): the game reads
@@ -658,7 +752,8 @@ class Prepare(Step):
         code, log = run_tool(ctx, self.id, layout.tools / 'pack_shader_cache.py', [build / 'shader-cache'])
         if code:
             raise InstallError('oot.shaders_failed', code=code, log=str(log))
-        return {}
+        ctx.state['shaders'] = mode   # 'all' is kept through later updates (shader_mode)
+        return {'shaders': mode}
 
 
 LOOSE_SHADER_FILE = re.compile(r'[0-9a-f]{64}\.(spv|res\.json|use)$')   # tools/pack_shader_cache.py NAME, beside in/*.in
@@ -685,7 +780,10 @@ class Package(Step):
         # (the compile key only when mods changed the code: a folder without them keeps the key it had)
         built = ctx.keys['oot_compile']
         # (the texture step's tool and choice: a folder set up before it gets its textures prepared once)
-        return fingerprint('oot-package-3', ctx.keys['oot_prepare'], ctx.layout.tools / 'package_oot.py',
+        # (the compile key through compile_base_key: the shader key no longer holds it, and a new exe must be copied and
+        # its driver cache warmed; the pack tool: a changed pack layout is converted here)
+        return fingerprint('oot-package-4', ctx.keys['oot_prepare'], ctx.keys.get('oot_prompts', ''), compile_base_key(ctx),
+                           ctx.layout.tools / 'package_oot.py', ctx.layout.tools / 'pack_shader_cache.py',
                            ctx.layout.tools / 'oot_prepare_textures.py', 'textures-no' if getattr(opt, 'no_textures', False) else '',
                            str(opt.dlls or ''), *([built] if built != compile_base_key(ctx) else []))
 
@@ -696,6 +794,13 @@ class Package(Step):
 
     def run(self, ctx):
         layout, rep, opt, build = ctx.layout, ctx.reporter, ctx.options, ctx.temp / 'build'
+        # The build's shader cache in the pack layout of this setup (a no-op when it already is: the preparation packs
+        # it, and a folder that skipped the preparation holds the pack of the release before).
+        if (build / 'shader-cache').is_dir():
+            rep.progress(self.id, 'pack', force=True)
+            code, log = run_tool(ctx, self.id, layout.tools / 'pack_shader_cache.py', [build / 'shader-cache'])
+            if code:
+                raise InstallError('oot.package_failed', code=code, log=str(log))
         rep.progress(self.id, 'copy', force=True)
         if opt.dlls:   # the player's own DLSS / FSR / frame generation libraries go in with the build's
             for name in OPTIONAL_DLLS:
@@ -789,7 +894,7 @@ def write_rebuild_command(ctx):
 
 
 def all_steps():
-    return [Check(), Extract(), Lift(), Compile(), Components(), Prepare(), Package()]
+    return [Check(), Extract(), Lift(), Compile(), Components(), Prompts(), Prepare(), Package()]
 
 
 class TimedReporter(Reporter):
@@ -826,6 +931,12 @@ def main(argv=None):
     ap.add_argument('--root', type=Path, help='release folder or checkout (default: the folder above installer/)')
     ap.add_argument('--temp', type=Path, help='temp folder (default: temp/ of the release, build/install-temp of a checkout)')
     ap.add_argument('--until', help='stop after this step (oot_check ... oot_package): for tests')
+    ap.add_argument('--all-shaders', action='store_true',
+                    help='prepare every variant of every shader (about 35 minutes more); without it a first install '
+                         'prepares the variants play met, and a folder that prepared all keeps all')
+    ap.add_argument('--shaders-later', action='store_true',
+                    help='the launcher foreground run: prepare the variants play met only when the shaders have to be '
+                         'prepared again; the launcher prepares the rest in the background (--all-shaders)')
     ap.add_argument('--no-textures', action='store_true',
                     help='do not prepare the textures for play (about 12 GiB on the disk; the game then prepares each one '
                          'at its first use)')
@@ -835,10 +946,12 @@ def main(argv=None):
             signal.signal(getattr(signal, name), cancel)
     dest = args.dest.resolve()
     layout = find_layout(args.root, args.toolchain)
-    base = (args.temp or layout.temp).resolve()
-    temp = base / f'oot-{hashlib.sha256(str(dest).lower().encode()).hexdigest()[:8]}'
+    temp, moved = work_folder(layout.temp, args.temp, dest)
     log = temp / 'logs' / time.strftime('install-%Y%m%d-%H%M%S.log')
     rep = TimedReporter(log_path=log)
+    if moved:
+        rep.log(f'The disk of the setup has {moved} GiB free and the working files need about {NEED_TEMP >> 30}: they go '
+                f'into the game folder, {temp}')
     t0 = time.monotonic()
     try:
         state = statefile.load(dest)
@@ -856,6 +969,11 @@ def main(argv=None):
     # one it has (its caches are there). The window counts down from these; each finished step's real time is kept
     # for the next run on this machine.
     rep.cases = {s.id: 'rerun' if state and (s.always or s.id in state['steps']) else 'first' for s in steps}
+    # every variant of the shaders is an all-or-nothing amount of work whatever the folder had before (a folder that
+    # prepared the variants play met has the record, and still needs the rest): its own estimate, no recorded timing
+    prepared = (state or {}).get('steps', {}).get('oot_prepare')
+    if shader_mode(ctx) == 'all' and not (prepared and prepared.get('shaders', 'all') == 'all'):
+        rep.cases['oot_prepare'] = 'all'
     rep.emit('eta', **eta.estimates(rep.cases))
     result = run_steps(steps, ctx)
     rep.emit('end', result=result, seconds=round(time.monotonic() - t0, 1))

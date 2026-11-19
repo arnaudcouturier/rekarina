@@ -815,18 +815,55 @@ static int video_due(void) {
     return 1;
 }
 
-// The frame in a slot's buffer (cap_w x cap_h pixels of the swapchain's format) to ffmpeg, at half its size.
+// REKARINA_VIDEO_FULL=1: every pixel instead of every second one of every second row, at REKARINA_VIDEO_BITRATE
+// (80M then, 14M otherwise). A full 2560x1440 frame is 14.7 MB, and ffmpeg takes it from the pipe only as fast as it
+// encodes, so the presenting thread does not write it: it copies the frame into one of VF_RING buffers and a writer
+// thread sends them on in order. A frame that finds the ring full is left out and counted.
+#define VF_RING 4
+static struct {
+    int on;                       // -1 not looked at
+    uint8_t *buf[VF_RING];
+    volatile uint32_t head, tail; // presenting thread writes head, the writer thread tail
+    unsigned long long dropped;
+} g_vfull = {.on = -1};
+
+static void video_writer(void *arg) {
+    (void)arg;
+    size_t n = (size_t)g_video.w * g_video.h;
+    for (;;) {
+        uint32_t t = __atomic_load_n(&g_vfull.tail, __ATOMIC_RELAXED);
+        if (t == __atomic_load_n(&g_vfull.head, __ATOMIC_ACQUIRE)) {
+            if (g_video.state == 2) return;
+            plat_sleep_ns(500000);
+            continue;
+        }
+        if (fwrite(g_vfull.buf[t % VF_RING], 4, n, g_video.pipe) != n) {
+            rt_log("gfx: video: ffmpeg stopped taking frames after %llu", g_video.frames);
+            g_video.state = 2;
+            return;
+        }
+        g_video.frames++;
+        __atomic_store_n(&g_vfull.tail, t + 1, __ATOMIC_RELEASE);
+    }
+}
+
+// The frame in a slot's buffer (cap_w x cap_h pixels of the swapchain's format) to ffmpeg, at half its size (or whole:
+// REKARINA_VIDEO_FULL).
 static void video_frame(const uint8_t *frame, int cap_w, int cap_h) {
-    int w = (cap_w / 2) & ~1, h = (cap_h / 2) & ~1;
+    if (g_vfull.on < 0) { const char *e = cfg_get("REKARINA_VIDEO_FULL"); g_vfull.on = e && *e == '1'; }
+    int full = g_vfull.on;
+    int w = full ? cap_w & ~1 : (cap_w / 2) & ~1, h = full ? cap_h & ~1 : (cap_h / 2) & ~1;
     if (w < 2 || h < 2 || g_sc_hdr) { g_video.state = 2; return; }
     if (!g_video.pipe) {
         int bgra = g_sc_fmt == VK_FORMAT_B8G8R8A8_UNORM || g_sc_fmt == VK_FORMAT_B8G8R8A8_SRGB;
         const char *enc = cfg_get("REKARINA_VIDEO_ENCODER");
         char cmd[1400];
         snprintf(cmd, sizeof cmd,
-                 "ffmpeg -hide_banner -loglevel error -y -f rawvideo -pix_fmt %s -s %dx%d -r %.3f -i - -c:v %s -b:v 14M "
+                 "ffmpeg -hide_banner -loglevel error -y -f rawvideo -pix_fmt %s -s %dx%d -r %.3f -i - -c:v %s -b:v %s "
                  "-pix_fmt yuv420p \"%s\"",
                  bgra ? "bgra" : "rgba", w, h, 1e9 / (double)g_video.step, enc && *enc ? enc : "h264_nvenc -preset p5",
+                 cfg_get("REKARINA_VIDEO_BITRATE") && *cfg_get("REKARINA_VIDEO_BITRATE") ? cfg_get("REKARINA_VIDEO_BITRATE")
+                                                                                         : full ? "80M" : "14M",
                  cfg_get("REKARINA_VIDEO"));
 #ifdef _WIN32
         g_video.pipe = _popen(cmd, "wb");
@@ -841,8 +878,28 @@ static void video_frame(const uint8_t *frame, int cap_w, int cap_h) {
             return;
         }
         rt_log("gfx: video: recording %dx%d at %.0f fps to %s", w, h, 1e9 / (double)g_video.step, cfg_get("REKARINA_VIDEO"));
+        if (full) {
+            for (int i = 0; i < VF_RING; i++) g_vfull.buf[i] = malloc((size_t)w * h * 4);
+            if (!g_vfull.buf[VF_RING - 1] || !plat_thread_spawn(video_writer, NULL, "video writer", 0)) {
+                rt_log("gfx: video: no memory or thread for whole frames");
+                g_video.state = 2;
+                return;
+            }
+        }
     }
     if (w != g_video.w || h != g_video.h) return;   // the window changed size: those frames are left out
+    if (full) {
+        uint32_t hd = __atomic_load_n(&g_vfull.head, __ATOMIC_RELAXED);
+        if (hd - __atomic_load_n(&g_vfull.tail, __ATOMIC_ACQUIRE) >= VF_RING) {
+            if (!(g_vfull.dropped++ & 63)) rt_log("gfx: video: %llu frames left out (the encoder is behind)", g_vfull.dropped);
+            return;
+        }
+        uint8_t *d = g_vfull.buf[hd % VF_RING];
+        if (w == cap_w) memcpy(d, frame, (size_t)w * h * 4);
+        else for (int y = 0; y < h; y++) memcpy(d + (size_t)y * w * 4, frame + (size_t)y * cap_w * 4, (size_t)w * 4);
+        __atomic_store_n(&g_vfull.head, hd + 1, __ATOMIC_RELEASE);
+        return;
+    }
     const uint32_t *src = (const uint32_t *)frame;
     uint32_t *dst = (uint32_t *)g_video.px;
     for (int y = 0; y < h; y++) {

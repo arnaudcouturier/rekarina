@@ -150,8 +150,11 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_TAA] = "Upscaler",
     [UI_MENU_TAA_DESC] = "Which upscaler the DLSS / DLAA row uses: NVIDIA DLSS (RTX GPUs), AMD FSR (any GPU, temporal) or AMD FSR 1 (any GPU, spatial: the lightest, for older cards and handhelds). After a restart.",
     [UI_MENU_FRAMEGEN] = "Frame generation",
-    [UI_MENU_FRAMEGEN_DESC] = "One generated frame between every two the game draws, with the HUD kept out of it: AMD FSR on any GPU, NVIDIA DLSS on RTX 40 and 50 series. After a restart.",
-    [UI_MENU_FRAMEGEN_NEEDS] = "Needs DLSS / DLAA on: it uses its motion vectors.",
+    [UI_MENU_FRAMEGEN_DESC] = "One generated frame between every two the game draws, with the HUD kept out of it: AMD FSR on any GPU, NVIDIA DLSS on RTX 40 and 50 series. The row lists the kinds this card runs. It turns DLSS / DLAA on, whose motion vectors it uses. After a restart.",
+    [UI_MENU_FRAMEGEN_NEEDS] = "Needs DLSS / DLAA on",
+    [UI_MENU_FRAMEGEN_OFF] = "Not running: %s",
+    [UI_MENU_FRAMEGEN_INSTEAD] = "AMD FSR in place of DLSS",
+    [UI_MENU_DLAA_FOR_FG] = "On for frame generation",
     [UI_MENU_DLAA] = "NVIDIA DLSS / DLAA",
     [UI_MENU_DLAA_DESC] = "NVIDIA DLSS for the 3D scene (NVIDIA RTX GPUs; " DLSS_FILE " next to " EXE_FILE "): smoother "
                           "edges and less shimmer. The HUD is not touched. The mode below sets the resolution it works "
@@ -311,6 +314,14 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_WALK_SCALE] = "Walk scale",
     [UI_MENU_WALK_SCALE_DESC] = "The tilt the keyboard's sticks get while the walk key is held. Half is a walk, the "
                                 "full tilt a run.",
+    [UI_MENU_STICK_DASH] = "Dash on the left stick's press",
+    [UI_MENU_STICK_DASH_DESC] = "The game dashes while its button is held and jumps when it is only pressed. On: a press "
+                                "of the left stick while it is tilted dashes until the stick comes back to the middle, "
+                                "without a jump, and the dash key does the same on the keyboard while held. The game's "
+                                "button works as before, also during such a dash.",
+    [UI_MENU_DASH_KEY] = "Dash key",
+    [UI_MENU_DASH_KEY_DESC] = "Held while a direction is held, the hero dashes without a jump. Works while dash on the "
+                              "left stick's press is on.",
     [UI_MENU_STICK_SENS] = "Stick camera speed",
     [UI_MENU_STICK_SENS_DESC] = "Multiplies the game's own right-stick camera speed, top speed included, at each of the "
                                 "game's five camera sensitivities. The mouse keeps its own setting.",
@@ -578,6 +589,8 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_REPORT_CRASHED] = "Rekarina stopped with an error.\n\nWhat happened is written at the end of the log:\n%s\n\nTo report it, start the game again and choose Esc > Advanced > Make a problem report (or Problem report in the launcher): the logs, the settings and the system details go into one zip to attach. Nothing is sent anywhere.",
     [UI_MENU_KBM_OFF] = "Keyboard and mouse off with a controller",
     [UI_MENU_KBM_OFF_DESC] = "While a controller is connected the game takes nothing from the keyboard and the mouse (a key leaned on, a mouse bumped). This menu, F11 and the screenshot key still work.",
+    [UI_MENU_MENU_GUIDE] = "Guide button opens this menu",
+    [UI_MENU_MENU_GUIDE_DESC] = "The controller's Guide button (the Xbox button, the PS button) opens and closes this menu, as Minus and Plus together do. On Windows the Xbox Game Bar may take the Guide button before the game sees it: turn the Game Bar's controller shortcut off in Windows Settings, or use Minus and Plus.",
     [UI_MENU_SHOT_KEY] = "Screenshot key",
     [UI_MENU_SHOT_KEY_DESC] = "Saves the picture as a PNG into the screenshots folder beside the game. Steam and the graphics driver's overlays have their own keys.",
     [UI_MENU_SHOT_OVERLAY] = "Screenshots with the menu and overlays",
@@ -708,8 +721,11 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_MENU_TAA] = "Апскейлер",
     [UI_MENU_TAA_DESC] = "Какой апскейлер использует строка DLSS / DLAA: NVIDIA DLSS (видеокарты RTX), AMD FSR (любые видеокарты, временной) или AMD FSR 1 (любые видеокарты, пространственный: самый лёгкий, для старых видеокарт и портативных ПК). После перезапуска.",
     [UI_MENU_FRAMEGEN] = "Генерация кадров",
-    [UI_MENU_FRAMEGEN_DESC] = "Один созданный кадр между каждыми двумя кадрами игры, интерфейс в него не попадает: AMD FSR на любых видеокартах, NVIDIA DLSS на RTX 40 и 50. После перезапуска.",
-    [UI_MENU_FRAMEGEN_NEEDS] = "Нужно включить DLSS / DLAA: используются его векторы движения.",
+    [UI_MENU_FRAMEGEN_DESC] = "Один созданный кадр между каждыми двумя кадрами игры, интерфейс в него не попадает: AMD FSR на любых видеокартах, NVIDIA DLSS на RTX 40 и 50. В списке только то, что работает на этой видеокарте. Включает DLSS / DLAA: используются его векторы движения. После перезапуска.",
+    [UI_MENU_FRAMEGEN_NEEDS] = "Нужен DLSS / DLAA",
+    [UI_MENU_FRAMEGEN_OFF] = "Не работает: %s",
+    [UI_MENU_FRAMEGEN_INSTEAD] = "AMD FSR вместо DLSS",
+    [UI_MENU_DLAA_FOR_FG] = "Включён для генерации кадров",
     [UI_MENU_DLAA] = "NVIDIA DLSS / DLAA",
     [UI_MENU_DLAA_DESC] = "NVIDIA DLSS для 3D-сцены (видеокарты NVIDIA RTX; " DLSS_FILE " рядом с " EXE_FILE "): ровнее "
                           "края и меньше мерцания. Интерфейс не затрагивается. Режим ниже задаёт разрешение, с которым он "
@@ -866,6 +882,14 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_MENU_WALK_SCALE] = "Сила шага",
     [UI_MENU_WALK_SCALE_DESC] = "Отклонение стиков клавиатуры при удержании клавиши шага. Половина — шаг, полное "
                                 "отклонение — бег.",
+    [UI_MENU_STICK_DASH] = "Рывок нажатием левого стика",
+    [UI_MENU_STICK_DASH_DESC] = "В игре рывок идёт, пока её кнопка удерживается, а короткое нажатие — прыжок. Вкл.: "
+                                "нажатие левого стика при наклоне даёт рывок, пока стик не вернётся в центр, без "
+                                "прыжка; клавиша рывка делает то же на клавиатуре, пока удерживается. Кнопка игры "
+                                "работает как раньше, и во время такого рывка тоже.",
+    [UI_MENU_DASH_KEY] = "Клавиша рывка",
+    [UI_MENU_DASH_KEY_DESC] = "Удерживайте вместе с направлением: персонаж делает рывок без прыжка. Работает, когда "
+                              "включён рывок нажатием левого стика.",
     [UI_MENU_STICK_SENS] = "Скорость камеры (стик)",
     [UI_MENU_STICK_SENS_DESC] = "Умножает скорость поворота камеры правым стиком, включая наибольшую, при каждой из пяти "
                                 "чувствительностей камеры в игре. На мышь не влияет.",
@@ -1407,8 +1431,11 @@ static const char *const text_pt_br[UI_TEXT_COUNT] = {
     [UI_MENU_TAA] = "Upscaler",
     [UI_MENU_TAA_DESC] = "Qual upscaler a linha DLSS / DLAA usa: NVIDIA DLSS (placas RTX), AMD FSR (qualquer placa, temporal) ou AMD FSR 1 (qualquer placa, espacial: o mais leve, para placas antigas e portáteis). Após reiniciar.",
     [UI_MENU_FRAMEGEN] = "Geração de quadros",
-    [UI_MENU_FRAMEGEN_DESC] = "Um quadro gerado entre cada dois que o jogo desenha, com o HUD fora dele: AMD FSR em qualquer placa, NVIDIA DLSS nas séries RTX 40 e 50. Após reiniciar.",
-    [UI_MENU_FRAMEGEN_NEEDS] = "Precisa do DLSS / DLAA ligado: usa os vetores de movimento dele.",
+    [UI_MENU_FRAMEGEN_DESC] = "Um quadro gerado entre cada dois que o jogo desenha, com o HUD fora dele: AMD FSR em qualquer placa, NVIDIA DLSS nas séries RTX 40 e 50. A lista traz só o que esta placa roda. Liga o DLSS / DLAA: usa os vetores de movimento dele. Após reiniciar.",
+    [UI_MENU_FRAMEGEN_NEEDS] = "Precisa do DLSS / DLAA",
+    [UI_MENU_FRAMEGEN_OFF] = "Não está rodando: %s",
+    [UI_MENU_FRAMEGEN_INSTEAD] = "AMD FSR no lugar do DLSS",
+    [UI_MENU_DLAA_FOR_FG] = "Ligado para a geração de quadros",
     [UI_MENU_AUDIO_CHANNELS] = "Alto-falantes",
     [UI_MENU_AUDIO_CHANNELS_DESC] = "Saída estéreo ou surround 5.1. Automático escolhe 5.1 quando a configuração de alto-falantes "
                                     "do Windows tem seis canais ou mais. Vale após reiniciar.",
@@ -1620,6 +1647,14 @@ static const char *const text_pt_br[UI_TEXT_COUNT] = {
     [UI_MENU_WALK_SCALE] = "Intensidade do andar",
     [UI_MENU_WALK_SCALE_DESC] = "A inclinação dos analógicos do teclado enquanto a tecla de andar está segura. Metade "
                                 "é andar, a inclinação total é correr.",
+    [UI_MENU_STICK_DASH] = "Disparada ao apertar o analógico esquerdo",
+    [UI_MENU_STICK_DASH_DESC] = "O jogo dispara enquanto o botão dele é segurado e pula quando ele só é apertado. "
+                                "Ligado: apertar o analógico esquerdo inclinado dispara até ele voltar ao centro, sem "
+                                "pular, e a tecla de disparada faz o mesmo no teclado enquanto segurada. O botão do "
+                                "jogo funciona como antes, também durante essa disparada.",
+    [UI_MENU_DASH_KEY] = "Tecla de disparada",
+    [UI_MENU_DASH_KEY_DESC] = "Segurada junto com uma direção, o herói dispara sem pular. Funciona com a disparada ao "
+                              "apertar o analógico esquerdo ligada.",
     [UI_MENU_OV_SCALE_DOWN] = "bilinear (o FSR só amplia)",
     [UI_MENU_HDR_HUE] = "Correção de matiz dos realces",
     [UI_MENU_HDR_HUE_DESC] = "Cores fortes como fogo e faíscas vão para o branco como na imagem SDR do próprio jogo e "
@@ -2090,8 +2125,11 @@ static const char *const text_zh_hans[UI_TEXT_COUNT] = {
     [UI_MENU_TAA] = "超分辨率",
     [UI_MENU_TAA_DESC] = "DLSS / DLAA 一项使用哪种超分辨率：NVIDIA DLSS（RTX 显卡）、AMD FSR（任意显卡，时域）或 AMD FSR 1（任意显卡，空间：最轻量，适合旧显卡和掌机）。重启后生效。",
     [UI_MENU_FRAMEGEN] = "帧生成",
-    [UI_MENU_FRAMEGEN_DESC] = "在游戏绘制的每两帧之间插入一帧生成帧，HUD 不参与生成：AMD FSR 支持任意显卡，NVIDIA DLSS 支持 RTX 40 和 50 系列。重启后生效。",
-    [UI_MENU_FRAMEGEN_NEEDS] = "需要开启 DLSS / DLAA：帧生成使用它的运动矢量。",
+    [UI_MENU_FRAMEGEN_DESC] = "在游戏绘制的每两帧之间插入一帧生成帧，HUD 不参与生成：AMD FSR 支持任意显卡，NVIDIA DLSS 支持 RTX 40 和 50 系列。列表中只有此显卡可运行的选项。会同时开启 DLSS / DLAA：帧生成使用它的运动矢量。重启后生效。",
+    [UI_MENU_FRAMEGEN_NEEDS] = "需要开启 DLSS / DLAA",
+    [UI_MENU_FRAMEGEN_OFF] = "未运行：%s",
+    [UI_MENU_FRAMEGEN_INSTEAD] = "以 AMD FSR 代替 DLSS",
+    [UI_MENU_DLAA_FOR_FG] = "为帧生成而开启",
     [UI_MENU_AUDIO_CHANNELS] = "扬声器",
     [UI_MENU_AUDIO_CHANNELS_DESC] = "立体声或 5.1 环绕声输出。自动：Windows 扬声器配置为六声道或更多时选择 5.1。重启后生效。",
     [UI_MENU_CHANNELS_AUTO] = "自动", [UI_MENU_CHANNELS_STEREO] = "立体声", [UI_MENU_CHANNELS_51] = "5.1 环绕声",
@@ -2313,6 +2351,11 @@ static const char *const text_zh_hans[UI_TEXT_COUNT] = {
     [UI_MENU_WALK_KEY_TAKEN] = "同时为 %s",
     [UI_MENU_WALK_SCALE] = "步行幅度",
     [UI_MENU_WALK_SCALE_DESC] = "按住步行键时键盘摇杆的推动幅度。一半为走路，推满为奔跑。",
+    [UI_MENU_STICK_DASH] = "按下左摇杆冲刺",
+    [UI_MENU_STICK_DASH_DESC] = "游戏中按住其按键为冲刺，只按一下为跳跃。开启后：推动左摇杆时按下它即冲刺，直到摇杆回到中间，"
+                                "不会先跳跃；键盘上按住冲刺键效果相同。游戏原本的按键照常使用，冲刺途中也一样。",
+    [UI_MENU_DASH_KEY] = "冲刺键",
+    [UI_MENU_DASH_KEY_DESC] = "与方向一同按住时，主角冲刺而不跳跃。需开启“按下左摇杆冲刺”。",
     [UI_MENU_OV_SCALE_DOWN] = "双线性（FSR 只能放大）",
     [UI_MENU_HDR_HUE] = "高光色调校正",
     [UI_MENU_HDR_HUE_DESC] = "火焰、火花等明亮色彩像游戏自身的 SDR 画面一样趋向白色，与它们发出的光一致；0 保持完全饱和。",

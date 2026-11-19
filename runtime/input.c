@@ -56,6 +56,7 @@ static volatile int32_t motion_on;   // input_motion_start ran: the gamepad thre
 static PlatMutex snap_lock = PLAT_MUTEX_INIT;
 static struct {
     int on, rumble;                       // a gamepad is connected, and it has rumble motors
+    int guide;                            // the Guide button (Xbox, PS button) is down: it opens the menu, input_menu_guide
     uint8_t pd[PAD_COUNT];
     int16_t ax[SDL_GAMEPAD_AXIS_COUNT];
     int want_rumble, want_triggers;       // a rumble waits for the gamepad thread
@@ -111,6 +112,7 @@ typedef struct { uint64_t at, hold; int bit, stick, timed, rel; int32_t x, y; in
 static const struct { const char *name; int bit; } script_buttons[] = {
     {"A", B_A}, {"B", B_B}, {"X", B_X}, {"Y", B_Y}, {"LCLICK", B_STICK_L}, {"RCLICK", B_STICK_R}, {"L", B_L}, {"R", B_R},
     {"ZL", B_ZL}, {"ZR", B_ZR}, {"PLUS", B_PLUS}, {"MINUS", B_MINUS}, {"LEFT", B_LEFT}, {"UP", B_UP}, {"RIGHT", B_RIGHT}, {"DOWN", B_DOWN},
+    {"DASH", 62},   // the dash key (dash_apply, SCRIPT_DASH_BIT); after the 16 the recorder writes
 };
 static ScriptEv *script_ev;
 static int script_n, script_state;   // 0 not loaded, 1 loaded
@@ -426,6 +428,70 @@ static void walk_get(void) {
     }
 }
 
+// ---- dash on an input of its own (REKARINA_STICK_DASH, off by default; REKARINA_DASH_KEY; both live)
+// OoT has one button for two moves: held while the hero moves it dashes, pressed and let go it jumps (the reports of
+// 2026-11-19: "I have to hold the button to dash and press the same button to jump"). With the option on, a press of
+// the gamepad's left stick while the stick is tilted, or the dash key held while a stick is tilted, holds that button
+// for the game, so the hero dashes without a jump first: L3 latches until the stick comes back near the middle, the key
+// dashes while held. The press of the stick that starts a dash does not reach the game as its own button. A hold ends
+// no sooner than DASH_MIN_NS after it began, so a quick tap of the key cannot become the game's tap (a jump). The
+// button itself keeps working as before: a press or a release of it while a dash holds it lets go of it for DASH_GAP_NS
+// first, so the game sees that press and release of its own (a jump out of the dash, as with the button alone).
+// A script's LCLICK counts as the stick's press and its DASH as the key (input scripts drive no physical button).
+#define DASH_BUTTON B_B
+#define DASH_TILT_ON 16384           // a press of the stick counts while the stick is past half way
+#define DASH_TILT_OFF 8192           // a latched dash ends when the stick comes back under a quarter
+#define DASH_MIN_NS 400000000ull
+#define DASH_GAP_NS 34000000ull      // two frames at 60 fps: the game reads its pad once a frame
+#define SCRIPT_DASH_BIT 62           // a script's DASH, carried in the buttons word until dash_apply takes it out
+static int dash_opt, dash_key = KEY_NONE;
+static unsigned dash_seen = ~0u;
+
+static void dash_get(void) {
+    unsigned ver = cfg_version();
+    if (ver == dash_seen) return;
+    dash_seen = ver;
+    int on = cfg_bool("REKARINA_STICK_DASH") != 0, key = KEY_NONE;
+    const char *name = cfg_value("REKARINA_DASH_KEY");   // "none" turns the key off
+    if (*name && !name_matches(name, "none")) {
+        for (int k = KEY_A; k < KEY_COUNT && key == KEY_NONE; k++)
+            if (input_key_name(k) && name_matches(name, input_key_name(k))) key = k;
+        if (key == KEY_NONE) rt_log("input: dash_key: unknown key '%s'", name);
+    }
+    if (on != dash_opt || key != dash_key)
+        rt_log("input: dash on its own input %s (the left stick's press while it is tilted, key %s)", on ? "on" : "off",
+               key != KEY_NONE ? input_key_name(key) : "none");
+    dash_opt = on, dash_key = key;
+}
+
+// Under lock, after every source of input is merged: the dash's hold of DASH_BUTTON in *b. l3: the gamepad's left stick
+// pressed (or a script's LCLICK); key: the dash key (or a script's DASH) held; sl: the left stick as the game gets it.
+static void dash_apply(uint64_t *b, const int32_t sl[2], int l3, int key) {
+    static int latched, l3_was, real_was, holding, told;
+    static uint64_t since, gap_until;
+    if (!dash_opt) {
+        latched = holding = 0;
+        return;
+    }
+    uint64_t now = plat_now_ns();
+    int32_t m = abs(sl[0]) > abs(sl[1]) ? abs(sl[0]) : abs(sl[1]);
+    if (l3 && !l3_was && m >= DASH_TILT_ON) latched = 1;   // a press while tilted: a dash until the stick comes back
+    l3_was = l3;
+    if (m < DASH_TILT_OFF) latched = 0;
+    if (latched && l3) *b &= ~(1ull << B_STICK_L);   // the press that dashes is not the game's stick press
+    int want = latched || (key && m >= DASH_TILT_OFF);
+    int real = (int)(*b >> DASH_BUTTON & 1);
+    if (want && !holding) {
+        holding = 1, since = now, gap_until = 0;
+        if (told++ < 8) rt_log("input: dash: %s holds the game's dash button", latched ? "the left stick's press" : "the dash key");
+    } else if (!want && holding && now - since >= DASH_MIN_NS) {
+        holding = 0;
+    }
+    if (holding && real != real_was) gap_until = now + DASH_GAP_NS;   // the button's own press or release, seen alone
+    real_was = real;
+    if (holding) *b = now < gap_until ? *b & ~(1ull << DASH_BUTTON) : *b | 1ull << DASH_BUTTON;
+}
+
 static int mouse_selector;
 int input_direct_mouse_selector_active(void) { return __atomic_load_n(&mouse_selector, __ATOMIC_RELAXED) != 0; }
 
@@ -683,6 +749,7 @@ static int pad_layout_get(void) {
     if (pad_layout != was)
         rt_log("input: gamepad layout %s (pad_layout = %s)", pad_layout == PAD_LAYOUT_XBOX ? "xbox" : "nintendo", set);
     plat_xchg32(&pad_layout_shown, pad_layout);
+    if (pad) romfs_hint_pad_layout(pad_layout);   // the action hint's places follow it at the next start
     return pad_layout;
 }
 
@@ -820,11 +887,20 @@ static int pad_physical(uint8_t pd[PAD_COUNT], int16_t *ax) {
 
 // Under lock, state 1: the open gamepad's buttons (Switch bits after REKARINA_PAD_LAYOUT and the REKARINA_BIND_* lines) and
 // sticks; 0 without a connected gamepad.
-static int pad_read(uint64_t *b, int32_t sl[2], int32_t sr[2]) {
+// The Guide button as the gamepad thread last read it. It is no Switch button and no binding: only the menu uses it.
+static int pad_guide(void) {
+    plat_mutex_lock(&snap_lock);
+    int g = snap.on && snap.guide;
+    plat_mutex_unlock(&snap_lock);
+    return g;
+}
+
+static int pad_read(uint64_t *b, int32_t sl[2], int32_t sr[2], int *l3) {
     uint8_t pd[PAD_COUNT] = {0};
     int16_t ax[SDL_GAMEPAD_AXIS_COUNT];
     if (!pad_physical(pd, ax)) return 0;
     *b |= input_map_pad_buttons(pd, pad_layout_get());
+    *l3 = pd[PAD_LSTICK] != 0;   // the stick's own press, whatever it is bound to (dash_apply)
     stick(ax, SDL_GAMEPAD_AXIS_LEFTX, SDL_GAMEPAD_AXIS_LEFTY, stick_dead_get(0), sl);
     stick(ax, SDL_GAMEPAD_AXIS_RIGHTX, SDL_GAMEPAD_AXIS_RIGHTY, stick_dead_get(1), sr);
     return 1;
@@ -937,9 +1013,11 @@ static void poll_merged(uint64_t *buttons, int32_t *lx, int32_t *ly, int32_t *rx
     int32_t sl[2] = {0, 0}, sr[2] = {0, 0};
     plat_mutex_lock(&lock);
     if (!state) start();
+    int l3 = 0, dash_down = 0;
+    dash_get();
     if (state > 0) {
         binds_refresh();
-        int pad_on = state == 1 && pad_read(&b, sl, sr);
+        int pad_on = state == 1 && pad_read(&b, sl, sr, &l3);
         int pad_used = b || abs(sl[0]) > PAD_USED || abs(sl[1]) > PAD_USED || abs(sr[0]) > PAD_USED ||
                        abs(sr[1]) > PAD_USED, kbm_used = 0;
         int pad_press = pad_pressed(b, sl, sr), key_press = 0;
@@ -965,6 +1043,7 @@ static void poll_merged(uint64_t *buttons, int32_t *lx, int32_t *ly, int32_t *rx
             // (keys typed into a text entry are text: the Steam Deck's on-screen keyboard keeps the pad's prompts)
             key_press = keys_pressed(down, ikb_escape(), !was_front) && g_block != 1;
             b |= input_map_buttons(down);
+            dash_down = dash_key != KEY_NONE && down[dash_key];
             int32_t k[2];
             walk_get();
             int walk = walk_key != KEY_NONE && down[walk_key];
@@ -991,12 +1070,22 @@ static void poll_merged(uint64_t *buttons, int32_t *lx, int32_t *ly, int32_t *rx
         was_front = front;
         prompt_track(pad_press ? DEV_PAD : key_press ? DEV_KBM : DEV_NONE);
     }
+    uint64_t before_script = b;
     script_apply(&b, sl, sr);
     rec_apply(b, sl, sr);
+    l3 |= (int)((b & ~before_script) >> B_STICK_L & 1);   // a script's LCLICK is the stick's press
+    dash_down |= (int)(b >> SCRIPT_DASH_BIT & 1);
+    b &= ~(1ull << SCRIPT_DASH_BIT);
+    dash_apply(&b, sl, l3, dash_down);
     // Minus and Plus held together (gamepad or keys) open or close the menu and never reach the game
     static int combo_held;
     int32_t st[4] = {sl[0], sl[1], sr[0], sr[1]};
     int toggle = input_menu_gate(&combo_held, menu_is_open(), &b, st);
+    // The Guide button (REKARINA_MENU_GUIDE, on by default) opens and closes the menu on the press
+    static int guide_was;
+    int guide = cfg_bool("REKARINA_MENU_GUIDE") && state == 1 && pad_guide();
+    if (guide && !guide_was) toggle = 1;
+    guide_was = guide;
     static int overlay_held;   // L3+R3 step the performance overlay (F10)
     int overlay = input_overlay_gate(&overlay_held, &b);
     sl[0] = st[0], sl[1] = st[1], sr[0] = st[2], sr[1] = st[3];
@@ -1076,7 +1165,8 @@ int input_pad_read(uint64_t *buttons, int32_t *lx, int32_t *ly) {
     plat_mutex_lock(&lock);
     if (!state) start();
     if (state > 0) binds_refresh();
-    int ok = state == 1 && pad_read(&b, sl, sr);
+    int l3;
+    int ok = state == 1 && pad_read(&b, sl, sr, &l3);
     plat_mutex_unlock(&lock);
     *buttons = b;
     *lx = sl[0];
@@ -1349,6 +1439,7 @@ static void pad_main(void *arg) {
         }
         plat_mutex_lock(&snap_lock);
         snap.on = on, snap.rumble = on && pad_rumble;
+        snap.guide = on && SDL_GetGamepadButton(pad, SDL_GAMEPAD_BUTTON_GUIDE);
         memcpy(snap.pd, pd, sizeof pd), memcpy(snap.ax, ax, sizeof ax);
         int rumble = snap.want_rumble, triggers = snap.want_triggers, has_hd = snap.want_hd;
         uint16_t low = snap.low, high = snap.high;

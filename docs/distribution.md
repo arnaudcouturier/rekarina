@@ -16,7 +16,7 @@ A release is five files:
 
 | File | What it is |
 | --- | --- |
-| `Rekarina.exe` | The whole launcher in one file, the download for a new player. At its first start it unpacks the setup folder into `%LOCALAPPDATA%\Rekarina\setup\<version>` and starts the launcher there (`installer/launcher/rekarina_single.c`). |
+| `Rekarina.exe` | The whole launcher in one file, the download for a new player. At its first start it asks for a folder (Windows' own folder dialog; a folder that holds other things gets a `Rekarina` folder inside it) and keeps everything under it: the setup folder in `<folder>/setup/<version>`, the working files of a build in that folder's `temp`, and `<folder>/game` as the game folder the launcher offers. The choice is kept in `%LOCALAPPDATA%/Rekarina/home.txt`. An install made before the choice existed stays in `%LOCALAPPDATA%/Rekarina`; `--choose` asks again, `--home <folder>` names the folder without a question (`installer/launcher/rekarina_single.c` `find_home`). |
 | `Rekarina-Setup-<version>-windows.zip` | The setup folder as an archive: what the launcher downloads for an update, and a portable install for whoever prefers a folder. |
 | `SHA256SUMS` | The SHA-256 of the two files above, one line each. |
 | `SHA256SUMS.sig` | The project key's Ed25519 signature over the bytes of `SHA256SUMS`, as 128 hex digits. |

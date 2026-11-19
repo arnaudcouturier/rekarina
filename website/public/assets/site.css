@@ -48,6 +48,10 @@ section{scroll-margin-top:86px}
 .plate:active{transform:translateY(1px)}
 .play{min-height:76px;padding:8px 40px;font-size:25px;background:url(grain-plate.png),linear-gradient(var(--amber-a),var(--amber-b));border-color:var(--amber-edge)}
 .play:hover,.play:focus-visible{background:url(grain-plate.png),linear-gradient(var(--amber-hot-a),var(--amber-hot-b));border-color:var(--cream)}
+.play,.join{min-width:346px}
+.join{min-height:64px;padding:8px 34px;gap:14px;font-size:21px;background:url(grain-plate.png),linear-gradient(#636cd6,#464db0);border-color:#9aa0f2;box-shadow:0 0 16px 3px rgba(118,128,255,.32);transition:border-color .15s,transform .15s,box-shadow .2s}
+.join:hover,.join:focus-visible{background:url(grain-plate.png),linear-gradient(#7780ee,#555dcb);border-color:var(--cream);box-shadow:0 0 22px 6px rgba(140,150,255,.5)}
+.join svg{width:30px;height:30px;fill:currentColor;flex:none}
 /* the game's cursor: a white frame with a pale glow outside it, breathing as it does in the game's menus */
 .cursor,.plate:focus-visible{outline:2px solid #fff;outline-offset:3px;box-shadow:0 0 12px 7px rgba(190,215,255,.45)}
 .cursor{animation:glow 2.4s ease-in-out infinite}
@@ -174,6 +178,7 @@ footer a:hover,footer a:focus-visible{color:#fff;text-decoration:underline}
   .hero .in,.two{grid-template-columns:minmax(0,1fr);gap:28px}
   .lead{font-size:19px}
   .get{align-items:stretch}
+  .play,.join{min-width:0}
   .play{font-size:22px;padding:8px 16px}
   .more .plate{flex:1;padding:8px 12px}
   h2{font-size:30px;margin-bottom:16px}

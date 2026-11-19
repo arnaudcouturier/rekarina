@@ -1275,7 +1275,7 @@ launcher and say nothing about the game. The ones that do:
 |---|---|---|
 | 2006, the pick-up counter above 60 fps | `main+0xa67e50` moves the shown count by `(int)(step * max(distance / 50, 1))`; a step under 1 gives 0 and the counter never fades | Patch set `pickup` (`recomp/patches-oot-v111.txt`): the amount is rounded up. Read in the disassembly at `main+0xa68300`; not seen in a run, no rupee was picked up in one |
 | 2470, moving platforms above 60 fps | The physics solver's step count is `(int)(step * steps + 0.001)` in `main+0x38aeb80` and `main+0x38afc10`; truncated and changing from frame to frame above 60 fps | Patch set `solver`: rounded up while the step is under one frame, the game's own count otherwise. A minute of walking in the forest at 110 fps runs as before; the great tree's moving platform was not played |
-| 2470, sound lost after several loading zones above 60 fps | The sound manager's job (`main+0x415300`) hands the step to the sound engine each frame; its fades expect whole 60 Hz steps, voices are not released and the voice budget fills | Not done. It needs a hook that runs the job at 60 Hz and skips its other phases with it. Neither Hookshot's author nor a session here has reproduced the loss; a report of sound or music going silent after loads is this |
+| 2470, sound lost after several loading zones above 60 fps | The sound manager's job (`main+0x415300`) hands the step to the sound engine each frame; its fades expect whole 60 Hz steps, voices are not released and the voice budget fills | Patch set `soundjob` (2026-11-19, "Places that need a whole 60 Hz frame" below): the job runs at 60 Hz above 60 fps. The loss itself was not reproduced here |
 | 2409, water ripples above 60 fps | The water simulation's pass count is `param * (int)ratio` | Already here: patch set `ripple`, found independently on 2026-11-09 |
 | 1875, a movie cutscene's cues above 60 fps | The movie player counts game updates as the timeline's frames | Already here another way: the frame rate is held to 60 while a movie plays (`frame_rate.c` `movie_cap_hz`) |
 | 1612, game speed above 60 fps | The game steps a whole 1/60 s per frame | Already here: patch set `realtime` |
@@ -3638,3 +3638,140 @@ Before / after (first 60 s, frames over 25 / 50 / 100 ms; one run each unless sa
 The hold at the opening lasted 0.05-0.96 s warm and 0.80 s cold (1,068-1,121 textures made in it). What is left: frame 2
 (the boot's first 282 textures), two game-side frames of 85-108 ms around frames 310 and 420 (replay under 10 ms: the
 game's own boot work), a few 25-35 ms frames.
+
+## 2026-11-19: weak systems at 1920x1080 (fewer processors, less video memory, a weak GPU)
+
+Measured on the development PC (Ryzen 7 9700X, RTX 5070 12 GB, 62 GiB of memory) made smaller by settings: the picture
+at 1920x1080 (`game_res = 1080`), base mode, three places (a town square walked into, the forest village, the open
+field), one run of 90-95 s per row unless said. A row is: frame rate, 1 % low, frames over 16.7 / 25 / 50 ms; all
+from the shown frames (`REKARINA_PACELOG`).
+
+**What bounds the frame at 1080p on this card.** The village and the field: 112 and 105 fps, with the GPU busy 8.0 and
+8.8 ms of an 8.7 and 9.6 ms frame: the card and the game's own cycle meet there. The square: 84-90 fps, the game's
+cycle (11.6 ms), the GPU busy two thirds of it. So a card half as fast is the limit at all three places at about 55
+fps, and the picture's height changes little (6.6 ms of the GPU's time do not depend on it, `2026-11-14`).
+
+**Fewer processors** (`REKARINA_AFFINITY=<mask>`, `REKARINA_TRACE=sched`, two stream threads as such a processor gets):
+
+| processors | the square | the field |
+|---|---|---|
+| 16 | 83.5 fps, 52.0, 27 / 3 / 0 | 105.1 fps, 79.3, 8 / 2 / 0 |
+| 4 cores with their second threads (0xFF) | 83.9, 55.6, 15 / 1 / 0 | 98.8, 70.4, 17 / 1 / 0 |
+| 6 cores without them (0x555) | 83.8, 46.8, 45 / 4 / 0; twice the jumps between frames | |
+| 4 cores without them (0x55), before | 64.2 and 61.6, 24.1 and 20.7, 327 / 22 / 1 and 364 / 33 / 5 | 70.6 and 71.0, 22.4 and 22.2, 553 / 107 / 10 and 514 / 123 / 15 |
+| the same, cores folded onto 4 slots | 62.5 and 56.3, 38.9 and 32.7, 422 / 15 / 0 and 620 / 48 / 0 | 72.7 and 73.1, 44.5 and 44.2, 556 / 31 / 1 and 551 / 29 / 2 |
+| the same, 3 slots | 58.5, 35.4, 568 / 41 / 0 | 73.6, 48.2, 495 / 5 / 0 |
+
+Eight logical processors lose nothing. With four the frame rate falls by a quarter and the 1 % low to 21-24 fps. A
+census of every thread's processor time by name over ten seconds there (the square): 333 % of one processor in all
+out of 400, the game's own threads 307 % of it (the presenting thread with the replay inside it 68 %, the main thread
+28 %, twelve workers 9-23 % each) and every host thread of ours together 26 %. Nothing of ours wastes a processor;
+fourteen runnable game threads share four, and the host's scheduler, which knows none of the game's priorities, makes
+a woken thread wait out another's time slice: the main thread and the workers waited up to 33-35 ms from their wake to
+running (7-11 ms with sixteen processors), the main thread being ready 37 % of the time and running 24 %.
+
+The cure in the tree: with fewer logical processors than the console has cores, the cores are folded onto as many
+slots (`kernel.c` `core_allowed` / `core_number`, docs/architecture.md). The waits become waits for a slot, in the
+order of the game's priorities and bounded at 5-8 ms; the 1 % low doubles in the field and rises by half at the square
+and the frames over 50 ms go, at an equal mean in the field and 2-10 % less at the square. Four processors still do
+not hold 60 fps at these places (400-600 frames in 60 s over 16.7 ms either way): the game's threads need three
+processors' worth of this machine's cores. Five slots on six processors lost 6 % at the square for nothing, so six
+processors and more keep six cores. Not measured: five processors, two cores with four threads, a processor whose
+cores are slower than these.
+
+Tried and not kept: the three waits of the draw stretches (`vk_exec.c` `vk_exec_par_join`, `par_run`, `par_thread`)
+ending in a yield after their pauses. With six processors the square's jumps stayed (14.1 against 15.6 a second) and
+the replay was off its processor longer (1.17 against 0.69 ms a frame).
+
+**Less video memory.** A capped budget (`REKARINA_VRAM_BUDGET_MB`) shows the eviction's work and nothing of a short
+card's frame times, so the memory was taken for real: a test program holds part of the card in 256 MiB buffers and
+writes a few bytes of each four times a second, as desktop programs hold it; the driver's budget, the adapter counter
+and Windows' residency then all see a smaller card. Texture quality as `auto` picks on such a card.
+
+| the card as the game finds it | the field | the square, whole stay |
+|---|---|---|
+| 12 GB with 4.5 GB held by others, full textures | 106.1 fps, 83.8, 3 / 0 / 0 | 95.1, 57.0, 72 / 14 / 0; again 93.8, 57.4, 69 / 7 / 0 |
+| 8 GB (7.2 GB free), half | 106.0, 88.6, 2 / 0 / 0 | 95.3, 58.7, 60 / 3 / 0 |
+| 6 GB (5.1 GB free), quarter, budget capped to 4,165 MiB | 85.4, 63.3, 23 / 2 / 0 | |
+| 4 GB (3.1 GB free), quarter, budget capped to 2,475 MiB | 73.4, 54.0, 89 / 1 / 1 | |
+| nothing held (2 GB of desktop), full | 105.1, 79.3, 8 / 2 / 0 | 89.8, 52.1, 111 / 8 / 0; 93.6, 52.6, 100 / 17 / 0 |
+
+Held video memory alone costs no frames at these places. With 4.5 GB held the game stood 0.3-0.5 GB over its budget of
+5.6 GB, and the square's whole stay had 14, 7, 10 and 8 frames over 25 ms in four runs against 8, 17 and 12 with
+nothing held; the field had none either way. The square's long frames in which the replay thread is off its
+processor for 5-25 ms inside the binding of the dispatches or the draws, with nothing made, uploaded or evicted in
+the frame, look like what players report with a browser and an editor open, but they are as many with nothing held
+(6, 14 and 8 of a run's 16-20 long-frame reports against 13, 9, 11 and 8): the square's own, cause not found. Making
+every texture up to 32 MiB a piece of a block (`REKARINA_TEX_SUBALLOC_KB=32768`, so that evictions free nothing to
+the system) did not change their count. So a bad session beside other programs needs what a holder of memory does
+not do: those programs working, or a longer way through many maps.
+
+The small cards: with quarter textures the game does not get under about 4.5 GB at 1080p one map in, whatever its
+budget says. A 6 GB card holds that and runs even, 20 fps under a card with room, because a 244 MiB buffer pool's
+mirror "does not fit the card's room" and stays in system memory, so the GPU reads it from there and the frame waits
+for the GPU (present sync 5 ms where it is 0). A 4 GB card is 1.4 GB short of the floor; the run above says what this
+PC did with the game's memory then (the holder's may have been moved out instead), not what such a card does.
+
+Found on the way: the images made ahead (`REKARINA_TEX_MAKE_AHEAD`) are idle most of the time beside a desktop. The
+game fills whatever budget it gets, so with 2.5 GB of the card held by other programs "room is short" is its normal
+state a minute into a map, and the stream's workers make no image then: after the arrival at the square 435 first uses
+took an image made ahead and 5,015 did not. With half or quarter textures the feature is off altogether (`ma_make`
+returns at `texq_mode != 0`). Letting the workers go on under a cap of 64 MiB while memory is short changed nothing:
+nine in ten of those images are of textures no draw binds within 30 frames (the pool holds them back by design), the
+cap fills with them, and the textures a draw does want find it full (7 of 812 taken with 4.5 GB held). It would need
+a sign of which new textures a draw is about to bind.
+
+**A weak GPU: where the time goes.** Every pass and dispatch of two frames timed at 1080p in the field
+(`REKARINA_GPU_PASSTIME=<frame>` with `REKARINA_GPU_PASSTIME_ALL=1` and `REKARINA_REPLAY_THREADS=1`, so the stretches the
+chunk threads record are marked too; the marks overlap on the GPU, so these are shares, not a sum): the scene's
+full-size passes (colour and depth at the picture's size: 68 passes with 2,088 draws, the largest single one a
+one-draw full-screen pass of 0.80 ms) 5.34 ms a frame, 60 %; the game's compute dispatches 1.74 ms, 19 %; our own
+work 0.61 ms, 7 % (the mirror prologue 0.42, the merge dispatches 0.17); the shadow maps (1600x1600, depth only, 7.5
+passes a frame) 0.28 ms, 3 %. So lowering shadows buys nothing here: the cost is the scene. The game's own handheld
+mode (`operation_mode = handheld`) draws the scene at 75 % of the picture (1440x810 in 1920x1080) and nothing else
+changes with it: GPU busy 7.71 against 8.76 ms, 112 against 105 fps.
+
+**The integrated Radeon** (the Ryzen's own, two compute units, AMD's Windows driver 2026.04.17, memory mode import):
+the forest village is drawn right (foliage, grass, fog, characters, HUD) at 3.6 fps at 1920x1080 and 4.7 fps at
+1280x720, the GPU taking 267 and 204 ms a frame with the replay at 9-10 ms. The two sizes give 154 ms that do not
+depend on the picture's size and 55 ms per megapixel (the RTX 5070: 6.6 ms and 0.65 ms). Every start waits about
+190 s in the entry step, the second one too: that driver links the 10,350 recorded pipelines at about 18 ms each
+even from its own cache. A first preparation there is 16 minutes of shader variants (220-500 ms each on 16 threads)
+and over 8 minutes of pipelines. Its GPU time by pass at 720p (two frames, 206 ms a frame inside the marks): the
+scene's passes at the picture's size (54 passes, 1,932 draws, none over 9 ms) 145 ms, 70 %; the game's compute
+dispatches 39 ms, 19 %; our own work 6 ms, 3 %; the shadow maps 2 ms. So there too the cost is the scene's own draws,
+and nothing of ours is in the way. It stands for "the code runs right on AMD's driver", not for a weak card players
+have.
+
+Also seen: one map in, the process's working set is 15.7-16.9 GiB and its private memory 22-23 GiB at 1080p
+(11.2-12.3 GiB on 2026-11-14). Not looked into; a PC with 16 GiB cannot hold it.
+
+## 2026-11-19: places that need a whole 60 Hz frame, as patch sets
+
+The set `realtime` feeds the game its measured step (in 60 Hz frames, under 1 above 60 fps). More places cut that step
+to a whole number or test it as if it were a whole frame; nine sets at the end of `recomp/patches-oot-v111.txt` fix
+them, with their host halves in `runtime/oot_fps.c` (an install-side file: its functions sit on the patch page at
++0xe50..+0xf60). Every site is a bl to its host function; each host function changes only the registers its comment
+names and gives the game's own values back while the frame's step (the VFR manager's, `[[main+0x4c7e890]]+0x10`) is
+one frame or more. A bl loses x30, so each site sits in a function that saved x30 in its prologue; the recording
+function `main+0x3296840` is a leaf, and its two sites move x30 to x16 first (the host puts it back). The lifted bl
+spills the registers and reloads x0-x18 and x30 after it, so a host function may read any register but must not write
+x19-x29 or sp (the caller keeps them in locals it does not reload).
+
+| Set (switch) | Place | Above 60 fps before | Now |
+|---|---|---|---|
+| `daytime` (REKARINA_DAY_CLOCK) | `main+0x3cdf70`, after the fadd at `+0x3cdfbc` | the clock adds (int)(2 * step) game seconds a frame: 83 % of its speed at 100 fps, stopped above 120 | the fraction kept per clock |
+| `soundjob` (REKARINA_SOUND_JOB) | the sound job `main+0x415300` (gate `+0x41531c`, step `+0x415334`); the music update `main+0x3353400` (step and seconds `+0x3353448`, four reads of the battle flags); the song playbacks' calls `main+0x3292c80`, `+0x3292ed0` | the sound engine was handed parts of a step | the job runs once a whole step has built up (w2 = 3 on the other frames: its epilogue), with a step of 1; the music counts a whole step, the battle flags of held frames are kept, a note flag counts once per run |
+| `horsejump` (REKARINA_HORSE_JUMP) | `main+0x2c3ae18` (fmov s9, #1.0 before fcmp s10, s9) | the slow-motion branch every frame: the horse ran through fences | s9 = the step when it is the frame's whole step |
+| `floorcarry` (REKARINA_FLOOR_CARRY) | `main+0x13a068`, `+0x13d708`, `+0x389ac24` (after fmov s1, w8 = 100.0) | 1/dt over 100 every frame above 100 fps: carried by a tenth | the threshold 100 / step |
+| `songrec` (REKARINA_SONG_RECORD) | `main+0x329340c` (playback), `+0x3296b04`, `+0x3296da0` (recording), `+0x32926c4` (its end) | the elapsed-frame counter (+0x265fc) cut to 0 | the fraction kept per counter |
+| `looppose` (REKARINA_LOOP_POSE) | `main+0x2afe04`, `+0x2b01d0` (step * speed), `main+0x924e50` (the time drawn) | a loop of one frame drew another phase each frame | whole steps per animation entry, drawn at its start |
+| `clothtime` (REKARINA_CLOTH_TIME) | `main+0x1b1ac68` (ldr d0, [x22, #8]) | a 60th per cloth step whatever the frame: fps / 60 too fast | the time times the step (below 60 fps left as it is) |
+| `webstep` (REKARINA_WEB_STEPS) | `main+0x632cfc` (after the fdiv) | (int)(dt / a 60th) steps = 0: the web stayed rigid | the fraction kept per web |
+| `inputstep` (REKARINA_INPUT_STEP) | `main+0x3b4eaf8` (60 / the nominal rate, stored at `main+0x4d41fc8`) | the input repeat ran fps / 60 fast | the real-time step (patch page +8) |
+
+Seen in two smoke runs of 200 s (the forest, then the field, a 240 cap, 70-140 fps): no fault; the day's clock added
+119.8-120.0 game seconds a second in steady 20 s windows (the game's own cut in the same windows: 64.5-104.5), the
+sound job ran 1188-1201 times per 20 s, cloth steps of 16.667 ms became 8.4-16.6 ms, and 13,698-21,785 steps of
+one-frame loops a 20 s window were made whole. The horse, the recording, the web and a song's playback were not met in
+those runs. With every set's switch at 0 the log lists the nine as off and none of their places runs.

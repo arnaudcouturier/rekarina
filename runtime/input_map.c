@@ -194,6 +194,21 @@ void input_map_configure(void) {
         const char *v = cfg_get(var);
         if (v && *v && input_map_bind(action_names[a], v)) rt_log("input: %s = %s", var + strlen("REKARINA_"), v);
     }
+    // A bind_ line gives its button the pads it names without taking them from other buttons (the menu's remapping
+    // swaps instead), so a line written by hand can leave one pad button on two Switch buttons and another on none: a
+    // player's "B dashes and rolls, A does nothing" looks like that. Said once per layout, with the buttons involved.
+    for (int l = 0; l < PAD_LAYOUT_COUNT; l++) {
+        const PadBinding *t = input_map.pads[l];
+        for (int i = 0; i < input_map.npads[l]; i++)
+            for (int j = i + 1; j < input_map.npads[l]; j++)
+                if (t[i].pad == t[j].pad && t[i].action != t[j].action && t[i].action < B_SL_LEFT && t[j].action < B_SL_LEFT) {
+                    rt_log("input: under the %s layout the pad's %s presses both %s and %s (bind_ lines); a button the "
+                           "line took it from may now have none",
+                           l == PAD_LAYOUT_XBOX ? "xbox" : "nintendo", pad_names[t[i].pad], action_names[t[i].action],
+                           action_names[t[j].action]);
+                    i = j = input_map.npads[l];   // once per layout
+                }
+    }
 }
 
 int input_map_set_key(InputMap *m, int action, int slot, int key) {

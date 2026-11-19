@@ -23,11 +23,16 @@
 #include "vk.h"
 #include "vk_dlaa.h"
 #include "vk_dlssg.h"
+#include "vk_fg.h"
+#include "platform/platform.h"
 #include "dlssg/nx2_sl.h"
 #include "ui/menu.h"
 
 static struct {
     int wanted, loaded, active;
+    int asked;          // REKARINA_FRAMEGEN was dlss at start (vk_dlssg_wanted)
+    int avail;          // Streamline's DLSS-G plugin runs on this card (vk_dlssg_device_ready; 0 before)
+    const char *why;    // why it is not running although asked, for the menu's row (vk_dlssg_off_why)
     PFN_nx2sl_init init;
     PFN_nx2sl_instance_proc gipa;
     PFN_nx2sl_device_proc gdpa;
@@ -64,9 +69,10 @@ static int reflex_mode(void) {
 
 int vk_dlssg_wanted(void) {
     if (S.wanted < 0) {
-        S.wanted = !strcmp(cfg_value("REKARINA_FRAMEGEN"), "dlss");
+        S.asked = S.wanted = !strcmp(cfg_value("REKARINA_FRAMEGEN"), "dlss");
         if (S.wanted && !vk_dlaa_wanted()) {
             rt_log("dlssg: frame generation needs DLSS or FSR 3.1 upscaling (any mode): off");
+            S.why = "needs DLSS / DLAA on";
             S.wanted = 0;
         }
     }
@@ -92,6 +98,7 @@ int vk_dlssg_early(void) {
 #endif
     if (!m) {
         rt_log("dlssg: " RT_FILE_STEM "_dlssg.dll is not next to the game: DLSS Frame Generation off");
+        S.why = RT_FILE_STEM "_dlssg.dll is missing (run the setup again)";
         return 0;
     }
     PFN_nx2sl_version ver = (PFN_nx2sl_version)(void *)GetProcAddress(m, "nx2sl_version");
@@ -109,9 +116,13 @@ int vk_dlssg_early(void) {
     if (!ver || ver() != NX2SL_VERSION || !S.init || !S.gipa || !S.gdpa || !S.available || !S.frame || !S.marker ||
         !S.sleep || !S.submit_end || !S.shown || !S.reflex) {
         rt_log("dlssg: " RT_FILE_STEM "_dlssg.dll is from another build: DLSS Frame Generation off");
+        S.why = RT_FILE_STEM "_dlssg.dll is from another build (run the setup again)";
         return 0;
     }
-    if (!S.init(dir, sl_line)) return 0;
+    if (!S.init(dir, sl_line)) {   // the library said why (sl.interposer.dll missing, slInit failed)
+        S.why = "NVIDIA Streamline did not start (the dlssg lines of the log say why)";
+        return 0;
+    }
     S.loaded = 1;
     return 1;
 #else
@@ -145,8 +156,28 @@ VkResult vk_dlssg_create_device(VkInstance inst, VkPhysicalDevice pd, const VkDe
     return f ? f(pd, ci, NULL, out) : vkCreateDevice(pd, ci, NULL, out);
 }
 
+// REKARINA_DLSSG_UNAVAILABLE=1 (a test knob): DLSS Frame Generation counts as missing on this card, as on an RTX 20 or
+// 30 card, so the AMD FSR frame generation that takes its place can be checked on a card that has it.
+static int test_unavailable(void) {
+    static int v = -1;
+    if (v < 0) v = cfg_bool("REKARINA_DLSSG_UNAVAILABLE") != 0;
+    return v;
+}
+
 void vk_dlssg_device_ready(VkDevice dev) {
-    if (S.loaded <= 0 || !S.available()) return;
+    if (S.loaded <= 0) {   // asked for, and our library or Streamline did not load: AMD's in its place
+        if (S.asked && S.wanted) vk_fg_take_over(S.why ? S.why : "DLSS Frame Generation did not load");
+        return;
+    }
+    S.avail = S.available() && !test_unavailable();
+    if (!S.avail) {   // Streamline's DLSS-G plugin refused this GPU, driver or system (or the test knob)
+        rt_log("dlssg: DLSS Frame Generation off: it needs an RTX 40 or 50 series card, a current NVIDIA driver and "
+               "Windows' hardware-accelerated GPU scheduling on (Settings > Display > Graphics)%s",
+               test_unavailable() ? " (REKARINA_DLSSG_UNAVAILABLE)" : "");
+        S.why = "not available: it needs an RTX 40 / 50 card, a current driver and hardware-accelerated GPU scheduling";
+        vk_fg_take_over("no RTX 40 / 50 card, an older driver or GPU scheduling off");
+        return;
+    }
     PFN_vkGetDeviceProcAddr g = S.gdpa();
     S.create_sc = (PFN_vkCreateSwapchainKHR)g(dev, "vkCreateSwapchainKHR");
     S.destroy_sc = (PFN_vkDestroySwapchainKHR)g(dev, "vkDestroySwapchainKHR");
@@ -155,10 +186,58 @@ void vk_dlssg_device_ready(VkDevice dev) {
     S.present = (PFN_vkQueuePresentKHR)g(dev, "vkQueuePresentKHR");
     S.active = S.create_sc && S.destroy_sc && S.images && S.acquire && S.present;
     rt_log("dlssg: %s", S.active ? "DLSS Frame Generation on the swapchain" : "the swapchain hooks are missing: off");
+    if (!S.active) S.why = "Streamline's swapchain hooks are missing";
     if (S.active) S.reflex(reflex_mode());
 }
 
 int vk_dlssg_active(void) { return S.active; }
+
+// The menu's frame generation row: whether DLSS Frame Generation can run here. Streamline's own answer when it was
+// loaded at start; else an NVIDIA card of the RTX 40 or 50 series (Ada and later: the generation's optical flow runs
+// there; a Turing Quadro RTX 4000 is not one) with our library and Streamline's beside the game. 0 with *why.
+int vk_dlssg_offered(const char **why) {
+    if (test_unavailable() || (S.loaded > 0 && !S.avail)) {
+        *why = "DLSS frame generation needs an RTX 40 or 50 card";
+        return 0;
+    }
+    if (S.loaded > 0) return 1;
+    const VkCtx *c = vk_ctx();
+    const char *name = c ? c->props.deviceName : "";
+    int rtx = c && c->props.vendorID == 0x10de && !strstr(name, "Quadro") &&
+              (strstr(name, "RTX 40") || strstr(name, "RTX 50") || strstr(name, "Ada") || strstr(name, "RTX PRO"));
+    if (!rtx) {
+        *why = "DLSS frame generation needs an RTX 40 or 50 card";
+        return 0;
+    }
+    static int have = -1;   // the files do not change while the game runs: looked at once
+    if (have < 0) {
+        char dir[PLAT_PATH_MAX], path[PLAT_PATH_MAX + 64];
+        int n = plat_exe_path(dir, sizeof dir);
+        char *cut = n ? plat_last_sep(dir) : NULL;
+        have = 1;
+        if (cut) {
+            *cut = 0;
+            static const char *const files[] = {"sl.interposer.dll", "sl.dlss_g.dll", "nvngx_dlssg.dll"};
+            for (size_t i = 0; i < sizeof files / sizeof *files && have; i++)
+                snprintf(path, sizeof path, "%s/%s", dir, files[i]), have = plat_file_exists(path);
+            snprintf(path, sizeof path, "%s/" RT_FILE_STEM "_dlssg.dll", dir);
+            int ours = plat_file_exists(path);
+#ifdef RT_OLD_FILE_STEM
+            snprintf(path, sizeof path, "%s/" RT_OLD_FILE_STEM "_dlssg.dll", dir);
+            ours = ours || plat_file_exists(path);
+#endif
+            have = have && ours;
+        }
+    }
+    if (have) return 1;
+    *why = "DLSS frame generation's libraries are missing (run the setup again)";
+    return 0;
+}
+
+const char *vk_dlssg_off_why(void) {
+    if (!S.asked || S.active || (vk_fg_instead() && vk_fg_active())) return NULL;
+    return S.why ? S.why : "it did not start (the dlssg lines of the log say why)";
+}
 
 VkResult vk_dlssg_create_swapchain(VkDevice d, const VkSwapchainCreateInfoKHR *ci, VkSwapchainKHR *sc) {
     VkResult r = S.create_sc(d, ci, NULL, sc);

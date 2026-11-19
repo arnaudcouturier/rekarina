@@ -1,3 +1,11 @@
 git.rekarina.dev {
+	# the browser keeps to HTTPS, does not guess content types and does not let other sites frame the pages
+	header {
+		Strict-Transport-Security "max-age=63072000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "SAMEORIGIN"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		-Server
+	}
 	reverse_proxy forgejo:3000
 }

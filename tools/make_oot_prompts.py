@@ -33,6 +33,12 @@ every set's four images as the game holds them, which runtime/romfs.c hint_apply
 A hint shown after the change has the new images; one already on screen keeps its look until it changes, as the game
 draws it once. The keyboard set's hint shows the default keys, not the bindings of the player's rekarina.ini.
 
+The hint's places: the hint is a diamond of the four face buttons where the console has them (A on the right). A pad
+mapped by label does the game's A with its bottom button, so romfs-patches-hint-label holds the common layout archive
+with the hint's layout rearranged for it (hint_by_label, tools/oot_hint_layout.py: A at the bottom, B on the right, X
+on the left, Y at the top), which runtime/romfs.c serves next to the prompt set's folder when the pad layout at start
+is the one by label. The archive keeps its size.
+
 Cutscene skip: the game's own skip screen (UIEventSkipScreen) offers to skip any event whose setting list does not hold
 the component Event/EventSetting/EventSettingComponent/SkipSetting/DisableSkip.engine__event__SkipSetting.bgyml, a BYML of
 one entry {IsDisableSkip: true}. Three events list it: the opening in the forest, the staff credits and the title scene,
@@ -73,6 +79,7 @@ except ImportError:   # the release's Python 3.14: its own compression.zstd behi
     import zstandard
 
 import button_icons as icons
+import oot_hint_layout
 from oot_romfs import NUP, RomFS, sarc_members
 
 FONT = 'Font2/Scalable/External.Nin_Ounce_NVN2.bfotf.zs'
@@ -155,12 +162,50 @@ KEY_SWAPS = (('KeyTexFontA_00', 'KeyTexFontB_00'), ('KeyTexFontX_00', 'KeyTexFon
 # little more room for the label it carries
 KEY_FIT = {'playstation': 28, 'pc': 34}
 
+# The song screen (the instrument's notes, layout PaOcarinaSingleNote_00) draws its six note buttons from images of the
+# same file: OcarinaButtonA/B/X/Y/L/R_00, 93x93, ASTC 4x4 sRGB, one mip, the shape in the alpha channel (a white disc
+# for A B X Y, a key for L and R) with the Switch's letter in black on it; the layout colours them. Each set's folder
+# gets them as its prompts name those buttons: the sets by position trade the discs A with B and X with Y (the game's
+# own letters, as the hint's images trade), the PlayStation sets draw the shapes, the keyboard set the default keys or
+# mouse buttons (as the hint), and every set but the Switch's names the shoulders as its pad does (LB RB, L1 R1, Q R).
+# A drawing is new ASTC in a box of the image that is opaque in the game's file and holds the whole letter, its edges
+# included (measured on 1.1.1: the discs' letters lie in x 29..63, y 27..64, the keys' in x 32..60, y 27..62), written
+# again block by block as opaque grey blocks (button_icons.bntx_redraw_box): the shape's edge outside the box stays
+# the game's. The file keeps its size.
+OCARINA_TEXTURES = {'OcarinaButtonA_00': 0xE040, 'OcarinaButtonB_00': 0xE041, 'OcarinaButtonX_00': 0xE042,
+                    'OcarinaButtonY_00': 0xE043, 'OcarinaButtonL_00': 0xE044, 'OcarinaButtonR_00': 0xE045}
+OCARINA_SWAPS = (('OcarinaButtonA_00', 'OcarinaButtonB_00'), ('OcarinaButtonX_00', 'OcarinaButtonY_00'))
+OCARINA_DISC_BOX, OCARINA_KEY_BOX = (28, 24, 36, 44), (20, 20, 52, 52)   # x, y, width, height
+OCARINA_FIT = {'playstation': 30, 'pc': 34, 'key': (44, 30)}   # pixels: the game's letters are 34 high
+SHOULDERS = {'xbox': ('LB', 'RB'), 'rekarina': ('LB', 'RB'), 'playstation': ('L1', 'R1')}
 
-def key_textures(fs, style, glyphs, adv, hint_images=None):
-    """(path, overlay bytes, original raw bytes) of the common layout images with the action hint's four buttons as
-    style shows them, None for a set that keeps the game's letters (the Switch prompts and the sets by label).
-    hint_images: a dict that gets style -> the four images' bytes (KEY_TEXTURES' order) as the game holds them in
-    memory, for every style, for prompts-hint.bin."""
+
+def ocarina_textures(data, style, glyphs, adv):
+    """The song screen's note buttons in the common layout images data (a bytearray, changed in place) as style shows
+    them. False for the Switch's set, which keeps the game's."""
+    family = style.removesuffix('-label')
+    if family == 'nintendo':
+        return False
+    discs = {n: c for n, c in OCARINA_TEXTURES.items() if c <= 0xE043}
+    keys = {n: c for n, c in OCARINA_TEXTURES.items() if c > 0xE043}
+    if style in ('xbox', 'rekarina'):
+        icons.bntx_swap(data, 0, OCARINA_SWAPS)
+    elif family == 'playstation':
+        icons.bntx_redraw_box(data, 0, discs, icons.playstation_symbols(style == 'playstation'), OCARINA_DISC_BOX,
+                              OCARINA_FIT['playstation'])
+    elif style == 'pc':
+        icons.bntx_redraw_box(data, 0, discs, icons.pc_icons(glyphs, adv), OCARINA_DISC_BOX, OCARINA_FIT['pc'])
+    labels = SHOULDERS.get(family) or tuple(icons.pc_letter(icons.PC_BINDS[b]).upper() for b in ('L', 'R'))
+    icons.bntx_redraw_box(data, 0, keys, icons.label_icons(glyphs, dict(zip((0xE044, 0xE045), labels))),
+                          OCARINA_KEY_BOX, OCARINA_FIT['key'])
+    return True
+
+
+def key_textures(fs, style, glyphs, adv, hint_images=None, ocarina_images=None):
+    """(path, overlay bytes, original raw bytes) of the common layout images with the action hint's four buttons and
+    the song screen's six as style shows them, None for the Switch prompts, which keep the game's.
+    hint_images, ocarina_images: dicts that get style -> those images' bytes (KEY_TEXTURES', OCARINA_TEXTURES' order)
+    as the game holds them in memory, for every style, for prompts-hint.bin and prompts-ocarina.bin."""
     raw = fs.read_raw(COMMON_BNTX)
     data = bytearray(fs.unzs(raw))
     changed = True
@@ -173,25 +218,55 @@ def key_textures(fs, style, glyphs, adv, hint_images=None):
         icons.bntx_redraw(data, 0, KEY_TEXTURES, icons.pc_icons(glyphs, adv), ns2=True, fit=KEY_FIT['pc'])
     else:
         changed = False
+    changed |= ocarina_textures(data, style, glyphs, adv)
+    images = icons.bntx_images(data, 0)
     if hint_images is not None:
-        images = icons.bntx_images(data, 0)
         hint_images[style] = [bytes(data[images[n][1]:images[n][1] + images[n][2]]) for n in KEY_TEXTURES]
+    if ocarina_images is not None:
+        ocarina_images[style] = [bytes(data[images[n][1]:images[n][1] + images[n][2]]) for n in OCARINA_TEXTURES]
     return (COMMON_BNTX, compress_like(fs, raw, bytes(data)), raw) if changed else None
 
 
-def write_hint(out, hint_images):
+def write_hint(out, hint_images, name='prompts-hint.bin', per_set=len(KEY_TEXTURES)):
     """prompts-hint.bin: the action hint's four button images of every set, for changing them in the running game as the
     font's cmap changes (runtime/romfs.c hint_apply). "RKPH", u32 version 1, u32 sets, u32 image bytes, u32 images per
     set (4: A, B, X, Y), then per set a 32-byte name (the names of prompts-live.bin) and its images, each exactly the
-    bytes the game copies out of the common layout images (BC4, the Switch 2's block-linear layout)."""
+    bytes the game copies out of the common layout images (BC4, the Switch 2's block-linear layout). The same for the
+    song screen's six (prompts-ocarina.bin: A, B, X, Y, L, R, ASTC)."""
     sizes = {len(img) for imgs in hint_images.values() for img in imgs}
-    assert len(sizes) == 1, f'the hint images differ in size: {sizes}'
+    assert len(sizes) == 1, f'the images of {name} differ in size: {sizes}'
     size = sizes.pop()
-    data = b'RKPH' + struct.pack('<IIII', 1, len(hint_images), size, len(KEY_TEXTURES))
+    data = b'RKPH' + struct.pack('<IIII', 1, len(hint_images), size, per_set)
     for style, imgs in hint_images.items():
+        assert len(imgs) == per_set
         data += style.encode().ljust(32, b'\0') + b''.join(imgs)
-    (Path(out) / 'prompts-hint.bin').write_bytes(data)
+    (Path(out) / name).write_bytes(data)
     return dict(sets=len(hint_images), image_bytes=size)
+
+
+COMMON_BLARC = 'UI/Layout2Archive/Common.Product.100.Nin_Ounce_NVN2.blarc.zs'
+HINT_LAYOUT = 'DoCommand_00.buil'
+HINT_LABEL_FOLDER = 'romfs-patches-hint-label'   # runtime/romfs.c serves it when the pad is mapped by label
+
+
+def hint_by_label(fs):
+    """(path, overlay bytes, original raw bytes) of the common layout archive with the action hint's four buttons where
+    a pad mapped by label has them (tools/oot_hint_layout.py): the member is edited in place, the archive keeps its
+    size. None when this game version's hint is not the layout that module knows."""
+    raw = fs.read_raw(COMMON_BLARC)
+    data = bytearray(fs.unzs(raw))
+    members = sarc_members(data)
+    if HINT_LAYOUT not in members:
+        return None
+    lo, hi = members[HINT_LAYOUT]
+    member = bytearray(data[lo:hi])
+    try:
+        oot_hint_layout.by_label(member)
+    except oot_hint_layout.LayoutError as e:
+        print(f'action hint by label: {e}: the hint keeps its places as the game has them', file=sys.stderr)
+        return None
+    data[lo:hi] = member
+    return COMMON_BLARC, compress_like(fs, raw, bytes(data)), raw
 
 
 BOOTUP = 'Pack/Bootup.Nin_Ounce_NVN2.pack.zs'
@@ -437,11 +512,11 @@ def build(fs, out, scene_scale=1.0):
     icons.pc_labels_fit(glyphs)
     sets['pc'] = (icons.pc_icons(glyphs, adv), ())                       # the keyboard and the mouse, default keys
     fonts, cmaps, keyinfo = icons.fonts_with_sets(otf, sets, icons.pc_key_icons(glyphs, adv, adv[0xE040]))
-    hint_images = {}
+    hint_images, ocarina_images = {}, {}
     for style, (set_icons, swaps) in sets.items():
         new = icons.bfotf_encode(fonts[style], key, blob)
         files = [(FONT, compress_like(fs, raw, new), raw)] + [(p, d, r) for p, d, r, _ in fixes]
-        hint = key_textures(fs, style, glyphs, adv, hint_images)   # same size as the original: no table entry
+        hint = key_textures(fs, style, glyphs, adv, hint_images, ocarina_images)   # same size: no table entry
         if hint:
             files.append(hint)
         table = restbl_file(fs, dict(fix_need, **{FONT: restbl_entry(fs, FONT) + max(0, len(new) - len(blob))}))
@@ -463,6 +538,11 @@ def build(fs, out, scene_scale=1.0):
     report['previews'] = write_previews(out, fonts)
     report['keys'] = write_keys(out, fonts['pc'], keyinfo)
     report['hint'] = write_hint(out, hint_images)
+    report['ocarina'] = write_hint(out, ocarina_images, 'prompts-ocarina.bin', len(OCARINA_TEXTURES))
+    by_label = hint_by_label(fs)
+    if by_label:
+        write_overlay(Path(out) / HINT_LABEL_FOLDER, [by_label])
+    report['hint_by_label'] = bool(by_label)
     return report
 
 

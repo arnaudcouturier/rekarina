@@ -40,6 +40,15 @@ class Step:
         """True when the recorded output is still in place (cheap checks only)."""
         return True
 
+    def adopts(self, ctx, record):
+        """True when a record whose key is not the current one still stands: it was made under an older form of the
+        key, which cannot be recomputed, and the step knows from the folder that its output is the one it would make.
+        (A step whose key form changed uses this so that a setup update does not do its work again for the new form.)"""
+        return False
+
+    def adopted(self, ctx, record):
+        """Called once for a record adopts() took over, to bring the record's fields to the current form."""
+
     def verify(self, ctx, record):
         """True when the recorded output passes the full check (hashes); called before keeping another release's
         output."""
@@ -78,7 +87,11 @@ class Context:
             if s.always or s.id in forced:
                 self.runs[s.id] = True
             else:
-                self.runs[s.id] = not (rec and rec.get('key') == self.keys[s.id] and s.current(self, rec))
+                same = bool(rec) and (rec.get('key') == self.keys[s.id] or s.adopts(self, rec))
+                self.runs[s.id] = not (same and s.current(self, rec))
+                if not self.runs[s.id] and rec.get('key') != self.keys[s.id]:   # adopted: the record takes the new key
+                    s.adopted(self, rec)
+                    rec['key'] = self.keys[s.id]
             self.reasons[s.id] = '' if self.runs[s.id] else 'current'
         for i in range(len(self.steps) - 2, -1, -1):
             s, after = self.steps[i], self.steps[i + 1]

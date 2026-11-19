@@ -49,6 +49,7 @@ enum { ROMFS_PROMPTS_OK, ROMFS_PROMPTS_MISSING, ROMFS_PROMPTS_FAILED, ROMFS_PROM
        ROMFS_PROMPTS_PATCHES };
 const char *romfs_prompts(void);
 int romfs_prompts_live(void);   // each present: applies a changed prompts setting to the running game where it can
+void romfs_hint_pad_layout(int layout);   // input.c: the open gamepad's layout (PAD_LAYOUT_*), for the action hint's places
 int romfs_prompts_can_change(void);            // 1: the sets change in the running game (prompts-live.bin)
 int romfs_prompts_shown(const char *folder);   // 1: the running game shows that folder's prompts, changed without a restart
 int romfs_prompts_ready(const char *folder);

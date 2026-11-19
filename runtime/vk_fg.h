@@ -7,6 +7,14 @@ int vk_fg_wanted(void);                      // REKARINA_FRAMEGEN = fsr3 with DL
 uint32_t vk_fg_queue_count(void);            // graphics-family queues the device creates: 3 with frame generation, else 1
 void vk_fg_queues(VkQueue present, VkQueue acquire);   // vk_device.c, after the device exists
 int vk_fg_active(void);                      // the frame generation swapchain exists
+// Why AMD FSR frame generation is not running although REKARINA_FRAMEGEN was fsr3 at start (the menu's row), else NULL
+const char *vk_fg_off_why(void);
+// DLSS Frame Generation asked for where it cannot run: AMD FSR frame generation in its place (vk_dlssg.c, after the
+// device and before the first swapchain); 1 once that happened.
+void vk_fg_take_over(const char *why);
+int vk_fg_instead(void);
+// 1 when AMD FSR frame generation can run here (its libraries are beside the game), else 0 with *why (the menu's row)
+int vk_fg_offered(const char **why);
 int vk_fg_generating(void);                  // ... and the last frame had generation on (not paused for the menu)
 // gfx_present.c's swapchain calls while vk_fg_wanted: the first create makes AMD's swapchain context, later ones
 // (window resizes) its swapchain again. Non-success from the first: the plain swapchain path stays.

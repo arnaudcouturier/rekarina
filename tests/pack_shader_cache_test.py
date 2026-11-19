@@ -23,18 +23,32 @@ def name(seed):
 
 
 def read_pack(path):
-    """{(kind, name hex): bytes}, checking what gfx_shader.c pack_open checks."""
+    """{(kind, name hex): the file's bytes}, checking what gfx_shader.c pack_open checks; a compressed entry is
+    given unpacked."""
     b = path.read_bytes()
     assert b[:8] == psc.MAGIC
     count = struct.unpack_from('<I', b, 8)[0]
     out, last = {}, None
     for i in range(count):
-        nm, kind, size, offset = struct.unpack_from('<32sIIQ', b, 16 + 48 * i)
+        nm, word, size, offset = struct.unpack_from('<32sIIQ', b, 16 + 48 * i)
+        kind = word & 0xff
+        assert word & ~(0xff | psc.ZSTD) == 0
         assert offset + size <= len(b) and offset >= 16 + 48 * count
         assert last is None or (last[0], last[1]) < (kind, nm), 'index not sorted by (kind, name)'
         last = (kind, nm)
-        out[(kind, nm.hex())] = b[offset:offset + size]
+        data = b[offset:offset + size]
+        out[(kind, nm.hex())] = psc.zstandard.ZstdDecompressor().decompress(data) if word & psc.ZSTD else data
     return out
+
+
+def stored_kind(path, kind, nm):
+    """The kind word of one entry as the pack has it."""
+    b = path.read_bytes()
+    for i in range(struct.unpack_from('<I', b, 8)[0]):
+        n, word, _size, _offset = struct.unpack_from('<32sIIQ', b, 16 + 48 * i)
+        if n.hex() == nm and word & 0xff == kind:
+            return word
+    return None
 
 
 class PackTest(unittest.TestCase):
@@ -105,6 +119,35 @@ class PackTest(unittest.TestCase):
         (self.cache / psc.PACK).write_bytes(b'garbage')
         n, _, _, _ = psc.pack(self.cache)
         self.assertEqual(n, 4)
+
+    def test_a_large_shader_is_stored_compressed_and_a_small_file_as_it_is(self):
+        big = b'#' + bytes(range(64)) * 400          # 25 KiB that compress well
+        k = self.shader('big', spv=big)
+        _, _, _, size = psc.pack(self.cache)
+        got = read_pack(self.cache / psc.PACK)
+        self.assertEqual(got[(1, k)], big + b'big')
+        self.assertEqual(stored_kind(self.cache / psc.PACK, 1, k), 1 | psc.ZSTD)
+        self.assertEqual(stored_kind(self.cache / psc.PACK, 2, k), 2)        # 7 bytes: as it is
+        self.assertEqual(stored_kind(self.cache / psc.PACK, 3, name('usebig')), 3)
+        self.assertLess(size, len(big) // 4)
+
+    def test_a_pack_of_the_layout_before_is_written_anew_compressed(self):
+        big = b'#' + bytes(range(64)) * 400
+        files = {(1, name('old')): big, (2, name('old')): b'{"x":1}', (3, name('useold')): USE}
+        keys = sorted((kind, bytes.fromhex(nm)) for kind, nm in files)
+        offset, index, data = 16 + 48 * len(keys), [], b''
+        for kind, nm in keys:
+            d = files[(kind, nm.hex())]
+            index.append(struct.pack('<32sIIQ', nm, kind, len(d), offset + len(data)))
+            data += d
+        (self.cache / psc.PACK).write_bytes(psc.MAGIC_PLAIN + struct.pack('<II', len(keys), 0) + b''.join(index) + data)
+        n, new, skipped, size = psc.pack(self.cache)                           # no loose file: converted all the same
+        self.assertEqual((n, new, skipped), (3, 0, 0))
+        got = read_pack(self.cache / psc.PACK)
+        self.assertEqual(got[(1, name('old'))], big)
+        self.assertEqual(got[(3, name('useold'))], USE)
+        self.assertLess(size, len(big) // 4)
+        self.assertEqual(psc.pack(self.cache)[:3], (3, 0, 0))                  # and left alone the next time
 
 
 if __name__ == '__main__':

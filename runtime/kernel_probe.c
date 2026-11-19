@@ -323,7 +323,14 @@ static void test_arbiter(Cpu *c) {
     uint32_t r = sv(c, 0x34, arb, 2, 5, 5000000);
     double ms = ms_since(t0);
     CHECK(r == KERN_R_TIMEOUT && ms >= 5.0, "wait type 2 with a 5 ms timeout: %#x after %.2f ms", r, ms);
+#ifdef GAME_NS2
+    // Wait type 3 (a 64-bit compare) exists on the Switch 2's kernel (kernel.c): a different value answers "bad
+    // state", not "invalid"; type 4 and signal type 3 are invalid there too.
+    CHECK(sv(c, 0x34, arb, 3, 0, 0) == KERN_R_BAD_STATE, "wait type 3 with a different value");
+    CHECK(sv(c, 0x34, arb, 4, 0, 0) == KERN_R_INVALID_ENUM && sig(c, 3, 0, 0) == KERN_R_INVALID_ENUM, "wait type 4, signal type 3");
+#else
     CHECK(sv(c, 0x34, arb, 3, 0, 0) == KERN_R_INVALID_ENUM && sig(c, 3, 0, 0) == KERN_R_INVALID_ENUM, "type 3");
+#endif
     printf("address arbiter: wait types 0-2 (less, decrement-less, equal), signal types 0-2 (wake, increment, modify by "
            "waiters), 5 ms timeout after %.2f ms: %s\n", ms, failures == before ? "ok" : "FAIL");
 }
@@ -423,18 +430,24 @@ static void test_events(Cpu *c) {
 }
 
 // ---- virtual cores: count the threads running guest code at once, and that no two of them share a core number
-static volatile int32_t g_running, g_run_max, g_core_use[3], g_core_clash;
+// The console this title runs on has PROBE_NCORE application cores (kernel.c NCORE): three, or six on the Switch 2.
+#ifdef GAME_NS2
+#define PROBE_NCORE 6
+#else
+#define PROBE_NCORE 3
+#endif
+static volatile int32_t g_running, g_run_max, g_core_use[PROBE_NCORE], g_core_clash;
 
 static void core_worker(Cpu *c) {
     for (int i = 0; i < CORE_RUNS; i++) {
         uint32_t core = sv(c, 0x10, 0, 0, 0, 0);
-        if (core > 2 || plat_inc32(&g_core_use[core > 2 ? 0 : core]) != 1) plat_inc32(&g_core_clash);
+        if (core >= PROBE_NCORE || plat_inc32(&g_core_use[core >= PROBE_NCORE ? 0 : core]) != 1) plat_inc32(&g_core_clash);
         long n = plat_inc32(&g_running), m;
         while (n > (m = g_run_max) && plat_cas32(&g_run_max, n, m) != m) {}
         uint64_t until = kern_now_ns() + 20000;
         while (kern_now_ns() < until) {}
         plat_dec32(&g_running);
-        plat_dec32(&g_core_use[core > 2 ? 0 : core]);
+        plat_dec32(&g_core_use[core >= PROBE_NCORE ? 0 : core]);
         sv(c, 0x0B, i % 8 == 7 ? 50000 : 0, 0, 0, 0);
     }
     exit_thread(c);
@@ -453,7 +466,7 @@ static void test_cores(Cpu *c) {
     kern_core_stats(&now, &held_max);
     uint32_t cpus = plat_cpu_usable();
     int gate = !cfg_bool("REKARINA_FREE_CORES");   // the kernel's own switch
-    int ok = g_run_max <= 3 && held_max <= 3 && !g_core_clash && (cpus < 4 || g_run_max == 3);
+    int ok = g_run_max <= PROBE_NCORE && held_max <= PROBE_NCORE && !g_core_clash && (cpus <= PROBE_NCORE || g_run_max == PROBE_NCORE);
     printf("virtual cores: %d threads x %d runs on %u host CPUs: at most %d running guest code at once, at most %d "
            "core holders (kernel count), %d core-number clashes: %s\n", CORE_WORKERS, CORE_RUNS, cpus, g_run_max,
            held_max, g_core_clash, !gate ? "not checked (REKARINA_FREE_CORES is set)" : ok ? "ok" : "FAIL");

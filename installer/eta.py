@@ -20,7 +20,7 @@ Where an estimate comes from, in rising order of trust:
 
 Events (events.py) carry it between the two processes: after "start" the command line emits
 
-    {"type": "eta", "cores": 16, "steps": {"<step>": {"case": "first" | "rerun", "seconds": 720, "source":
+    {"type": "eta", "cores": 16, "steps": {"<step>": {"case": "first" | "rerun" | "all", "seconds": 720, "source":
                                                        "default" | "measured"}}}
 
 and Tracker folds "start", "eta", "plan", "step" and "progress" into what a window shows:
@@ -49,7 +49,8 @@ DEFAULTS = {
     'oot_lift':              (100, 100),
     'oot_compile':           (720, 240),    # a rerun compiles what changed and links again
     'oot_components':        (60, 10),
-    'oot_prepare':           (1800, 60),    # every shader for the driver the first time; all from the caches later
+    'oot_prompts':           (60, 60),      # the button prompts and fonts, drawn again when their tools change
+    'oot_prepare':           (420, 60),     # the variants play met for the driver the first time; all from the caches later
     'oot_package':           (360, 90),     # the copy, then the prepared shaders warmed in the game folder
     # the launcher's own update (update.py): the download depends on the line, so its counter soon takes over
     'update_download':       (90, 90),
@@ -57,6 +58,7 @@ DEFAULTS = {
     'update_restart':        (5, 5),
 }
 UNKNOWN_STEP = (30, 30)
+ALL_SHADERS = 2100   # the case 'all' of oot_prepare: every variant of every shader (--all-shaders), on the reference machine
 SCALED = ('oot_lift', 'oot_compile', 'oot_prepare')   # limited by the processor: times 16 / logical cores
 SCALE_RANGE = (0.5, 4.0)
 # The share of a step's time each of its phases takes, in the order they run. A phase that is not listed (or a step
@@ -66,7 +68,8 @@ PHASES = {
     'oot_lift': (('discover', 0.4), ('emit', 0.6)),
     'oot_compile': (('compile', 0.95), ('link', 0.05)),
     'oot_components': (('detect', 0.05), ('fsr', 0.95), ('dlss', 0.95), ('dlssg', 0.95)),   # one byte counter over the three
-    'oot_prepare': (('prompts', 0.03), ('seed', 0.02), ('translate', 0.15), ('libraries', 0.80)),
+    'oot_prompts': (('prompts', 1.0),),
+    'oot_prepare': (('seed', 0.05), ('translate', 0.15), ('libraries', 0.80)),
     'oot_package': (('copy', 0.15), ('warm', 0.85)),
     'update_download': (('download', 1.0),),
     'update_unpack': (('unpack', 1.0),),
@@ -128,7 +131,7 @@ def estimate(step, case, n_cores=None, timings=None):
     if measured:
         return float(measured), 'measured'
     first, rerun = DEFAULTS.get(step, UNKNOWN_STEP)
-    seconds = float(first if case == 'first' else rerun)
+    seconds = float(ALL_SHADERS if step == 'oot_prepare' and case == 'all' else first if case == 'first' else rerun)
     if step in SCALED:
         seconds *= scale(n_cores or cores())
     return seconds, 'default'

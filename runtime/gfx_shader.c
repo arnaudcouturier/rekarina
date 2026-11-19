@@ -39,6 +39,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include <zstd.h>
+
 #include "cfg.h"
 #include "gfx.h"
 #include "host.h"
@@ -145,11 +147,13 @@ static PlatOnce paths_once = PLAT_ONCE_INIT;
 #define write_file plat_file_write
 
 // ---- cache pack (<cache>/shader-cache.pack, written by tools/pack_shader_cache.py)
-// Little-endian: "TKSPACK1", u32 count, u32 0, then count entries sorted by (kind, name), then the data. name is the
-// 32 bytes the loose file's 64 hex digits spell. The index is read once (48 bytes a file: ~5.6 MB after an install);
-// the data is read per lookup with positioned reads on one handle, safe from every thread. A pack that fails a check is
-// ignored as a whole and the loose files are used.
-enum { PACK_SPV = 1, PACK_RES = 2, PACK_USE = 3, PACK_IN = 4 };
+// Little-endian: "TKSPACK2", u32 count, u32 0, then count entries sorted by (kind, name), then the data. name is the
+// 32 bytes the loose file's 64 hex digits spell; the kind word's low byte is the kind and its bit 8 says the data is
+// one zstd frame of the file (the translated shaders, 6 of an install's 7 GiB, pack to about a sixth: PACK_ZSTD). The
+// layout before, "TKSPACK1", is the same without compressed entries and is read too. The index is read once (48
+// bytes a file: ~12 MB after an install); the data is read per lookup with positioned reads on one handle, safe from
+// every thread. A pack that fails a check is ignored as a whole and the loose files are used.
+enum { PACK_SPV = 1, PACK_RES = 2, PACK_USE = 3, PACK_IN = 4, PACK_KIND = 0xff, PACK_ZSTD = 0x100 };
 typedef struct { uint8_t name[32]; uint32_t kind, size; uint64_t offset; } PackEnt;
 _Static_assert(sizeof(PackEnt) == 48, "shader-cache.pack entry layout");
 static PlatFile *pack_file;
@@ -157,7 +161,8 @@ static PackEnt *pack_ix;
 static uint32_t pack_n;
 
 static int pack_cmp(const PackEnt *a, uint32_t kind, const uint8_t name[32]) {
-    if (a->kind != kind) return a->kind < kind ? -1 : 1;
+    uint32_t k = a->kind & PACK_KIND;
+    if (k != kind) return k < kind ? -1 : 1;
     return memcmp(a->name, name, 32);
 }
 
@@ -177,7 +182,9 @@ static void pack_open(void) {
     const char *why = NULL;
     PackEnt *ix = NULL;
     pack_file = h;
-    if (!plat_file_id(h, &id) || !pack_read_at(0, head, sizeof head) || memcmp(head, "TKSPACK1", 8)) why = "header";
+    if (!plat_file_id(h, &id) || !pack_read_at(0, head, sizeof head) ||
+        (memcmp(head, "TKSPACK2", 8) && memcmp(head, "TKSPACK1", 8)))
+        why = "header";
     if (!why) {
         memcpy(&n, head + 8, 4);
         if (n > (1u << 24) || (uint64_t)n * sizeof *ix + sizeof head > id.size ||
@@ -187,7 +194,8 @@ static void pack_open(void) {
     }
     for (uint32_t i = 0; !why && i < n; i++) {
         if (ix[i].offset + ix[i].size > id.size) why = "entry out of bounds";
-        else if (i && pack_cmp(&ix[i - 1], ix[i].kind, ix[i].name) >= 0) why = "index order";
+        else if (ix[i].kind & ~(uint32_t)(PACK_KIND | PACK_ZSTD)) why = "entry kind";
+        else if (i && pack_cmp(&ix[i - 1], ix[i].kind & PACK_KIND, ix[i].name) >= 0) why = "index order";
     }
     if (why) {
         rt_log("gfx_shader: %s is not a usable cache pack (%s); reading the loose files", p, why);
@@ -220,6 +228,19 @@ static uint8_t *pack_read(uint32_t kind, const uint8_t name[32], uint64_t *size)
     if (!pack_read_at(e->offset, buf, e->size)) {
         free(buf);
         return NULL;
+    }
+    if (e->kind & PACK_ZSTD) {   // a frame that does not unpack to the size it names is a missing file
+        unsigned long long raw = ZSTD_getFrameContentSize(buf, e->size);
+        uint8_t *out = raw && raw < (1ull << 30) ? malloc((size_t)raw + 1) : NULL;
+        size_t got = out ? ZSTD_decompress(out, (size_t)raw, buf, e->size) : 0;
+        free(buf);
+        if (!out || ZSTD_isError(got) || got != raw) {
+            free(out);
+            return NULL;
+        }
+        out[raw] = 0;
+        *size = raw;
+        return out;
     }
     buf[e->size] = 0;
     *size = e->size;
@@ -1450,7 +1471,7 @@ static void use_preload(void *arg) {
     for (uint32_t i = 0; i < pack_n; i++) {   // the packed masks; the loose files below add the masks found since
         uint32_t u[5];
         UseFile **slot, *x;
-        if (pack_ix[i].kind != PACK_USE) continue;
+        if (pack_ix[i].kind != PACK_USE) continue;   // never compressed: 20 bytes
         if (pack_ix[i].size != sizeof u || !pack_read_at(pack_ix[i].offset, u, sizeof u) || u[0] != USE_MAGIC ||
             u[1] != USE_VERSION) {
             bad++;
@@ -2326,7 +2347,7 @@ static size_t other_inputs(const uint8_t (*named)[32], size_t n_named, uint8_t (
     InList l = {.named = named, .n_named = n_named};
     char name[68];
     for (uint32_t i = 0; i < pack_n; i++) {   // the packed inputs, under the name their loose file would have
-        if (pack_ix[i].kind != PACK_IN) continue;
+        if ((pack_ix[i].kind & PACK_KIND) != PACK_IN) continue;
         key_hex(pack_ix[i].name, name);
         memcpy(name + 64, ".in", 4);
         if (!in_collect(name, &l)) break;

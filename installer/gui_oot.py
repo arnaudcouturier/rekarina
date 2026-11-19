@@ -48,7 +48,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
-from . import components, eta, ini, mods, net, oot, saves, update
+from . import components, eta, ini, mods, net, oot, saves, shaderjob, update
 from . import shots as screenshots
 from . import state as statefile
 from tkinter import font as tkfont
@@ -452,6 +452,7 @@ class OotForm:
     dlls: str = ''
     toolchain: str = ''
     textures: bool = True   # the setup's texture step (installer/oot.py --no-textures when off)
+    all_shaders: bool = False   # the launcher's background job: every variant of every shader (installer/oot.py --all-shaders)
 
     def installed_state(self):
         if not self.dest.strip():
@@ -486,6 +487,8 @@ class OotForm:
                 cmd += [flag, value.strip()]
         if not self.textures:
             cmd.append('--no-textures')
+        # a run on the run screen never prepares the rest of the shaders (the background job does: shaderjob.py)
+        cmd.append('--all-shaders' if self.all_shaders else '--shaders-later')
         if root:
             cmd += ['--root', str(root)]
         if temp:
@@ -598,6 +601,7 @@ class RekarinaApp(App):
             self.panel_focus()
         if args:   # a real run: ask the network and the hardware off the window's thread
             root.after(POLL_MS, self.pump)
+            root.after(2000, self.shader_tick)
             self.background(components.detect, self.got_gpu)
             self.check_updates()
             if getattr(args, 'after_update', False):
@@ -611,6 +615,7 @@ class RekarinaApp(App):
                 root.after(POLL_MS, self.start)
 
     pending_title = None
+    forced_shaders = None     # the self test's stand-in for the shader row's view (shader_view)
 
     # ---- the stage -------------------------------------------------------------------------------------------------
     # The window is one picture (tools/make_launcher_art.py): the painting with the band. The home screen and the
@@ -949,7 +954,7 @@ class RekarinaApp(App):
         line = lambda fill, font, extra=(), width=SHEET_TEXT: StageText(   # noqa: E731
             c, c.create_text(SHEET_X, 0, anchor='nw', width=width, fill=fill, font=font, tags=tags + extra))
         self.home_text = line(INK, 'RekBody')
-        self.home_rules = [c.create_line(0, 0, 0, 0, fill=SHEET_LINE, tags=tags) for _ in range(2)]
+        self.home_rules = [c.create_line(0, 0, 0, 0, fill=SHEET_LINE, tags=tags) for _ in range(3)]
         # this machine, as a small table: the card, the first settings chosen for it, the libraries in the game folder
         self.facts = [(line(INK_DIM, 'RekText'), line(INK, 'RekText')) for _ in FACTS]
         for (name, _value), id in zip(self.facts, FACTS):
@@ -958,6 +963,16 @@ class RekarinaApp(App):
         self.comp_label = line(INK_WARN, 'RekText', ('home:comp',), SHEET_TEXT - 190)
         self.comp_retry = Plate(self, 'plate40', 150, self.retry_components, 'RekStrong', tags + ('home:comp',))
         self.bind_text(self.comp_retry, 'text', 'ui.oot_components_retry')
+        # the shaders: a first install prepares the variants play met; the launcher prepares the rest in the background
+        self.shaders_name = line(INK_DIM, 'RekText', ('home:shaders',), 90)
+        self.shaders_status = line(INK, 'RekText', ('home:shaders',), SHEET_TEXT - 100)
+        self.shaders_detail = line(INK, 'RekText', ('home:shaders',), SHEET_TEXT - 100)
+        self.shaders_note = line(INK_DIM, 'RekSmall', ('home:shaders',), SHEET_TEXT - 100)
+        self.shaders_bar = c.create_rectangle(0, 0, 0, 0, fill='#1c130a', outline=SHEET_LINE, tags=tags + ('home:shaders',))
+        self.shaders_fill = c.create_rectangle(0, 0, 0, 0, fill=AMBER, outline='', tags=tags + ('home:shaders',))
+        self.shaders_pause = Plate(self, 'plate40', 110, self.pause_shaders, 'RekStrong', tags + ('home:shaders',))
+        self.bind_text(self.shaders_name, 'text', 'ui.oot_shaders_name')
+        self.shaders_view = None
         # the launcher's own version: up to date, or the newer one with its buttons and what is new in it
         self.update_label = line(INK_DIM, 'RekText')
         make = lambda kind, id, command: (lambda p: (self.bind_text(p, 'text', id), p)[1])(   # noqa: E731
@@ -1021,7 +1036,44 @@ class RekarinaApp(App):
                     px, y = x, y + 48
                 p.place(px, y)
                 px += p.width + 10
-        y += 40 + 22
+        y += 40 + 8
+        view = self.shader_view()
+        self.shaders_view = view
+        c.itemconfigure('home:shaders', state='normal' if view else 'hidden')
+        c.itemconfigure(self.home_rules[2], state='normal' if view else 'hidden')
+        if view:
+            rule(self.home_rules[2])
+            col = x + 100
+            c.coords(self.shaders_name.item, x, y)
+            c.coords(self.shaders_status.item, col, y)
+            c.itemconfigure(self.shaders_status.item, text=view['status'])
+            y = c.bbox(self.shaders_status.item)[3] + 8
+            if view['detail']:
+                c.coords(self.shaders_detail.item, col, y)
+                c.itemconfigure(self.shaders_detail.item, text=view['detail'], state='normal')
+                y = c.bbox(self.shaders_detail.item)[3] + 8
+            else:
+                c.itemconfigure(self.shaders_detail.item, state='hidden')
+            bar = view['fraction'] is not None
+            for item in (self.shaders_bar, self.shaders_fill):
+                c.itemconfigure(item, state='normal' if bar else 'hidden')
+            self.shaders_pause.show(view['button'] is not None)
+            if bar:
+                width = SHEET_TEXT - 100 - 130
+                c.coords(self.shaders_bar, col, y, col + width, y + 32)
+                c.coords(self.shaders_fill, col + 3, y + 3, col + 3 + round((width - 6) * view['fraction']), y + 29)
+            if view['button'] is not None:
+                self.shaders_pause.configure(text=self.cat(view['button']))
+                self.shaders_pause.place(x + SHEET_TEXT - self.shaders_pause.width, y - 4)
+            if bar or view['button'] is not None:
+                y += 40
+            if view['note']:
+                c.itemconfigure(self.shaders_note.item, text=view['note'], state='normal')
+                c.coords(self.shaders_note.item, col, y)
+                y = c.bbox(self.shaders_note.item)[3] + 8
+            else:
+                c.itemconfigure(self.shaders_note.item, state='hidden')
+        y += 14
         # what is new in the release that is out, as much of it as the sheet has room for
         shown = bool(self.notes_lines) and SHEET_BOTTOM - y > 90
         c.itemconfigure('home:notes', state='normal' if shown else 'hidden')
@@ -1054,6 +1106,111 @@ class RekarinaApp(App):
             self.comp_label.configure(text=self.cat('ui.oot_components_missing',
                                                     names=', '.join(self.cat('comp.' + g) for g in lacking)))
         self.refresh_update()
+
+    # ---- the shaders' background preparation ----------------------------------------------------------------------
+    # The setup's first run prepares the variants play met. The rest are prepared here, by themselves (shaderjob.py): a
+    # child at low priority while the window is open and no game runs. Play stops it, starts the game, hides the window
+    # and takes the job up again when the game has ended. Closing the window stops it; the next start goes on.
+
+    shader_job = None
+    shader_hidden = False       # the window is hidden while the game runs, for the job's sake
+    shader_finished = None      # 'done' or 'failed' once the job ended in this window's life: the row says so
+    shader_error = ''
+
+    def shader_wanted(self):
+        """True when the game folder prepared the variants play met only, and this window may still do the rest."""
+        return (self.shader_finished is None and self.game_exe().is_file() and
+                oot.shaders_only_met(self.form().installed_state()) and not self.form().problems())
+
+    def shader_command(self):
+        python = Path(sys.executable) if self.layout.dev else self.layout.python
+        form = self.form()
+        form.all_shaders = True
+        return form.command(python, root=self.layout.root if self.layout.dev else None, temp=self.run_args.get('temp'))
+
+    def shader_tick(self):
+        """Once a second: take in the job's events, stop the job when a game runs, start it when none does, and show the
+        window again when the game is over and there is nothing left to wait for."""
+        try:
+            self.shader_step()
+        except Exception:   # a tick that fails must not end the ticks
+            pass
+        finally:
+            self.root.after(1000, self.shader_tick)
+
+    def shader_step(self):
+        job, changed = self.shader_job, False
+        if job is not None:
+            changed = job.poll()
+            if job.state in ('done', 'failed') and self.shader_finished is None:
+                self.shader_finished, self.shader_error = job.state, job.error or ''
+                changed = True
+        if self.shader_finished is None and (job is not None and job.active or self.shader_hidden or
+                                             (self.screen in ('home', 'mods', 'saves') and not self.process and not self.job)):
+            game = shaderjob.games_running(oot.GAME_EXE, job.pid if job is not None and job.active else None)
+            if game:
+                if job is not None and job.active:
+                    job.stop()
+                    changed = True
+            elif self.shader_wanted():
+                if job is None:
+                    job = self.shader_job = shaderjob.ShaderJob(self.shader_command(), self.layout.root)
+                if job.start():
+                    changed = True
+        if self.shader_hidden and not (self.shader_job is not None and self.shader_job.active) and \
+                not shaderjob.games_running(oot.GAME_EXE):
+            self.shader_show_window()   # the job ended (or cannot go on) and no game runs: nothing left to wait for
+            changed = True
+        if changed and self.screen == 'home':
+            self.layout_home()
+
+    def shader_show_window(self):
+        self.shader_hidden = False
+        self.root.deiconify()
+        self.root.lift()
+
+    def shader_stop(self):
+        if self.shader_job is not None:
+            self.shader_job.stop()
+
+    def pause_shaders(self):
+        job = self.shader_job
+        if job is None:
+            return
+        if job.paused:
+            job.resume()
+        else:
+            job.pause()
+        self.layout_home()
+
+    def shader_view(self):
+        """What the home sheet's shader row says: {'status', 'detail', 'fraction' (None: no bar), 'button' (text id or
+        None), 'note'}, or None for no row (nothing to prepare, nothing to say)."""
+        if self.forced_shaders is not None:
+            return self.forced_shaders or None
+        job = self.shader_job
+        if self.shader_finished == 'done':
+            return {'status': self.cat('ui.oot_shaders_done'), 'detail': '', 'fraction': None, 'button': None, 'note': ''}
+        if self.shader_finished == 'failed':
+            return {'status': self.cat('ui.oot_shaders_ready'), 'fraction': None, 'button': None, 'note': '',
+                    'detail': self.cat('ui.oot_shaders_failed', error=self.shader_error or '?')}
+        if job is None or not self.shader_wanted():
+            return None
+        status, note, button, fraction = self.cat('ui.oot_shaders_ready'), '', None, None
+        if job.paused:
+            detail, button = self.cat('ui.oot_shaders_paused'), 'ui.oot_shaders_resume'
+        elif job.active:
+            left = job.remaining()
+            minutes = max(1, round(left / 60)) if left is not None else '?'
+            if job.done and job.total and job.phase in ('translate', 'libraries'):
+                detail = self.cat('ui.oot_shaders_running', done=f'{job.done:,}'.replace(',', ' '),
+                                  total=f'{job.total:,}'.replace(',', ' '), minutes=minutes)
+            else:
+                detail = self.cat('ui.oot_shaders_starting')
+            fraction, button, note = job.fraction, 'ui.oot_shaders_pause', self.cat('ui.oot_shaders_note')
+        else:
+            detail, note = self.cat('ui.oot_shaders_waiting'), self.cat('ui.oot_shaders_note')
+        return {'status': status, 'detail': detail, 'fraction': fraction, 'button': button, 'note': note}
 
     def open_game_folder(self):
         dest = self.vars['dest'].get().strip()
@@ -1853,6 +2010,7 @@ class RekarinaApp(App):
         super().cancel()
 
     def on_close(self):
+        self.shader_stop()   # no question: the preparation goes on at the next start
         if self.job:
             if not messagebox.askyesno(self.cat('ui.oot_title'), self.cat('ui.confirm_cancel')):
                 return
@@ -1864,6 +2022,8 @@ class RekarinaApp(App):
     # ---- the setup run --------------------------------------------------------------------------------------------
 
     def start(self):
+        self.shader_stop()
+        self.shader_job = None   # a run of the setup may have changed what there is to prepare: judged again after it
         save_settings(game=self.extra['game'].get().strip(), dest=self.vars['dest'].get().strip())
         self.job_title, self.pending_title, self.finish_kind = self.pending_title, None, None
         self.tracker.reset()
@@ -2251,9 +2411,25 @@ class RekarinaApp(App):
         exe = dest / oot.GAME_EXE
         if exe.is_file():
             save_settings(game=self.extra['game'].get().strip(), dest=str(dest))
+            pending = self.shader_wanted() and not (self.shader_job is not None and self.shader_job.paused)
+            self.shader_stop()   # nothing of the preparation runs while the game does
             flags = subprocess.DETACHED_PROCESS if os.name == 'nt' else 0
             subprocess.Popen([str(exe)], cwd=str(dest), creationflags=flags, close_fds=True)
-            self.root.destroy()
+            if pending:
+                # The preparation is not done: the window goes out of sight (not destroyed: the press came from a
+                # binding of the stage's canvas) and takes the job up again when the game has ended (shader_step).
+                self.shader_hidden = True
+                self.root.withdraw()
+                return
+            # The press came from a binding of the stage's canvas (the Play plate): taking the window down from inside
+            # its own event makes Tcl free what it is still running and panic with a "Fatal Error" box. The settings are
+            # saved and the game runs on its own, so the launcher just ends, without Tk's teardown.
+            for stream in (sys.stdout, sys.stderr):
+                try:
+                    stream.flush()
+                except (OSError, ValueError, AttributeError):
+                    pass
+            os._exit(0)
 
 
 # ---- self test ---------------------------------------------------------------------------------------------------
@@ -2305,7 +2481,7 @@ SAMPLE_NOTES = ('Rekarina 1.0.1\n\n- Shorter loading between areas.\n- The water
                 '- New button prompt set for PlayStation pads.\n- The setup downloads DLSS and FSR 3.1 by itself.\n\n'
                 'The update keeps your saves, settings and shader caches. After it the setup rebuilds the game from the '
                 'dump you already have; that takes a few minutes.')
-SCREENS = ('form', 'form-textures-help', 'form-space', 'home', 'home-update', 'mods', 'mods-empty', 'saves', 'saves-ask', 'saves-empty', 'update', 'run',
+SCREENS = ('form', 'form-textures-help', 'form-space', 'home', 'home-update', 'home-shaders-running', 'home-shaders-waiting', 'home-shaders-done', 'mods', 'mods-empty', 'saves', 'saves-ask', 'saves-empty', 'update', 'run',
            'components', 'ok', 'failed')
 
 
@@ -2401,6 +2577,19 @@ def selftest(layout, shots=None):
             app.home_play.state(['!disabled'])
             app.home_text.configure(text=app.cat('ui.oot_home_text', dest=app.vars['dest'].get()))
             shot(f'oot-home-update-{lang}')
+            for name, view in (('running', {'status': app.cat('ui.oot_shaders_ready'), 'fraction': 0.38, 'button': 'ui.oot_shaders_pause',
+                                            'note': app.cat('ui.oot_shaders_note'),
+                                            'detail': app.cat('ui.oot_shaders_running', done='18 240', total='47 542', minutes=22)}),
+                               ('waiting', {'status': app.cat('ui.oot_shaders_ready'), 'fraction': None, 'button': None,
+                                            'note': app.cat('ui.oot_shaders_note'), 'detail': app.cat('ui.oot_shaders_waiting')}),
+                               ('done', {'status': app.cat('ui.oot_shaders_done'), 'fraction': None, 'button': None, 'note': '', 'detail': ''})):
+                app.forced_shaders = view
+                app.update_info, app.forced_missing = sample_update('1.0.0', False), []
+                app.refresh_home()
+                app.home_play.state(['!disabled'])
+                app.home_text.configure(text=app.cat('ui.oot_home_text', dest=app.vars['dest'].get()))
+                shot(f'oot-home-shaders-{name}-{lang}')
+            app.forced_shaders = None
             app.open_mods()
             shot(f'oot-mods-{lang}')
             app.forced_mods = []

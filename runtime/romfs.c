@@ -792,6 +792,72 @@ static char pc_dir[64];
 
 const char *romfs_prompts(void) { return prompts_loaded; }
 
+// ---- The action hint's places (romfs-patches-hint-label, tools/make_oot_prompts.py hint_by_label)
+// The hint in the screen's corner is a diamond of the four face buttons where the console has them: A on the right. A
+// pad mapped by label (PAD_LAYOUT_XBOX) does the game's A with its bottom button, so that folder holds the hint's
+// layout with A at the bottom, B on the right, X on the left and Y at the top (tools/oot_hint_layout.py). The game
+// reads the layout once, so the folder is served, or not, for the pad layout known at start: the setting's, and under
+// auto the layout of the pad the player used last (hint-pad.txt next to romfs-index.bin, written by
+// romfs_hint_pad_layout; no file: by label, the layout of every pad but a Switch one, which the keyboard's hint
+// shares). A pad of the other layout opened later gets the right hint at the next start.
+static int hint_places = PAD_LAYOUT_NINTENDO;   // the pad layout the hint's layout was loaded for
+static int hint_places_known;                   // hint_places_load ran
+
+#ifdef GAME_OOT
+static int hint_pad_seen(void) {   // the pad layout an earlier run ended with, -1 when none was written
+    char path[2200], word[16] = "";
+    if (snprintf(path, sizeof path, "%s/hint-pad.txt", index_dir) >= (int)sizeof path) return -1;
+    FILE *f = fopen(path, "rb");
+    if (!f) return -1;
+    if (!fgets(word, sizeof word, f)) word[0] = 0;
+    fclose(f);
+    return !strncmp(word, "nintendo", 8) ? PAD_LAYOUT_NINTENDO : !strncmp(word, "xbox", 4) ? PAD_LAYOUT_XBOX : -1;
+}
+
+static void hint_places_load(void) {
+    int layout = input_pad_layout_pick(cfg_value("REKARINA_PAD_LAYOUT"), hint_pad_seen() == PAD_LAYOUT_NINTENDO);
+    char path[2200];
+    if (layout == PAD_LAYOUT_XBOX &&
+        snprintf(path, sizeof path, "%s/romfs-patches-hint-label/manifest.tsv", index_dir) < (int)sizeof path) {
+        // A folder from a setup before 1.2.1 has none: the hint's diamond then keeps the console's places (A on the
+        // right) under every prompt set, which reads as the Switch's buttons on a pad whose A is at the bottom.
+        if (!plat_file_exists(path)) {
+            rt_log("RomFS overlay: the action hint keeps the console's places (A on the right) though the pad is mapped by "
+                   "label: romfs-patches-hint-label is missing (run the setup again)");
+        } else {
+            path[strlen(path) - strlen("/manifest.tsv")] = 0;
+            size_t first = noverlay;
+            if (overlay_load(path, 1, 0) && noverlay > first) {
+                hint_places = PAD_LAYOUT_XBOX;
+                rt_log("RomFS overlay: the action hint shows the buttons where a pad mapped by label has them (%s)", path);
+            } else {
+                rt_log("RomFS overlay: %s failed its check: the action hint keeps the console's places (run the setup again)",
+                       path);
+            }
+        }
+    }
+    hint_places_known = 1;
+}
+#endif
+
+// input.c pad_layout_get: the layout of the gamepad in use. Kept for the next start's hint (hint_places_load).
+void romfs_hint_pad_layout(int layout) {
+    static int told = -1;
+    if (!hint_places_known || layout == told || (layout != PAD_LAYOUT_NINTENDO && layout != PAD_LAYOUT_XBOX)) return;
+    told = layout;
+    char path[2200];
+    if (snprintf(path, sizeof path, "%s/hint-pad.txt", index_dir) < (int)sizeof path) {
+        FILE *f = fopen(path, "wb");
+        if (f) {
+            fputs(layout == PAD_LAYOUT_NINTENDO ? "nintendo\n" : "xbox\n", f);
+            fclose(f);
+        }
+    }
+    if (layout != hint_places)
+        rt_log("RomFS overlay: the gamepad is mapped %s, the action hint was loaded for the other layout: its buttons "
+               "move to this pad's places at the next start", layout == PAD_LAYOUT_XBOX ? "by label" : "by position");
+}
+
 // ---- Button prompts that change while the game runs (prompts-live.bin, tools/make_oot_prompts.py)
 // The button font of every prompt folder holds the glyphs of every set; the folders differ in the font's cmap table
 // alone, which sends the button code points to one set's glyphs. prompts-live.bin (next to romfs-index.bin) lists each
@@ -953,42 +1019,48 @@ static uint64_t live_find(const uint8_t *pat, uint32_t n) {
 // image shown makes the whole search run again. The textures are mirrored ones (vk_texture.c make_fresh uploads them
 // again, seen 2026-11-15), yet a hint already on screen keeps its look until it changes: the game draws it once. A
 // hint shown after the change has the new images.
-#define HINT_SETS 8
-#define HINT_IMAGES 4
+// The song screen's six note buttons (OcarinaButtonA/B/X/Y/L/R_00, ASTC images of the same archive) change the same
+// way, from prompts-ocarina.bin (tools/make_oot_prompts.py write_hint): one table of each kind, the same code.
+#define HINT_SETS 10
+#define HINT_IMAGES_MAX 6
 #define HINT_PLACES 4
-static struct {
-    int tried, n, cur;                               // cur: the set whose images are in memory, -1 unknown
+typedef struct {
+    const char *file, *what;                         // prompts-hint.bin, "the action hint"
+    int tried, n, cur, nimg;                         // cur: the set whose images are in memory, -1 unknown
     uint32_t size;                                   // bytes of one image
     char name[HINT_SETS][32];
-    uint8_t *img[HINT_SETS];                         // HINT_IMAGES * size bytes per set
-    uint64_t at[HINT_IMAGES][HINT_PLACES];           // where each image of the set shown was found
-    int nat[HINT_IMAGES];
-} HT = {.cur = -1};
+    uint8_t *img[HINT_SETS];                         // nimg * size bytes per set
+    uint64_t at[HINT_IMAGES_MAX][HINT_PLACES];       // where each image of the set shown was found
+    int nat[HINT_IMAGES_MAX];
+} HintTable;
+static HintTable HT = {.file = "prompts-hint.bin", .what = "the action hint", .cur = -1},
+                 OT = {.file = "prompts-ocarina.bin", .what = "the song screen", .cur = -1};
 
-static void hint_load(void) {
-    HT.tried = 1;
+static void hint_load(HintTable *T) {
+    T->tried = 1;
     char path[2200];
-    snprintf(path, sizeof path, "%s/prompts-hint.bin", index_dir);
+    snprintf(path, sizeof path, "%s/%s", index_dir, T->file);
     FILE *f = fopen(path, "rb");
     if (!f) return;
     uint32_t h[5];
     if (fread(h, 4, 5, f) == 5 && h[0] == 0x48504b52u && h[1] == 1 && h[2] && h[2] <= HINT_SETS && h[3] &&
-        h[3] <= (1u << 20) && h[4] == HINT_IMAGES) {
-        HT.size = h[3];
+        h[3] <= (1u << 20) && h[4] && h[4] <= HINT_IMAGES_MAX) {
+        T->size = h[3];
+        T->nimg = (int)h[4];
         for (uint32_t i = 0; i < h[2]; i++) {
-            HT.img[i] = malloc((size_t)HINT_IMAGES * HT.size);
-            if (!HT.img[i] || fread(HT.name[i], 1, 32, f) != 32 ||
-                fread(HT.img[i], HT.size, HINT_IMAGES, f) != HINT_IMAGES) break;
-            HT.name[i][31] = 0;
-            HT.n = (int)i + 1;
+            T->img[i] = malloc((size_t)T->nimg * T->size);
+            if (!T->img[i] || fread(T->name[i], 1, 32, f) != 32 ||
+                fread(T->img[i], T->size, (size_t)T->nimg, f) != (size_t)T->nimg) break;
+            T->name[i][31] = 0;
+            T->n = (int)i + 1;
         }
     }
     fclose(f);
     const char *start = live_name(prompts_loaded);
-    for (int i = 0; i < HT.n; i++)
-        if (!strcmp(HT.name[i], start)) HT.cur = i;
-    if (HT.n) rt_log("RomFS overlay: prompts-hint.bin: the action hint's images of %d sets (%s shown)", HT.n,
-                     HT.cur >= 0 ? HT.name[HT.cur] : "none known");
+    for (int i = 0; i < T->n; i++)
+        if (!strcmp(T->name[i], start)) T->cur = i;
+    if (T->n) rt_log("RomFS overlay: %s: %s's images of %d sets (%s shown)", T->file, T->what, T->n,
+                     T->cur >= 0 ? T->name[T->cur] : "none known");
 }
 
 // A word of the image to look for, at a multiple of 4: one of four different bytes where there is one (a busy block
@@ -1007,15 +1079,15 @@ static uint32_t hint_key_at(const uint8_t *img, uint32_t size) {
 
 // The images of the set shown and their key words, for hint_scan.
 typedef struct {
-    const uint8_t *img[HINT_IMAGES];
-    uint32_t ko[HINT_IMAGES], key[HINT_IMAGES];
+    const uint8_t *img[HINT_IMAGES_MAX];
+    uint32_t ko[HINT_IMAGES_MAX], key[HINT_IMAGES_MAX];
     uint8_t *buf;
 } HintScan;
 
-// Every place in [lo, hi) where an image of the shown set starts, added to HT.at (up to HINT_PLACES each).
-static void hint_scan(HintScan *S, uint64_t lo, uint64_t hi) {
+// Every place in [lo, hi) where an image of the shown set starts, added to T->at (up to HINT_PLACES each).
+static void hint_scan(HintTable *T, HintScan *S, uint64_t lo, uint64_t hi) {
     enum { CHUNK = 4 << 20 };
-    uint32_t n = HT.size;
+    uint32_t n = T->size;
     for (uint64_t a = lo, end; a < hi; a = end) {
         int st = plat_mem_state(a, hi, &end);
         if (end <= a) break;
@@ -1027,30 +1099,32 @@ static void hint_scan(HintScan *S, uint64_t lo, uint64_t hi) {
             for (uint64_t i = 0; i + 4 <= len; i += 4) {
                 uint32_t w;
                 memcpy(&w, S->buf + i, 4);
-                if (w != S->key[0] && w != S->key[1] && w != S->key[2] && w != S->key[3]) continue;
-                for (int k = 0; k < HINT_IMAGES; k++) {
-                    if (w != S->key[k] || i < S->ko[k] || HT.nat[k] >= HINT_PLACES) continue;
+                int any = 0;
+                for (int k = 0; k < T->nimg && !any; k++) any = w == S->key[k];
+                if (!any) continue;
+                for (int k = 0; k < T->nimg; k++) {
+                    if (w != S->key[k] || i < S->ko[k] || T->nat[k] >= HINT_PLACES) continue;
                     uint64_t s = i - S->ko[k];
-                    if (s < CHUNK && s + n <= len && !memcmp(S->buf + s, S->img[k], n)) HT.at[k][HT.nat[k]++] = p + s;
+                    if (s < CHUNK && s + n <= len && !memcmp(S->buf + s, S->img[k], n)) T->at[k][T->nat[k]++] = p + s;
                 }
             }
         }
     }
 }
 
-// Where the shown set's images lie (up to HINT_PLACES each); returns how many of the four were found. The game keeps
+// Where the shown set's images lie (up to HINT_PLACES each); returns how many of them were found. The game keeps
 // them in the graphics heap the font table is in (200 MiB apart in a run of 2026-11-15), so the 1 GiB around `near`
 // goes first, and the rest of the address space only when an image is still missing: a pass over all of it took
 // seconds.
-static int hint_find(uint64_t near) {
+static int hint_find(HintTable *T, uint64_t near) {
     enum { WINDOW = 512u << 20 };
     HintScan S;
-    uint32_t n = HT.size;
-    for (int k = 0; k < HINT_IMAGES; k++) {
-        S.img[k] = HT.img[HT.cur] + (size_t)k * n;
+    uint32_t n = T->size;
+    for (int k = 0; k < T->nimg; k++) {
+        S.img[k] = T->img[T->cur] + (size_t)k * n;
         S.ko[k] = hint_key_at(S.img[k], n);
         memcpy(&S.key[k], S.img[k] + S.ko[k], 4);
-        HT.nat[k] = 0;
+        T->nat[k] = 0;
     }
     S.buf = malloc((4 << 20) + n);
     if (!S.buf) return 0;
@@ -1059,14 +1133,14 @@ static int hint_find(uint64_t near) {
         lo = near > lo + WINDOW ? (near - WINDOW) & ~0xfffull : lo;
         hi = near + WINDOW < hi ? (near + WINDOW) & ~0xfffull : hi;
     }
-    hint_scan(&S, lo, hi);
+    hint_scan(T, &S, lo, hi);
     int found = 0;
-    for (int k = 0; k < HINT_IMAGES; k++) found += HT.nat[k] > 0;
-    if (found < HINT_IMAGES && (lo > 0x10000 || hi < RT_ADDRESS_LIMIT)) {   // an image straddling lo or hi is missed
-        hint_scan(&S, 0x10000, lo);
-        hint_scan(&S, hi, RT_ADDRESS_LIMIT);
+    for (int k = 0; k < T->nimg; k++) found += T->nat[k] > 0;
+    if (found < T->nimg && (lo > 0x10000 || hi < RT_ADDRESS_LIMIT)) {   // an image straddling lo or hi is missed
+        hint_scan(T, &S, 0x10000, lo);
+        hint_scan(T, &S, hi, RT_ADDRESS_LIMIT);
         found = 0;
-        for (int k = 0; k < HINT_IMAGES; k++) found += HT.nat[k] > 0;
+        for (int k = 0; k < T->nimg; k++) found += T->nat[k] > 0;
     }
     free(S.buf);
     return found;
@@ -1074,39 +1148,39 @@ static int hint_find(uint64_t near) {
 
 // The set `to`'s images (a prompts-live.bin name) where the shown set's are; near: the font table's address, where the
 // search starts. Runs on the prompts' worker thread.
-static void hint_apply(const char *to, uint64_t near) {
-    if (!HT.tried) hint_load();
+static void hint_apply(HintTable *T, const char *to, uint64_t near) {
+    if (!T->tried) hint_load(T);
     int t = -1;
-    for (int i = 0; i < HT.n; i++)
-        if (!strcmp(HT.name[i], to)) t = i;
-    if (t < 0 || HT.cur < 0 || t == HT.cur) return;
+    for (int i = 0; i < T->n; i++)
+        if (!strcmp(T->name[i], to)) t = i;
+    if (t < 0 || T->cur < 0 || t == T->cur) return;
     uint64_t t0 = plat_now_ns();
-    uint32_t n = HT.size;
-    if (!memcmp(HT.img[t], HT.img[HT.cur], (size_t)HINT_IMAGES * n)) {   // the same pictures: nothing to write
-        HT.cur = t;
+    uint32_t n = T->size;
+    if (!memcmp(T->img[t], T->img[T->cur], (size_t)T->nimg * n)) {   // the same pictures: nothing to write
+        T->cur = t;
         return;
     }
     int ok = 1;   // the kept places still hold the shown images
     uint8_t *mem = malloc(n);
-    for (int k = 0; k < HINT_IMAGES && ok; k++) {
-        ok = HT.nat[k] > 0;
-        for (int j = 0; j < HT.nat[k] && ok; j++)
-            ok = mem && plat_mem_read(HT.at[k][j], mem, n) && !memcmp(mem, HT.img[HT.cur] + (size_t)k * n, n);
+    for (int k = 0; k < T->nimg && ok; k++) {
+        ok = T->nat[k] > 0;
+        for (int j = 0; j < T->nat[k] && ok; j++)
+            ok = mem && plat_mem_read(T->at[k][j], mem, n) && !memcmp(mem, T->img[T->cur] + (size_t)k * n, n);
     }
     free(mem);
-    int found = ok ? HINT_IMAGES : hint_find(near);
+    int found = ok ? T->nimg : hint_find(T, near);
     if (!found) {
-        rt_log("RomFS overlay: the action hint's images of %s were not found in memory (%.0f ms): they stay until the next start",
-               HT.name[HT.cur], (plat_now_ns() - t0) / 1e6);
+        rt_log("RomFS overlay: %s's images of %s were not found in memory (%.0f ms): they stay until the next start",
+               T->what, T->name[T->cur], (plat_now_ns() - t0) / 1e6);
         return;
     }
     // mem_thaw makes a region our write tracking froze writable again; a place in memory that is read-only for another
     // reason (a copy the game mapped read-only) is left as it is and dropped from the kept places, as a write would fault
     int places = 0, skipped = 0;
-    for (int k = 0; k < HINT_IMAGES; k++) {
+    for (int k = 0; k < T->nimg; k++) {
         int kept = 0;
-        for (int j = 0; j < HT.nat[k]; j++) {
-            uint64_t a = HT.at[k][j], end = 0;
+        for (int j = 0; j < T->nat[k]; j++) {
+            uint64_t a = T->at[k][j], end = 0;
             mem_thaw(a, n);
             int rw = 1;   // the bounded walk: plat_mem_state would measure the whole run around the place
             for (uint64_t x = a; rw && x < a + n; x = end)
@@ -1115,17 +1189,17 @@ static void hint_apply(const char *to, uint64_t near) {
                 skipped++;
                 continue;
             }
-            memcpy((void *)(uintptr_t)a, HT.img[t] + (size_t)k * n, n);
-            HT.at[k][kept++] = a;
+            memcpy((void *)(uintptr_t)a, T->img[t] + (size_t)k * n, n);
+            T->at[k][kept++] = a;
             places++;
         }
-        HT.nat[k] = kept;
+        T->nat[k] = kept;
     }
-    rt_log("RomFS overlay: the action hint's images changed from %s to %s (%d of %d images found, %d places, %d read-only "
+    rt_log("RomFS overlay: %s's images changed from %s to %s (%d of %d images found, %d places, %d read-only "
            "left, first at %#llx, %.0f ms)",
-           HT.name[HT.cur], HT.name[t], found, HINT_IMAGES, places, skipped,
-           (unsigned long long)(HT.nat[0] ? HT.at[0][0] : 0), (plat_now_ns() - t0) / 1e6);
-    HT.cur = t;
+           T->what, T->name[T->cur], T->name[t], found, T->nimg, places, skipped,
+           (unsigned long long)(T->nat[0] ? T->at[0][0] : 0), (plat_now_ns() - t0) / 1e6);
+    T->cur = t;
 }
 
 static void live_main(void *arg) {
@@ -1143,7 +1217,8 @@ static void live_main(void *arg) {
         LV.at = at, LV.applied = to, LV.tries = 0, LV.retry_at = 0;
         rt_log("RomFS overlay: button prompts changed to %s in the running game (font table at %#llx, %.0f ms)", LV.name[to],
                (unsigned long long)at, (plat_now_ns() - t0) / 1e6);
-        hint_apply(LV.name[to], at);   // and the action hint's images
+        hint_apply(&HT, LV.name[to], at);   // and the action hint's images
+        hint_apply(&OT, LV.name[to], at);   // and the song screen's
     } else {
         // Before the game has loaded its fonts there is nothing to find: a few more tries, some seconds apart, so
         // keys bound in rekarina.ini show without a visit to the menu; then not again until the settings change.
@@ -1392,6 +1467,12 @@ static void overlay_init(void) {
         if (overlay_load(path, 1, 0)) {
             prompts_loaded = prompts_wanted;
             rt_log("RomFS overlay: %s button prompts (%s)", style, path);
+            // By label (pad_layout xbox, or auto for any pad but a Switch one) the Switch's A is the button labelled A,
+            // so the Xbox and Rekarina sets keep the game's own A B X Y glyphs: only the shoulders, triggers, Menu, View
+            // and the d-pad look different. Said once, as "I picked Xbox and still see the Switch's" starts there.
+            if (strstr(prompts_wanted, "-label") && (pick == PROMPTS_XBOX || pick == PROMPTS_RK))
+                rt_log("RomFS overlay: by label the face buttons keep the game's letters A B X Y (each names the button "
+                       "labelled so); LB RB LT RT, Menu, View and the d-pad are drawn as the %s set's", style);
             if (shaped) patches = NULL;   // in place of romfs-patches-<w>x<h>, whose UI layout it carries
         } else {
             prompts_off = ROMFS_PROMPTS_FAILED;
@@ -1404,6 +1485,8 @@ static void overlay_init(void) {
                                                              : "the game resolution takes its own UI layout")
                : prompts_off == ROMFS_PROMPTS_PATCHES ? "REKARINA_ROMFS_PATCHES is set"
                                                       : "their folder has no manifest.tsv (run the setup again)");
+        if (prompts_off == ROMFS_PROMPTS_MISSING)
+            rt_log("RomFS overlay: the missing folder is %s/%s", index_dir, prompts_wanted);
     }
     size_t prompts_end = noverlay;
     char plain[2100];   // romfs-patches, when it has a manifest
@@ -1417,6 +1500,7 @@ static void overlay_init(void) {
         snprintf(path, sizeof path, "%s/romfs-patches-fasttext", index_dir);
         if (overlay_load(path, 1, 0)) rt_log("RomFS overlay: faster dialogue, the messages without their pauses (%s)", path);
     }
+    hint_places_load();
 #endif
     size_t mods_first = noverlay;
     if (mods && *mods && strcmp(mods, "0")) overlay_load(mods, 0, 1);

@@ -473,6 +473,7 @@ static RtThread *g_core_owner[NCORE], *g_core_wait;
 static int g_cores_on = -1, g_held_max;
 
 static void diag_init(void);
+static void slots_init(void);
 static void ap_init(void);
 
 static int cores_enabled(void) {
@@ -482,6 +483,7 @@ static int cores_enabled(void) {
             rt_log("kernel: WARNING: free_cores = 1 (REKARINA_FREE_CORES) turns the virtual core gate off. This is an "
                    "experimental mode and the game crashes or hangs in it, usually at start. Set free_cores = 0 in "
                    RT_INI_FILE " to play");
+        slots_init();
         diag_init();
         ap_init();
         kern_wait_off_core();   // its start line
@@ -495,7 +497,54 @@ void kern_free_cores_note(void) {
                RT_INI_FILE " before reporting this crash");
 }
 
-static int core_allowed(const RtThread *t, int c) { return (int)((t->mask >> c) & 1); }
+// ---- fewer virtual cores at once (REKARINA_GUEST_CORES=<n>, 1 to NCORE; unset: as many as the process has processors)
+// The gate lets one thread run on each of the console's NCORE application cores, so up to NCORE game threads run at
+// once beside the thread that replays the frame and the host's own. On a processor with fewer logical processors than
+// that the host's scheduler decides who waits, by its time slices and without the game's priorities: with four
+// processors a woken main thread waited up to 33 ms for one while a background thread of the game kept running
+// (2026-11-19, the square and the field at 1080p: 1 % low 22-24 fps against 52-70). With n < NCORE the cores are
+// folded onto n slots (core c runs in slot c % n) and one thread runs per slot: a thread may take a slot when its
+// mask names a core of that slot, and everything that decides between threads (core_grant, core_kick, the yield,
+// the preemption) goes by the game's priorities as on any core. The game still sees NCORE cores: each thread is told
+// a core of its own mask that folds onto its slot (core_number), so two running threads never report the same core,
+// which is what the game's per-core data needs (free_cores above).
+// The default is one slot per logical processor the process may use, at most NCORE (so nothing changes with six or
+// more) and at least two. Measured with the process held to four processors (0x55), four slots against six: the
+// square 62.5 against 61.6-64.2 fps with a 1 % low of 38.9 against 20.7-24.1 and 15 frames over 25 ms against 22-33;
+// the field 72.7 against 70.6 fps, 1 % low 44.5 against 22.4, frames over 25 / 50 ms 31 / 1 against 107 / 10. Three
+// slots: the field better still (5 / 0), the square slower (58.5 fps). Five slots on six processors lost 6 % of the
+// square's frame rate for nothing, so six processors keep six.
+static int g_slots = NCORE;
+
+static void slots_init(void) {
+    const char *e = cfg_env("REKARINA_GUEST_CORES");
+    int cpus = (int)plat_cpu_usable();
+    int n = e && *e ? atoi(e) : cpus < 2 ? 2 : cpus;
+    g_slots = n < 1 || n > NCORE ? NCORE : n;
+    if (g_slots != NCORE)
+        rt_log("kernel: the game's %d cores are folded onto %d: that many of its threads run at once (%d logical "
+               "processors; REKARINA_GUEST_CORES)", NCORE, g_slots, cpus);
+}
+
+static int core_allowed(const RtThread *t, int c) {
+    if (g_slots == NCORE) return (int)((t->mask >> c) & 1);
+    if (c >= g_slots) return 0;
+    for (int i = c; i < NCORE; i += g_slots)
+        if (t->mask >> i & 1) return 1;
+    return 0;
+}
+
+// The core number the game is told for t: the core held, or with folded cores a core of t's mask in the slot held
+// (its ideal core when that is one).
+static int core_number(const RtThread *t) {
+    int s = t->cur_core;
+    if (s < 0) return t->core;
+    if (g_slots == NCORE) return s;
+    if (t->core >= 0 && t->core < NCORE && t->core % g_slots == s && (t->mask >> t->core & 1)) return t->core;
+    for (int i = s; i < NCORE; i += g_slots)
+        if (t->mask >> i & 1) return i;
+    return s;
+}
 
 // ---- asynchronous preemption (REKARINA_ASYNC_PREEMPT, on unless 0)
 // Adapted from MacNativeGames games/totk/runtime/threads.c @ 33e8fa8 (8bf0893, PR #488; MIT, Copyright (c) 2026
@@ -1244,7 +1293,8 @@ static void core_take(RtThread *t) {
     }
     if (!(t->mask & ((1u << NCORE) - 1)))
         rt_fatal("kernel: thread %#x core mask %#llx has no application core", t->handle, (unsigned long long)t->mask);
-    int c = t->core >= 0 && t->core < NCORE && core_allowed(t, t->core) && !g_core_owner[t->core] ? t->core : -1;
+    int ideal = t->core >= 0 && t->core < NCORE ? t->core % g_slots : -1;   // its ideal core, or that core's slot
+    int c = ideal >= 0 && core_allowed(t, ideal) && !g_core_owner[ideal] ? ideal : -1;
     for (int i = 0; c < 0 && i < NCORE; i++)
         if (core_allowed(t, i) && !g_core_owner[i]) c = i;
     if (c >= 0) {
@@ -2163,7 +2213,7 @@ static int kern_svc_(Cpu *c, uint32_t imm) {
     }
     case 0x10: {   // GetCurrentProcessorNumber: the virtual core held
         RtThread *t = cur(imm);
-        x[0] = (uint64_t)(uint32_t)(t->cur_core >= 0 ? t->cur_core : t->core);
+        x[0] = (uint64_t)(uint32_t)core_number(t);
         return 1;
     }
     case 0x36: {   // SynchronizePreemptionState: the SDK's spin locks call it after clearing TLR+0x100 (disable_count)

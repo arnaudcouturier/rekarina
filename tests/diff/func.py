@@ -18,11 +18,19 @@ picked function are dropped, as the C side would run that function instead of th
 With --patches, the spin waits of the table (recomp/patches.py `spin`) are emitted with their gates, and functions
 that hold one come first (a quarter of the picks at most); a case whose loop does not leave runs into --steps.
 
+--at ADDR[,ADDR...] tests those functions (absolute addresses of function starts) in place of random picks, and in
+half the cases gives v0's low lane a float between 0.05 and 2 (a step or a scale, as such functions take). With
+--patches the code patch sites inside them are emitted as the generator emits them; --patch-on SET[,SET...] switches
+those sets on for both sides: the C reads rt_patch_on, and Unicorn runs a copy of the module whose site words branch
+to the replacement words placed after its image and back (replacement words that branch or name the patch page are
+not supported here).
+
 Usage: func.py [--exefs DIR] [--modules main,subsdk0,sdk] [--functions N] [--cases K] [--seed S] [--jobs J]
-               [--patches FILE]
+               [--patches FILE] [--at ADDR,...] [--patch-on SET,...]
 """
 import argparse
 import os
+import struct
 import platform
 import random
 import subprocess
@@ -42,6 +50,7 @@ import patches
 from layout import layout
 from module import Module
 
+PATCH_ON = [0] * 64   # rt_patch_on of the harness, by set index (--patch-on)
 SENTINEL = 0x7210000000  # LR on entry; never executed
 PTR_LO, PTR_HI = BUF + 0x8000, BUF + 0x28000
 STACK_TOP = BUF + 0x3F000
@@ -86,9 +95,11 @@ def simd_mask(w):
 STUB_SKIP_TEMPS = False   # --temps-unsaved (main sets it)
 
 
-def pick_functions(name, mod, count, r, spins=None, kept_uses=0, reg_locals=gen.regs.LOCALS, temps_unsaved=False):
+def pick_functions(name, mod, count, r, spins=None, kept_uses=0, reg_locals=gen.regs.LOCALS, temps_unsaved=False,
+                   at=None, patched=None):
     """[(entry, end, tags)] of up to count functions of mod, plus the Emitter that will emit them. spins: {spin wait
-    back-edge: head}, emitted with gates."""
+    back-edge: head}, emitted with gates. at: these function starts in place of random picks; patched: the module's
+    code patch sites (recomp/patches.py Table.for_module), emitted at theirs."""
     starts, _ = gen.discover(mod)
     w = mod.words
     ends = np.append(starts[1:], len(w))
@@ -111,11 +122,28 @@ def pick_functions(name, mod, count, r, spins=None, kept_uses=0, reg_locals=gen.
     for pool in (with_spin, with_br, with_call, rest):
         r.shuffle(pool)
     emitter = gen.Emitter(mod, set((mod.lo + starts * 4).tolist()), spins=spins, kept_uses=kept_uses,
-                          reg_locals=reg_locals, temps_unsaved=temps_unsaved)
+                          reg_locals=reg_locals, temps_unsaved=temps_unsaved, patched=patched)
     picks, tags_seen = [], Counter()
+    if at is not None:   # the functions named, whatever the pools say
+        pools = ()
+        for entry in at:
+            i = int(np.searchsorted(mod.lo + starts * 4, entry))
+            if i >= len(starts) or mod.lo + int(starts[i]) * 4 != entry:
+                print(f'{name}: {entry:#x} is no function start')
+                continue
+            end = mod.lo + int(ends[i]) * 4
+            tags = check_function(emitter, entry, end)
+            if tags is None:
+                print(f'{name}: {gen.fname(entry)} cannot run alone (a branch out of it, an unresolved br, no ret)')
+                continue
+            if any(a in (patched or {}) for a in range(entry, end, 4)):
+                tags.add('patched')
+            picks.append((entry, end, tags))
+    else:
+        pools = ((with_spin, count // 4), (with_br, count // 4), (with_call, count // 2), (rest, count))
     # Functions with a spin wait first, then with a br (jump tables, fallbacks), at most a quarter of the picks each;
     # then functions with calls, at most half.
-    for pool, quota in ((with_spin, count // 4), (with_br, count // 4), (with_call, count // 2), (rest, count)):
+    for pool, quota in pools:
         taken = 0
         for i in pool:
             if len(picks) >= count or taken >= quota:
@@ -206,6 +234,8 @@ def build(work, emitted, jobs, cflags):
     table.write_text('#include "cpu.h"\n' + ''.join(f'void {gen.fname(e)}(Cpu *c);\n' for _, e, _, _ in emitted) +
                      'GuestFn tests[] = {' + ','.join(gen.fname(e) for _, e, _, _ in emitted) + '};\n' +
                      f'int ntests = {len(emitted)};\n' + 'void rt_stub_call(Cpu *c, uint64_t target);\n' +
+                     # the code patch sets as --patch-on switches them (read by the patched sites' C)
+                     'RT_LOCAL uint8_t rt_patch_on[64] = {' + ','.join(str(v) for v in PATCH_ON) + '};\n' +
                      ''.join(f'void {gen.fname(t)}(Cpu *c) {{ rt_stub_call(c, {hex(t)}ull); }}\n'
                              for t in sorted(called)))
     # fma.c: a --cflags=-march=x86-64-v2 run must exercise the software fma the v2 build links, not the C runtime's.
@@ -222,13 +252,14 @@ def build(work, emitted, jobs, cflags):
     return exe
 
 
-def make_buffer(r):
+def make_buffer(r, pointers=0.4):
+    """The scratch buffer: pointers into itself (that share of the words), small numbers and random words."""
     out = bytearray()
     for _ in range(BUF_SIZE // 8):
         k = r.random()
-        if k < 0.4:
+        if k < pointers:
             v = r.randrange(PTR_LO, PTR_HI, 8)
-        elif k < 0.7:
+        elif k < pointers + (1 - pointers) / 2:
             v = r.randrange(0, 256)
         else:
             v = r.getrandbits(64)
@@ -255,7 +286,8 @@ class Runner:
 
     MAX_CALLS = 1000
 
-    def __init__(self, images, buf0, sites):
+    def __init__(self, images, buf0, sites, extra=()):
+        self.extra = list(extra)   # [(lo, hi)]: code outside the function that counts as its own (patch trampolines)
         self.emu = Emu(images)
         mu = self.emu.mu
         for base, data in images:
@@ -272,7 +304,8 @@ class Runner:
             mu.hook_add(uc.UC_HOOK_CODE, self._call, begin=a, end=a)
 
     def _block(self, mu, address, size, user):
-        if not self.lo <= address < self.hi and address != SENTINEL:
+        if not self.lo <= address < self.hi and address != SENTINEL and \
+                not any(lo <= address < hi for lo, hi in self.extra):
             self.left = True
             mu.emu_stop()
 
@@ -356,6 +389,8 @@ def main():
                     'fold, as a callee may not read them')
     ap.add_argument('--reg-locals', type=int, default=gen.regs.LOCALS, help='recomp/gen.py --reg-locals')
     ap.add_argument('--kept-locals', type=int, default=0, help='recomp/gen.py --kept-locals for the emitted functions')
+    ap.add_argument('--at', help='test these function starts (hex, comma separated) instead of random picks')
+    ap.add_argument('--patch-on', default='', help='code patch sets (names, comma separated) switched on for both sides')
     ap.add_argument('--cflags', default='-march=x86-64-v3' if platform.machine().lower() in ('amd64', 'x86_64') else '')
     args = ap.parse_args()
     r = random.Random(args.seed)
@@ -367,15 +402,56 @@ def main():
     images, emitted, tags = [], [], []
     mods = layout(args.exefs)
     table = patches.load(args.patches, mods) if args.patches else patches.Table()
-    for name, base, _ in mods:
+    at = [int(a, 16) for a in args.at.split(',')] if args.at else None
+    on = [s for s in args.patch_on.split(',') if s]
+    names = [n for n, _, _ in table.sets]
+    for s in on:
+        if s not in names:
+            sys.exit(f'func.py: --patch-on {s}: no such set in {args.patches}')
+    PATCH_ON[:] = [1 if i < len(names) and names[i] in on else 0 for i in range(64)]
+    tramps = []   # (lo, hi) of the trampolines Unicorn runs for the sets switched on
+    for name, base, size in mods:
         if name not in want:
+            continue
+        mine = [a for a in at if base <= a < base + size] if at is not None else None
+        if mine == []:
             continue
         mod = Module(name, args.exefs / name, base, 'c')
         img = work / f'{name}.img'
         img.write_bytes(mod.image)
-        images.append((base, img, mod.image))
+        patched = table.for_module(name, base) if at is not None else None
         picks, emitter = pick_functions(name, mod, args.functions, r, table.spins_for(name, base), args.kept_locals,
-                                        args.reg_locals, not args.temps_saved)
+                                        args.reg_locals, not args.temps_saved, mine, patched)
+        uc_image = mod.image
+        if at is not None:   # retaa / retab: Unicorn's Cortex-A57 has no pointer authentication, the lifter takes them
+            data = bytearray(mod.image)   # as ret (its paciasp / pacibsp are hints, nothing on that core)
+            for e, end, _ in picks:
+                for a in range(e, end, 4):
+                    if int.from_bytes(data[a - base:a - base + 4], 'little') in (0xD65F0BFF, 0xD65F0FFF):
+                        data[a - base:a - base + 4] = (0xD65F03C0).to_bytes(4, 'little')
+            uc_image = bytes(data)
+        if on and patched:   # each site of a set switched on: b to its replacement words, then b back to the next word
+            data = bytearray(uc_image)
+            tbase = base + ((len(data) + 0xFFFF) & ~0xFFFF)
+            data += bytes(tbase - base - len(data))
+            for a, alts in sorted(patched.items()):
+                if not any(e <= a < end for e, end, _ in picks):
+                    continue
+                words = next((w for k, w in alts if names[k] in on), None)
+                if words is None:
+                    continue
+                t = base + len(data)
+                for w in words:
+                    lifted = mod.lifter.lift(w, a)
+                    if lifted.kind != 'op' or (w & 0x1F000000) == 0x10000000:
+                        sys.exit(f'func.py: {a:#x}: replacement word {w:08x} branches or is pc-relative')
+                    data += w.to_bytes(4, 'little')
+                data += (0x14000000 | ((a + 4 - (base + len(data))) >> 2 & 0x3FFFFFF)).to_bytes(4, 'little')
+                data[a - base:a - base + 4] = (0x14000000 | ((t - a) >> 2 & 0x3FFFFFF)).to_bytes(4, 'little')
+                print(f'{name}: {a:#x} runs the replacement at {t:#x} in Unicorn ({len(words)} words)')
+            tramps.append((tbase, base + len(data)))
+            uc_image = bytes(data)
+        images.append((base, img, uc_image))
         for entry, end, t in picks:
             emitted.append((name, entry, end, emitter))
             tags.append(t)
@@ -386,16 +462,19 @@ def main():
     exe = build(work, emitted, args.jobs, args.cflags + ('' if args.temps_saved else ' -DSTUB_SKIP_TEMPS'))
     print(f'compiled ({time.time() - t1:.0f}s)', flush=True)
 
-    buf0 = make_buffer(r)
+    buf0 = make_buffer(r, 0.95 if at is not None else 0.4)   # named functions walk objects: mostly pointers
     sites = set()
     for _, entry, end, emitter in emitted:
         sites.update(call_sites(emitter.mod, entry, end))
-    runner = Runner([(base, data) for base, _, data in images], buf0, sites)
+    runner = Runner([(base, data) for base, _, data in images], buf0, sites, tramps)
     cases, expect, tested, skipped = [], [], set(), 0
     t2 = time.time()
     for k, (name, entry, end, _) in enumerate(emitted):
         for _ in range(args.cases):
             case = make_case(r)
+            if at is not None and r.random() < 0.5:   # a step or a scale in v0's low lane
+                fpcr, x, sp, nzcv, v = case
+                v[0] = v[0] & ~0xFFFFFFFF | struct.unpack('<I', struct.pack('<f', r.uniform(0.05, 2)))[0]
             want_state = runner.run(entry, end, case, args.steps)
             if want_state is None:
                 skipped += 1

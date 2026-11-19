@@ -159,7 +159,15 @@ are the latency columns.
 ### Open
 
 - Frames of 25-50 ms remain where the game streams textures while video memory is short (another program holding
-  4-5 GB of a 12 GB card makes it an 8 GB card).
+  4-5 GB of a 12 GB card makes it an 8 GB card). With that much really held by a test program on an otherwise quiet
+  machine, the square and the field at 1080p showed no more long frames than with nothing held (2026-11-19,
+  docs/oot-notes.md): what the reported sessions add to held memory is not found.
+- The images made ahead are idle most of the time beside a desktop: the game fills whatever budget it gets, "room is
+  short" is then its normal state a minute into a map, and nothing is made ahead while it is; with half or quarter
+  textures they are off altogether.
+- Four logical processors hold about 60-70 fps at 1080p with a 1 % low of 33-44 (the cores folded onto four slots,
+  docs/architecture.md); the game's threads alone need three of this machine's cores.
+- One map in, the process's working set is about 16 GB (private memory 22 GB): too much for a PC with 16 GB.
 - Block compaction of video memory (`REKARINA_VRAM_COMPACT`, off) loses the device at its first pass; the free space
   inside partly used blocks (0.15-0.5 GB in play, about 2 GB after ten map changes) stays until that is fixed.
 - The kernel probe (`--probe-kernel`) still expects three application cores; this title has six, so its virtual-core

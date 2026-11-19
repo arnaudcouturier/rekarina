@@ -78,6 +78,13 @@ Every guest thread is a host thread. TotK assumes Horizon's scheduler: three app
   waiter after 50 us of polling (`REKARINA_SPIN`, `REKARINA_SPIN_HANDOFF_US`).
 - `free_cores = 1` (`REKARINA_FREE_CORES=1`) turns the gate off, for experiments only: the game crashes or hangs, usually
   at start, because its job workers all report core 0 and share per-core memory (#212).
+- Fewer processors than cores. With fewer logical processors than the console has application cores (the process's
+  affinity mask counts), the cores are folded onto that many slots, at least two (`kernel.c` `core_allowed`: core c runs
+  in slot c % n, one thread per slot), so no more game threads run at once than the host can run and the game's own
+  priorities decide who waits: the host's scheduler knows none of them and makes a woken thread wait out another's
+  time slice (33 ms measured). Each thread is still told a core of its own mask that folds onto its slot
+  (`core_number`), so two running threads never report the same core. `REKARINA_GUEST_CORES=<n>` sets the count
+  (the console's own count turns the fold off).
 
 ### 4. Graphics
 

@@ -138,3 +138,135 @@ site mouse_direct main 37c45c bd053a81 952c92c9   # str s1, [x20, #0x538] -> bl 
 # it) decide whether the camera eases back to its rest pitch; the second call marks a frame the mouse moved the camera
 # as input, so a mouse-held pitch stays as a stick-held one does.
 site mouse_direct main 37c4f4 b9053288 952c929f   # str w8, [x20, #0x530] -> bl page+0xf70
+
+set turnrate REKARINA_TURN_RATE 1
+
+# A steering update's saved turn rate (main+0x261e8e0, the step in 60 Hz frames in s8 from its first argument; the
+# first dungeon's boss steers by it). After applying a turn the update clamps the saved rate (+0x24) to
+# [-|turn| * step, |turn| * step], but the turn was already scaled by the step: the bounds are rate * step squared.
+# Above 60 fps the step is below 1, the bounds shrink faster than the turn, and a player at 113 fps saw the boss
+# circle the ceiling without reaching her next point. With the set both bounds are |turn| / step (the rate) while
+# 0 < step < 1; at a step of one frame or more, and for a NaN step, the game's own products stay, bit for bit. The
+# selection uses vector compares and a bit insert, which leave the flags alone (every alternative of a site writes the
+# same flags): s4..s6 are free here, the function returns after these and restores v8 and v9 next.
+# fcmgt s4, s8, #0.0; fmov s5, #1.0; fcmgt s5, s5, s8; and v4.8b, v4.8b, v5.8b (the mask: 0 < step < 1);
+# fdiv s6, s0, <s1 | s8>; the original fmul; bit <v1 | v0>.8b, v6.8b, v4.8b
+site turnrate main 261eb18 1e210801 5ea0c904 1e2e1005 7ea8e4a5 0e251c84 1e211806 1e210801 2ea41cc1   # fmul s1, s0, s1 (s1 = -step)
+site turnrate main 261eb1c 1e280800 5ea0c904 1e2e1005 7ea8e4a5 0e251c84 1e281806 1e280800 2ea41cc0   # fmul s0, s0, s8
+
+# The sets from here on keep places right that count or test the frame step as if it were a whole 60 Hz frame. Each
+# site calls a host function on the patch page (runtime/oot_fps.c, which says per function what it reads and writes);
+# the host gives the game's own values back at a step of one frame or more, so they change nothing at 60 fps and
+# below. The step they test is the VFR manager's ([[main+0x4c7e890]]+0x10, in 60 Hz frames: the one realtime feeds).
+# A bl at a site loses x30, so each such site is in a function that saved x30 in its prologue, except where the
+# comment says how it is kept.
+
+set daytime REKARINA_DAY_CLOCK 1
+
+# The time of day (main+0x3cdf70, the clock object in x19): each frame it stores (int)(2 * step) game seconds at +0x3c,
+# which the clock then adds to the seconds of the day. Above 60 fps the cut loses the fraction: 1 a frame below 120 fps
+# (the day ran at 83 % at 100 fps) and 0 above 120 (the clock stood still and the sun swung around the frozen hour).
+# With the set the amount's fraction is kept per clock object and the whole seconds in it are handed out, so the day
+# runs at its own rate at any frame rate.
+site daytime main 3cdfbc 1e202800 1e202800 952b4be9   # fadd s0, s0, s0 -> fadd s0, s0, s0; bl page+0xf60
+
+set soundjob REKARINA_SOUND_JOB 1
+
+# The sound manager's job (main+0x415300, its phase in w2: 0, 1 or 2; any other value falls to its epilogue). Phase 0
+# hands the step to the sound engine, whose fades, delays and parameter ramps count updates of at least one whole step.
+# Fed less, some sounds were not released when a map unloaded, the voices in use climbed until the game's voice budget
+# was full, and new sounds and then the music stopped after several loading zones. With the set the job runs as often
+# as at 60 fps: phase 0 adds the step to a remainder and runs once a whole step has built up, with a step of 1; on the
+# other frames the host sets w2 to 3 and the job returns at once; phases 1 and 2 follow phase 0's choice.
+site soundjob main 41531c 910083fd 910083fd 952a2f0d   # add x29, sp, #0x20 -> the same; bl page+0xf50 (the gate)
+site soundjob main 415334 bd401100 bd401100 952a2f03   # ldr s0, [x8, #0x10] -> the same; bl page+0xf40 (a whole step)
+# The music manager's update (main+0x3353400) runs inside that job. It reads the step (+0x10) and the frame's seconds
+# (+0x18) from the time object itself: held to 60 Hz and handed a part of a step, its clock would run at 60 / fps. The
+# host makes them a whole step and that step's seconds. It also reads a byte of change flags the battle manager sets
+# for one game frame ([x26+0x898]: the battle music's name, its distance volume, ...): on a frame the gate held the job
+# the host keeps the byte, and the update's next run reads its flags with it, so the battle music still ends after a
+# fight.
+site soundjob main 3353448 bd401909 bd401909 946d36ba   # ldr s9, [x8, #0x18] -> the same; bl page+0xf30
+site soundjob main 3353680 39626348 946d3628   # ldrb w8, [x26, #0x898] -> bl page+0xf20 (the load with the kept flags)
+site soundjob main 33537c0 39626348 946d35d8
+site soundjob main 3353950 39626348 946d3574
+site soundjob main 3353a4c 39626348 946d3535
+# A song's playback after the instrument (main+0x3292af0 the song just played, main+0x3292dc0 the other melody
+# playback) asks main+0x3297b50 each update whether the note flag is set, which the sound engine sets on its run at each
+# note, and goes on to the next note when it is. With the job at 60 Hz the flag stays set over several updates and the
+# notes came two or three at a time: the host calls the game's function and reads a set flag as clear when it was read
+# set before and the job has not run since.
+site soundjob main 3292c80 940013b4 947038a4   # bl main+0x3297b50 -> bl page+0xf10
+site soundjob main 3292ed0 94001320 9470380c   # bl main+0x3297b50 -> bl page+0xf00
+
+set horsejump REKARINA_HORSE_JUMP 1
+
+# The horse's jump (its state machine main+0x2c39eb0, its step in s10): while the horse gets ready to jump a fence it
+# sets the blend frames into the jump animation each frame, and with a step under 1 (slow motion at 60 fps) it takes
+# last frame's blend frames plus the step instead (main+0x2c3ae18: fmov s9, #1.0; fcmp s10, s9; b.pl past that branch).
+# Above 60 fps every step is under 1, the blend frames grew each frame, the blend into the jump hardly started and the
+# horse galloped through the fence while its body went over it. With the set a step that is the frame's whole step
+# (within 0.1 %) is not slow motion: the host makes s9 the step itself, so the test skips the branch; otherwise s9 is
+# 1.0 as before (s9 is written again before any other read on that path).
+site horsejump main 2c3ae18 1e2e1009 94899836   # fmov s9, #1.0 -> bl page+0xef0
+
+set floorcarry REKARINA_FLOOR_CARRY 1
+
+# A character on a moving floor (three update modules: main+0x139dc0, main+0x13d490, main+0x389aa40) is carried by the
+# floor's velocity, but each first tests the physics time's 1/dt against 100 (mov w8, #100.0; fmov s1, w8; fcmp s0,
+# s1; b.gt) and above it (a frame under 10 ms: at 60 fps, time slowed below 0.6) carries it by a tenth. Above 100 fps
+# every frame is under 10 ms, and the hero and the enemies slid to the back of a dungeon's barge. With the set the
+# threshold is 100 / step while the step is under 1: 1/dt * step against 100, the game's own test as at 60 fps.
+site floorcarry main 13a068 1e270101 1e270101 95359b9e    # fmov s1, w8 -> the same; bl page+0xee0
+site floorcarry main 13d708 1e270101 1e270101 95358df6
+site floorcarry main 389ac24 1e270101 1e270101 945818af
+
+set songrec REKARINA_SONG_RECORD 1
+
+# A song the hero records for a scarecrow and plays back to it: one counter of elapsed frames (+0x265fc of its object)
+# adds (unsigned)step each update while a recorded melody plays (main+0x32932b0), while the eight notes and the gaps
+# between them are recorded (main+0x3296840, two places) and when the recording ends (main+0x3292690). Above 60 fps the
+# cut gave 0: the playback waited on one note, and the recording lost its timing and the eighth note's length. With the
+# set the step's fraction is kept for the counter and its whole frames are handed out. main+0x3296840 is a leaf (x30
+# not saved): its two sites keep x30 in x16 (not read after them; the host puts it back).
+site songrec main 329340c bd401100 bd401100 947036b1            # ldr s0, [x8, #0x10] -> the same; bl page+0xed0
+site songrec main 3296b04 bd401100 bd401100 aa1e03f0 947028ef   # -> the same; mov x16, x30; bl page+0xec0
+site songrec main 3296da0 bd401100 bd401100 aa1e03f0 94702848   # -> the same; mov x16, x30; bl page+0xec0
+site songrec main 32926c4 bd401100 bd401100 947039fb            # -> the same; bl page+0xeb0
+
+set looppose REKARINA_LOOP_POSE 1
+
+# An animation that loops over one frame or less is one pose (people frozen under the ice are drawn from one). At 60
+# fps each step is 1 and the clock lands on the same phase; above 60 fps the phase moves by the step each frame and
+# wraps, so each frame drew another phase and the pose twitched. Two places make the time a skeleton is drawn at: the
+# animation clock's two advances (main+0x2afca0: step * speed, the entry in x20 with its start at +0x10 and end at
+# +0x14), where the host gives such a loop the step's whole frames, the fraction kept per entry; and the store of the
+# time (main+0x924aa0, x22: the time, its range at +4 and +8), where such a loop is drawn at its start. Longer loops are
+# left as they are.
+site looppose main 2afe04 1e210902 952fc427   # fmul s2, s8, s1 -> bl page+0xea0
+site looppose main 2b01d0 1e200901 952fc330   # fmul s1, s8, s0 -> bl page+0xe90
+site looppose main 924e50 bd0002c0 9515f00c   # str s0, [x22] -> bl page+0xe80
+
+set clothtime REKARINA_CLOTH_TIME 1
+
+# Cloth (the hero's cap and the other cloth): the simulate operator's per-frame setup (main+0x1b1aa48) takes the time
+# of a step from its step context (x22+8), a 60th of a second whatever the frame, and splits it into substeps. Above 60
+# fps the cloth was still stepped a 60th each frame and swung fps / 60 times too fast. With the set the time is
+# multiplied by the step while the step is under 1: the cloth keeps the game's clock and is still solved every frame.
+# (Below 60 fps the same 60th makes the cloth slow; a step over 1 is left as the game has it here.)
+site clothtime main 1b1ac68 fd4006c0 fd4006c0 94ce1882   # ldr d0, [x22, #8] -> the same; bl page+0xe70
+
+set webstep REKARINA_WEB_STEPS 1
+
+# The floor web of the first dungeon (main+0x632cb0, x19): it runs (int)(dt / a 60th) simulation steps a frame,
+# clamped to 0..3. Above 60 fps the cut gave 0 and the web stayed rigid when the hero landed on it. With the set the
+# fraction is kept per web and its whole steps are handed out.
+site webstep main 632cfc 1e201900 1e201900 9521b859   # fdiv s0, s8, s0 -> the same; bl page+0xe60
+
+set inputstep REKARINA_INPUT_STEP 1
+
+# The framework's frame procedure (main+0x3b4ea90) stores 60 / its nominal frame rate (60 here) at main+0x4d41fc8 as a
+# global step, which the input repeat timer (main+0x348376c: a held direction moving a menu cursor) counts by. Above 60
+# fps it stayed 1 a frame and the repeat ran fps / 60 times too fast. With the set it is the frame's step (patch page
+# +8, the real-time step in 60 Hz frames) while that is under 1.
+site inputstep main 3b4eaf8 1e201820 1e201820 944d48d6   # fdiv s0, s1, s0 -> the same; bl page+0xe50

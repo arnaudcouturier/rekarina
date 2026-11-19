@@ -20,7 +20,7 @@
 <link rel="icon" href="assets/icon-64.png" sizes="64x64" type="image/png">
 <link rel="apple-touch-icon" href="assets/icon-180.png">
 <link rel="preload" href="assets/fonts/Roboto-Medium.ttf" as="font" type="font/ttf" crossorigin>
-<link rel="stylesheet" href="assets/site.css">
+<link rel="stylesheet" href="assets/site.css?v=20261119">
 <script src="assets/site.js" defer></script>
 </head>
 <body>
@@ -50,8 +50,10 @@
       <div class="get rv d2" id="release">
         <!-- release:hero -->
         <a class="plate play cursor" href="/download">Download for Windows</a>
-        <span class="meta">Rekarina.exe &middot; version 1.2.0 &middot; 155 MB &middot; Windows 10 or 11, 64-bit</span>
+        <span class="meta">Rekarina.exe &middot; version 1.2.1 &middot; 155 MB &middot; Windows 10 or 11, 64-bit</span>
         <!-- /release:hero -->
+        <a class="plate join" href="https://discord.gg/6N8PKr9zZA" rel="noopener"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20.317 4.3698a19.7913 19.7913 0 00-4.8851-1.5152.0741.0741 0 00-.0785.0371c-.211.3753-.4447.8648-.6083 1.2495-1.8447-.2762-3.68-.2762-5.4868 0-.1636-.3933-.4058-.8742-.6177-1.2495a.077.077 0 00-.0785-.037 19.7363 19.7363 0 00-4.8852 1.515.0699.0699 0 00-.0321.0277C.5334 9.0458-.319 13.5799.0992 18.0578a.0824.0824 0 00.0312.0561c2.0528 1.5076 4.0413 2.4228 5.9929 3.0294a.0777.0777 0 00.0842-.0276c.4616-.6304.8731-1.2952 1.226-1.9942a.076.076 0 00-.0416-.1057c-.6528-.2476-1.2743-.5495-1.8722-.8923a.077.077 0 01-.0076-.1277c.1258-.0943.2517-.1923.3718-.2914a.0743.0743 0 01.0776-.0105c3.9278 1.7933 8.18 1.7933 12.0614 0a.0739.0739 0 01.0785.0095c.1202.099.246.1981.3728.2924a.077.077 0 01-.0066.1276 12.2986 12.2986 0 01-1.873.8914.0766.0766 0 00-.0407.1067c.3604.698.7719 1.3628 1.225 1.9932a.076.076 0 00.0842.0286c1.961-.6067 3.9495-1.5219 6.0023-3.0294a.077.077 0 00.0313-.0552c.5004-5.177-.8382-9.6739-3.5485-13.6604a.061.061 0 00-.0312-.0286zM8.02 15.3312c-1.1825 0-2.1569-1.0857-2.1569-2.419 0-1.3332.9555-2.4189 2.157-2.4189 1.2108 0 2.1757 1.0952 2.1568 2.419 0 1.3332-.9555 2.4189-2.1569 2.4189zm7.9748 0c-1.1825 0-2.1569-1.0857-2.1569-2.419 0-1.3332.9554-2.4189 2.1569-2.4189 1.2108 0 2.1757 1.0952 2.1568 2.419 0 1.3332-.946 2.4189-2.1568 2.4189Z"/></svg><span>Join the Discord</span></a>
+        <span class="meta">Help with the setup, news of new versions, and where to report a problem.</span>
         <div class="more">
           <a class="plate" href="#install">How it works</a>
           <a class="plate" href="#requirements">Requirements</a>
@@ -117,11 +119,11 @@
       <ol class="steps rv">
         <li>
           <div class="row"><div class="n">1</div><div class="l">Point the launcher at your dump</div><div class="c">about a minute</div></div>
-          <p>Start <b>Rekarina.exe</b>. It is the whole launcher in one file: at its first start it unpacks its tools, once. Choose the folder with your game dump and where the game goes.</p>
+          <p>Start <b>Rekarina.exe</b>. It is the whole launcher in one file: at its first start it asks for a folder, on any disk, and keeps everything there: its tools, the build and the game. Then choose the folder with your game dump.</p>
         </li>
         <li>
-          <div class="row"><div class="n">2</div><div class="l">It builds the game</div><div class="c">a little over an hour, once</div></div>
-          <p>Press <b>Start</b>. The launcher checks the dump, recompiles the game's code, builds the executable, fetches the graphics components for your GPU and prepares the shaders. Each step shows how long it has left.</p>
+          <div class="row"><div class="n">2</div><div class="l">It builds the game</div><div class="c">about half an hour, once</div></div>
+          <p>Press <b>Start</b>. The launcher checks the dump, recompiles the game's code, builds the executable, fetches the graphics components for your GPU and prepares the shaders the game is known to use. Each step shows how long it has left. The rarer shaders are prepared by the launcher in the background afterwards, while the game is closed.</p>
         </li>
         <li>
           <div class="row"><div class="n">3</div><div class="l">Play</div><div class="c go">Play</div></div>
@@ -176,7 +178,7 @@
         <p>Every release is signed with the project's key. The launcher installs an update only when that signature fits, so a changed file is refused wherever it came from.</p>
         <!-- release:sums -->
         <p>Rekarina.exe has no code-signing certificate, so Windows SmartScreen shows an &ldquo;unknown publisher&rdquo; page until enough people have run the file. To be sure the file is the one published here, compare its SHA-256 with the line below.</p>
-        <div class="sum"><b>SHA-256 of Rekarina.exe 1.2.0</b><code>c60b0a70b2ab448e613427d2cc9acebb9a925f8aa8f6d382375ee1b1245b01d2</code></div>
+        <div class="sum"><b>SHA-256 of Rekarina.exe 1.2.1</b><code>c0d924ab5dcfe9aff30929352630861ef43e13c6ea92ce46ff3aeb9c957316ca</code></div>
         <p class="how">In a terminal: <code>certutil -hashfile Rekarina.exe SHA256</code></p>
         <!-- /release:sums -->
       </div>
@@ -191,6 +193,8 @@
           <li>A shader combination or a foliage pipeline that none of our runs met is built the first time it appears: a few milliseconds for most, up to seconds for a patch of foliage, which is not drawn meanwhile. Our runs went through every map once; boss fights and the rooms deep inside dungeons only partly.</li>
           <li>With 16 GB of memory the prepared textures are not read ahead at the start, so the first visit to a place after a restart of the PC reads them from the disk while you play.</li>
           <li>With another program holding most of the video memory (a video editor, a second game) the frame rate collapses; the game says so at the top of the screen.</li>
+          <li>Shadows and trees in the distance can flicker, and some lights inside dungeons. Being worked on.</li>
+          <li>The game uses about 15 GB of memory: with 16 GB in the PC it can stutter. Being worked on.</li>
           <li>HDR10 output is experimental and off by default.</li>
           <li>Releases are Windows only for now. A native Linux build is in development; it has not run on a Linux PC with a graphics card or on a Steam Deck yet.</li>
         </ul>

@@ -41,6 +41,9 @@ namespace {
 
 struct {
     int wanted = -1;
+    int asked = 0;               // REKARINA_FRAMEGEN was fsr3 at start (vk_fg_wanted)
+    int instead = 0;             // running in place of DLSS Frame Generation (vk_fg_take_over)
+    const char *why = nullptr;   // why it is not running although asked, for the menu's row (vk_fg_off_why)
     VkQueue present = VK_NULL_HANDLE, acquire = VK_NULL_HANDLE;
     ffxContext sc = nullptr;   // the swapchain context
     ffxContext fg = nullptr;   // the frame generation context
@@ -81,32 +84,89 @@ FfxApiResource image(const VkFfxImage *i) {
 void fail(const char *what, unsigned r) {
     rt_log("fg: %s failed (%u): frame generation off for this run", what, r);
     F.failed = 1;
+    F.why = "AMD's frame generation did not start (the fg lines of the log say why)";
 }
 
 }  // namespace
 
 extern "C" int vk_fg_wanted(void) {
     if (F.wanted < 0) {
-        F.wanted = !strcmp(cfg_value("REKARINA_FRAMEGEN"), "fsr3");
+        F.asked = F.wanted = !strcmp(cfg_value("REKARINA_FRAMEGEN"), "fsr3");
         if (F.wanted && !vk_dlaa_wanted()) {
             rt_log("fg: frame generation needs DLSS or FSR 3.1 upscaling (any mode): off");
+            F.why = "needs DLSS / DLAA on";
             F.wanted = 0;
         }
     }
     return F.wanted;
 }
 
-extern "C" uint32_t vk_fg_queue_count(void) { return vk_fg_wanted() ? 3 : 1; }
+extern "C" int vk_dlssg_wanted(void);   // vk_dlssg.c
+
+// Either frame generation asked for: AMD's may take DLSS's place once the device shows DLSS's is missing
+// (vk_fg_take_over), and its queues have to be there from the device's creation.
+extern "C" uint32_t vk_fg_queue_count(void) { return vk_fg_wanted() || vk_dlssg_wanted() ? 3 : 1; }
+
+// DLSS Frame Generation asked for where it cannot run (vk_dlssg.c vk_dlssg_device_ready: no RTX 40 or 50 card, an
+// older driver, its libraries missing): AMD FSR frame generation runs in its place, as it runs on any card. Called
+// after the device exists and before the first swapchain.
+extern "C" void vk_fg_take_over(const char *why) {
+    vk_fg_wanted();
+    if (F.wanted > 0 || F.failed) return;
+    F.asked = F.wanted = F.instead = 1;
+    F.why = nullptr;
+    rt_log("fg: AMD FSR frame generation in place of DLSS Frame Generation, which cannot run here (%s)", why);
+}
+
+extern "C" int vk_fg_instead(void) { return F.instead; }
+
+// The menu's frame generation row: whether AMD FSR frame generation can run here, from its libraries beside the game
+// (the FidelityFX loader with its frame generation library, or the single library of an older install); else NULL
+// and why. It runs on any card with the device features the game needs anyway.
+extern "C" int vk_fg_offered(const char **why) {
+    static int ok = -1;   // the files do not change while the game runs: looked at once
+    if (ok < 0) {
+        char dir[PLAT_PATH_MAX], path[PLAT_PATH_MAX + 64];
+        int n = plat_exe_path(dir, sizeof dir);
+        char *cut = n ? plat_last_sep(dir) : nullptr;
+        ok = 1;   // nothing to look at: let the start say
+        if (cut) {
+            *cut = 0;
+            snprintf(path, sizeof path, "%s/amd_fidelityfx_framegeneration_vk.dll", dir);
+            int sdk2 = plat_file_exists(path);
+            snprintf(path, sizeof path, "%s/amd_fidelityfx_loader_vk.dll", dir);
+            sdk2 = sdk2 && plat_file_exists(path);
+            snprintf(path, sizeof path, "%s/amd_fidelityfx_vk.dll", dir);
+            ok = sdk2 || plat_file_exists(path);
+        }
+    }
+    if (!ok) *why = "AMD's FidelityFX libraries are missing (run the setup again)";
+    return ok;
+}
 
 extern "C" void vk_fg_queues(VkQueue present, VkQueue acquire) { F.present = present, F.acquire = acquire; }
 
 extern "C" int vk_fg_active(void) { return F.sc != nullptr && !F.failed; }
 
+extern "C" const char *vk_fg_off_why(void) {
+    if (!F.asked || vk_fg_active()) return nullptr;
+    return F.why ? F.why : "it did not start (the fg lines of the log say why)";
+}
+
 extern "C" int vk_fg_generating(void) { return vk_fg_active() && __atomic_load_n(&F.on, __ATOMIC_RELAXED); }
 
 extern "C" VkResult vk_fg_create_swapchain(const VkSwapchainCreateInfoKHR *ci, VkSwapchainKHR *sc) {
     if (F.sc) return F.fn.pOutCreateSwapchainFFXAPI(vk_ctx()->device, ci, nullptr, sc, F.sc);
-    if (!vk_fg_wanted() || F.failed || !F.present || !vk_ffx_load()) return VK_ERROR_FEATURE_NOT_PRESENT;
+    if (!vk_fg_wanted() || F.failed) return VK_ERROR_FEATURE_NOT_PRESENT;
+    if (!F.present || !vk_ffx_load()) {   // vk_ffx_load logs a library it could not load
+        if (!F.why) {
+            rt_log("fg: AMD FSR frame generation off: %s", F.present ? "AMD's FidelityFX libraries did not load"
+                                                                     : "the device has no queues for it");
+            F.why = F.present ? "AMD's FidelityFX libraries did not load (run the setup again)"
+                              : "the GPU has no spare queues for it";
+        }
+        return VK_ERROR_FEATURE_NOT_PRESENT;
+    }
     const VkCtx *c = vk_ctx();
     ffxCreateContextDescFrameGenerationSwapChainVK d = {};
     d.header.type = FFX_API_CREATE_CONTEXT_DESC_TYPE_FGSWAPCHAIN_VK;

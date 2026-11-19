@@ -201,7 +201,8 @@ def write_single(out, path, root):
     subprocess.run([str(llvm / 'llvm-windres.exe'), '-I', str(root / 'runtime'), '-O', 'coff',
                     str(root / 'installer' / 'launcher' / 'rekarina.rc'), '-o', str(rc)], check=True)
     subprocess.run([str(llvm / 'clang.exe'), '-O2', '-mwindows', '-municode',
-                    str(root / 'installer' / 'launcher' / 'rekarina_single.c'), str(rc), '-o', str(stub)], check=True)
+                    str(root / 'installer' / 'launcher' / 'rekarina_single.c'), str(rc),
+                    '-lole32', '-luuid', '-lshell32', '-o', str(stub)], check=True)   # the folder dialog (find_home)
     with zipfile.ZipFile(payload, 'w', zipfile.ZIP_DEFLATED, compresslevel=6) as z:
         for f in sorted(out.rglob('*')):
             if f.is_file() and not players(f.relative_to(out).parts[0]):

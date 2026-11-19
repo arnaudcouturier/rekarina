@@ -11,7 +11,7 @@ and maintained with heavy use of LLM assistants unwelcome, and this one is.
 
 | File | What it is |
 | --- | --- |
-| `docker-compose.yml` | Forgejo 17 (`codeberg.org/forgejo/forgejo:17`, SQLite, registration closed, Actions on) and Caddy 2 in front of it |
+| `docker-compose.yml` | Forgejo 17 (`codeberg.org/forgejo/forgejo:17`, SQLite, registration open behind a captcha, Actions on) and Caddy 2 in front of it |
 | `Caddyfile` | Caddy serves `git.rekarina.dev` over HTTPS and passes it to Forgejo's port 3000; the certificate is Caddy's own (ACME, renewed by itself) |
 | `backup.sh` | `forgejo dump` of repositories, database and settings into `backups/`, the last 14 kept; run daily from cron |
 
@@ -51,7 +51,10 @@ passes neither SSH on 2222 nor Caddy's HTTP certificate challenge as set up here
        docker exec -u git forgejo forgejo admin user create --admin --username <name> --email <address> \
            --random-password --must-change-password > admin-first-password.txt
 
-   Registration stays closed (`FORGEJO__service__DISABLE_REGISTRATION`): accounts are made by the administrator.
+   Registration is open: anyone may sign up behind a captcha and the account works at once, with at most three
+   repositories of their own (a fork counts). If spam accounts appear, set
+   `FORGEJO__service__REGISTER_MANUAL_CONFIRM=true`: an account then works only after an administrator has activated
+   it under Site administration, User accounts.
 5. An organization `rekarina` with a repository `rekarina` (empty), and the maintainer's SSH key under the account's
    SSH keys.
 

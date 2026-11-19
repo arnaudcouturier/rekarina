@@ -94,7 +94,13 @@ The Switch prompts stay, with a note under *Button prompts* and a `RomFS overlay
 
 A Switch pad keeps the console's buttons: by position its right button, labelled A, confirms as on the console, and the game's own prompts are right. With `pad_layout` set by hand each face button's prompt still names the label of the button that presses it: an Xbox or PlayStation pad under `nintendo` gets the swapped sets (`-xbox`, `-playstation`), a Switch pad under `xbox` the swapped Xbox letters (its bottom button, labelled B, does A). An install without `romfs-patches-pc` keeps the pad's set for the keyboard. Without `prompts-live.bin` (TotK, an older OoT folder) `auto` is the Xbox set picked at start. A fixed choice on the row overrides all of this. Only the first gamepad SDL lists is read: on a Steam Deck with a second pad connected, the Deck's own controls may be the one.
 
-The action hint at the bottom of the screen draws its four face buttons from images of the game's common layout archive, not from the font, and the game loads them once. A change of set also writes the new set's four images over the shown ones in memory (`romfs.c` `hint_apply`, from `prompts-hint.bin`, which `make_oot_prompts.py` `write_hint` makes beside `prompts-live.bin`): the log says `the action hint's images changed from ... to ...`. The textures are uploaded again at once, but the game keeps a hint's look while it stays on screen: a hint that appears after the change shows the new set, one already shown changes when its action does. The first change searches the game's memory near the font table (about half a second); later ones reuse the places found. Without that file the hint keeps the start's images until the next start.
+The action hint at the bottom of the screen draws its four face buttons from images of the game's common layout archive, not from the font, and the game loads them once. A change of set also writes the new set's four images over the shown ones in memory (`romfs.c` `hint_apply`, from `prompts-hint.bin`, which `make_oot_prompts.py` `write_hint` makes beside `prompts-live.bin`): the log says `the action hint's images changed from ... to ...`. The first change searches the game's memory near the font table (about half a second); later ones reuse the places found. Without that file the hint keeps the start's images until the next start.
+
+The song screen (the instrument's notes and its song book) draws its six note buttons from six more images of that archive, `OcarinaButtonA/B/X/Y/L/R_00` (ASTC 4x4, a white disc or key with a black letter). Every set's folder carries them as its prompts name those buttons (`make_oot_prompts.py` `ocarina_textures`): the sets by position trade A with B and X with Y, the PlayStation sets draw the shapes, the keyboard set the default keys and the mouse, and every set but the Switch's names the shoulders (LB RB, L1 R1, Q R). A drawing is new ASTC blocks in a box of the image that holds the whole letter and is opaque in the game's file, so the shape's edge stays the game's (`button_icons.py` `bntx_redraw_box`). A change of set in the running game writes them as the hint's (`prompts-ocarina.bin`; the log says `the song screen's images changed from ... to ...`).
+
+The button in the hint's pill is text, not one of those images: a glyph of the button font in a text the layout sets once. It keeps the glyph it was first drawn with (the keyboard's key after a pad was switched on) until the next start. Open: the new table does not reach it, and marking the text changed the way the game's own setter does (tried 2026-11-19, with the game's functions, on every text of the interface) did not change it either; where the game keeps the drawn glyph is not found yet.
+
+The hint is a diamond of the four face buttons where the console has them: A on the right, B at the bottom, X at the top, Y on the left. Under the layout by label (`xbox`) the pad's bottom button does A, so `romfs-patches-hint-label` holds the hint's layout with A at the bottom, B on the right, X on the left and Y at the top (`tools/oot_hint_layout.py`), and `romfs.c` serves it at start (`the action hint shows the buttons where a pad mapped by label has them`). The game reads the layout once, so the choice is the start's: `pad_layout` when it is set, and under `auto` the layout of the pad used last (`hint-pad.txt` in the game folder; by label when there is none, which is also what the keyboard's hint shows). A pad of the other layout opened in the running game logs `its buttons move to this pad's places at the next start`.
 
 The settings menu follows the same device: the row's note says *in use: PlayStation*, the picture above its description shows that set, and the hints along the bottom name the pad's own buttons for the layout in effect (B or circle to go back, LB or L1 for the tabs) while the pad is in use, Q, E, Del and Esc while the keyboard is.
 
@@ -102,9 +108,11 @@ The settings menu follows the same device: the row's note says *in use: PlayStat
 
 | Key | Gamepad | Action |
 |---|---|---|
-| F1 or Esc | Minus and Plus together | open or close the settings menu; the game gets no input while it is open |
+| F1 or Esc | Minus and Plus together, or the Guide button | open or close the settings menu; the game gets no input while it is open |
 | F10 | L3 + R3 (both stick clicks) | performance overlay: off, frame rate, full panel |
 | F11 | | borderless fullscreen on or off, saved to `rekarina.ini` |
+
+The Guide button (Xbox button, PS button) opens and closes the menu as well; `REKARINA_MENU_GUIDE=0` (live, the *Guide button opens this menu* row on the Controls tab) turns that off. On Windows the Xbox Game Bar may take the Guide button before the game sees it; turn its controller shortcut off in Windows Settings.
 
 The Minus+Plus combo never reaches the game. In the menu the arrow keys, the D-pad or the left stick move, Enter or A selects, Q and E or L and R switch tabs, Esc or B goes back (Switch button names, as in the table above).
 
@@ -129,6 +137,10 @@ bind_B = pad:east, key:lshift
 bind_X = pad:west, key:space
 bind_Y = pad:north, key:mouse_l
 ```
+
+## Dash on its own input
+
+OoT has one button for two moves: held while the hero moves it dashes, pressed and let go it jumps (B; Left Shift on the keyboard). That is the game's own design, not a binding: no default binding puts two Switch buttons on one key or pad button. `REKARINA_STICK_DASH=1` (`stick_dash`, off by default, live; *Dash on the left stick's press* on the Controls tab) gives the dash an input of its own: a press of the gamepad's left stick while the stick is tilted past half way holds that button for the game until the stick comes back under a quarter, and `REKARINA_DASH_KEY` (`dash_key`, `v` by default, any key name of the `bind_` lines; *Dash key*) held with a direction does the same on the keyboard (`runtime/input.c`, `dash_apply`). The hero dashes without a jump first: the press of the stick that starts a dash does not reach the game as its own button, and a hold lasts at least 0.4 s, so a quick tap of the key is no jump either. The game's button keeps working as before, also during such a dash: its press and its release let go of the held button for two frames first, so the game sees them as its own (a jump out of the dash). In an input script `LCLICK` is the stick's press and `DASH` the key.
 
 ## Mouse camera
 

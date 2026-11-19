@@ -40,7 +40,7 @@ INVENTORY_DONE = '.seed-inventory'
 def inventory_stamp(a):
     """A hash of everything the seed files follow from: these tools, the seed of played variants, the dump (by its path,
     size and time) and the game's modules (names, sizes, times)."""
-    h = hashlib.sha256(b'oot-seed-inventory-1')
+    h = hashlib.sha256(b'oot-seed-inventory-1' + (b'-met' if getattr(a, 'met_only', False) else b''))
     here = Path(__file__).resolve().parent
     for f in (Path(__file__).resolve(), here / 'prepare_shaders.py', here / 'oot_romfs.py', here / 'shader_census.py', SEED_ANSWERS):
         h.update(f.name.encode() + b'\0' + (f.read_bytes() if f.is_file() else b'missing') + b'\1')
@@ -196,7 +196,9 @@ def write_seed_files(a, out, t0):
                     played.append(r)
         print(f'{len(played)} variants met in play taken from {SEED_ANSWERS.name} ({kernels} of them compute kernels of mesh '
               f'or task programs), {unmatched} for programs not in this dump', flush=True)
-    recs = played + recs
+    # --met-only: the variants play met alone; the default variants of every other shader of the dump (five of six)
+    # are left for a later run without the flag, which finds these translated and built and goes on from them.
+    recs = played + ([] if a.met_only else recs)
     with open(out / 'seed-programs.bin', 'wb') as f:
         f.write(b'TOTKSPRG' + struct.pack('<II', 1, 0))
         for _, body in progs.values():
@@ -215,6 +217,9 @@ def main():
     ap.add_argument('--nup', default=oot_romfs.NUP)
     ap.add_argument('--exefs', type=Path, default=Path('../build/oot/exefs-plain'))
     ap.add_argument('--no-run', action='store_true')
+    ap.add_argument('--met-only', action='store_true',
+                    help='prepare only the variants play met (tools/data/shader-answers-oot.bin.gz), not the default '
+                         'variant of every other shader of the dump: a sixth of the work')
     ap.add_argument('--exe-name', default='rekarina.exe' if os.name == 'nt' else 'rekarina',
                     help='the file name the game will be started under: the preparation runs a copy of rekarina.exe of that name')
     a = ap.parse_args()

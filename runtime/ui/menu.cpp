@@ -66,6 +66,12 @@ extern "C" const char *rt_game_version_text(void);
 extern const char rt_port_version[];
 void cheats_frame(uint64_t frame);   // cheats.c
 bool tab_cheats(float scale);        // ui/cheats_tab.cpp; true: restart into the rebuild
+const char *vk_dlssg_off_why(void);  // vk_dlssg.c: why DLSS Frame Generation asked at start is not running
+const char *vk_fg_off_why(void);     // vk_fg.cpp: the same for AMD FSR frame generation
+int vk_dlssg_offered(const char **why);   // vk_dlssg.c: DLSS Frame Generation can run here
+int vk_fg_offered(const char **why);      // vk_fg.cpp: AMD FSR frame generation can run here
+int vk_fg_instead(void);                  // vk_fg.cpp: AMD's runs in place of DLSS's
+int vk_fg_active(void);
 }
 
 // Roboto Medium (Apache-2.0, ui/fonts/LICENSE-Roboto.txt) with Latin and Cyrillic glyphs.
@@ -901,12 +907,14 @@ static void row_window_size(void) {
 
 static void row_render_scale(void) {
 #ifdef GAME_OOT   // OoT: shares of the picture up to the whole of it; an older "game" in totk.ini reads as 100
-    static const char *const ovals[] = {"50", "67", "75", "100"};
-    static const char *const onames[] = {"50 %", "67 %", "75 %", "100 %"};
+    // steps of 5 from 50 to 100 and the old 67 (an ini file from before keeps working); frame_rate.c scene_share takes any share
+    static const char *const ovals[] = {"50", "55", "60", "65", "67", "70", "75", "80", "85", "90", "95", "100"};
+    static const char *const onames[] = {"50 %", "55 %", "60 %", "65 %", "67 %", "70 %", "75 %", "80 %", "85 %", "90 %", "95 %", "100 %"};
+    enum { ON = sizeof ovals / sizeof *ovals };
     int cur = -1;
-    for (int i = 0; i < 4; i++)
+    for (int i = 0; i < ON; i++)
         if (!strcmp(cfg_value("REKARINA_RENDER_SCALE"), ovals[i])) cur = i;
-    opt_choice_list("REKARINA_RENDER_SCALE", UI_MENU_RENDER_SCALE, ovals, onames, 4, UI_MENU_RENDER_SCALE_DESC, cur < 0 ? 3 : cur);
+    opt_choice_list("REKARINA_RENDER_SCALE", UI_MENU_RENDER_SCALE, ovals, onames, ON, UI_MENU_RENDER_SCALE_DESC, cur < 0 ? ON - 1 : cur);
     return;
 #endif
     static const char *const vals[] = {"game", "50", "67", "75", "100", "125", "150", "200"};
@@ -1100,14 +1108,39 @@ static void tab_screen(float scale) {
 #endif
     rows_color();   // with the picture's rows: the group below is the upscalers'
     opt_group(UI_MENU_UPSCALE_GROUP);
+    // frame generation takes DLSS / DLAA's depth and motion vectors and keeps it on (vk_dlaa.c vk_dlaa_wanted)
+    const char *fg_now = cfg_value("REKARINA_FRAMEGEN");
+    if (strcmp(fg_now, "off") && cfg_bool("REKARINA_DLAA")) opt_disable_next(UI_MENU_DLAA_FOR_FG);
     opt_toggle("REKARINA_DLAA", UI_MENU_DLAA, UI_MENU_DLAA_DESC);
     static const char *const taa[] = {"dlss", "fsr3", "fsr1"};
     const char *taa_names[] = {"NVIDIA DLSS", "AMD FSR", "AMD FSR 1"};
     opt_choice_list("REKARINA_TAA", UI_MENU_TAA, taa, taa_names, 3, UI_MENU_TAA_DESC);
-    if (!cfg_bool("REKARINA_DLAA")) opt_disable_next(UI_MENU_FRAMEGEN_NEEDS);
-    static const char *const framegen[] = {"off", "fsr3", "dlss"};
-    const char *framegen_names[] = {menu_text(UI_MENU_DLSS_CHARS_OFF), "AMD FSR", "NVIDIA DLSS"};
-    opt_choice_list("REKARINA_FRAMEGEN", UI_MENU_FRAMEGEN, framegen, framegen_names, 3, UI_MENU_FRAMEGEN_DESC);
+    // Frame generation: Off, NVIDIA DLSS (an RTX 40 or 50 card with its libraries, vk_dlssg_offered) and AMD FSR 3.1
+    // (any card with AMD's libraries, vk_fg_offered); the row lists only what can run here and says why a kind is
+    // missing. Turned on from the base mode it turns DLSS / DLAA on with it, whose depth and motion vectors it takes
+    // (the start does the same for a rekarina.ini line: vk_dlaa.c vk_dlaa_wanted). It applies at the next start, as the
+    // device's queues and the swapchain are made for it. Asked for at start but not running: the row says why, as the log
+    // does; DLSS asked for where it cannot run: AMD's runs in its place (vk_fg.cpp vk_fg_take_over), and the row says so.
+    {
+        const char *why_dlss = nullptr, *why_fsr = nullptr;
+        int dlss_ok = vk_dlssg_offered(&why_dlss), fsr_ok = vk_fg_offered(&why_fsr), n = 0;
+        const char *values[3], *names[3];
+        values[n] = "off", names[n++] = menu_text(UI_MENU_DLSS_CHARS_OFF);
+        if (dlss_ok) values[n] = "dlss", names[n++] = "NVIDIA DLSS";
+        if (fsr_ok) values[n] = "fsr3", names[n++] = "AMD FSR 3.1";
+        const char *why = !strcmp(fg_now, "dlss") ? vk_dlssg_off_why() : !strcmp(fg_now, "fsr3") ? vk_fg_off_why() : nullptr;
+        static char fg_note[192];
+        const char *note = nullptr;
+        if (why) snprintf(fg_note, sizeof fg_note, menu_text(UI_MENU_FRAMEGEN_OFF), why), note = fg_note;
+        else if (!strcmp(fg_now, "dlss") && vk_fg_instead() && vk_fg_active()) note = menu_text(UI_MENU_FRAMEGEN_INSTEAD);
+        else if (!dlss_ok) note = why_dlss;
+        else if (!fsr_ok) note = why_fsr;
+        if (opt_choice_list("REKARINA_FRAMEGEN", UI_MENU_FRAMEGEN, values, names, n, UI_MENU_FRAMEGEN_DESC, -1, note) &&
+            strcmp(cfg_value("REKARINA_FRAMEGEN"), "off") && !cfg_bool("REKARINA_DLAA")) {
+            cfg_set("REKARINA_DLAA", "1");   // its depth and motion vectors: the dlaa row shows it on
+            opt_save_soon();
+        }
+    }
     static const UiTextId dlss[] = {UI_MENU_DLSS_DLAA, UI_MENU_DLSS_QUALITY, UI_MENU_DLSS_BALANCED,
                                     UI_MENU_DLSS_PERFORMANCE, UI_MENU_DLSS_ULTRA};
     opt_choice("REKARINA_DLSS", UI_MENU_DLSS, dlss, 5, UI_MENU_DLSS_DESC);
@@ -1213,6 +1246,26 @@ static void row_walk_key(void) {
         if (a >= 0 && input_action_name(a)) snprintf(note, sizeof note, menu_text(UI_MENU_WALK_KEY_TAKEN), input_action_name(a)), n = note;
     }
     opt_choice_list("REKARINA_WALK_KEY", UI_MENU_WALK_KEY, keys, names, sizeof keys / sizeof *keys, UI_MENU_WALK_KEY_DESC,
+                    -1, n);
+}
+
+// The dash key (input.c dash_apply) as a few keys the default bindings leave free; rekarina.ini takes any key name.
+// Greyed out while dash on the left stick's press is off, which it belongs to. A key the bindings use says which.
+static void row_dash_key(void) {
+    static const char *const keys[] = {"none", "v", "lalt", "capslock", "mouse_x1", "mouse_x2"};
+    const char *names[sizeof keys / sizeof *keys] = {menu_text(UI_MENU_OFF), "V", "Alt", "Caps Lock", "Mouse 4", "Mouse 5"};
+    const char *cur = cfg_value("REKARINA_DASH_KEY");
+    static char note[64];
+    const char *n = nullptr;
+    InputMap m;
+    input_map_snapshot(&m);
+    for (int k = KEY_A; k < KEY_COUNT && !n; k++) {
+        if (!input_key_name(k) || strcasecmp(input_key_name(k), cur)) continue;
+        int a = key_action(&m, k);
+        if (a >= 0 && input_action_name(a)) snprintf(note, sizeof note, menu_text(UI_MENU_WALK_KEY_TAKEN), input_action_name(a)), n = note;
+    }
+    if (!cfg_bool("REKARINA_STICK_DASH")) opt_disable_next(UI_MENU_STICK_DASH);
+    opt_choice_list("REKARINA_DASH_KEY", UI_MENU_DASH_KEY, keys, names, sizeof keys / sizeof *keys, UI_MENU_DASH_KEY_DESC,
                     -1, n);
 }
 
@@ -1322,6 +1375,8 @@ static void tab_controls(float scale) {
         opt_choice("REKARINA_PAD_DRIVER", UI_MENU_PAD_DRIVER, drivers, 2, UI_MENU_PAD_DRIVER_DESC);
     }
     opt_toggle("REKARINA_KBM_OFF", UI_MENU_KBM_OFF, UI_MENU_KBM_OFF_DESC);
+    opt_toggle("REKARINA_STICK_DASH", UI_MENU_STICK_DASH, UI_MENU_STICK_DASH_DESC);   // input.c dash_apply
+    opt_toggle("REKARINA_MENU_GUIDE", UI_MENU_MENU_GUIDE, UI_MENU_MENU_GUIDE_DESC);
     opt_toggle("REKARINA_MOTION", UI_MENU_MOTION, UI_MENU_MOTION_DESC);
     opt_slider("REKARINA_RUMBLE_STRENGTH", UI_MENU_RUMBLE_STRENGTH, 0, 300, UI_MENU_RUMBLE_STRENGTH_DESC, 10, "%.0f %%");
     opt_slider("REKARINA_RUMBLE_CURVE", UI_MENU_RUMBLE_CURVE, 0.2f, 1.5f, UI_MENU_RUMBLE_CURVE_DESC, 0.05f, "%.2f", nullptr, nullptr,
@@ -1355,6 +1410,7 @@ static void tab_controls(float scale) {
         opt_choice_list("REKARINA_CURSOR_HIDE", UI_MENU_CURSOR_HIDE, vals, names, 5, UI_MENU_CURSOR_HIDE_DESC);
     }
     row_walk_key();
+    row_dash_key();
     opt_slider("REKARINA_WALK_SCALE", UI_MENU_WALK_SCALE, 0.2f, 0.9f, UI_MENU_WALK_SCALE_DESC, 0.01f, "%.2f");
     // Analog sticks: one dead zone row per stick, falling back to REKARINA_STICK_DEADZONE (both sticks) while unset. With
     // a gamepad connected each row shows its stick's deflection now, before the dead zone: a drifting stick's resting

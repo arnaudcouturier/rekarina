@@ -17,7 +17,12 @@ services:
       - FORGEJO__server__SSH_DOMAIN=git.rekarina.dev
       - FORGEJO__server__SSH_PORT=2222               # the port clone URLs show; the container listens on 22
       - FORGEJO__database__DB_TYPE=sqlite3           # one small project: no database server needed
-      - FORGEJO__service__DISABLE_REGISTRATION=true  # nobody signs up; the admin is made on the first page
+      - FORGEJO__service__DISABLE_REGISTRATION=false # anyone may sign up (to open issues and pull requests)
+      - FORGEJO__service__REGISTER_MANUAL_CONFIRM=false  # ... and the account works at once (true: only after an administrator activates it)
+      - FORGEJO__service__ENABLE_CAPTCHA=true            # a picture to solve on the sign-up form
+      - FORGEJO__service__DEFAULT_KEEP_EMAIL_PRIVATE=true
+      - FORGEJO__service__DEFAULT_ALLOW_CREATE_ORGANIZATION=false
+      - FORGEJO__repository__MAX_CREATION_LIMIT=3        # a contributor's forks; the project's own repository is the organization's
       - FORGEJO__actions__ENABLED=true               # for the content check (a runner is added later)
     volumes:
       - ./forgejo:/data

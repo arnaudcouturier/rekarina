@@ -713,7 +713,7 @@ class EtaTest(Sandbox):
         self.assertEqual(eta.estimate('oot_compile', 'first', 32, {}), (360.0, 'default'))
         self.assertEqual(eta.estimate('oot_compile', 'first', 2, {})[0], 720.0 * 4)           # the factor stops at 4
         self.assertEqual(eta.estimate('oot_compile', 'first', 128, {})[0], 360.0)             # and at a half
-        self.assertEqual(eta.estimate('oot_prepare', 'first', 8, {})[0], 3600.0)
+        self.assertEqual(eta.estimate('oot_prepare', 'first', 8, {})[0], 840.0)
         self.assertEqual(eta.estimate('oot_prepare', 'rerun', 16, {})[0], 60.0)
         self.assertEqual(eta.estimate('oot_extract', 'first', 4, {})[0], 20.0)                # not a processor's step
         self.assertEqual(eta.estimate('oot_components', 'first', 4, {})[0], 60.0)
@@ -951,7 +951,7 @@ class WindowPartsTest(unittest.TestCase):
 class SetupTest(Sandbox):
     def test_steps_and_estimates(self):
         ids = [s.id for s in oot.all_steps()]
-        self.assertEqual(ids, ['oot_check', 'oot_extract', 'oot_lift', 'oot_compile', 'oot_components', 'oot_prepare',
+        self.assertEqual(ids, ['oot_check', 'oot_extract', 'oot_lift', 'oot_compile', 'oot_components', 'oot_prompts', 'oot_prepare',
                                'oot_package'])
         for i in ids:
             self.assertIn(i, eta.DEFAULTS)

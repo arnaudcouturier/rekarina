@@ -12,6 +12,10 @@ PFN_vkVoidFunction vk_dlssg_instance_proc(VkInstance inst, const char *name);   
 VkResult vk_dlssg_create_device(VkInstance inst, VkPhysicalDevice pd, const VkDeviceCreateInfo *ci, VkDevice *out);
 void vk_dlssg_device_ready(VkDevice dev);   // after the device: checks DLSS-G and takes the swapchain hooks
 int vk_dlssg_active(void);
+// Why DLSS Frame Generation is not running although REKARINA_FRAMEGEN was dlss at start (for the menu's row), else NULL
+const char *vk_dlssg_off_why(void);
+// 1 when DLSS Frame Generation can run here (an RTX 40 or 50 card, its libraries beside the game), else 0 with *why
+int vk_dlssg_offered(const char **why);
 // gfx_present.c's swapchain calls while active
 VkResult vk_dlssg_create_swapchain(VkDevice d, const VkSwapchainCreateInfoKHR *ci, VkSwapchainKHR *sc);
 void vk_dlssg_destroy_swapchain(VkDevice d, VkSwapchainKHR sc);

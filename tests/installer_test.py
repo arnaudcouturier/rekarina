@@ -9,6 +9,7 @@ import json
 import re
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -557,69 +558,257 @@ class FontsTest(unittest.TestCase):
         self.assertEqual(steps.firmware_dir(self.firmware), nested)
 
 
-class OotPrepareResumeTest(unittest.TestCase):
-    """The OoT shader step cut short and run again draws the button prompts and fonts only once."""
+class OotShaderStepsTest(unittest.TestCase):
+    """The prompts step and the shader step of the OoT setup: each is redone for its own inputs only, an old record of
+    the shader step stands, and a first install prepares the variants play met."""
 
     def setUp(self):
-        from installer import oot
-        self.oot = oot
+        from installer import oot, runner
+        self.oot, self.runner = oot, runner
         self.tmp = tempfile.TemporaryDirectory()
-        base = Path(self.tmp.name)
+        self.base = base = Path(self.tmp.name)
+        tools = base / 'root' / 'tools'
+        (tools / 'data').mkdir(parents=True)
+        for n in (*oot.SHADER_TOOLS, 'make_oot_prompts.py', 'oot_hint_layout.py', 'button_icons.py', 'make_ext_font.py'):
+            (tools / n).write_text(n)
+        (tools / 'data' / oot.SHADER_DATA[0]).write_bytes(b'seed')
+        (base / 'bin').mkdir()
+        self.xlate = base / 'bin' / 'rekarina_xlate.exe'
+        self.xlate.write_bytes(b'x')
+        self.xlate.with_suffix('.id').write_text('identity-1')
         (base / 'temp' / 'build').mkdir(parents=True)
-        xlate = base / 'rekarina_xlate.exe'
-        xlate.write_bytes(b'x')
-        self.ctx = SimpleNamespace(dest=base / 'dest', temp=base / 'temp', nup=base / 'game.nup',
-                                   layout=SimpleNamespace(tools=base / 'tools', xlate=xlate, libs=()),
-                                   reporter=Reporter(out=io.StringIO()))
-        self.calls, self.prep_code = [], 0
-        build = self.ctx.temp / 'build'
+        self.layout = SimpleNamespace(tools=tools, xlate=self.xlate, libs=(), root=base / 'root', release='1.2.1')
+        self.options = SimpleNamespace(all_shaders=False)
+        self.calls = []
+        build = base / 'temp' / 'build'
 
         def run(ctx, step, script, args, parse=None):
-            self.calls.append(script.name)
-            if script.name == 'make_oot_prompts.py':
-                (build / 'romfs-patches-xbox').mkdir(exist_ok=True)
-                (build / 'romfs-patches-xbox' / 'manifest.tsv').write_text('x')
-            elif script.name == 'make_ext_font.py':
-                Path(args[0]).write_bytes(b'font')
-            elif script.name == 'oot_prepare_shaders.py' and not self.prep_code:
+            self.calls.append((script.name, list(map(str, args))))
+            if script.name == 'oot_prepare_shaders.py':
                 (build / 'shader-prepared.bin').write_bytes(b'p')
-            return (self.prep_code if script.name == 'oot_prepare_shaders.py' else 0), ctx.temp / 'tool.log'
-        self.saved = oot.run_tool, oot.Prepare.key
+            return 0, ctx.temp / 'tool.log'
+        self.saved = oot.run_tool
         oot.run_tool = run
-        oot.Prepare.key = lambda step, ctx: 'key-1'
 
     def tearDown(self):
-        self.oot.run_tool, self.oot.Prepare.key = self.saved
-        self.ctx.reporter.close()
+        self.oot.run_tool = self.saved
         self.tmp.cleanup()
 
-    def test_a_resume_does_not_draw_again(self):
-        self.prep_code = 1   # the shader preparation cut short
-        with self.assertRaises(self.oot.InstallError):
-            self.oot.Prepare().run(self.ctx)
-        self.assertEqual(self.calls.count('make_oot_prompts.py'), 1)
-        self.prep_code = 0
-        self.calls.clear()
-        self.oot.Prepare().run(self.ctx)
-        self.assertEqual(self.calls, ['oot_prepare_shaders.py', 'pack_shader_cache.py'])
+    def ctx(self, state=None):
+        ctx = self.runner.Context(self.layout, self.base / 'dest', self.base / 'temp', Reporter(out=io.StringIO()), self.options,
+                                  state=state)
+        ctx.nup = self.base / 'game.nup'
+        ctx.keys['oot_extract'] = 'dump-1'
+        return ctx
 
-    def test_another_step_key_or_dump_draws_again(self):
-        self.oot.Prepare().run(self.ctx)
-        self.oot.Prepare.key = lambda step, ctx: 'key-2'
-        self.calls.clear()
-        self.oot.Prepare().run(self.ctx)
-        self.assertIn('make_oot_prompts.py', self.calls)
-        self.ctx.nup = Path(self.tmp.name) / 'other.nup'
-        self.calls.clear()
-        self.oot.Prepare().run(self.ctx)
-        self.assertIn('make_oot_prompts.py', self.calls)
+    def keys(self, ctx=None):
+        ctx = ctx or self.ctx()
+        return self.oot.Prompts().key(ctx), self.oot.Prepare().key(ctx)
 
-    def test_a_missing_output_draws_again(self):
-        self.oot.Prepare().run(self.ctx)
-        (self.ctx.temp / 'build' / 'shared-fonts-xbox' / '5-nintendo-extension.bfttf').unlink()
-        self.calls.clear()
-        self.oot.Prepare().run(self.ctx)
-        self.assertIn('make_oot_prompts.py', self.calls)
+    def test_each_step_follows_its_own_tools(self):
+        prompts, shaders = self.keys()
+        (self.layout.tools / 'oot_hint_layout.py').write_text('changed')
+        again = self.keys()
+        self.assertNotEqual(again[0], prompts)
+        self.assertEqual(again[1], shaders)          # a prompt drawing change does not prepare the shaders again
+        prompts = again[0]
+        for name in ('oot_prepare_shaders.py', 'prepare_shaders.py'):
+            (self.layout.tools / name).write_text('changed ' + name)
+            again = self.keys()
+            self.assertEqual(again[0], prompts)
+            self.assertNotEqual(again[1], shaders)
+            shaders = again[1]
+        (self.layout.tools / 'data' / self.oot.SHADER_DATA[0]).write_bytes(b'seed 2')
+        self.assertNotEqual(self.keys()[1], shaders)
+
+    def test_the_shader_key_follows_the_translator_and_the_dump_not_the_build(self):
+        _, shaders = self.keys()
+        self.xlate.with_suffix('.id').write_text('identity-2')
+        self.assertNotEqual(self.keys()[1], shaders)
+        self.xlate.with_suffix('.id').write_text('identity-1')
+        self.assertEqual(self.keys()[1], shaders)
+        ctx = self.ctx()
+        ctx.keys['oot_extract'] = 'dump-2'
+        self.assertNotEqual(self.oot.Prepare().key(ctx), shaders)
+        (self.layout.tools / 'build_game.py').write_text('a new compile')   # nothing of the build is in it
+        self.assertEqual(self.keys()[1], shaders)
+
+    def test_mode(self):
+        mode = self.oot.shader_mode
+        self.assertEqual(mode(self.ctx()), 'met')                                   # a first install
+        met = {'format': 1, 'release': '1.2.1', 'inputs': {}, 'steps': {'oot_prepare': {'key': 'k', 'shaders': 'met'}}}
+        self.assertEqual(mode(self.ctx(met)), 'met')
+        old = {'format': 1, 'release': '1.2.0', 'inputs': {}, 'steps': {'oot_prepare': {'key': 'k', 'release': '1.2.0'}}}
+        self.assertEqual(mode(self.ctx(old)), 'all')                                # the old setup prepared every variant
+        self.options.all_shaders = True
+        self.assertEqual(mode(self.ctx(met)), 'all')
+        self.options.all_shaders = False
+        met['shaders'] = 'all'
+        self.assertEqual(mode(self.ctx(met)), 'all')                                # kept through updates
+        self.assertNotEqual(self.keys(self.ctx(met))[1], self.keys(self.ctx())[1])  # and a mode is part of the key
+
+    def test_an_old_record_stands_while_the_translator_is_the_one_that_prepared(self):
+        build = self.base / 'temp' / 'build'
+        (build / 'shader-prepared.bin').write_bytes(b'p')
+        (build / 'rekarina_xlate.id').write_text('identity-1')
+
+        def old(release='1.2.0'):
+            return {'format': 1, 'release': release, 'inputs': {}, 'steps': {
+                'oot_prepare': {'key': 'the old form', 'release': release, 'finished': 't', 'seconds': 1.0}}}
+        extract = SimpleNamespace(id='oot_extract', transient=False, always=False, key=lambda ctx: 'dump-1',
+                                  current=lambda ctx, rec: True, adopts=lambda ctx, rec: False)
+
+        def plan(state):
+            ctx = self.ctx(state)
+            ctx.keys.clear()
+            ctx.steps = [extract, self.oot.Prepare()]
+            ctx.plan()
+            return ctx
+        ctx = plan(old())
+        self.assertFalse(ctx.runs['oot_prepare'])                                   # the key form changed, nothing else
+        rec = ctx.state['steps']['oot_prepare']
+        self.assertEqual((rec['key'], rec['shaders'], ctx.state['shaders']), (ctx.keys['oot_prepare'], 'all', 'all'))
+        again = plan(ctx.state)                                                     # and it is an ordinary record now
+        self.assertFalse(again.runs['oot_prepare'])
+        self.assertFalse(plan(old('1.2.1')).runs['oot_prepare'])
+        self.assertTrue(plan(old('1.1.0')).runs['oot_prepare'])                     # a release with another seed
+        (build / 'rekarina_xlate.id').write_text('identity-0')
+        self.assertTrue(plan(old()).runs['oot_prepare'])                            # another translator
+        (build / 'rekarina_xlate.id').write_text('identity-1')
+        (build / 'shader-prepared.bin').unlink()
+        self.assertTrue(plan(old()).runs['oot_prepare'])                            # output gone
+        (build / 'shader-prepared.bin').write_bytes(b'p')
+        (self.layout.tools / 'oot_romfs.py').write_text('another reader')
+        self.assertTrue(plan(ctx.state).runs['oot_prepare'])                        # a new-form record follows its key
+
+    def test_a_first_install_prepares_what_play_met_and_all_on_request(self):
+        for flag, expect in ((False, True), (True, False)):
+            self.options.all_shaders = flag
+            ctx = self.ctx()
+            self.calls.clear()
+            record = self.oot.Prepare().run(ctx)
+            prepare = next(a for n, a in self.calls if n == 'oot_prepare_shaders.py')
+            self.assertEqual('--met-only' in prepare, expect)
+            self.assertEqual(record, {'shaders': 'met' if expect else 'all'})
+            self.assertEqual(ctx.state.get('shaders'), 'met' if expect else 'all')
+            self.assertIn('pack_shader_cache.py', [n for n, _ in self.calls])
+
+    def test_shaders_later_keeps_all_only_while_the_inputs_stand(self):
+        """The launcher's run screen (--shaders-later) never prepares the rest: a changed input prepares the variants
+        play met, which the background job completes; unchanged inputs keep 'all'."""
+        build = self.base / 'temp' / 'build'
+        (build / 'shader-prepared.bin').write_bytes(b'p')
+        ctx = self.ctx()
+        ctx.options.all_shaders = True
+        key = self.oot.Prepare().key(ctx)
+        state = {'format': 1, 'release': '1.2.1', 'inputs': {}, 'shaders': 'all',
+                 'steps': {'oot_prepare': {'key': key, 'shaders': 'all'}}}
+        self.options.all_shaders, self.options.shaders_later = False, True
+        self.assertEqual(self.oot.shader_mode(self.ctx(state)), 'all')
+        (self.layout.tools / 'prepare_shaders.py').write_text('a change of the inputs')
+        self.assertEqual(self.oot.shader_mode(self.ctx(state)), 'met')
+        ctx = self.ctx(state)
+        self.oot.Prepare().run(ctx)
+        self.assertEqual(ctx.state['shaders'], 'met')                               # the background job has work again
+        self.assertTrue(self.oot.shaders_only_met(ctx.state | {'steps': {'oot_prepare': {'shaders': 'met'}}}))
+
+    def test_only_met_is_offered_the_rest(self):
+        met = {'steps': {'oot_prepare': {'shaders': 'met'}}}
+        self.assertTrue(self.oot.shaders_only_met(met))
+        self.assertFalse(self.oot.shaders_only_met({**met, 'shaders': 'all'}))
+        self.assertFalse(self.oot.shaders_only_met({'steps': {'oot_prepare': {'release': '1.2.0'}}}))   # an old record: all
+        self.assertFalse(self.oot.shaders_only_met({'steps': {}}))
+        self.assertFalse(self.oot.shaders_only_met(None))
+
+    def test_prompts_draw_the_overlays_and_the_fonts(self):
+        ctx = self.ctx()
+        step = self.oot.Prompts()
+        self.assertFalse(step.current(ctx, {}))
+        step.run(ctx)
+        self.assertEqual([n for n, _ in self.calls], ['make_oot_prompts.py'] + ['make_ext_font.py'] * len(self.oot.STYLES))
+
+    def test_the_package_follows_the_build_the_shaders_do_not(self):
+        ctx = self.ctx()
+        ctx.layout.recomp, ctx.layout.patches, ctx.layout.pgo = self.base / 'root', self.base / 'p', None
+        ctx.options = SimpleNamespace(dlls=None, all_shaders=False)
+        (self.base / 'root' / 'runtime').mkdir()
+        ctx.keys.update({'oot_prepare': self.oot.Prepare().key(ctx), 'oot_prompts': 'p', 'oot_lift': 'l', 'oot_compile': 'c'})
+        before = self.oot.Package().key(ctx)
+        (self.base / 'root' / 'runtime' / 'main.c').write_text('a new runtime')
+        self.assertNotEqual(self.oot.Package().key(ctx), before)
+        self.assertEqual(self.oot.Prepare().key(ctx), ctx.keys['oot_prepare'])
+
+
+class ShaderJobTest(unittest.TestCase):
+    """installer/shaderjob.py with a stand-in for the setup: start, stop, resume from the built count, the game's name."""
+
+    SETUP = """import json, os, sys, time
+f = sys.argv[1]
+n = int(open(f).read()) if os.path.exists(f) else 0
+e = lambda **k: print(json.dumps(k), flush=True)
+e(type='progress', step='oot_prepare', phase='libraries', done=n, total=100, unit='shaders')
+while n < 100:
+    time.sleep(0.02); n += 1; open(f, 'w').write(str(n))
+    if n % 10 == 0: e(type='progress', step='oot_prepare', phase='libraries', done=n, total=100, unit='shaders')
+e(type='end', result='ok')
+"""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.dir = Path(self.tmp.name)
+        (self.dir / 'setup.py').write_text(self.SETUP)
+        self.built = self.dir / 'built.txt'
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def job(self):
+        from installer import shaderjob
+        return shaderjob.ShaderJob([sys.executable, str(self.dir / 'setup.py'), str(self.built)], str(self.dir))
+
+    def until(self, job, test, seconds=30):
+        end = time.monotonic() + seconds
+        while time.monotonic() < end:
+            job.poll()
+            if test():
+                return True
+            time.sleep(0.02)
+        return False
+
+    def test_stop_and_resume_go_on_from_what_is_built(self):
+        job = self.job()
+        self.assertTrue(job.start())
+        self.assertTrue(self.until(job, lambda: (job.done or 0) >= 30))
+        job.stop()
+        self.assertEqual(job.state, 'idle')
+        built = int(self.built.read_text())
+        self.assertTrue(30 <= built < 100)
+        self.assertTrue(job.start())
+        self.assertTrue(self.until(job, lambda: job.done is not None))
+        self.assertGreaterEqual(job.done, built)                                    # not from the start again
+        self.assertTrue(self.until(job, lambda: job.state == 'done'))
+        self.assertEqual((job.done, job.total), (100, 100))
+        self.assertFalse(job.start())                                               # done: not run again
+
+    def test_a_pause_holds_until_resumed_and_a_failure_is_not_retried(self):
+        job = self.job()
+        job.pause()
+        self.assertFalse(job.start())
+        job.resume()
+        self.assertTrue(job.start())
+        job.stop()
+        (self.dir / 'setup.py').write_text('import sys; sys.exit(3)')
+        job = self.job()
+        job.start()
+        self.assertTrue(self.until(job, lambda: job.state == 'failed'))
+        self.assertFalse(job.start())
+
+    def test_games_are_the_processes_of_that_name_outside_the_job(self):
+        from installer import shaderjob
+        table = {10: (1, 'explorer.exe'), 20: (10, 'launcher.exe'), 30: (20, 'python.exe'), 31: (30, 'Rekarina.exe'),
+                 40: (1, 'rekarina.exe')}
+        self.assertEqual(shaderjob.games_running('Rekarina.exe', 30, table), [40])   # 31 is the job's own warm-up
+        self.assertEqual(shaderjob.games_running('Rekarina.exe', None, table), [31, 40])
 
 
 class LooseShaderFilesTest(unittest.TestCase):

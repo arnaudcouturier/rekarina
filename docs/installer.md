@@ -242,9 +242,15 @@ bin/                  totk_xlate, hactool, ninja, libSDL3.so.0
 
 ## Rekarina: the OoT setup
 
+The working files of a game folder (the generated C, the objects, the build's caches: about 9 GB) are in the setup's
+`temp/oot-<tag of the game folder>`; `--temp` names another base. When the setup's own disk has no room for them and
+the game folder is on another disk that has, they go into `<game folder>\.setup-work` instead (`installer/oot.py`
+`work_folder`; the log says so), and later runs go where the earlier one's objects are.
+
 `python -m installer.gui_oot` (window) and `python -m installer.oot` (command line) build OoT (Switch 2)
 the same way, from the player's NUP container. The player chooses the folder that holds the dump and the install
 folder; the steps are those of `installer/oot.py`:
+
 
 1. **Check**: the `.nup` in the folder (the largest one, also one level down), its newest package's ExeFS against the
    hashes the code patches were written for (`tools/data/expected-oot.json`), the tools, the free space.
@@ -255,10 +261,29 @@ folder; the steps are those of `installer/oot.py`:
    `build/pgo/pgo-oot.profdata` (a release: `data/pgo-oot.profdata`) exists, which is the generated code at -O2 with
    the game's hot paths known (about a fifth more frames than without); otherwise the generated code at -O1 with the
    hottest chunks at -O2 (`tools/data/hot-oot-v111.txt`). About ten minutes on eight cores either way.
-5. **Prepare** the button prompt overlays and fonts (`tools/make_oot_prompts.py`, `tools/make_ext_font.py`) and every
-   shader (`tools/oot_prepare_shaders.py`).
+5. **Prompts** (`oot_prompts`): the button prompt overlays and fonts (`tools/make_oot_prompts.py`, `tools/oot_hint_layout.py`,
+   `tools/button_icons.py`, `tools/make_ext_font.py`), a minute, redone when those tools or the dump change.
+   **Prepare** (`oot_prepare`): the shaders (`tools/oot_prepare_shaders.py`). Its key (`Prepare.key`) holds only what the
+   prepared shaders follow from: the dump, the translator's identity (`rekarina_xlate.id`), `oot_prepare_shaders.py`,
+   `prepare_shaders.py`, `oot_romfs.py`, `shader_census.py`, the seed `tools/data/shader-answers-oot.bin.gz`, the mode and
+   `SHADER_FORMAT` (a hand switch for a runtime change that alters what `--prepare-shaders` makes). Not the compile key:
+   a new exe costs the compile and the package step (which copies it and warms the driver's cache under the game's file
+   name), not the preparation. A record made under the older key form is taken over (`Step.adopts`) when its release
+   is in `LEGACY_PREPARED_BY` and the translator is the one that prepared it.
+   The mode is `met` (the variants play met, `--met-only`: a first install, about six minutes of the shader part) or `all`
+   (`--all-shaders`). `rekarina-install.json` keeps `"shaders": "all"` once a folder has prepared all, through updates. The
+   launcher's run screen passes `--shaders-later`: it never prepares the rest in the foreground, a change of the
+   inputs prepares `met` and the launcher's background job (below) does the rest.
 6. **Package** the folder (`tools/package_oot.py`): `Rekarina.exe`, its libraries, the caches and `rekarina.ini`
    (a `totk.ini` left by an earlier package is renamed to it).
+
+**The rest of the shaders, in the background.** While the launcher is open and the game is not running, a folder that
+prepared `met` only gets the other variants prepared by the launcher itself (`installer/shaderjob.py`): the setup with
+`--all-shaders` as a child at below-normal priority on all cores but one, inside a job object that ends with the launcher.
+The home sheet's row shows the counts and the time left and has a Pause button (until the next start of the launcher).
+Play stops the job (what is built stays; the preparation resumes), starts the game, hides the window and, when the game
+has ended, resumes the job and shows the window when it is done; a launcher with nothing pending exits at Play as before.
+A game that someone else started counts: the job waits for it. Closing the launcher stops the job without a question.
 
 The RomFS is not copied: `rekarina.ini` names the NUP and the game reads it in place, so the dump must stay where it is.
 A second run on the same folder continues or updates it under the rule of `installer/runner.py`; the dump is asked

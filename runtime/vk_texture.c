@@ -4039,9 +4039,10 @@ static void ts_start(void) {
         plat_event_init(&ts_ev, 0, 0);
         const char *e = cfg_get("REKARINA_TEX_STREAM_THREADS"), *mb = cfg_get("REKARINA_TEX_STREAM_MB"),
                    *wm = cfg_get("REKARINA_TEX_STREAM_WAIT_MS");
-        // a third of the logical processors, 2 to 6: a cache file's first open costs the scanner's look at it (2-5 ms
-        // on a cold file), which the workers wait out side by side
-        int auto_n = (int)plat_cpu_count() / 3;
+        // a third of the logical processors the process may use (an affinity mask counts, as for the other pools),
+        // 2 to 6: a cache file's first open costs the scanner's look at it (2-5 ms on a cold file), which the workers
+        // wait out side by side
+        int auto_n = (int)plat_cpu_usable() / 3;
         auto_n = auto_n < 2 ? 2 : auto_n > 6 ? 6 : auto_n;
         int nt = e && atoi(e) > 0 ? atoi(e) : auto_n, started = 0;
         if (nt > 8) nt = 8;

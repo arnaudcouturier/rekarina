@@ -136,6 +136,41 @@ static void oe_display_version(Cpu *c) {   // void GetDisplayVersion(DisplayVers
     if (out) memset(out, 0, 16), strcpy(out, "1.1.1");
 }
 
+// ---- audio input: the host has no microphone
+// OoT's option that plays its instrument by voice (or by a real instrument) listens through two input streams of the
+// SDK's stream interface (SDK 22: nn::audio::OpenInputStream and the calls below, 16-bit mono at 48 kHz). It lists the
+// virtual input devices first and opens the streams only when there is one; the host answers none
+// (ListVirtualInputDevices below), so nothing is opened. With the option on, the game still purges and starts both
+// streams when it begins to listen (main+0x336ee10 checks the option, not whether the streams were opened: the
+// console always has a microphone), and the SDK's own PurgeInputStream / StartInputStream read through the stream's
+// implementation pointer, which is null in a stream that was never opened. The game stopped there (player report
+// 2026-11-19: "the game crashes if voice recognition is enabled"). Every input stream call is answered here for a
+// stream that does not exist: it cannot be opened or started, it is closed, and it holds no frames, so the option does
+// nothing and the buttons play as before.
+#define R_AUDIO_NO_INPUT (153u | 1u << 9)   // a failure of the audio module; the game tests these results for zero only
+static void audin_log(const char *what) {
+    static int told;
+    if (!told++) rt_log("audio input: the game asks for a microphone (%s): the host has none, its voice input stays silent", what);
+}
+// Result OpenInputStream(InputStreamType *, [os::SystemEvent *,] void *buffer, size_t, const AudioDeviceName &,
+// const StreamFormat &, int frames[, int]): the first word of the stream is its implementation pointer
+static void audin_open(Cpu *c) {
+    uint64_t *stream = arg_p(c, 0);
+    if (stream) *stream = 0;
+    audin_log("OpenInputStream");
+    ret_x(c, R_AUDIO_NO_INPUT);
+}
+static void audin_start(Cpu *c) {   // Result StartInputStream(InputStreamType *)
+    audin_log("StartInputStream");
+    ret_x(c, R_AUDIO_NO_INPUT);
+}
+// InputStreamStatistics GetInputStreamStatistics(InputStreamType *, bool reset): three 64-bit counts, returned in
+// memory (x8)
+static void audin_statistics(Cpu *c) {
+    void *out = (void *)(uintptr_t)c->x[8];
+    if (out) memset(out, 0, 24);
+}
+
 // ---- account: no Nintendo Account, so the network service account calls fail at once
 static void acc_no_account(Cpu *c) { ret_x(c, R_NO_NINTENDO_ACCOUNT); }
 static void acc_async_event(Cpu *c) {   // Result AsyncContext::GetSystemEvent(os::SystemEvent *): signalled
@@ -209,6 +244,19 @@ HOST_OVERRIDE("_ZN2nn5audio39AcquireAudioDeviceNotificationForOutputEPNS_2os11Sy
 // SDK 22 lists the virtual input devices (the Switch 2's microphone routing) through auddmg:u at boot: the host has
 // no microphone (nxnative audio.md "No virtual audio input devices (SDK 22)", found on OoT)
 HOST_OVERRIDE("_ZN2nn5audio23ListVirtualInputDevicesEPNS0_15AudioDeviceNameEi", h_zero);
+// the input streams the game would open on such a device (audin_open): none can be opened, and a stream never opened
+// is closed (state 0), empty, and takes Stop, Purge and Close as nothing
+HOST_OVERRIDE("_ZN2nn5audio15OpenInputStreamEPNS0_15InputStreamTypeEPvmRKNS0_15AudioDeviceNameERKNS0_12StreamFormatEi", audin_open);
+HOST_OVERRIDE("_ZN2nn5audio15OpenInputStreamEPNS0_15InputStreamTypeEPNS_2os11SystemEventEPvmRKNS0_15AudioDeviceNameERKNS0_12StreamFormatEii",
+              audin_open);
+HOST_OVERRIDE("_ZN2nn5audio16StartInputStreamEPNS0_15InputStreamTypeE", audin_start);
+HOST_OVERRIDE("_ZN2nn5audio15StopInputStreamEPNS0_15InputStreamTypeE", h_ok);
+HOST_OVERRIDE("_ZN2nn5audio16PurgeInputStreamEPNS0_15InputStreamTypeE", h_ok);
+HOST_OVERRIDE("_ZN2nn5audio16CloseInputStreamEPNS0_15InputStreamTypeE", h_nothing);
+HOST_OVERRIDE("_ZN2nn5audio19GetInputStreamStateEPKNS0_15InputStreamTypeE", h_zero);
+HOST_OVERRIDE("_ZN2nn5audio30GetInputStreamFilledFrameCountEPKNS0_15InputStreamTypeE", h_zero);
+HOST_OVERRIDE("_ZN2nn5audio15ReadInputStreamEPNS0_15InputStreamTypeEPvi", h_zero);
+HOST_OVERRIDE("_ZN2nn5audio24GetInputStreamStatisticsEPNS0_15InputStreamTypeEb", audin_statistics);
 HOST_OVERRIDE("_ZN2nn3hid13GetJcmsHandleERKjRKNS0_8JcmsTypeE", jcms_handle);
 HOST_OVERRIDE("_ZN2nn3hid9StartJcmsERKNS0_10JcmsHandleE", h_nothing);
 HOST_OVERRIDE("_ZN2nn3hid8StopJcmsERKNS0_10JcmsHandleE", h_nothing);

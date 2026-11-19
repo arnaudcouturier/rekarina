@@ -115,6 +115,13 @@ static int p_getp(const NgxParam *p, const char *n, void **v) { return NGX_OK(((
 // NGX is brought up only when dlaa is on at start: its device extensions can only be asked for at device creation, and
 // loading the driver's NGX core on every NVIDIA machine would cost start time and change the device with DLAA off. So
 // dlaa applies after a restart; switched off, nothing else of DLAA runs.
+// Frame generation (vk_dlssg.c, vk_fg.cpp) takes the temporal upscaler's depth and motion vectors: asked for, it has
+// switched dlaa on in the settings at start (cfg.c cfg_init). FSR 1 has no motion vectors: FSR 3.1 takes its place then.
+static int fg_asked(void) {
+    const char *v = cfg_value("REKARINA_FRAMEGEN");
+    return v && *v && strcmp(v, "off");
+}
+
 int vk_dlaa_wanted(void) {
     static int wanted = -1;
     if (wanted < 0) wanted = cfg_bool("REKARINA_DLAA");
@@ -126,7 +133,13 @@ int vk_dlaa_wanted(void) {
 // extensions. The DLSS mode setting (REKARINA_DLSS) is the render scale for both.
 static int fsr3_on = -1;   // REKARINA_TAA = fsr3, or DLSS cannot run on this card (vk_dlaa_init)
 static int fsr3(void) {
-    if (fsr3_on < 0) fsr3_on = !strcmp(cfg_value("REKARINA_TAA"), "fsr3");
+    if (fsr3_on < 0) {
+        fsr3_on = !strcmp(cfg_value("REKARINA_TAA"), "fsr3");
+        if (!fsr3_on && fg_asked() && !strcmp(cfg_value("REKARINA_TAA"), "fsr1")) {
+            fsr3_on = 1;
+            rt_log("dlaa: FSR 3.1 in place of FSR 1 for frame generation, which needs motion vectors");
+        }
+    }
     return fsr3_on;
 }
 // REKARINA_TAA = fsr1: AMD FSR 1, spatial (vk_fsr.c vk_fsr_scene), at the same point of the frame and at the same DLSS mode
@@ -134,7 +147,7 @@ static int fsr3(void) {
 // costs too much (a Radeon RX 6000, a handheld); at the dlaa mode (the scene at the picture's size) it does nothing.
 static int fsr1_on = -1;
 static int fsr1(void) {
-    if (fsr1_on < 0) fsr1_on = !strcmp(cfg_value("REKARINA_TAA"), "fsr1");
+    if (fsr1_on < 0) fsr1_on = !strcmp(cfg_value("REKARINA_TAA"), "fsr1") && !fg_asked();
     return fsr1_on;
 }
 int vk_dlaa_fsr1(void) { return vk_dlaa_wanted() && fsr1(); }

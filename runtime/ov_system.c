@@ -817,6 +817,10 @@ const char *ov_shared_font_dir(char *buf, size_t n) {
                 snprintf(buf, n, "%s/shared-fonts-%s", exe, style);
                 return buf;
             }
+            static int told;
+            if (strcmp(style, "switch") && !told++)
+                rt_log("pl: the button icons in the system font's text stay the Switch's: %s is missing (run the setup again)",
+                       probe);
         }
 #endif
         snprintf(probe, sizeof probe, "%s/shared-fonts/0-standard.bfttf", exe);

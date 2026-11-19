@@ -808,10 +808,15 @@ def fill_mask(polygons, width, height):
 
 def rasterize(draw, size, fit=None):
     """A size x size coverage mask (0..255, rows top down) of draw's outline, nonzero winding, centred and scaled so its
-    larger side spans fit pixels (default: the square less HUD_MARGIN on each side)."""
+    larger side spans fit pixels (default: the square less HUD_MARGIN on each side), or, with a (width, height) pair,
+    so it is as large as fits both."""
     rec = RecordingPen(); draw(rec)
     box = BoundsPen(None); rec.replay(box); x0, y0, x1, y1 = box.bounds
-    inner = fit or size - 2 * HUD_MARGIN; scale = inner / max(x1 - x0, y1 - y0)
+    inner = fit or size - 2 * HUD_MARGIN
+    if isinstance(inner, tuple):   # (width, height): the outline as large as fits both
+        scale = min(inner[0] / (x1 - x0), inner[1] / (y1 - y0))
+    else:
+        scale = inner / max(x1 - x0, y1 - y0)
     ox = (size - (x1 - x0) * scale) / 2 - x0 * scale
     oy = (size - (y1 - y0) * scale) / 2 - y0 * scale
     flat = PolygonPen(); rec.replay(TransformPen(flat, (scale, 0, 0, -scale, ox, size - oy)))   # font y up -> rows down
@@ -928,6 +933,68 @@ def bntx_swap(data, base, pairs):
         (shape_a, at_a, size, *_), (shape_b, at_b, *_) = images[a], images[b]
         assert shape_a == shape_b, f'{a} and {b} differ in format, size or tiling'
         data[at_a:at_a + size], data[at_b:at_b + size] = data[at_b:at_b + size], data[at_a:at_a + size]
+
+
+# ---- images whose letter lies on an opaque shape of the image itself (OoT's song screen: a white disc or key with a
+# black letter, ASTC 4x4, the shape in the alpha channel). The letter's surroundings are replaced, the shape's edge
+# stays as the game has it: every 4x4 block of a box inside the opaque part is written again, white with the new
+# drawing in black. Such a block needs no alpha and one pair of grey ends, the simplest block ASTC has.
+ASTC_4X4_SRGB = 0x2d06
+ASTC_WEIGHTS = (0, 9, 18, 27, 37, 46, 55, 64)   # a 3-bit weight as a decoder widens it to 0..64
+
+
+def astc_grey_block(px):
+    """The 16 bytes of an opaque grey ASTC 4x4 block of 16 values, rows top down: block mode 0x53 (a 4x4 grid of 3-bit
+    weights, one plane), one partition, endpoint mode 0 (two luminance values of 8 bits, the smallest and the largest
+    value), each texel the nearest of the eight steps between them. The weights fill the block from its last bit
+    down, the first texel's lowest bit in bit 127. The steps are computed as an sRGB decode does (the ends widened to
+    16 bits with 0x80 below)."""
+    lo, hi = min(px), max(px)
+    v = 0x53 | lo << 17 | hi << 25
+    if hi > lo:
+        steps = [((lo << 8 | 0x80) * (64 - w) + (hi << 8 | 0x80) * w + 32 >> 6) >> 8 for w in ASTC_WEIGHTS]
+        for i, p in enumerate(px):
+            k = min(range(8), key=lambda j: abs(steps[j] - p))
+            for b in range(3):
+                v |= (k >> b & 1) << (127 - (3 * i + b))
+    return v.to_bytes(16, 'little')
+
+
+def bntx_redraw_box(data, base, textures, icons, box, fit, ns2=True):
+    """Paint the icon of each texture of textures (name -> code point; icons: code point -> (advance, draw)) in black
+    on white over the box (x0, y0, width, height; multiples of 4) of its image in the BNTX at data[base:] (a
+    bytearray), in place: ASTC 4x4 images of one mip whose box is opaque in the game's file. The icon is centred in the
+    box, as large as fits fit (rasterize). Returns the names painted."""
+    images, done = bntx_images(data, base), []
+    x0, y0, bw_px, bh_px = box
+    assert x0 % 4 == 0 and y0 % 4 == 0 and bw_px % 4 == 0 and bh_px % 4 == 0, box
+    side = max(bw_px, bh_px)   # the mask is square, centred on the box: the box is its middle
+    ox, oy = (side - bw_px) // 2, (side - bh_px) // 2
+    for name, code in textures.items():
+        assert name in images, f'not in the texture list: {name}'
+        _, start, size, fmt, mips, w, h, block = images[name]
+        assert fmt == ASTC_4X4_SRGB and mips == 1 and x0 + bw_px <= w and y0 + bh_px <= h, \
+            f'{name}: format {fmt:#x}, {w}x{h}, {mips} mips'
+        mask = rasterize(icons[code][1], side, fit)
+        bw = (w + 3) // 4
+        for by in range(bh_px // 4):
+            for bx in range(bw_px // 4):
+                px = [255 - mask[(oy + by * 4 + j // 4) * side + ox + bx * 4 + j % 4] for j in range(16)]
+                at = gob_offset((x0 // 4 + bx) * 16, y0 // 4 + by, (bw * 16 + 63) // 64, block, ns2)
+                assert at + 16 <= size, f'{name}: block ({bx}, {by}) past the image'
+                data[start + at:start + at + 16] = astc_grey_block(px)
+        done.append(name)
+    return done
+
+
+def label_icons(g, labels):
+    """Code point -> (advance, draw(pen)) of plain text in the game's own text font (g: Glyphs), for an image that
+    carries its own key shape: labels maps code point -> text."""
+    def text(label):
+        def draw(pen):
+            g.fill(pen, label, 0, 0, 700, 1e9)
+        return 0, draw
+    return {code: text(label) for code, label in labels.items()}
 
 
 # ---- the resource size table: System/Resource/ResourceSizeTable.Product.<n>.Nin_NX_NVN.rsizetable.zs, a RESTBL whose

@@ -45,14 +45,14 @@ static const char *const known[] = {
     "BIND_SKIP", "BIND_STATS", "BIND_UP", "BIND_X", "BIND_Y",
     "BIND_ZL", "BIND_ZR", "BLOCK_VIEWS_3D", "CLOTH_REALTIME", "COLOR_BRIGHTNESS", "COLOR_CONTRAST", "COLOR_GAMMA",
     "COLOR_PRESET", "COLOR_SATURATION", "CONTACT_DEBUG", "CONTACT_SHADOWS", "CORE_DIAG", "CRIT", "CRIT_OUT",
-    "DEFER_GRACE", "POOL_QUARANTINE", "DESC_TEMPLATE", "DEVICE_PROFILE", "DISCORD_APP_ID", "DISCORD_IMAGE", "DISCORD_RPC", "DLAA", "DLAA_JITTER", "DLAA_MV", "DLAA_MASKDEBUG", "DLAA_MVDEBUG", "DLAA_OBJMV", "DLAA_PJITTER", "DLAA_PJ_YS", "DLAA_SURVEY", "DLAA_TIMES", "DLSS", "DLSS_CHAR_MASK", "DLSS_PRESET", "DLSS_REACTIVE", "DUMP", "DUMP_BUF", "DUMP_DIR",
+    "DEFER_GRACE", "POOL_QUARANTINE", "DESC_TEMPLATE", "DEVICE_PROFILE", "DISCORD_APP_ID", "DISCORD_IMAGE", "DISCORD_RPC", "DLAA", "DLAA_JITTER", "DLAA_MV", "DLAA_MASKDEBUG", "DLAA_MVDEBUG", "DLAA_OBJMV", "DLAA_PJITTER", "DLAA_PJ_YS", "DLAA_SURVEY", "DLAA_TIMES", "DLSS", "DLSSG_UNAVAILABLE", "DLSS_CHAR_MASK", "DLSS_PRESET", "DLSS_REACTIVE", "DUMP", "DUMP_BUF", "DUMP_DIR",
     "DUMP_LOG", "EXEFS", "FEEDBACK", "FIX_C0", "FIX_ZERO", "FLIGHT", "FLIGHT_AT", "FLIGHT_DIR", "FLIGHT_FRAMES",
     "FLIGHT_SPIKE_MS", "FLIGHT_THUMB", "FLIGHT_THUMBS", "FLUSH_SPAN", "FLUSH_UPLOAD", "TEX_EVICT", "FOLIAGE_SHADOW_CULL", "FOLIAGE_SHADOW_VRS", "FOV", "FOV_PATCH", "FPS60", "FPS_LIMIT", "FRAMETIMES", "FREEZE_IDLE", "FREEZE_WHOLE", "FREE_CORES",
     "FAST_TEXT", "FULLSCREEN", "FXAA", "GPL", "GPL_DRAW_BUILD", "GPU", "GPU_INDEX", "GPU_NAME", "HDR", "HDR_GAME_NITS", "HDR_HUE",
     "HDR_PEAK_NITS", "HDR_UI_NITS", "HIGHFPS_FIX", "INPUT", "INPUT_RECORD", "INPUT_SCRIPT", "LANG", "LIB_PREBUILD",
     "LIB_PREBUILD_KEEP", "LIB_PREBUILD_THREADS", "LOCALE", "LOD_GUARD", "LSTICK_DEADZONE", "MEMORY", "LINUX_GUEST_MEMORY", "SHADOW_PAGE_PRE", "SHADOW_GMEM_PRE", "MENU_LANG", "MENU_TEST", "MESH_ASYNC",
     "MESH_GPL", "MESH_WAIT_MS", "MESH_KEYS_DROP", "MESH_LIB_PREPARE", "MESH_COLD", "MESH_ALT_ONLY", "MESH_FS_AHEAD",
-    "MENU_CURSOR", "MENU_CURSOR_LOG", "MENU_TEST_DIR", "MENU_TEST_SET", "MINIMAL_LAYOUT", "MIRROR_GAP", "MODS_DIR", "MODS_DISABLED", "MODS_ORDER", "MODS_REBUILD", "MOTION", "PAD_FOLLOW", "PAD_DRIVER", "CURSOR_HIDE", "BG_MUTE", "MENU_SCRIPT", "KBM_OFF", "SCREENSHOT_KEY", "SCREENSHOT_OVERLAY", "TEST_FAULT", "TEST_RAM_MB", "REPORT_NO_OPEN", "NO_CRASH_BOX", "MOUSE_MODE", "MOUSE_DIRECT_PATCH", "MOUSE_SENS", "MOUSE_SENS_Y", "MOUSE_INVERT_Y", "MOUSE_RAW", "MOVIE_HOST", "MOVIE_PACE",
+    "MENU_CURSOR", "MENU_CURSOR_LOG", "MENU_TEST_DIR", "MENU_TEST_SET", "MINIMAL_LAYOUT", "MIRROR_GAP", "MODS_DIR", "MODS_DISABLED", "MODS_ORDER", "MODS_REBUILD", "MOTION", "PAD_FOLLOW", "PAD_DRIVER", "CURSOR_HIDE", "BG_MUTE", "MENU_SCRIPT", "KBM_OFF", "MENU_GUIDE", "SCREENSHOT_KEY", "SCREENSHOT_OVERLAY", "TEST_FAULT", "TEST_RAM_MB", "REPORT_NO_OPEN", "NO_CRASH_BOX", "MOUSE_MODE", "MOUSE_DIRECT_PATCH", "MOUSE_SENS", "MOUSE_SENS_Y", "MOUSE_INVERT_Y", "MOUSE_RAW", "MOVIE_HOST", "MOVIE_PACE",
     "MVOBJ_ALL", "MVOBJ_BANKS", "MVOBJ_EQUAL", "MVOBJ_EXACT", "MVOBJ_EXEC", "MVOBJ_NOC4", "MVOBJ_ONLY", "MVOBJ_TIMES", "MVPREV_CHECK", "MVPREV_GROW", "MVPREV_SKIP", "MVPREV_TRUST", "MV_CHECK",
     "MV_SURVEY",
     "ONE_PER_CORE", "OPERATION_MODE", "OUTPUT_RES", "PAD_LAYOUT", "PASS_CRUMBS", "PATCH_OUTPUT", "PATCH_SCENE", "PCSS", "PCSS_K", "PERF_OVERLAY", "PERF_SLOW_MS", "PIPELINE_CACHE", "PIPE_MEMO", "PIPE_PREBUILD", "PIPE_SKIP", "PIPE_SYNC", "PIPE_WAIT",
@@ -67,7 +67,7 @@ static const char *const known[] = {
     "FSR_VERSION", "CS_KEEP", "MESH_INDICES", "MESH_TASK", "VRAM_BUDGET_MB", "VMA_DUMP", "SNAP_RING_MB", "TEX_EVICT_CLASS", "TPOOL_HIDE", "POOLTAB", "VMA_BLOCK_MB", "TEX_SUBALLOC_KB",
     "SWKBD_TEST", "TEST_PAD", "UPDATE_CHECK", "TEST_PREPARE_SHADERS", "TEST_STALL", "FIXED_SCENE", "FRAMEGEN", "REFLEX", "GAME_ASPECT", "GAME_RES", "SCENE_SCALE", "SHADOW_COMPARE", "TAA", "TEX_ALIAS", "TEX_MEMO", "TEX_QUALITY", "TEX_SAME_REG", "DLAA_WARM", "DLAA_SHARPEN", "TPOOL_PUMP_MS", "MOVIE_FPS", "TEX_VRAM_PRESSURE", "TIMER_1MS", "PROCESS_PRIORITY", "RENDER_CORE", "GPU_LOAD_ZERO", "GPU_PASSTIME", "OQLOG", "PRED_ZERO", "RES_GUARD", "TPOOL", "TPOOL_MS", "TPOOL_REGBITS", "PAR_UB_JOIN", "HEAP_CHECK", "EVICT_QUIET", "USNAP_HELD_LOCK", "TPOOL_OLD_MS", "EVICT_HOLD_MS", "PRESSURE_KEEP_USED", "TRACE", "TXD_TRANSPOSE", "UBO_SNAPSHOT", "UPSCALER", "VK_DYN_A2C", "VK_DYN_VERTEX", "VK_NO_FLOAT64",
     "VK_PRESENT", "VK_RECORDER", "VK_SSBO_ALIGN", "VK_SUBGROUP", "VK_SUBGROUP_PIN", "VK_VALIDATION", "VOLUME", "VRAM_HEADROOM", "VS_OUTS",
-    "WALK_KEY", "WALK_SCALE", "WB_EXACT", "WB_FENCE_LIMIT", "WB_MERGE", "WINDOW_SIZE", "XLATE", "XLATE_ID", "XLATE_KEEP", "XLATE_PROCS",
+    "WALK_KEY", "WALK_SCALE", "STICK_DASH", "DASH_KEY", "WB_EXACT", "WB_FENCE_LIMIT", "WB_MERGE", "WINDOW_SIZE", "XLATE", "XLATE_ID", "XLATE_KEEP", "XLATE_PROCS",
     "ZSTD_CHECK", "ZSTD_NATIVE",
 };
 
@@ -94,8 +94,8 @@ static const struct { const char *key, *section; } sections[] = {
     {"MOTION", "input"}, {"RUMBLE_STRENGTH", "input"}, {"RUMBLE_CURVE", "input"}, {"RUMBLE_TRIGGERS", "input"},
     {"PAD_LAYOUT", "input"}, {"PROMPTS", "input"}, {"STICK_DEADZONE", "input"}, {"LSTICK_DEADZONE", "input"}, {"RSTICK_DEADZONE", "input"},
     {"STICK_SENS", "input"},
-    {"MENU_CURSOR", "input"}, {"PAD_FOLLOW", "input"}, {"PAD_DRIVER", "input"}, {"KBM_OFF", "input"}, {"SCREENSHOT_KEY", "input"}, {"SCREENSHOT_OVERLAY", "input"}, {"CURSOR_HIDE", "input"}, {"MOUSE_MODE", "input"}, {"MOUSE_SENS", "input"}, {"MOUSE_SENS_Y", "input"},
-    {"MOUSE_INVERT_Y", "input"}, {"MOUSE_RAW", "input"}, {"WALK_KEY", "input"}, {"WALK_SCALE", "input"}, {"INPUT_RECORD", "input"},
+    {"MENU_CURSOR", "input"}, {"PAD_FOLLOW", "input"}, {"PAD_DRIVER", "input"}, {"KBM_OFF", "input"}, {"MENU_GUIDE", "input"}, {"SCREENSHOT_KEY", "input"}, {"SCREENSHOT_OVERLAY", "input"}, {"CURSOR_HIDE", "input"}, {"MOUSE_MODE", "input"}, {"MOUSE_SENS", "input"}, {"MOUSE_SENS_Y", "input"},
+    {"MOUSE_INVERT_Y", "input"}, {"MOUSE_RAW", "input"}, {"WALK_KEY", "input"}, {"WALK_SCALE", "input"}, {"STICK_DASH", "input"}, {"DASH_KEY", "input"}, {"INPUT_RECORD", "input"},
     {"BIND_A", "input"}, {"BIND_B", "input"}, {"BIND_X", "input"}, {"BIND_Y", "input"}, {"BIND_LCLICK", "input"},
     {"BIND_RCLICK", "input"}, {"BIND_L", "input"}, {"BIND_R", "input"}, {"BIND_ZL", "input"}, {"BIND_ZR", "input"},
     {"BIND_PLUS", "input"}, {"BIND_MINUS", "input"}, {"BIND_LEFT", "input"}, {"BIND_UP", "input"},
@@ -127,7 +127,7 @@ static const CfgMeta metas[] = {
     {"VK_PRESENT", "mailbox", "mailbox|fifo|immediate", LIVE}, {"GPU_INDEX", "", NULL, RESTART},
     {"PERF_OVERLAY", "off", "off|fps|full", LIVE},
 #ifdef GAME_OOT   // OoT: the scene's share of the picture is read on every present (frame_rate.c scene_share)
-    {"OUTPUT_RES", "1920x1080", NULL, RESTART}, {"RENDER_SCALE", "100", "50|67|75|100", LIVE},
+    {"OUTPUT_RES", "1920x1080", NULL, RESTART}, {"RENDER_SCALE", "100", "50|55|60|65|67|70|75|80|85|90|95|100", LIVE},
 #else
     {"OUTPUT_RES", "1920x1080", NULL, RESTART}, {"RENDER_SCALE", "game", "game|50|67|75|100|125|150|200", RESTART},
 #endif
@@ -164,6 +164,7 @@ static const CfgMeta metas[] = {
     {"FAST_TEXT", "0", "0|1", RESTART},   // OoT: romfs-patches-fasttext at start (romfs.c)
     {"ASSUME_FOCUS", "1", "0|1", LIVE},   // read on every focus change (ov_system.c)
     {"HEAP_CHECK", "0", NULL, LIVE},      // test runs: the process heap checked every n presents (perf.c heap_check)
+    {"DLSSG_UNAVAILABLE", "0", "0|1", RESTART},   // test runs: DLSS-G counted missing, AMD's takes over (vk_dlssg.c)
     // Sound, Controls, Menu
     {"VOLUME", "100", "0..100", LIVE}, {"AUDIO_CHANNELS", "stereo", "auto|stereo|5.1", RESTART},
     {"BG_MUTE", "0", "0|1", LIVE},   // silent while the window is in the background (audio_mixer.c)
@@ -184,6 +185,8 @@ static const CfgMeta metas[] = {
     // MOUSE_RAW 0 takes the cursor's motion in place of raw input (input_win.c mouse_raw)
     {"MOUSE_SENS_Y", "1", "0.1..3", LIVE}, {"MOUSE_INVERT_Y", "0", "0|1", LIVE}, {"MOUSE_RAW", "1", "0|1", LIVE},
     {"WALK_KEY", "none", NULL, LIVE}, {"WALK_SCALE", "0.51", "0.2..0.9", LIVE},
+    // the game's dash on an input of its own: the left stick's press while it is tilted, and this key (input.c dash_apply)
+    {"STICK_DASH", "0", "0|1", LIVE}, {"DASH_KEY", "v", NULL, LIVE},
     // several gamepads: the one pressed last is read (input.c pad_follow); compat: the system's XInput / DirectInput
     // path in place of SDL's own drivers, for a controller listed but silent (input.c start)
     {"PAD_FOLLOW", "1", "0|1", LIVE}, {"PAD_DRIVER", "auto", "auto|compat", RESTART},
@@ -191,7 +194,7 @@ static const CfgMeta metas[] = {
     {"CURSOR_HIDE", "3", "0|1|3|5|10", LIVE},
     // keyboard and mouse ignored while a gamepad is connected (input.c kbm_off); the screenshot key and whether the
     // picture keeps the menu and the overlays (input.c screenshot_key, gfx_present.c screenshot_path)
-    {"KBM_OFF", "0", "0|1", LIVE}, {"SCREENSHOT_KEY", "f12", "none|f12|f9|f7|f6|f5", LIVE},
+    {"KBM_OFF", "0", "0|1", LIVE}, {"MENU_GUIDE", "1", "0|1", LIVE}, {"SCREENSHOT_KEY", "f12", "none|f12|f9|f7|f6|f5", LIVE},
     {"SCREENSHOT_OVERLAY", "0", "0|1", LIVE},
     // the order of the menu's own list (ui/menu.cpp tab_menu langs[], after "Automatic")
     {"MENU_LANG", "", "en|de|es|fr|it|nl|pt|pt-BR|ru|ja|ko|zh-Hans|zh-Hant", LIVE},
@@ -836,6 +839,15 @@ static void load_ini(void) {
 
 void cfg_init(void) {
     load_ini();
+    // Frame generation takes DLSS / DLAA's depth and motion vectors (vk_dlaa.c): asked for from the base mode (a
+    // rekarina.ini line, the setup), it switches dlaa on in the settings themselves, so every part that reads dlaa
+    // (the scene's size, the upscaling pass, the motion vectors) agrees. dlaa set to 0 in the environment wins: the
+    // frame generation then logs that it is off.
+    const char *fg = cfg_get(PREFIX "FRAMEGEN");
+    if (fg && *fg && strcmp(fg, "off") && !cfg_bool(PREFIX "DLAA") && !cfg_from_env(PREFIX "DLAA")) {
+        cfg_set(PREFIX "DLAA", "1");
+        rt_log("cfg: framegen = %s turns dlaa on: frame generation takes its depth and motion vectors", fg);
+    }
     if (profile_of())
         rt_log("cfg: device profile %s: defaults for the keys " RT_INI_FILE " does not set (REKARINA_DEVICE_PROFILE=desktop "
                "turns it off)", profile_of() == 1 ? "Steam Deck" : "Windows handheld");

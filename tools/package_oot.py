@@ -57,7 +57,11 @@ FOLDERS = ('romfs-patches', 'romfs-patches-xbox', 'romfs-patches-xbox-label', 'r
            'romfs-patches-pc', 'romfs-patches-fasttext',
            'shared-fonts-switch', 'shared-fonts-xbox',
            'shared-fonts-xbox-label')
-PROMPT_FILES = ('prompts-live.bin', 'prompt-previews.bin', 'prompts-keys.bin', 'prompts-hint.bin')
+PROMPT_FILES = ('prompts-live.bin', 'prompt-previews.bin', 'prompts-keys.bin', 'prompts-hint.bin',
+                'prompts-ocarina.bin')   # the action hint's and the song screen's button images of every set
+# Overlay folders that are there only when the game's files were the ones their tool knows: the action hint's layout for a
+# pad mapped by label (make_oot_prompts.py hint_by_label)
+OPTIONAL_FOLDERS = ('romfs-patches-hint-label',)
 
 
 def copy(src, dst):
@@ -185,7 +189,7 @@ def main():
     if SEED_COMPUTE.is_file():
         (out / 'compute-used-seed.bin').write_bytes(gzip.decompress(SEED_COMPUTE.read_bytes()))
     n = 0
-    for d in FOLDERS:
+    for d in FOLDERS + tuple(d for d in OPTIONAL_FOLDERS if (build / d / 'manifest.tsv').is_file()):
         n += copy_tree(build / d, out / d)
     n += copy_tree(a.exefs, out / 'exefs')
     if (build / 'nv-cache').is_dir():   # the driver's pipelines of the shader preparation (runtime/vk_device.c)
