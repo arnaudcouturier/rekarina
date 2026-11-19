@@ -79,6 +79,8 @@ static const char *switch_language(const char *tag) {
         !strcmp(lang, "ru") || !strcmp(lang, "ko") || !strcmp(lang, "pt"))
         return !strcmp(lang, "ja") ? "ja" : !strcmp(lang, "de") ? "de" : !strcmp(lang, "it") ? "it"
              : !strcmp(lang, "nl") ? "nl" : !strcmp(lang, "ru") ? "ru" : !strcmp(lang, "ko") ? "ko" : "pt";
+    // Polish: a language of the Switch 2's list (the SDK's language codes end in pl and th), which OoT ships (EUpl)
+    if (!strcmp(lang, "pl")) return "pl";
     if (!strcmp(lang, "fr")) return !strcmp(region, "CA") ? "fr-CA" : "fr";
     if (!strcmp(lang, "es")) return *region && strcmp(region, "ES") ? "es-419" : "es";
     if (!strcmp(lang, "zh"))
@@ -95,7 +97,7 @@ static const char *switch_language(const char *tag) {
 // spellings, which older totk.ini files and menus wrote, are mapped to them.
 const char *ov_language(void) {
     static const char *const codes[] = {"ja", "en-US", "fr", "de", "it", "es", "ko", "nl", "pt", "ru",
-                                        "en-GB", "fr-CA", "es-419", "zh-Hans", "zh-Hant", "pt-BR"};
+                                        "en-GB", "fr-CA", "es-419", "zh-Hans", "zh-Hant", "pt-BR", "pl"};
     const char *code = cfg_get("REKARINA_LANG");   // no fixed default: REKARINA_LOCALE or the Windows user locale decides when unset
     if (code && *code) {
         if (!strcmp(code, "zh-CN")) return "zh-Hans";

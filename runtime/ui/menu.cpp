@@ -1135,10 +1135,12 @@ static void tab_screen(float scale) {
         else if (!strcmp(fg_now, "dlss") && vk_fg_instead() && vk_fg_active()) note = menu_text(UI_MENU_FRAMEGEN_INSTEAD);
         else if (!dlss_ok) note = why_dlss;
         else if (!fsr_ok) note = why_fsr;
-        if (opt_choice_list("REKARINA_FRAMEGEN", UI_MENU_FRAMEGEN, values, names, n, UI_MENU_FRAMEGEN_DESC, -1, note) &&
-            strcmp(cfg_value("REKARINA_FRAMEGEN"), "off") && !cfg_bool("REKARINA_DLAA")) {
-            cfg_set("REKARINA_DLAA", "1");   // its depth and motion vectors: the dlaa row shows it on
-            opt_save_soon();
+        if (opt_choice_list("REKARINA_FRAMEGEN", UI_MENU_FRAMEGEN, values, names, n, UI_MENU_FRAMEGEN_DESC, -1, note)) {
+            fg_guard_clear();   // one that stopped a start while being set up is tried again at the next (report.c)
+            if (strcmp(cfg_value("REKARINA_FRAMEGEN"), "off") && !cfg_bool("REKARINA_DLAA")) {
+                cfg_set("REKARINA_DLAA", "1");   // its depth and motion vectors: the dlaa row shows it on
+                opt_save_soon();
+            }
         }
     }
     static const UiTextId dlss[] = {UI_MENU_DLSS_DLAA, UI_MENU_DLSS_QUALITY, UI_MENU_DLSS_BALANCED,
@@ -1655,6 +1657,14 @@ static const UiTextId kTabNames[TAB_COUNT] = {UI_MENU_TAB_SCREEN,   UI_MENU_TAB_
 static int g_tab;               // the tab shown
 static int g_tab_request = -1;  // select this tab at the next layout; -1 none
 static int g_focus_page = -1;   // this tab's first row takes the cursor once it is shown; -1 none
+// The row each tab's cursor was last on (opt_focus_row), for the session: the menu opened again puts the cursor back
+// there, where it took the tab's first row before (a player tuning "3D render scale" came back to "Fullscreen" at
+// every opening). "" for a tab the cursor has not been on.
+static char g_last_row[TABS][64];
+static int g_restore_row;   // frames left to put the cursor back on g_last_row (the opening's own nav init runs first)
+#ifdef _WIN32
+extern "C" int menu_window_client(int *w, int *h);   // ui/menu_win.cpp (DEBUG-MENUCLIENT)
+#endif
 
 static void request_tab(int tab) { g_tab_request = tab; }
 
@@ -2019,6 +2029,10 @@ static void layout_menu(const MenuTarget *t, float scale) {
             opt_focus_first();
             g_focus_page = -1;
         }
+        if (g_restore_row > 0) {
+            g_restore_row--;
+            if (g_last_row[tab_index(k)][0]) opt_focus_key(g_last_row[tab_index(k)]);
+        }
         // the page's rows are a NavFlattened child of this window itself: ImGui clips the items of a direct child
         // only, so behind a second child level the rows scrolled out above won D-pad moves from the buttons
         opt_reserve_bottom(ImGui::GetContentRegionAvail().y - (pb.y - pa.y - inner * 2));
@@ -2039,6 +2053,8 @@ static void layout_menu(const MenuTarget *t, float scale) {
             break;
         case TAB_ADVANCED: tab_advanced(scale); break;
         }
+        const char *row = opt_focus_row();
+        if (*row) snprintf(g_last_row[tab_index(k)], sizeof g_last_row[0], "%s", row);
     }
     // "Continue" and "Quit game", plates under the panel
     const char *cont = menu_text(UI_MENU_CONTINUE), *quit = menu_text(UI_MENU_QUIT);
@@ -2619,7 +2635,22 @@ extern "C" int menu_overlay_frame(uint64_t frame, const MenuTarget *t, const cha
         io.ClearInputKeys();
         io.ClearInputMouse();
         g_last_ns = 0;
-        g_focus_page = g_tab_request >= 0 ? g_tab_request : g_tab;   // opening: the first row has the cursor
+#ifdef _WIN32
+        {   // DEBUG-MENUCLIENT: the mouse positions are client pixels, the menu lays out over the swapchain: one log line
+            // per opening while the two sizes differ, the first three openings always
+            static int said;
+            int cw = 0, ch = 0;
+            if (menu_window_client(&cw, &ch) && (said < 3 || cw != (int)t->width || ch != (int)t->height) && said < 20) {
+                said++;
+                rt_log("menu: opened over %ux%u, the window's client area is %dx%d%s", t->width, t->height, cw, ch,
+                       cw != (int)t->width || ch != (int)t->height ? ": the mouse lands off" : "");
+            }
+        }
+#endif
+        // opening: the cursor goes back to the row it was on in that tab, else the tab's first row has it
+        int tab = g_tab_request >= 0 ? g_tab_request : g_tab;
+        if (g_last_row[tab_index(tab)][0]) g_restore_row = 3;   // for 3 frames: ImGui's nav init of the
+        else g_focus_page = tab;                                 // reopened window takes its first item otherwise
         if (GImGui->OpenPopupStack.Size) ImGui::ClosePopupToLevel(0, false);   // a confirmation left open on closing
         g_modal = false;
     }

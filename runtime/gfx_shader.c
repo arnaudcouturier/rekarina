@@ -35,6 +35,7 @@
 // The code layout the translator sees (graphics: code[0x30..], compute: code[0..]; c1 = code[c1..length]
 // with c1 and length at control+0x700) follows tools/shader_census.py, itself MacNativeGames' totk shader tooling (MIT).
 #include <ctype.h>
+#include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -1402,25 +1403,75 @@ static void use_path_of(const uint8_t name[32], char *p) {
     snprintf(p, PATH_CAP + 80, "%s/%s.use", cache_dir, hex);
 }
 
-static void use_path(const uint8_t h[32], char *p) {
-    uint8_t name[32];
-    use_name(h, name);
-    use_path_of(name, p);
-}
-
-// Every .use file of the cache, read by a background thread when the paths are set (use_preload), by file name: a
-// lookup on the render thread then opens no file. Opening one took 0.1 ms alone but 11-40 ms in play, behind the
-// translator's and the pipeline cache's writes and flushes on the same volume, and each new shader of a draw opened one.
-// The table is complete and read-only once use_files_ready is 1; masks found later are in use_buckets.
+// Every use mask of the cache in one table by file name, filled by a background thread when the paths are set
+// (use_preload): a lookup on the render thread then opens no file. Opening one took 0.1 ms alone but 11-40 ms in play,
+// behind the translator's and the pipeline cache's writes and flushes on the same volume, and each new shader of a draw
+// opened one. Sources in order: the pack's masks, the mask log (below), the loose .use files neither of them named;
+// use_store adds the masks found later. The table only grows: writers hold use_files_lock, readers walk the chains
+// without a lock, as an entry is complete before the release store that links it.
+// use_files_ready: 0 while the pack and the log are read (a name not in the table may be on the disk), 1 once they are
+// in (a name not in it may still have a loose file), 2 when the loose files are in too (a name not in it has no file).
+//
+// The mask log, <cache>/use-masks.bin: 48-byte records (UseRec) that every run appends for the masks it finds, and the
+// preload for each loose file it had to open, so a later start lists the loose files' names and opens none of them. A
+// development folder held 90,703 packed masks and 86,159 loose .use files: read one by one they took a background
+// thread 11-13 s with a warm file cache and 83 s with a cold one, a sixth of a four-processor machine while the first
+// scene played (2026-11-19). The loose files are still written and kept: an older rekarina.exe on the same folder and
+// tools/pack_shader_cache.py read them. A record that fails its check (a write cut short by a crash) is skipped byte
+// by byte up to the next one that passes.
 #define USE_FILE_BUCKETS 65536
 typedef struct UseFile { struct UseFile *next; uint8_t name[32]; UseMask m; } UseFile;
 static UseFile *use_files[USE_FILE_BUCKETS];
 static volatile int32_t use_files_ready;
+static PlatMutex use_files_lock = PLAT_MUTEX_INIT;        // adding to use_files; the log handle
+
+typedef struct { uint8_t name[32]; uint32_t slots, attrs, fouts, check; } UseRec;
+_Static_assert(sizeof(UseRec) == 48, "use-masks.bin record layout");
+static PlatAppend *use_log;
+static int use_log_failed;
 
 static UseFile **use_file_slot(const uint8_t name[32]) {
-    UseFile **e = &use_files[(name[0] | name[1] << 8) % USE_FILE_BUCKETS];
-    while (*e && memcmp((*e)->name, name, 32)) e = &(*e)->next;
+    UseFile **e = &use_files[(name[0] | name[1] << 8) % USE_FILE_BUCKETS], *x;
+    while ((x = __atomic_load_n(e, __ATOMIC_ACQUIRE)) && memcmp(x->name, name, 32)) e = &x->next;
     return e;
+}
+
+static UseFile *use_file_find(const uint8_t name[32]) { return __atomic_load_n(use_file_slot(name), __ATOMIC_ACQUIRE); }
+
+// name -> m into the table unless the name is there; 1 when added. Caller holds use_files_lock.
+static int use_file_add(const uint8_t name[32], const UseMask *m) {
+    UseFile **slot = use_file_slot(name), *x;
+    if (*slot || !(x = malloc(sizeof *x))) return 0;
+    memcpy(x->name, name, 32), x->m = *m, x->next = NULL;
+    __atomic_store_n(slot, x, __ATOMIC_RELEASE);
+    return 1;
+}
+
+static uint32_t use_rec_check(const UseRec *r) {           // FNV-1a over the record's first 44 bytes, seeded with the magic
+    const uint8_t *p = (const uint8_t *)r;
+    uint32_t h = 2166136261u ^ USE_MAGIC;
+    for (size_t i = 0; i < offsetof(UseRec, check); i++) h = (h ^ p[i]) * 16777619u;
+    return h;
+}
+
+static void use_rec_fill(UseRec *r, const uint8_t name[32], const UseMask *m) {
+    memcpy(r->name, name, 32), r->slots = m->slots, r->attrs = m->attrs, r->fouts = m->fouts;
+    r->check = use_rec_check(r);
+}
+
+// n records to the end of the log, opened at the first call. Caller holds use_files_lock.
+static void use_log_append(const UseRec *r, size_t n) {
+    if (!n || use_log_failed || !cache_dir[0]) return;
+    if (!use_log) {
+        char p[PATH_CAP + 32];
+        snprintf(p, sizeof p, "%s/use-masks.bin", cache_dir);
+        if (!(use_log = plat_append_shared(p))) {
+            use_log_failed = 1;
+            rt_log("gfx_shader: cannot open %s for writing: masks go to the loose .use files only", p);
+            return;
+        }
+    }
+    if (!plat_append_write(use_log, r, n * sizeof *r)) use_log_failed = 1;
 }
 
 static int hex_byte(const char *c) {
@@ -1433,30 +1484,100 @@ static int hex_byte(const char *c) {
     return v;
 }
 
-typedef struct { int n, bad; } UsePreload;
+#define USE_LOG_BATCH 1024                                 // records the preload appends to the log at a time
+typedef struct { int n, bad, listed; size_t nrec; UseRec rec[USE_LOG_BATCH]; } UsePreload;
 
-// One <64 hex digits>.use file of the cache directory into the table.
+static int use_add_locked(const uint8_t name[32], const UseMask *m) {
+    plat_mutex_lock(&use_files_lock);
+    int added = use_file_add(name, m);
+    plat_mutex_unlock(&use_files_lock);
+    return added;
+}
+
+// The pack's masks. The tool writes the data in index order, so they lie in one stretch of the file: one read for
+// all of them (20 bytes each) instead of one read each. A pack of 90,703 masks: 5 ms, where the reads one by one
+// and the loose files after them took 11-13 s with a warm file cache (2026-11-19).
+static void use_preload_pack(int *n, int *bad) {
+    uint64_t lo = UINT64_MAX, hi = 0;
+    for (uint32_t i = 0; i < pack_n; i++)
+        if (pack_ix[i].kind == PACK_USE) {   // never compressed: 20 bytes
+            if (pack_ix[i].offset < lo) lo = pack_ix[i].offset;
+            if (pack_ix[i].offset + pack_ix[i].size > hi) hi = pack_ix[i].offset + pack_ix[i].size;
+        }
+    if (lo >= hi) return;
+    uint8_t *span = hi - lo <= (64u << 20) ? malloc((size_t)(hi - lo)) : NULL;
+    if (span && !pack_read_at(lo, span, (uint32_t)(hi - lo))) free(span), span = NULL;
+    for (uint32_t i = 0; i < pack_n; i++) {
+        uint32_t u[5];
+        if (pack_ix[i].kind != PACK_USE) continue;
+        int got = pack_ix[i].size == sizeof u &&
+                  (span ? (memcpy(u, span + (pack_ix[i].offset - lo), sizeof u), 1) : pack_read_at(pack_ix[i].offset, u, sizeof u));
+        if (!got || u[0] != USE_MAGIC || u[1] != USE_VERSION) {
+            ++*bad;
+            continue;
+        }
+        UseMask m = {u[2], u[3], u[4]};
+        *n += use_add_locked(pack_ix[i].name, &m);
+    }
+    free(span);
+}
+
+// The mask log's records; *skipped: bytes that held no valid record.
+static void use_preload_log(int *n, uint64_t *skipped) {
+    char p[PATH_CAP + 32];
+    snprintf(p, sizeof p, "%s/use-masks.bin", cache_dir);
+    uint64_t len = 0;
+    uint8_t *f = read_file(p, &len);
+    if (!f) return;
+    for (uint64_t o = 0; o + sizeof(UseRec) <= len;) {
+        UseRec r;
+        memcpy(&r, f + o, sizeof r);
+        if (r.check != use_rec_check(&r)) {
+            ++*skipped, o++;
+            continue;
+        }
+        UseMask m = {r.slots, r.attrs, r.fouts};
+        *n += use_add_locked(r.name, &m);
+        o += sizeof r;
+    }
+    free(f);
+}
+
+static void use_preload_flush(UsePreload *st) {
+    plat_mutex_lock(&use_files_lock);
+    use_log_append(st->rec, st->nrec);
+    plat_mutex_unlock(&use_files_lock);
+    st->nrec = 0;
+}
+
+// One <64 hex digits>.use file of the cache directory into the table, and into the log: read only when the pack and
+// the log did not name it.
 static int use_preload_file(const char *name, void *ctx) {
     UsePreload *st = ctx;
     char p[PATH_CAP + 80];
-    UseFile e = {0};
+    uint8_t nm[32];
     int ok = strlen(name) == 68;
     for (int i = 0; ok && i < 32; i++) {
         int v = hex_byte(name + 2 * i);
-        ok = v >= 0, e.name[i] = (uint8_t)v;
+        ok = v >= 0, nm[i] = (uint8_t)v;
     }
+    if (!ok) {
+        st->bad++;
+        return 1;
+    }
+    st->listed++;
+    if (use_file_find(nm)) return 1;
     uint64_t len = 0;
-    uint32_t *u = NULL;
-    if (ok) {
-        snprintf(p, sizeof p, "%s/%s", cache_dir, name);
-        u = (uint32_t *)read_file(p, &len);
-        ok = u && len == 20 && u[0] == USE_MAGIC && u[1] == USE_VERSION;
-    }
-    UseFile **slot = ok ? use_file_slot(e.name) : NULL, *x;
-    if (slot && !*slot && (x = malloc(sizeof *x))) {
-        e.m.slots = u[2], e.m.attrs = u[3], e.m.fouts = u[4];
-        *x = e, *slot = x, st->n++;
-    } else if (!ok) {
+    snprintf(p, sizeof p, "%s/%s", cache_dir, name);
+    uint32_t *u = (uint32_t *)read_file(p, &len);
+    if (u && len == 20 && u[0] == USE_MAGIC && u[1] == USE_VERSION) {
+        UseMask m = {u[2], u[3], u[4]};
+        if (use_add_locked(nm, &m)) {
+            st->n++;
+            use_rec_fill(&st->rec[st->nrec++], nm, &m);
+            if (st->nrec == USE_LOG_BATCH) use_preload_flush(st);
+        }
+    } else {
         st->bad++;
     }
     free(u);
@@ -1466,30 +1587,24 @@ static int use_preload_file(const char *name, void *ctx) {
 static void use_preload(void *arg) {
     (void)arg;
     plat_thread_priority(PLAT_PRIO_BELOW_NORMAL);
-    uint64_t t0 = plat_now_ns();
-    int n = 0, bad = 0;
-    for (uint32_t i = 0; i < pack_n; i++) {   // the packed masks; the loose files below add the masks found since
-        uint32_t u[5];
-        UseFile **slot, *x;
-        if (pack_ix[i].kind != PACK_USE) continue;   // never compressed: 20 bytes
-        if (pack_ix[i].size != sizeof u || !pack_read_at(pack_ix[i].offset, u, sizeof u) || u[0] != USE_MAGIC ||
-            u[1] != USE_VERSION) {
-            bad++;
-            continue;
-        }
-        if (!*(slot = use_file_slot(pack_ix[i].name)) && (x = malloc(sizeof *x))) {
-            memcpy(x->name, pack_ix[i].name, 32);
-            x->next = NULL, x->m.slots = u[2], x->m.attrs = u[3], x->m.fouts = u[4];
-            *slot = x, n++;
-        }
+    uint64_t t0 = plat_now_ns(), skipped = 0;
+    int npack = 0, nlog = 0, bad = 0;
+    use_preload_pack(&npack, &bad);
+    use_preload_log(&nlog, &skipped);
+    __atomic_store_n(&use_files_ready, 1, __ATOMIC_RELEASE);
+    uint64_t t1 = plat_now_ns();
+    UsePreload *st = calloc(1, sizeof *st);
+    if (st) {
+        plat_file_list(cache_dir, ".use", use_preload_file, st);
+        use_preload_flush(st);
+        bad += st->bad;
     }
-    UsePreload st = {0};
-    plat_file_list(cache_dir, ".use", use_preload_file, &st);
-    n += st.n, bad += st.bad;
-    plat_xchg32(&use_files_ready, 1);
-    rt_log("gfx_shader: %d use masks read in %.0f ms on a background thread (%d unreadable)", n,
-           (plat_now_ns() - t0) / 1e6, bad);
-    return;
+    __atomic_store_n(&use_files_ready, 2, __ATOMIC_RELEASE);
+    rt_log("gfx_shader: use masks on a background thread: %d from the pack and %d from the log in %.0f ms (%llu bytes "
+           "of the log skipped), then %d loose files listed, %d of them read, in %.0f ms (%d unreadable)",
+           npack, nlog, (t1 - t0) / 1e6, (unsigned long long)skipped, st ? st->listed : 0, st ? st->n : 0,
+           (plat_now_ns() - t1) / 1e6, bad);
+    free(st);
 }
 
 static void use_preload_start(void) {
@@ -1521,14 +1636,17 @@ static int use_find(const uint8_t h[32], UseMask *m) {
     if (seen) return known;
     uint8_t name[32];
     use_name(h, name);
-    if (plat_cas32(&use_files_ready, 0, 0)) {   // complete: a name not in it has no file
-        UseFile *u = *use_file_slot(name);
-        if ((known = u != NULL)) *m = u->m;
+    int ready = __atomic_load_n(&use_files_ready, __ATOMIC_ACQUIRE);
+    UseFile *u = use_file_find(name);
+    if (u) {
+        known = 1, *m = u->m;
+    } else if (ready == 2) {   // complete: a name not in it has no file
+        known = 0;
     } else {
         char p[PATH_CAP + 80];
         use_path_of(name, p);
         uint64_t n = 0;
-        uint32_t *f = (uint32_t *)pack_read(PACK_USE, name, &n);
+        uint32_t *f = ready ? NULL : (uint32_t *)pack_read(PACK_USE, name, &n);   // from 1 on the pack is in the table
         if (!f) f = (uint32_t *)read_file(p, &n);
         known = f && n == 20 && f[0] == USE_MAGIC && f[1] == USE_VERSION;
         if (known) m->slots = f[2], m->attrs = f[3], m->fouts = f[4];
@@ -1542,9 +1660,16 @@ static int use_find(const uint8_t h[32], UseMask *m) {
 
 static void use_store(const uint8_t h[32], const UseMask *m) {
     char p[PATH_CAP + 80];
-    use_path(h, p);
+    uint8_t name[32];
+    use_name(h, name);
+    use_path_of(name, p);
     uint32_t f[5] = {USE_MAGIC, USE_VERSION, m->slots, m->attrs, m->fouts};
     plat_file_write_atomic(p, f, sizeof f);
+    UseRec r;
+    use_rec_fill(&r, name, m);
+    plat_mutex_lock(&use_files_lock);
+    if (use_file_add(name, m)) use_log_append(&r, 1);
+    plat_mutex_unlock(&use_files_lock);
     plat_mutex_lock(&cache_lock);
     use_put(h, 1, m);
     plat_mutex_unlock(&cache_lock);
@@ -1816,12 +1941,7 @@ void gfx_shader_drop_memory(void) {
         for (UseEnt *e = use_buckets[i], *n; e; e = n) n = e->next, free(e);
         use_buckets[i] = NULL;
     }
-    // the preloaded .use table misses the masks this run wrote, which only use_buckets held: back to the disk
-    plat_xchg32(&use_files_ready, 0);
-    for (int i = 0; i < USE_FILE_BUCKETS; i++) {
-        for (UseFile *e = use_files[i], *n; e; e = n) n = e->next, free(e);
-        use_files[i] = NULL;
-    }
+    // use_files stays: it holds what the disk holds, the masks this run wrote included (use_store)
     plat_mutex_unlock(&cache_lock);
 }
 
@@ -2386,6 +2506,15 @@ void gfx_shader_prewarm(const uint8_t (*iids)[32], size_t n, const GfxShader **o
            (long)w.missing, w.n_other, (long)w.other_cached, (unsigned long long)((uint64_t)n_xlated - xl0),
            (unsigned long long)((uint64_t)n_failures - fail0), procs, k, (double)plat_now_ms() - t0);
     free(w.other);
+    {   // what the memory cache holds now (the process's memory on a 16 GB PC)
+        uint64_t n = 0, spv = 0, refl = 0;
+        plat_mutex_lock_shared(&cache_lock);
+        for (int i = 0; i < BUCKETS; i++)
+            for (const GfxShader *s = buckets[i]; s; s = s->next) n++, spv += s->words * 4, refl += s->reflection_size;
+        plat_mutex_unlock_shared(&cache_lock);
+        rt_log("gfx_shader: memory cache after the prewarm: %llu shaders, %.1f MiB of SPIR-V, %.1f MiB of reflection text",
+               (unsigned long long)n, spv / 1048576.0, refl / 1048576.0);
+    }
 }
 const uint32_t *gfx_shader_spirv(const GfxShader *s, uint64_t *words) {
     if (words) *words = s->words;

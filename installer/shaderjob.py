@@ -1,6 +1,8 @@
-"""The launcher's background shader preparation.
+"""The launcher's background shader preparation, not started since 2026-11-19 (gui_oot.py RekarinaApp.shader_wanted):
+every setup run prepares every variant in the foreground (installer/oot.py shader_mode). What follows is how 1.2.1 to
+1.2.3 worked.
 
-A first install prepares the shader variants play met (installer/oot.py, mode 'met'), which is all a player needs at
+A first install prepared the shader variants play met (installer/oot.py, mode 'met'), which is all a player needs at
 once. The rest of the variants (five of six) are prepared by the launcher itself, while it is open and the game is not
 running: this module runs the setup (`python -m installer.oot --all-shaders ...`: every finished step is skipped, the
 shader step prepares the variants that are missing, the package step puts them into the game folder) as a child at

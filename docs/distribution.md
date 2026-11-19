@@ -31,6 +31,8 @@ Its files stop at 25 MiB each, and a release's two programs are about 150 MB eac
 
     https://rekarina.dev/releases/latest.json                         the newest release's record
     https://rekarina.dev/download                                     a redirect to the newest Rekarina.exe
+    https://rekarina.dev/releases/                                    every version: date, notes, files, SHA-256
+    https://rekarina.dev/releases/releases.json                       the history that page is made from
     https://dl.rekarina.dev/releases/<version>/Rekarina.exe
     https://dl.rekarina.dev/releases/<version>/Rekarina-Setup-<version>-windows.zip
     https://dl.rekarina.dev/releases/<version>/SHA256SUMS
@@ -121,8 +123,13 @@ of `Rekarina.exe` and say what the SmartScreen page is.
 5. Publish: `python website/publish_release.py <dist> --dry-run`, then without `--dry-run` and with `--deploy`. It
    refuses a folder that is not a signed release of the project's keys, uploads the four files to the bucket, reads
    them back from `dl.rekarina.dev`, and only then writes the record, the `/download` redirect and the page's
-   download block into `website/public` and deploys the site. A version that is already on the download host is not
-   replaced: publish a new version instead. A run that stopped after the upload goes on from there when run again:
+   download block into `website/public`, adds the version to the history `public/releases/releases.json` with the
+   day's date, renders the releases page `public/releases/index.html` from it (newest first, notes from their
+   Markdown) and deploys the site. A version that is already on the download host is not replaced: publish a new
+   version instead. The history never replaces a version's record either: the same files again change nothing, other
+   files under a version it holds are refused before anything is uploaded. A release published without the history
+   is added with `--history-only --date <YYYY-MM-DD>`, which reads its files back from the host and touches nothing
+   else; `python tests/publish_release_test.py` covers the notes' Markdown, the history and the page. A run that stopped after the upload goes on from there when run again:
    the host's `SHA256SUMS` is the folder's, so the files are read back, not sent again. Every request says
    `User-Agent: Rekarina-Publish`; the site's protection answers urllib's own with 403.
 6. Optionally publish the same files as the GitHub release `v<version>` with the notes as its text.

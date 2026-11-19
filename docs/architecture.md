@@ -78,13 +78,20 @@ Every guest thread is a host thread. TotK assumes Horizon's scheduler: three app
   waiter after 50 us of polling (`REKARINA_SPIN`, `REKARINA_SPIN_HANDOFF_US`).
 - `free_cores = 1` (`REKARINA_FREE_CORES=1`) turns the gate off, for experiments only: the game crashes or hangs, usually
   at start, because its job workers all report core 0 and share per-core memory (#212).
-- Fewer processors than cores. With fewer logical processors than the console has application cores (the process's
-  affinity mask counts), the cores are folded onto that many slots, at least two (`kernel.c` `core_allowed`: core c runs
-  in slot c % n, one thread per slot), so no more game threads run at once than the host can run and the game's own
-  priorities decide who waits: the host's scheduler knows none of them and makes a woken thread wait out another's
-  time slice (33 ms measured). Each thread is still told a core of its own mask that folds onto its slot
-  (`core_number`), so two running threads never report the same core. `REKARINA_GUEST_CORES=<n>` sets the count
-  (the console's own count turns the fold off).
+- Fewer processors than cores. With n logical processors, fewer than the console has application cores (the process's
+  affinity mask counts), at most n cores are held at once, at least two (`kernel.c` budget mode, `g_budget`), so no
+  more game threads run at once than the host can run and the game's own priorities decide who waits: the host's
+  scheduler knows none of them and makes a woken thread wait out another's time slice (33 ms measured). Every core
+  stays its own: a thread waits while its own core is held, as on the console, or while n cores are held, and then a
+  better thread takes the core of the worst holder wherever it is (`core_kick`, `core_grant_budget`). The presenting
+  thread keeps its core while it replays a submission, as the replay needs a processor (`kern_core_away_soft`; a
+  game thread of better priority takes the core at once), a sleep short enough to spin keeps the core while no thread
+  waits for one (`sleep_short`), and a core waiter spins 20 us instead of 250 before it interrupts a holder.
+  `REKARINA_GUEST_CORES=<n>` sets the count (the console's own count turns all this off); `REKARINA_FOLD_MAP=1` folds
+  the cores onto n fixed slots instead ({0} {1} {2,4} {3,5}), `=0` as releases up to 1.2.2 did (core c in slot c % n),
+  and each thread is then told a core of its own mask in the slot it holds (`core_number`), so two running threads
+  never report the same core; `REKARINA_FOLD_SUBMIT_SLOT`, `REKARINA_FOLD_SLEEP` and `REKARINA_FOLD_AP_SPIN` (0 or 1)
+  switch the other three.
 
 ### 4. Graphics
 

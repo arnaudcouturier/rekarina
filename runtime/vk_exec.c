@@ -1493,7 +1493,12 @@ static int par_on(void) {
         uint32_t cpus = plat_cpu_weighted();   // a slower core (Intel's efficient cores) counts half
         // 8 logical processors (4 cores / 8 threads, as a Steam Deck): 3 measured better than 4 in the forest
         // (1 % low 51 against 44 fps, 7 against 17 frames over 25 ms) and no worse in the Market
-        n = cpus >= 12 ? 6 : cpus >= 6 ? 3 : 1;
+        // 4 or 5 (four cores, as a small desktop CPU): 2. Four processors with the core budget (kernel.c), 1080p,
+        // 2026-11-19: the square's replay took 16.3 ms a frame alone and 10.5 with a second thread, 48.5 against 54.2
+        // fps (1 % low 26.8 / 31.4), the village unchanged (62.7 / 62.9 fps); a second pair at the square (ABBA) gave
+        // a median replay of 15.4 and 17.4 ms against 10.6 and 12.4, 51.0 and 45.7 against 52.8 and 47.0 fps, the
+        // 1 % low unchanged (31.8 and 23.8 against 31.2 and 24.8), frames over 25 ms 480 against 319
+        n = cpus >= 12 ? 6 : cpus >= 6 ? 3 : cpus >= 4 ? 2 : 1;
 #else
         n = 1;   // measured and checked on OoT only so far
 #endif

@@ -28,6 +28,7 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(Path(__file__).resolve().parent))   # tools/pack_shader_cache.py
 WIN = os.name == 'nt'
 EXE = '.exe' if WIN else ''
 # nvngx_dlss.dll and AMD's FSR libraries (the loader with its two effect libraries, or the single amd_fidelityfx_vk.dll
@@ -81,6 +82,21 @@ def copy_tree(src, dst):
                 shutil.copy2(Path(dirpath) / f, dst / rel / f)
                 n += 1
     return n
+
+
+def keep_pack_entries(build_cache, folder_cache, folder_id, xlate_id):
+    """Before the build's shader pack replaces the game folder's: when both were made under the same translator, the
+    entries only the folder's pack holds go into the build's first (tools/pack_shader_cache.py merge), so a package never
+    takes prepared shaders away. 1.2.3 copied a setup's pack over the folder's whatever each held, and a setup run from a
+    fresh temp folder that had prepared the variants play met (340 MB) replaced a folder's 2 GB of every variant. Under
+    another translator the folder's entries are of no use and the build's pack replaces it as before."""
+    import pack_shader_cache as psc
+    mine, theirs = build_cache / psc.PACK, folder_cache / psc.PACK
+    if not (mine.is_file() and theirs.is_file() and folder_id and xlate_id.is_file() and folder_id == xlate_id.read_bytes()):
+        return
+    total, added = psc.merge(mine, theirs)
+    if added:
+        print(f'package_oot: {added} shader cache entries of the game folder kept ({total} in all)')
 
 
 def graphics_text(settings, note):
@@ -163,6 +179,9 @@ def main():
         sys.exit('package_oot: --out must not be the build dir')
 
     out.mkdir(parents=True, exist_ok=True)
+    # The translator the folder's shader pack was made under, before this package names its own: under the same one
+    # the pack's entries stay valid and are kept (below)
+    folder_id = next((f.read_bytes() for f in (out / 'rekarina_xlate.id', out / 'totk_xlate.id') if f.is_file()), None)
     copy(build / ('rekarina' + EXE), out / ('Rekarina' + EXE))
     for d in DLLS:
         if (build / d).exists():
@@ -195,6 +214,7 @@ def main():
     if (build / 'nv-cache').is_dir():   # the driver's pipelines of the shader preparation (runtime/vk_device.c)
         n += copy_tree(build / 'nv-cache', out / 'nv-cache')
     if (build / 'shader-cache').is_dir():
+        keep_pack_entries(build / 'shader-cache', out / 'shader-cache', folder_id, a.xlate.with_suffix('.id'))
         n += copy_tree(build / 'shader-cache', out / 'shader-cache')
     (out / 'profile').mkdir(exist_ok=True)
     ini, old_ini = out / 'rekarina.ini', out / 'totk.ini'

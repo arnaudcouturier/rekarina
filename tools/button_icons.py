@@ -27,6 +27,10 @@ import math
 import struct
 import zlib
 
+try:   # before fontTools: REKARINA_FONTTOOLS_PURE=1 keeps its compiled modules out (tools/fonttools_pure.py)
+    import fonttools_pure  # noqa: F401
+except ImportError:   # loaded by path from elsewhere (a test), tools/ not on sys.path
+    pass
 from fontTools.pens.basePen import BasePen
 from fontTools.pens.boundsPen import BoundsPen
 from fontTools.pens.recordingPen import RecordingPen

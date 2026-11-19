@@ -270,20 +270,43 @@ folder; the steps are those of `installer/oot.py`:
    a new exe costs the compile and the package step (which copies it and warms the driver's cache under the game's file
    name), not the preparation. A record made under the older key form is taken over (`Step.adopts`) when its release
    is in `LEGACY_PREPARED_BY` and the translator is the one that prepared it.
-   The mode is `met` (the variants play met, `--met-only`: a first install, about six minutes of the shader part) or `all`
-   (`--all-shaders`). `rekarina-install.json` keeps `"shaders": "all"` once a folder has prepared all, through updates. The
-   launcher's run screen passes `--shaders-later`: it never prepares the rest in the foreground, a change of the
-   inputs prepares `met` and the launcher's background job (below) does the rest.
+   Every run prepares every variant (`all`), in the foreground: 35 to 40 minutes of the shader part on 16 threads
+   (2116 s from nothing; 2269 s from a folder that had prepared the variants play met, of which the translation took
+   11 minutes, the driver's phase 25 and the pack 2), the whole setup about an hour, longer on fewer threads (the
+   estimate scales the step by 16 / logical cores, up to four times). 1.2.1 to 1.2.3
+   prepared the variants play met on a first install (`met`, `--met-only`, a sixth of the work) and left the rest to a
+   background job of the launcher; play then translated and built the rest in its frames, and a setup run from a fresh
+   temp folder over a folder that had prepared all prepared `met` and its package replaced the folder's pack of every
+   variant (2 GB) with those (340 MB). From the release after 1.2.3 on (`shader_mode`):
+   - a folder recorded `met` prepares the rest at its next setup run: the step first takes in what the game folder
+     holds under the same translator (`seed_from_folder`: its pack merged into the build folder's with
+     `pack_shader_cache.py --merge-from`, its pipeline cache, recorded pipelines and the driver's `nv-cache`), so it
+     translates and builds only what is missing;
+   - a record of every variant whose key stands is done with no output in the temp folder when the game folder holds
+     the pack and `shader-prepared.bin` under this translator (`Prepare.current`, `folder_prepared`): a setup unpacked
+     again or a cleaned temp folder prepares nothing, and the package step, finding no shader output in the build
+     folder, leaves the folder's as it is;
+   - the package step never takes prepared shaders away: before the build's pack replaces the folder's, the entries
+     only the folder's holds go into it when both were made under one translator (`package_oot.py keep_pack_entries`).
+   `--all-shaders` and `--shaders-later` are still taken and change nothing.
 6. **Package** the folder (`tools/package_oot.py`): `Rekarina.exe`, its libraries, the caches and `rekarina.ini`
    (a `totk.ini` left by an earlier package is renamed to it).
 
-**The rest of the shaders, in the background.** While the launcher is open and the game is not running, a folder that
-prepared `met` only gets the other variants prepared by the launcher itself (`installer/shaderjob.py`): the setup with
-`--all-shaders` as a child at below-normal priority on all cores but one, inside a job object that ends with the launcher.
-The home sheet's row shows the counts and the time left and has a Pause button (until the next start of the launcher).
-Play stops the job (what is built stays; the preparation resumes), starts the game, hides the window and, when the game
-has ended, resumes the job and shows the window when it is done; a launcher with nothing pending exits at Play as before.
-A game that someone else started counts: the job waits for it. Closing the launcher stops the job without a question.
+**Shortcuts to the launcher.** `Rekarina.exe` in the game folder is the game alone, and players looking there for the
+launcher (to update) did not find it: it lives in `<home>\setup\<version>\Rekarina-Launcher.exe`
+(`%LOCALAPPDATA%\Rekarina\setup\<version>` for a 1.2.0 install). Every Windows run that leaves a game in the folder
+writes "Rekarina Launcher" into the game folder, "Rekarina" into the player's own Start menu (no administrator) and,
+unless the form's **Desktop shortcut** row says No (`--no-desktop-shortcut`), "Rekarina Launcher" on the desktop
+(`installer/oot.py` `launcher_shortcuts`). They point at the launcher of the setup that ran, in its own folder, with
+its icon, and are written again at every run, so a setup downloaded anew moves them to its launcher. The shell writes
+them (WScript.Shell through PowerShell, the paths passed in its environment); one that cannot be written is logged
+and costs nothing else. Linux gets none (its setup has no launcher executable).
+
+**No preparation in the background.** 1.2.1 to 1.2.3 prepared the rest of the variants of a `met` folder from the
+launcher itself (`installer/shaderjob.py`: the setup with `--all-shaders` as a child at below-normal priority while the
+window was open and no game ran, with a row and a Pause button on the home sheet). From the release after 1.2.3 on, the launcher starts and
+offers no such job (`RekarinaApp.shader_wanted`) and its home sheet has no shader row: everything is prepared by the
+setup run, before play. The job's code stays for now.
 
 The RomFS is not copied: `rekarina.ini` names the NUP and the game reads it in place, so the dump must stay where it is.
 A second run on the same folder continues or updates it under the rule of `installer/runner.py`; the dump is asked

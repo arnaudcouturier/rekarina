@@ -734,7 +734,9 @@ class EtaTest(Sandbox):
         eta.record('oot_prepare', 'first', 1500.0)
         eta.record('oot_prepare', 'first', 0)            # a step that reports no time is not kept
         eta.record('oot_prepare', 'other', 5)
-        self.assertEqual(eta.load_timings(), {'oot_compile': {'first': 702.4, 'rerun': 163.0}, 'oot_prepare': {'first': 1500.0}})
+        eta.record('oot_prepare', 'all', 2116.3)         # every variant: every setup run's case since 2026-11-19
+        self.assertEqual(eta.load_timings(), {'oot_compile': {'first': 702.4, 'rerun': 163.0},
+                                              'oot_prepare': {'first': 1500.0, 'all': 2116.3}})
         self.assertEqual(eta.timings_path().parent, update.state_path().parent)   # beside update.json
         self.assertNotIn(b'\r', eta.timings_path().read_bytes())
         self.assertEqual(eta.estimates({'oot_prepare': 'first'}, 8)['steps']['oot_prepare']['source'], 'measured')
@@ -981,6 +983,61 @@ class WindowPartsTest(unittest.TestCase):
                              (g.INSET, 'kInset'), (g.CREAM, 'kCream')):
             self.assertEqual(ours, menu[theirs], theirs)
 
+    def test_folder_beside_its_exe(self):
+        """A folder X with X.exe beside it: the folder is what opens (the shell's plain open of X ran X.exe, another
+        launcher), on every button that opens a folder."""
+        from unittest import mock
+        from . import gui
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp) / 'Rekarina'
+            folder.mkdir()
+            (Path(tmp) / 'Rekarina.exe').write_bytes(b'MZ')
+            with mock.patch.object(gui.os, 'name', 'nt'), mock.patch.object(gui.os, 'startfile', create=True) as start:
+                gui.open_folder_window(folder)
+                gui.open_folder_window(str(folder) + '\\')
+            self.assertEqual(start.call_args_list, [mock.call(str(folder) + '\\', 'explore')] * 2)
+            with mock.patch.object(gui.os, 'name', 'posix'), mock.patch.object(gui.subprocess, 'Popen') as popen:
+                gui.open_folder_window(folder)
+            self.assertEqual(popen.call_args[0][0], ['xdg-open', str(folder)])
+        # every folder button of both windows goes through it: no plain startfile of a folder is left
+        for name in ('gui.py', 'gui_oot.py'):
+            text = (Path(gui.__file__).parent / name).read_text(encoding='utf-8')
+            plain = [line.strip() for line in text.splitlines() if 'os.startfile(' in line and "'explore'" not in line
+                     and 'ini_file' not in line]   # (the settings file is a file: the plain open is its editor)
+            self.assertEqual(plain, [], name)
+
+    def test_desktop_shortcut_row(self):
+        """The form's desktop row: Yes (the default) adds nothing, No asks the setup for no desktop shortcut."""
+        form = self.gui.OotForm(game='g', dest='d', lang='en-US')
+        self.assertNotIn('--no-desktop-shortcut', form.command('python'))
+        form.desktop = False
+        self.assertIn('--no-desktop-shortcut', form.command('python'))
+
+    def test_oot_languages(self):
+        """OoT's list: Polish (its Mals/EUpl) and no Portugal's Portuguese; TotK's list stays as it was; every code
+        has its name in every catalog."""
+        from . import ini
+        from .guilogic import UI_LANGUAGES, load_texts
+        self.assertIn('pl', ini.LANGUAGES_OOT)
+        self.assertNotIn('pt', ini.LANGUAGES_OOT)
+        self.assertNotIn('pl', ini.LANGUAGES)
+        self.assertEqual(self.gui.RekarinaApp.languages, ini.LANGUAGES_OOT)
+        for lang in UI_LANGUAGES:
+            texts = load_texts(lang)
+            for code in ini.LANGUAGES_OOT:
+                self.assertIn('lang.' + code, texts, lang)
+
+    def test_no_background_shader_job(self):
+        """The owner's call of 2026-11-19: the window starts and offers no background preparation of the shaders, and
+        its setup runs ask for every variant in the foreground (installer/oot.py shader_mode)."""
+        self.assertFalse(self.gui.RekarinaApp.shader_wanted(None))
+        cmd = self.gui.OotForm(game='game.nup', dest='game').command('python')
+        self.assertIn('--all-shaders', cmd)
+        self.assertNotIn('--shaders-later', cmd)
+        from types import SimpleNamespace
+        self.assertIsNone(self.gui.RekarinaApp.shader_view(SimpleNamespace(   # the home sheet has no shader row
+            forced_shaders=None, shader_finished=None, shader_job=None, shader_wanted=lambda: False)))
+
     def test_amount_of_a_download(self):
         from .guilogic import Catalog, amount
         cat = Catalog('en')
@@ -988,6 +1045,73 @@ class WindowPartsTest(unittest.TestCase):
         self.assertEqual(amount(cat, None, 561_000_000, 'bytes'), '0 of 561 MB')
         self.assertEqual(amount(cat, 6e9, 16e9, 'bytes'), '6.0 / 16.0 GB')
         self.assertEqual(amount(cat, 412, 681, 'objects'), '412 / 681 files')
+
+
+class FormRowHoverTest(unittest.TestCase):
+    """A row of the form is lit as a whole, and stays lit, while the pointer is anywhere on it (gui_oot.py
+    hover_rows). The pointer's crossings are fed in as Tk makes them: a Leave of the window left, an Enter of the one
+    reached, in one go. Needs a display (an unseen window on Windows)."""
+
+    def setUp(self):
+        try:
+            import tkinter as tk
+            from . import gui_oot, shots
+            from .gui import fix_tcl_paths
+            fix_tcl_paths()
+            self.root = shots.unseen_root() if shots.AVAILABLE else tk.Tk()
+        except Exception as e:   # no Tk, or no display
+            self.skipTest(str(e))
+        self.addCleanup(self.root.destroy)
+        self.gui = gui_oot
+        self.app = gui_oot.RekarinaApp(self.root, 'en', oot.find_layout(None, None))
+        self.app.show('form')
+        self.root.update()
+
+    def crossings(self, path):
+        """Moves the pointer along `path` (windows), each step a Leave and an Enter, the events through after each."""
+        before = None
+        for w in path:
+            if before is not None:
+                before.event_generate('<Leave>')
+            w.event_generate('<Enter>')
+            before = w
+            self.root.update()
+            yield w
+
+    def lit(self, strip):
+        cells = [w for w in strip.winfo_children() if w.winfo_class() == 'Frame']
+        ttks = [w for c in cells for w in c.winfo_children()] + [w for w in strip.winfo_children() if w.winfo_class() == 'TLabel']
+        return [strip.cget('background') == self.gui.ROW_HOT] + [c.cget('background') == self.gui.ROW_HOT for c in cells] + \
+            [w.instate(['user1']) for w in ttks]
+
+    def test_whole_row_steady(self):
+        box = self.app.lang_box
+        strip, cell = box.master.master, box.master
+        label = [w for w in strip.winfo_children() if w.winfo_class() == 'TLabel'][0]
+        dump = strip.master.winfo_children()[0]
+        panel = strip.master
+        self.assertEqual(set(self.lit(strip)), {False})
+        for w in self.crossings([label, strip, cell, box, strip]):
+            self.assertEqual(set(self.lit(strip)), {True}, w)
+            self.assertEqual(set(self.lit(dump)), {False}, w)
+        list(self.crossings([strip, panel]))
+        self.assertEqual(set(self.lit(strip)), {False})
+        # straight from one row into another: the first goes out, the second is lit
+        list(self.crossings([box, dump.winfo_children()[0]]))
+        self.assertEqual(set(self.lit(strip)), {False})
+        self.assertEqual(set(self.lit(dump)), {True})
+
+    def test_lit_colours(self):
+        from tkinter import ttk
+        s, g = ttk.Style(self.root), self.gui
+        self.assertEqual(s.lookup('Row.TLabel', 'background', ['user1']), g.ROW_HOT)
+        for style in ('TEntry', 'TCombobox'):
+            self.assertEqual(s.lookup(style, 'fieldbackground', ['readonly', 'user1']), g.INSET_HOT, style)
+        self.assertEqual(s.lookup('Cell.TButton', 'background', ['user1']), g.INSET_HOT)
+        # the part of a drop-down under the pointer alone ('active') does not light it: that lit its edge and its
+        # arrow by turns while the pointer crossed the cell; the whole widget under the pointer ('hover') does
+        self.assertEqual(s.lookup('TCombobox', 'fieldbackground', ['readonly', 'active']), g.INSET)
+        self.assertEqual(s.lookup('TCombobox', 'fieldbackground', ['readonly', 'hover']), g.INSET_HOT)
 
 
 class SetupTest(Sandbox):

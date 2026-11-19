@@ -25,6 +25,7 @@
 #include "vk_dlssg.h"
 #include "vk_fg.h"
 #include "platform/platform.h"
+#include "report.h"
 #include "dlssg/nx2_sl.h"
 #include "ui/menu.h"
 
@@ -70,7 +71,10 @@ static int reflex_mode(void) {
 int vk_dlssg_wanted(void) {
     if (S.wanted < 0) {
         S.asked = S.wanted = !strcmp(cfg_value("REKARINA_FRAMEGEN"), "dlss");
-        if (S.wanted && !vk_dlaa_wanted()) {
+        if (S.wanted && fg_guard_blocked()) {   // it stopped the last start while being set up (report.c)
+            S.why = FG_GUARD_WHY;
+            S.wanted = 0;
+        } else if (S.wanted && !vk_dlaa_wanted()) {
             rt_log("dlssg: frame generation needs DLSS or FSR 3.1 upscaling (any mode): off");
             S.why = "needs DLSS / DLAA on";
             S.wanted = 0;
@@ -83,6 +87,7 @@ int vk_dlssg_early(void) {
     if (!vk_dlssg_wanted()) return 0;
     if (S.loaded) return S.loaded > 0;
     S.loaded = -1;
+    fg_guard_arm("dlss");   // a crash from here to the first generated frames: the next start goes without (report.c)
 #ifdef _WIN32
     wchar_t dir[MAX_PATH], path[MAX_PATH + 32];
     DWORD n = GetModuleFileNameW(NULL, dir, MAX_PATH);
@@ -298,6 +303,8 @@ void vk_dlssg_frame(VkCommandBuffer cb, VkExtent2D ext, VkImage hudless, VkImage
     static int went_on;
     int on = (have || went_on) && !menu_is_open();
     if (on) went_on = 1;
+    static uint64_t generating;
+    if (on) fg_guard_running(++generating);
     Nx2SlImage zd = {d.image, dv, d.format, d.width, d.height, VK_IMAGE_LAYOUT_GENERAL,
                      VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT};
     Nx2SlImage zm = {m.image, mvv, m.format, m.width, m.height, VK_IMAGE_LAYOUT_GENERAL,

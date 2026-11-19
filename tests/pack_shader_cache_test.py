@@ -149,6 +149,69 @@ class PackTest(unittest.TestCase):
         self.assertLess(size, len(big) // 4)
         self.assertEqual(psc.pack(self.cache)[:3], (3, 0, 0))                  # and left alone the next time
 
+    def other_pack(self, *seeds):
+        """A pack of those shaders made elsewhere (the game folder's), the cache left without a pack."""
+        for s in seeds:
+            self.shader(s, spv=b'#' + bytes(range(64)) * 400 if s == 'big' else b'\x03\x02\x23\x07spirv')
+        psc.pack(self.cache)
+        other = Path(self.tmp.name) / 'folder' / 'shader-cache' / psc.PACK
+        other.parent.mkdir(parents=True, exist_ok=True)
+        (self.cache / psc.PACK).replace(other)
+        return other
+
+    def test_merge_adds_what_only_the_other_pack_holds(self):
+        """installer/oot.py seed_from_folder and tools/package_oot.py keep_pack_entries: the union of two packs made
+        under one translator, this pack's entry winning, the other's bytes copied as they are stored."""
+        other = self.other_pack('big', 'b')
+        big = name('big')
+        self.shader('b', res=b'{"mine":1}')
+        c = self.shader('c')
+        psc.pack(self.cache)
+        total, added = psc.merge(self.cache / psc.PACK, other)
+        self.assertEqual((total, added), (12, 4))                               # the big shader's four files
+        got = read_pack(self.cache / psc.PACK)                                   # (checks the order and the bounds)
+        self.assertEqual(got[(1, big)], b'#' + bytes(range(64)) * 400 + b'big')
+        self.assertEqual(stored_kind(self.cache / psc.PACK, 1, big), 1 | psc.ZSTD)
+        self.assertEqual(got[(2, name('b'))], b'{"mine":1}')
+        self.assertEqual(got[(1, c)], b'\x03\x02\x23\x07spirvc')
+        self.assertEqual(psc.merge(self.cache / psc.PACK, other), (12, 0))      # nothing new: not written again
+        self.assertEqual(psc.merge(self.cache / psc.PACK, Path(self.tmp.name) / 'none'), (0, 0))
+        self.assertEqual(len(read_pack(other)), 8)                               # the other pack is not touched
+        self.assertFalse(any(p.name.endswith('.tmp') for p in self.cache.iterdir()))
+
+    def test_merge_from_on_the_command_line(self):
+        """--merge-from into a cache without a pack copies it, then the loose files are folded in."""
+        import contextlib
+        import io
+        from unittest import mock
+        other = self.other_pack('a')
+        self.shader('b')
+        with mock.patch.object(sys, 'argv', ['pack_shader_cache.py', str(self.cache), '--merge-from', str(other)]), \
+                contextlib.redirect_stdout(io.StringIO()):
+            psc.main()
+        got = read_pack(self.cache / psc.PACK)
+        self.assertEqual(len(got), 8)
+        self.assertIn((1, name('a')), got)
+        self.assertTrue(other.is_file())
+
+    def test_the_package_keeps_the_folder_entries_under_the_same_translator(self):
+        """tools/package_oot.py keep_pack_entries: the build's pack takes in what only the game folder's holds when both
+        were made under this translator; under another one, or a folder without an identity, it does not."""
+        import contextlib
+        import io
+        import package_oot
+        other = self.other_pack('a', 'b')
+        self.shader('b')
+        psc.pack(self.cache)
+        xid = Path(self.tmp.name) / 'rekarina_xlate.id'
+        xid.write_bytes(b'identity-1')
+        with contextlib.redirect_stdout(io.StringIO()):
+            for folder_id in (b'identity-0', None):
+                package_oot.keep_pack_entries(self.cache, other.parent, folder_id, xid)
+                self.assertEqual(len(read_pack(self.cache / psc.PACK)), 4)
+            package_oot.keep_pack_entries(self.cache, other.parent, b'identity-1', xid)
+        self.assertEqual(len(read_pack(self.cache / psc.PACK)), 8)
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -21,7 +21,8 @@ typedef struct { const char *lang; const char *const *text; } Row;
     [UI_MENU_LANGNAME_ZH_HANS] = "简体中文", [UI_MENU_LANGNAME_ZH_HANT] = "繁體中文", [UI_MENU_LANGNAME_KO] = "한국어", \
     [UI_MENU_LANGNAME_PT_BR] = "Português (Brasil)", [UI_MENU_LANGNAME_PT] = "Português (Portugal)", \
     [UI_MENU_LANGNAME_EN_GB] = "English (UK)", \
-    [UI_MENU_LANGNAME_FR_CA] = "Français (Canada)", [UI_MENU_LANGNAME_ES_419] = "Español (Latinoamérica)"
+    [UI_MENU_LANGNAME_FR_CA] = "Français (Canada)", [UI_MENU_LANGNAME_ES_419] = "Español (Latinoamérica)", \
+    [UI_MENU_LANGNAME_PL] = "Polski"
 
 // SWKBD: TITLE, PROMPT, DEFAULT_NAME (at most 9 UTF-16 units, no '@' '%' '\'), OK, CANCEL, PAD_HINT.
 #define SWKBD(title, prompt, name, ok, cancel, hint) \
@@ -315,13 +316,13 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_WALK_SCALE_DESC] = "The tilt the keyboard's sticks get while the walk key is held. Half is a walk, the "
                                 "full tilt a run.",
     [UI_MENU_STICK_DASH] = "Dash on the left stick's press",
-    [UI_MENU_STICK_DASH_DESC] = "The game dashes while its button is held and jumps when it is only pressed. On: a press "
-                                "of the left stick while it is tilted dashes until the stick comes back to the middle, "
-                                "without a jump, and the dash key does the same on the keyboard while held. The game's "
-                                "button works as before, also during such a dash.",
+    [UI_MENU_STICK_DASH_DESC] = "The game dashes while its A button is held; a press of A does the action at hand. On: "
+                                "a press of the left stick while it is tilted dashes until the stick comes back to the "
+                                "middle, and the dash key does the same on the keyboard while held. The game's button "
+                                "works as before, also during such a dash.",
     [UI_MENU_DASH_KEY] = "Dash key",
-    [UI_MENU_DASH_KEY_DESC] = "Held while a direction is held, the hero dashes without a jump. Works while dash on the "
-                              "left stick's press is on.",
+    [UI_MENU_DASH_KEY_DESC] = "Held while a direction is held, the hero dashes. Works while dash on the left stick's "
+                              "press is on.",
     [UI_MENU_STICK_SENS] = "Stick camera speed",
     [UI_MENU_STICK_SENS_DESC] = "Multiplies the game's own right-stick camera speed, top speed included, at each of the "
                                 "game's five camera sensitivities. The mouse keeps its own setting.",
@@ -883,13 +884,13 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_MENU_WALK_SCALE_DESC] = "Отклонение стиков клавиатуры при удержании клавиши шага. Половина — шаг, полное "
                                 "отклонение — бег.",
     [UI_MENU_STICK_DASH] = "Рывок нажатием левого стика",
-    [UI_MENU_STICK_DASH_DESC] = "В игре рывок идёт, пока её кнопка удерживается, а короткое нажатие — прыжок. Вкл.: "
-                                "нажатие левого стика при наклоне даёт рывок, пока стик не вернётся в центр, без "
-                                "прыжка; клавиша рывка делает то же на клавиатуре, пока удерживается. Кнопка игры "
-                                "работает как раньше, и во время такого рывка тоже.",
+    [UI_MENU_STICK_DASH_DESC] = "В игре рывок идёт, пока удерживается кнопка A, а нажатие A — действие рядом "
+                                "(поговорить, открыть). Вкл.: нажатие левого стика при наклоне даёт рывок, пока стик "
+                                "не вернётся в центр; клавиша рывка делает то же на клавиатуре, пока удерживается. "
+                                "Кнопка игры работает как раньше, и во время такого рывка тоже.",
     [UI_MENU_DASH_KEY] = "Клавиша рывка",
-    [UI_MENU_DASH_KEY_DESC] = "Удерживайте вместе с направлением: персонаж делает рывок без прыжка. Работает, когда "
-                              "включён рывок нажатием левого стика.",
+    [UI_MENU_DASH_KEY_DESC] = "Удерживайте вместе с направлением: персонаж делает рывок. Работает, когда включён "
+                              "рывок нажатием левого стика.",
     [UI_MENU_STICK_SENS] = "Скорость камеры (стик)",
     [UI_MENU_STICK_SENS_DESC] = "Умножает скорость поворота камеры правым стиком, включая наибольшую, при каждой из пяти "
                                 "чувствительностей камеры в игре. На мышь не влияет.",
@@ -1648,13 +1649,13 @@ static const char *const text_pt_br[UI_TEXT_COUNT] = {
     [UI_MENU_WALK_SCALE_DESC] = "A inclinação dos analógicos do teclado enquanto a tecla de andar está segura. Metade "
                                 "é andar, a inclinação total é correr.",
     [UI_MENU_STICK_DASH] = "Disparada ao apertar o analógico esquerdo",
-    [UI_MENU_STICK_DASH_DESC] = "O jogo dispara enquanto o botão dele é segurado e pula quando ele só é apertado. "
-                                "Ligado: apertar o analógico esquerdo inclinado dispara até ele voltar ao centro, sem "
-                                "pular, e a tecla de disparada faz o mesmo no teclado enquanto segurada. O botão do "
-                                "jogo funciona como antes, também durante essa disparada.",
+    [UI_MENU_STICK_DASH_DESC] = "O jogo dispara enquanto o botão A é segurado; um toque em A faz a ação do momento "
+                                "(falar, abrir). Ligado: apertar o analógico esquerdo inclinado dispara até ele voltar "
+                                "ao centro, e a tecla de disparada faz o mesmo no teclado enquanto segurada. O botão "
+                                "do jogo funciona como antes, também durante essa disparada.",
     [UI_MENU_DASH_KEY] = "Tecla de disparada",
-    [UI_MENU_DASH_KEY_DESC] = "Segurada junto com uma direção, o herói dispara sem pular. Funciona com a disparada ao "
-                              "apertar o analógico esquerdo ligada.",
+    [UI_MENU_DASH_KEY_DESC] = "Segurada junto com uma direção, o herói dispara. Funciona com a disparada ao apertar o "
+                              "analógico esquerdo ligada.",
     [UI_MENU_OV_SCALE_DOWN] = "bilinear (o FSR só amplia)",
     [UI_MENU_HDR_HUE] = "Correção de matiz dos realces",
     [UI_MENU_HDR_HUE_DESC] = "Cores fortes como fogo e faíscas vão para o branco como na imagem SDR do próprio jogo e "
@@ -2352,10 +2353,10 @@ static const char *const text_zh_hans[UI_TEXT_COUNT] = {
     [UI_MENU_WALK_SCALE] = "步行幅度",
     [UI_MENU_WALK_SCALE_DESC] = "按住步行键时键盘摇杆的推动幅度。一半为走路，推满为奔跑。",
     [UI_MENU_STICK_DASH] = "按下左摇杆冲刺",
-    [UI_MENU_STICK_DASH_DESC] = "游戏中按住其按键为冲刺，只按一下为跳跃。开启后：推动左摇杆时按下它即冲刺，直到摇杆回到中间，"
-                                "不会先跳跃；键盘上按住冲刺键效果相同。游戏原本的按键照常使用，冲刺途中也一样。",
+    [UI_MENU_STICK_DASH_DESC] = "游戏中按住 A 键为冲刺，单按 A 为当前动作（交谈、打开等）。开启后：推动左摇杆时按下它即冲刺，"
+                                "直到摇杆回到中间；键盘上按住冲刺键效果相同。游戏原本的按键照常使用，冲刺途中也一样。",
     [UI_MENU_DASH_KEY] = "冲刺键",
-    [UI_MENU_DASH_KEY_DESC] = "与方向一同按住时，主角冲刺而不跳跃。需开启“按下左摇杆冲刺”。",
+    [UI_MENU_DASH_KEY_DESC] = "与方向一同按住时，主角冲刺。需开启“按下左摇杆冲刺”。",
     [UI_MENU_OV_SCALE_DOWN] = "双线性（FSR 只能放大）",
     [UI_MENU_HDR_HUE] = "高光色调校正",
     [UI_MENU_HDR_HUE_DESC] = "火焰、火花等明亮色彩像游戏自身的 SDR 画面一样趋向白色，与它们发出的光一致；0 保持完全饱和。",
@@ -2515,7 +2516,8 @@ const char *ui_text_lang(const char *code) {
     return code;
 }
 
-// Every game language: the Mals files EUen/USen, USfr/EUfr, USes/EUes ship in both builds; USpt only from 1.4.3.
+// Every game language: the Mals files EUen/USen, USfr/EUfr, USes/EUes ship in both builds; USpt only from 1.4.3; EUpl
+// in OoT alone (9111: a game other than TotK, main.c rt_game_version_text).
 int ui_text_game_langs(int game_version, UiGameLang *out, int max) {
     static const struct { const char *code; UiTextId name; int since; } all[] = {
         {"en-US", UI_MENU_LANGNAME_EN, 0}, {"en-GB", UI_MENU_LANGNAME_EN_GB, 0}, {"ja", UI_MENU_LANGNAME_JA, 0},
@@ -2523,7 +2525,7 @@ int ui_text_game_langs(int game_version, UiGameLang *out, int max) {
         {"it", UI_MENU_LANGNAME_IT, 0}, {"es", UI_MENU_LANGNAME_ES, 0}, {"es-419", UI_MENU_LANGNAME_ES_419, 0},
         {"pt-BR", UI_MENU_LANGNAME_PT_BR, 143}, {"nl", UI_MENU_LANGNAME_NL, 0}, {"ru", UI_MENU_LANGNAME_RU, 0},
         {"zh-Hans", UI_MENU_LANGNAME_ZH_HANS, 0}, {"zh-Hant", UI_MENU_LANGNAME_ZH_HANT, 0},
-        {"ko", UI_MENU_LANGNAME_KO, 0},
+        {"ko", UI_MENU_LANGNAME_KO, 0}, {"pl", UI_MENU_LANGNAME_PL, 1000},
     };
     int n = 0;
     for (size_t i = 0; i < sizeof all / sizeof *all && n < max; i++)
@@ -2542,8 +2544,37 @@ int ui_text_defined(const char *lang, UiTextId id) {
     return (unsigned)id < UI_TEXT_COUNT && r && r->text[id] && *r->text[id];
 }
 
+#ifdef GAME_OOT
+// OoT's own descriptions of the buttons on the Controls tab (ui_binds_oot.inc): the table above has TotK's (B
+// "Run", R "Throw a weapon", ZR "Bow"). A language without its own row takes the English one.
+enum { OOT_BINDS = 13 };
+static const UiTextId oot_bind_ids[OOT_BINDS] = {
+    UI_BIND_DESC_A, UI_BIND_DESC_B, UI_BIND_DESC_X, UI_BIND_DESC_Y, UI_BIND_DESC_LCLICK, UI_BIND_DESC_RCLICK,
+    UI_BIND_DESC_L, UI_BIND_DESC_R, UI_BIND_DESC_ZL, UI_BIND_DESC_ZR, UI_BIND_DESC_PLUS, UI_BIND_DESC_MINUS,
+    UI_BIND_DESC_DPAD};
+static const struct { const char *lang; const char *text[OOT_BINDS]; } oot_binds[] = {
+#include "ui_binds_oot.inc"
+};
+static int oot_bind_slot(UiTextId id) {
+    for (int i = 0; i < OOT_BINDS; i++)
+        if (oot_bind_ids[i] == id) return i;
+    return -1;
+}
+static const char *oot_bind(const char *lang, UiTextId id) {
+    int i = oot_bind_slot(id);
+    if (i < 0) return NULL;
+    for (size_t r = 0; r < sizeof oot_binds / sizeof *oot_binds; r++)
+        if (!strcmp(oot_binds[r].lang, lang)) return oot_binds[r].text[i];
+    return oot_binds[0].text[i];
+}
+#endif
+
 const char *ui_text_in(const char *lang, UiTextId id) {
     if ((unsigned)id >= UI_TEXT_COUNT) return "";
+#ifdef GAME_OOT
+    const char *oot = oot_bind(lang, id);
+    if (oot) return oot;
+#endif
     return ui_text_defined(lang, id) ? find_row(lang)->text[id] : rows[0].text[id];
 }
 
@@ -2556,6 +2587,9 @@ void ui_text_visit(const char *lang, void (*visit)(void *ctx, const char *text),
     if (!r) return;
     for (int id = 0; id < (int)UI_TEXT_COUNT; id++)
         if (r->text[id] && *r->text[id]) visit(ctx, r->text[id]);
+#ifdef GAME_OOT
+    for (int i = 0; i < OOT_BINDS; i++) visit(ctx, oot_bind(lang, oot_bind_ids[i]));   // their letters too
+#endif
 }
 
 // The menu language, re-read when cfg_version changes. REKARINA_MENU_LANG names a catalog language ("en", "ru", "de",

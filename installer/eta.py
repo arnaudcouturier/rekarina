@@ -52,7 +52,7 @@ DEFAULTS = {
     'oot_compile':           (720, 240),    # a rerun compiles what changed and links again
     'oot_components':        (60, 10),
     'oot_prompts':           (60, 60),      # the button prompts and fonts, drawn again when their tools change
-    'oot_prepare':           (420, 60),     # the variants play met for the driver the first time; all from the caches later
+    'oot_prepare':           (420, 60),     # (the variants play met, 1.2.1-1.2.3; every run since prepares all: ALL_SHADERS)
     'oot_package':           (360, 90),     # the copy, then the prepared shaders warmed in the game folder
     # the launcher's own update (update.py): the download depends on the line, so its counter soon takes over
     'update_download':       (90, 90),
@@ -60,7 +60,9 @@ DEFAULTS = {
     'update_restart':        (5, 5),
 }
 UNKNOWN_STEP = (30, 30)
-ALL_SHADERS = 2100   # the case 'all' of oot_prepare: every variant of every shader (--all-shaders), on the reference machine
+# The case 'all' of oot_prepare, every variant of every shader, on the reference machine: 35 minutes from nothing (2116 s
+# measured on 16 threads). Since 2026-11-19 every setup run prepares all, and that case's time is recorded too.
+ALL_SHADERS = 2100
 SCALED = ('oot_lift', 'oot_compile', 'oot_prepare')   # limited by the processor: times 16 / logical cores
 SCALE_RANGE = (0.5, 4.0)
 # The share of a step's time each of its phases takes, in the order they run. A phase that is not listed (or a step
@@ -111,7 +113,7 @@ def load_timings(path=None):
 
 def record(step, case, seconds, path=None):
     """Keep a finished step's duration for the next estimate. A profile that cannot be written costs only that."""
-    if case not in ('first', 'rerun') or not seconds or seconds <= 0:
+    if case not in ('first', 'rerun', 'all') or not seconds or seconds <= 0:
         return
     path = Path(path or timings_path())
     steps = load_timings(path)

@@ -740,6 +740,11 @@ PlatAppend *plat_append_open(const char *path) {
     return fd < 0 ? NULL : (PlatAppend *)(intptr_t)(fd + 1);
 }
 
+PlatAppend *plat_append_shared(const char *path) {
+    int fd = open(path, O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0644);
+    return fd < 0 ? NULL : (PlatAppend *)(intptr_t)(fd + 1);
+}
+
 int plat_append_write(PlatAppend *f, const void *data, size_t n) {
     int fd = (int)(intptr_t)f - 1;
     ssize_t k;
@@ -1125,6 +1130,53 @@ const void *plat_file_map(PlatFile *f) {
     if (fstat(fd_of(f), &st) || !st.st_size) return NULL;
     void *v = mmap(NULL, (size_t)st.st_size, PROT_READ, MAP_SHARED, fd_of(f), 0);
     return v == MAP_FAILED ? NULL : v;
+}
+
+struct PlatView { int fd; void *data; uint64_t size; int write; };
+
+PlatView *plat_view_open(const char *path, const void **data, uint64_t *size) {
+    struct stat st;
+    int fd = open(path, O_RDONLY | O_CLOEXEC);
+    if (fd < 0) return NULL;
+    void *v = !fstat(fd, &st) && st.st_size > 0 ? mmap(NULL, (size_t)st.st_size, PROT_READ, MAP_SHARED, fd, 0) : MAP_FAILED;
+    PlatView *pv = v != MAP_FAILED ? malloc(sizeof *pv) : NULL;
+    if (!pv) {
+        if (v != MAP_FAILED) munmap(v, (size_t)st.st_size);
+        close(fd);
+        return NULL;
+    }
+    *pv = (PlatView){fd, v, (uint64_t)st.st_size, 0};
+    *data = v, *size = (uint64_t)st.st_size;
+    return pv;
+}
+
+PlatView *plat_view_create(const char *path, uint64_t size, void **data) {
+    if (!size) return NULL;
+    int fd = open(path, O_RDWR | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
+    if (fd < 0) return NULL;
+    // blocks reserved now: a full disk fails here, not as a SIGBUS in a write through the view
+    void *v = !posix_fallocate(fd, 0, (off_t)size) ? mmap(NULL, (size_t)size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0) : MAP_FAILED;
+    PlatView *pv = v != MAP_FAILED ? malloc(sizeof *pv) : NULL;
+    if (!pv) {
+        if (v != MAP_FAILED) munmap(v, (size_t)size);
+        close(fd);
+        unlink(path);
+        return NULL;
+    }
+    *pv = (PlatView){fd, v, size, 1};
+    *data = v;
+    return pv;
+}
+
+int plat_view_close(PlatView *v, uint64_t keep) {
+    if (!v) return 0;
+    int ok = 1;
+    if (v->write) ok = msync(v->data, (size_t)v->size, MS_SYNC) == 0;
+    munmap(v->data, (size_t)v->size);
+    if (v->write) ok = ok && !ftruncate(v->fd, (off_t)keep) && !fsync(v->fd);
+    close(v->fd);
+    free(v);
+    return ok;
 }
 
 int plat_fs_os_error(void) { return errno; }

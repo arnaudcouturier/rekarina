@@ -15,7 +15,7 @@ did not change since it was recorded is skipped, so a second run continues or up
     oot_components  the upscaler libraries this machine's graphics card can use (DLSS, frame generation, FSR 3.1),
                   downloaded from NVIDIA's and AMD's own repositories (components.py); a failure only warns
     oot_prompts   the button prompt overlays and fonts (a minute)
-    oot_prepare   the shaders translated and built before play: the variants play met, or with --all-shaders every one
+    oot_prepare   the shaders translated and built before play: every variant, in the foreground
     oot_package   the folder to play from (tools/package_oot.py): Rekarina.exe, its libraries, caches and rekarina.ini,
                   a new rekarina.ini with first settings for the graphics card (components.preset)
 
@@ -152,15 +152,17 @@ def kill_tree(proc):
         proc.kill()
 
 
-def run_tool(ctx, step, script, args, parse=None):
+def run_tool(ctx, step, script, args, parse=None, env=None):
     """Run a tool script with the setup's Python. Its output goes to <temp>/logs/<step>-<script>.log and, line by line,
-    to parse(line). Returns (exit code, log path)."""
+    to parse(line); env: variables added to the setup's own. Returns (exit code, log path). The tool runs with
+    faulthandler, so a crash of the process (an access violation) leaves the Python stack where it happened in the
+    log, not only an exit code."""
     logs = ctx.temp / 'logs'
     logs.mkdir(parents=True, exist_ok=True)
     log = logs / f'{step}-{Path(script).stem}.log'
-    command = [str(ctx.layout.python), '-c', RUN_SCRIPT, str(script), *map(str, args)]
-    ctx.reporter.log('run ' + ' '.join(command[3:]))
-    env = dict(os.environ, PYTHONUNBUFFERED='1', PYTHONIOENCODING='utf-8')
+    command = [str(ctx.layout.python), '-X', 'faulthandler', '-c', RUN_SCRIPT, str(script), *map(str, args)]
+    ctx.reporter.log('run ' + ' '.join(command[5:]))
+    env = dict(os.environ, PYTHONUNBUFFERED='1', PYTHONIOENCODING='utf-8', **(env or {}))
     with open(log, 'w', encoding='utf-8', newline='\n') as out:
         proc = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, cwd=ctx.layout.root, env=env,
                                 text=True, encoding='utf-8', errors='replace', bufsize=1, start_new_session=not WIN)
@@ -174,6 +176,63 @@ def run_tool(ctx, step, script, args, parse=None):
             kill_tree(proc)
             raise
     ctx.reporter.log(f'{Path(script).name}: exit code {code}; output in {log}')
+    return code, log
+
+
+def crashed(code):
+    """Whether an exit code is a crash of the process, not an error the tool reported: a Windows exception status
+    (0xC0000005 an access violation, 0xC0000374 a damaged heap, ...) or a POSIX signal."""
+    return code < 0 or code >= 0xC0000000
+
+
+def last_line(log):
+    """The last line a tool wrote: the exception that ended it, or the place faulthandler found it crashed."""
+    try:
+        lines = [line.strip() for line in Path(log).read_text(encoding='utf-8', errors='replace').splitlines() if line.strip()]
+    except OSError:
+        return ''
+    return lines[-1] if lines else ''
+
+
+class Unstable(Exception):
+    """A tool failed every time it ran and each time differently (tool_steady)."""
+
+    def __init__(self, tool, code, log, tries):
+        super().__init__(tool, code, log, tries)
+        self.tool, self.code, self.log, self.tries = tool, code, log, tries
+
+    def error(self):
+        return InstallError('oot.unstable', tool=self.tool, tries=self.tries, code=self.code, log=str(self.log))
+
+
+def tool_steady(ctx, step, script, args, parse=None, env=None, tries=3, within=None):
+    """run_tool, again after a failure that need not come back. Returns (exit code, log path) as run_tool does: 0 once
+    a run works, or the code of a failure that came twice the same way (the same code and last line: an error in the
+    input or the tool, which a third run would repeat). Raises Unstable when every one of `tries` runs failed and they
+    did not all fail alike. within: seconds; a run that failed after more than that is not run again (a long step).
+    Why: a player's setup crashed in the button prompts' drawing, a pure Python tool that works on other machines with
+    the same dump, a different way at each run (an access violation, Python objects of the wrong type in fontTools, an
+    earlier release's shader tool the same way): memory damaged in that process, which another run may not meet. Each
+    failed run's log is kept beside the last one (<log>.1.log, ...)."""
+    seen = []
+    for attempt in range(1, tries + 1):
+        began = time.monotonic()
+        code, log = run_tool(ctx, step, script, args, parse, env)
+        if not code:
+            return code, log
+        sign = (code, last_line(log))
+        if sign in seen or within is not None and time.monotonic() - began > within:
+            return code, log
+        seen.append(sign)
+        if attempt == tries:
+            raise Unstable(Path(script).name, code, log, tries)
+        kept = log.with_name(f'{log.stem}.{attempt}.log')
+        try:
+            log.replace(kept)
+        except OSError:
+            kept = log
+        ctx.reporter.log(f'{Path(script).name} failed ({"crashed, " if crashed(code) else ""}exit code {code}: '
+                         f'{sign[1][:200]}); its log is {kept}; running it again ({attempt + 1} of {tries})')
     return code, log
 
 
@@ -567,7 +626,11 @@ class Components(Step):
     id = 'oot_components'
 
     def key(self, ctx):
-        return fingerprint('oot-components-1', components.pins_digest(), components.gpu_key(host_gpu(ctx)))
+        # (our DLSS Frame Generation library, when the release carries it and the card runs DLSS Frame Generation:
+        # releases 1.2.0 to 1.2.3 carried none, and a folder they set up gets it at its next update)
+        gpu, shim = host_gpu(ctx), ctx.layout.shim
+        ours = [(SHIM, shim)] if shim.is_file() and 'dlssg' in components.groups_for(gpu) else []
+        return fingerprint('oot-components-1', components.pins_digest(), components.gpu_key(gpu), *ours)
 
     def current(self, ctx, record):
         return not record.get('failed') and all((ctx.dest / n).is_file() for n in record.get('files') or [])
@@ -577,15 +640,16 @@ class Components(Step):
         rep.progress(self.id, 'detect', force=True)
         rep.log(f'components: graphics card: {components.describe(gpu) or "not detected"}; '
                 f'groups: {", ".join(components.groups_for(gpu))}')
-        failed, files = {}, []
+        failed, files, ours = {}, [], []
         try:
             shim = ctx.layout.shim   # ours, bundled: frame generation loads Streamline through it
             if shim.is_file() and 'dlssg' in components.groups_for(gpu):
                 shutil.copy2(shim, ctx.dest / SHIM)
+                ours = [SHIM]   # in the record's files: the step runs again when it is gone (current)
             result = components.install(ctx.dest, gpu, ctx.temp / 'components', log=rep.log,
                                         progress=lambda group, done, total: rep.progress(self.id, group, done, total, 'bytes'))
             failed = result['failed']
-            files = result['installed'] + result['present'] + result['kept']
+            files = result['installed'] + result['present'] + result['kept'] + ours
             for name in result['kept']:
                 rep.log(f'components: {name} in the game folder is not the pinned version: kept as it is')
         except net.Cancelled:
@@ -622,16 +686,23 @@ class Prompts(Step):
     def run(self, ctx):
         layout, rep, build = ctx.layout, ctx.reporter, ctx.temp / 'build'
         rep.progress(self.id, 'prompts', force=True)
-        code, log = run_tool(ctx, self.id, layout.tools / 'make_oot_prompts.py', ['--out', build, '--nup', ctx.nup])
-        if code:
-            raise InstallError('oot.prompts_failed', code=code, log=str(log))
-        for folder, style in STYLES:
-            out = build / f'shared-fonts-{folder}'
-            out.mkdir(parents=True, exist_ok=True)
-            code, log = run_tool(ctx, self.id, layout.tools / 'make_ext_font.py',
-                                 [out / '5-nintendo-extension.bfttf', '--style', style])
+        # fontTools' own Python in place of its compiled modules (tools/fonttools_pure.py, the same fonts): the drawing
+        # then runs on no native code but Python's, and a run that failed is run again (tool_steady)
+        pure = {'REKARINA_FONTTOOLS_PURE': '1'}
+        try:
+            code, log = tool_steady(ctx, self.id, layout.tools / 'make_oot_prompts.py', ['--out', build, '--nup', ctx.nup],
+                                    env=pure)
             if code:
                 raise InstallError('oot.prompts_failed', code=code, log=str(log))
+            for folder, style in STYLES:
+                out = build / f'shared-fonts-{folder}'
+                out.mkdir(parents=True, exist_ok=True)
+                code, log = tool_steady(ctx, self.id, layout.tools / 'make_ext_font.py',
+                                        [out / '5-nintendo-extension.bfttf', '--style', style], env=pure)
+                if code:
+                    raise InstallError('oot.prompts_failed', code=code, log=str(log))
+        except Unstable as e:
+            raise e.error() from None
         return {}
 
 
@@ -649,44 +720,31 @@ LEGACY_PREPARED_BY = ('1.2.0', '1.2.1')
 
 
 def shader_mode(ctx):
-    """'met' (the variants play met: a first install) or 'all' (every variant of the dump). A folder that has
-    prepared all stays on 'all' (state 'shaders'), and so does one an earlier setup prepared: that one always did.
-    --shaders-later (the launcher's run screen) never prepares the rest in the foreground: it keeps 'all' only while
-    the step has nothing to do (the shaders' inputs did not change and the prepared output is in the temp folder) and
-    otherwise prepares the variants play met only, which the launcher's background job (--all-shaders) then completes.
-    The output matters as much as the inputs: a setup unpacked again, or a temp folder that was cleaned, has none, and
-    'all' then prepared every variant in the foreground (35 minutes on 16 threads, hours on a weak machine)."""
-    state = getattr(ctx, 'state', None) or {}
-    opt = ctx.options
-    if getattr(opt, 'all_shaders', False):
-        return 'all'
-    rec = (state.get('steps') or {}).get('oot_prepare')
-    prepared_all = state.get('shaders') == 'all' or bool(rec and rec.get('shaders', 'all') == 'all')
-    if getattr(opt, 'shaders_later', False):
-        step = Prepare()
-        stands = prepared_all and rec and step.current(ctx, rec) and \
-            (rec.get('key') == step.key(ctx, 'all') or step.adopts(ctx, rec))
-        return 'all' if stands else 'met'
-    return 'all' if prepared_all else 'met'
+    """'all': every variant of the dump, in the foreground, for every setup run. 1.2.1 to 1.2.3 prepared the variants
+    play met on a first install ('met') and left the rest to a background job of the launcher; with only those, play
+    translated and built the rest in its frames (a player: "massive stuttering"), and the owner's call (2026-11-19) was
+    that a setup prepares everything before play. A folder recorded 'met' therefore prepares the rest at its next setup
+    run, from what it holds (seed_from_folder), and one that holds every variant under this translator prepares nothing
+    (Prepare.current). --all-shaders and --shaders-later are still taken and change nothing."""
+    return 'all'
 
 
 def shader_case(ctx):
     """The shader step's case for the estimate (eta.py), from what it will do in this run: 'rerun' when it will be
-    skipped (its record stands and its output is in the temp folder, as Context.plan decides), else what it prepares:
-    'all' (every variant) or 'first' (the variants play met, the amount of a first install). A folder that prepared
-    before but has no prepared output in the temp folder does that work in full, which a 'rerun' estimate (a minute)
-    hid: the window counted down to a couple of minutes and stayed there."""
+    skipped (its record stands and its output is in the temp folder or the game folder, as Context.plan decides), else
+    'all' (every variant). A folder that prepared before but has no prepared output where Prepare.current looks does
+    that work in full, which a 'rerun' estimate (a minute) hid: the window counted down to a couple of minutes and
+    stayed there."""
     rec = ctx.record('oot_prepare')
     step = Prepare()
-    mode = shader_mode(ctx)
-    if rec and step.current(ctx, rec) and (rec.get('key') == step.key(ctx, mode) or step.adopts(ctx, rec)):
+    if rec and (rec.get('key') == step.key(ctx, 'all') or step.adopts(ctx, rec)) and step.current(ctx, rec):
         return 'rerun'
-    return 'all' if mode == 'all' else 'first'
+    return 'all'
 
 
 def shaders_only_met(state):
-    """True for a folder whose shaders were prepared for the variants play met only (and has not prepared all since): the
-    launcher offers the rest. A record of the old form (no 'shaders' field) prepared all."""
+    """True for a folder whose shaders were prepared for the variants play met only (and has not prepared all since): its
+    next setup run prepares the rest. A record of the old form (no 'shaders' field) prepared all."""
     rec = ((state or {}).get('steps') or {}).get('oot_prepare')
     return bool(rec) and rec.get('shaders') == 'met' and (state or {}).get('shaders') != 'all'
 
@@ -720,10 +778,19 @@ class Prepare(Step):
         """The output of a run that finished. --prepare-shaders writes shader-prepared.bin after the translation, before
         the driver's long phase, so a run cut short later leaves it: such a run also leaves PREPARING behind, and,
         cut short while the driver built (also by a setup from before PREPARING), the runtime's journal of that phase,
-        which only a finished build removes."""
+        which only a finished build removes.
+        A setup unpacked again or a cleaned temp folder has none of that, while the game folder holds what the step
+        would make (the record's key names every variant of this dump under this translator): then the step is done,
+        and the package step, finding no shader output in the build folder, leaves the folder's as it is. 1.2.3 prepared
+        the variants play met in that case and its package replaced the folder's pack of every variant (2 GB) with them
+        (340 MB): play then translated and built the rest in its frames."""
         build = ctx.temp / 'build'
-        return (build / 'shader-prepared.bin').is_file() and not (build / self.PREPARING).exists() and \
-            not (build / self.JOURNAL).exists()
+        if (build / 'shader-prepared.bin').is_file() and not (build / self.PREPARING).exists() and \
+                not (build / self.JOURNAL).exists():
+            return True
+        nothing_here = not any((build / n).exists() for n in ('shader-prepared.bin', self.PREPARING, self.JOURNAL,
+                                                              'shader-cache'))
+        return nothing_here and record.get('shaders', 'all') == 'all' and folder_prepared(ctx)
 
     def adopts(self, ctx, record):
         """A record of the old key form is kept when its release prepared what this one would and the translator is the
@@ -754,6 +821,7 @@ class Prepare(Step):
         for lib in layout.libs:   # Linux: the game finds libSDL3.so.0 beside itself ($ORIGIN), here as in the package
             shutil.copy2(lib, build / lib.name)
         (build / self.PREPARING).write_text(mode + '\n', encoding='ascii')   # a run cut short leaves it (current)
+        seed_from_folder(ctx, self.id, build)
         phase = ['seed']
 
         def parse(line):
@@ -772,9 +840,12 @@ class Prepare(Step):
                 rep.progress(self.id, 'libraries')
 
         rep.progress(self.id, 'seed', force=True)
-        code, log = run_tool(ctx, self.id, layout.tools / 'oot_prepare_shaders.py',
-                             [build, '--nup', ctx.nup, '--exefs', ctx.dest / 'exefs', '--exe-name', GAME_EXE,
-                              *(['--met-only'] if mode == 'met' else [])], parse)
+        try:   # once more after an early failure that need not come back (tool_steady), not after a long run
+            code, log = tool_steady(ctx, self.id, layout.tools / 'oot_prepare_shaders.py',
+                                    [build, '--nup', ctx.nup, '--exefs', ctx.dest / 'exefs', '--exe-name', GAME_EXE,
+                                     *(['--met-only'] if mode == 'met' else [])], parse, tries=2, within=300)
+        except Unstable as e:
+            raise e.error() from None
         if code or not (build / 'shader-prepared.bin').is_file():
             raise InstallError('oot.shaders_failed', code=code, log=str(log))
         # One shader-cache.pack instead of four files per shader (about 250,000 after the preparation): the game reads
@@ -788,6 +859,54 @@ class Prepare(Step):
         (build / self.PREPARING).unlink(missing_ok=True)
         ctx.state['shaders'] = mode   # 'all' is kept through later updates (shader_mode)
         return {'shaders': mode}
+
+
+# What a game folder keeps of a preparation beside its shader pack (tools/package_oot.py STATE), shader-prepared.bin aside:
+# the pipeline cache, the pipelines and shaders the preparation and play recorded, the variants the driver failed on.
+FOLDER_STATE = ('pipeline-cache.bin', 'pipeline-keys.bin', 'pipeline-keys-mesh.bin', 'shader-answers.bin',
+                'shader-programs.bin', 'shader-prepare-skip.txt')
+
+
+def folder_translator(ctx):
+    """True when the game folder's shaders were made by this setup's translator: the identity file the package step
+    wrote beside the pack (under its name from before the rename too) holds what this translator's does. The shader
+    cache's entries are named by that identity, so another translator's are of no use."""
+    xid = ctx.layout.xlate.with_suffix('.id')
+    try:
+        want = xid.read_bytes() if xid.is_file() else None
+        return bool(want) and any((ctx.dest / n).is_file() and (ctx.dest / n).read_bytes() == want
+                                  for n in ('rekarina_xlate.id', 'totk_xlate.id'))
+    except OSError:
+        return False
+
+
+def folder_prepared(ctx):
+    """The game folder holds a finished preparation under this setup's translator: its pack and shader-prepared.bin."""
+    return folder_translator(ctx) and (ctx.dest / 'shader-prepared.bin').is_file() and \
+        (ctx.dest / 'shader-cache' / 'shader-cache.pack').is_file()
+
+
+def seed_from_folder(ctx, step_id, build):
+    """Before a preparation: what the game folder holds of an earlier one under the same translator goes into the build
+    folder first (its pack merged in, the files of FOLDER_STATE and the driver's nv-cache where the build folder has
+    none), so the run translates and builds only what is missing, and what the package step copies back holds all that
+    the folder held. A folder of 1.2.1-1.2.3 that prepared the variants play met prepares only the rest this way."""
+    if not folder_translator(ctx):
+        return
+    cache = build / 'shader-cache'
+    cache.mkdir(parents=True, exist_ok=True)
+    pack = ctx.dest / 'shader-cache' / 'shader-cache.pack'
+    if pack.is_file():
+        ctx.reporter.progress(step_id, 'seed', force=True)
+        code, log = run_tool(ctx, step_id, ctx.layout.tools / 'pack_shader_cache.py', [cache, '--merge-from', pack])
+        if code:
+            raise InstallError('oot.shaders_failed', code=code, log=str(log))
+    for name in FOLDER_STATE:
+        if (ctx.dest / name).is_file() and not (build / name).exists():
+            shutil.copy2(ctx.dest / name, build / name)
+    if (ctx.dest / 'nv-cache').is_dir() and not (build / 'nv-cache').exists():
+        shutil.copytree(ctx.dest / 'nv-cache', build / 'nv-cache')
+    ctx.reporter.log(f'shaders: what the game folder held under this translator was taken in first ({ctx.dest})')
 
 
 LOOSE_SHADER_FILE = re.compile(r'[0-9a-f]{64}\.(spv|res\.json|use)$')   # tools/pack_shader_cache.py NAME, beside in/*.in
@@ -927,6 +1046,75 @@ def write_rebuild_command(ctx):
     os.replace(tmp, cache / 'rebuild.txt')
 
 
+LAUNCHER_EXE = 'Rekarina-Launcher.exe'   # the setup folder's launcher (installer/update.py LAUNCHER)
+LAUNCHER_LINK = 'Rekarina Launcher.lnk'   # in the game folder and, when the form asks for it, on the desktop
+START_LINK = 'Rekarina.lnk'               # in the player's own Start menu
+
+
+def shell_folder(csidl):
+    """A folder of the player's as the shell has it (SHGetFolderPathW: a desktop moved to OneDrive is found there),
+    None when Windows does not say."""
+    if not WIN:
+        return None
+    import ctypes
+    buf = ctypes.create_unicode_buffer(1024)
+    if ctypes.windll.shell32.SHGetFolderPathW(None, csidl, None, 0, buf) != 0 or not buf.value:
+        return None
+    return Path(buf.value)
+
+
+def start_menu_folder():
+    """The player's own Start menu programs folder (CSIDL_PROGRAMS: no administrator needed)."""
+    return shell_folder(0x02)
+
+
+def desktop_folder():
+    """The player's desktop (CSIDL_DESKTOPDIRECTORY)."""
+    return shell_folder(0x10)
+
+
+def write_shortcut(link, target, workdir, description):
+    """A Windows shortcut written by the shell's own writer (WScript.Shell through PowerShell), so no module is needed.
+    The paths reach PowerShell in environment variables, not in its command, so no character of theirs can change the
+    command. The icon is the target's first one. (ok, what PowerShell said)."""
+    script = ('$s = (New-Object -ComObject WScript.Shell).CreateShortcut($env:REKARINA_LNK); '
+              '$s.TargetPath = $env:REKARINA_LNK_TARGET; $s.WorkingDirectory = $env:REKARINA_LNK_DIR; '
+              '$s.IconLocation = $env:REKARINA_LNK_TARGET + ",0"; $s.Description = $env:REKARINA_LNK_TEXT; $s.Save()')
+    env = dict(os.environ, REKARINA_LNK=str(link), REKARINA_LNK_TARGET=str(target), REKARINA_LNK_DIR=str(workdir),
+               REKARINA_LNK_TEXT=description)
+    proc = subprocess.run(['powershell', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', script],
+                          env=env, capture_output=True, text=True, timeout=60,
+                          creationflags=subprocess.CREATE_NO_WINDOW if WIN else 0)
+    return proc.returncode == 0 and Path(link).is_file(), (proc.stderr or proc.stdout or '').strip()
+
+
+def launcher_shortcuts(ctx):
+    """The launcher one click from the game: "Rekarina Launcher" in the game folder, beside Rekarina.exe (the game
+    alone, which players took for the launcher and then could not find where to update), "Rekarina" in the player's
+    Start menu, and "Rekarina Launcher" on the desktop unless the form's desktop row says no (--no-desktop-shortcut).
+    All point at the launcher of the setup that runs, in its own folder, so they are written again at every run: a
+    setup downloaded anew (another <home>/setup/<version>) moves them to its launcher. Windows only (the Linux setup has
+    no launcher executable); a source checkout has no launcher and gets none. A shortcut that cannot be written costs
+    nothing but itself: it is logged. Returns the shortcuts written."""
+    launcher = ctx.layout.root / LAUNCHER_EXE
+    if not WIN or not launcher.is_file():
+        return []
+    made = []
+    start, desk = start_menu_folder(), desktop_folder()
+    if getattr(getattr(ctx, 'options', None), 'no_desktop_shortcut', False):
+        desk = None
+    for link in [ctx.dest / LAUNCHER_LINK] + ([start / START_LINK] if start else []) + ([desk / LAUNCHER_LINK] if desk else []):
+        try:
+            link.parent.mkdir(parents=True, exist_ok=True)
+            ok, said = write_shortcut(link, launcher, ctx.layout.root, 'Rekarina launcher: build, update and start the game')
+        except (OSError, subprocess.SubprocessError) as e:
+            ok, said = False, str(e)
+        ctx.reporter.log(f'shortcut {link} -> {launcher}: ' + ('written' if ok else f'not written ({said})'))
+        if ok:
+            made.append(link)
+    return made
+
+
 def all_steps():
     return [Check(), Extract(), Lift(), Compile(), Components(), Prompts(), Prepare(), Package()]
 
@@ -966,11 +1154,12 @@ def main(argv=None):
     ap.add_argument('--temp', type=Path, help='temp folder (default: temp/ of the release, build/install-temp of a checkout)')
     ap.add_argument('--until', help='stop after this step (oot_check ... oot_package): for tests')
     ap.add_argument('--all-shaders', action='store_true',
-                    help='prepare every variant of every shader (about 35 minutes more); without it a first install '
-                         'prepares the variants play met, and a folder that prepared all keeps all')
+                    help='taken for older launchers: every setup run prepares every variant of every shader')
     ap.add_argument('--shaders-later', action='store_true',
-                    help='the launcher foreground run: prepare the variants play met only when the shaders have to be '
-                         'prepared again; the launcher prepares the rest in the background (--all-shaders)')
+                    help='taken for older launchers: changes nothing (every variant is prepared in the foreground)')
+    ap.add_argument('--no-desktop-shortcut', action='store_true',
+                    help='no "Rekarina Launcher" shortcut on the desktop (the game folder\'s and the Start menu\'s are '
+                         'always written)')
     ap.add_argument('--no-textures', action='store_true',
                     help='do not prepare the textures for play (about 12 GiB on the disk; the game then prepares each one '
                          'at its first use)')
@@ -1009,12 +1198,14 @@ def main(argv=None):
         done = (state or {}).get('steps', {})
         rep.cases = {s.id: 'rerun' if state and (s.always or (s.id in done and s.current(ctx, done[s.id]))) else 'first'
                      for s in steps}
-        # the shader step by what it will prepare: nothing, the variants play met, or every variant (an all-or-nothing
-        # amount of work whatever the folder had before: its own estimate, no recorded timing)
+        # the shader step by what it will prepare: nothing or every variant (its own case, 'all', with its own default
+        # and its own recorded time)
         if 'oot_prepare' in rep.cases:
             rep.cases['oot_prepare'] = shader_case(ctx)
         rep.emit('eta', **eta.estimates(rep.cases))
         result = run_steps(steps, ctx)
+        if result != 'cancelled' and (ctx.dest / GAME_EXE).is_file():
+            launcher_shortcuts(ctx)   # at every run, so they follow the setup that ran last
     except Exception as e:
         # A failure outside the steps (run_steps reports its own): the traceback goes to the log, and the window gets
         # an error and the end of the run instead of a process that ended without either ("stopped unexpectedly").

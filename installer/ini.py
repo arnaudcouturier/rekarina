@@ -12,6 +12,9 @@ from pathlib import Path
 # runtime/ov_system.c: the codes REKARINA_LANG offers. Each language appears once, under the code the game accepts.
 LANGUAGES = ('ja', 'en-US', 'en-GB', 'fr', 'fr-CA', 'de', 'it', 'es', 'es-419', 'nl', 'pt', 'pt-BR', 'ru', 'ko',
              'zh-Hans', 'zh-Hant')
+# OoT's languages: those, without Portugal's Portuguese (OoT ships Brazil's only), and Polish (its Mals/EUpl, the Switch
+# 2's language code pl).
+LANGUAGES_OOT = tuple(c for c in LANGUAGES if c != 'pt') + ('pl',)
 # Older installer builds wrote these two codes; they are read as the canonical ones and rewritten on the next install.
 ALIASES = {'zh-CN': 'zh-Hans', 'zh-TW': 'zh-Hant'}
 # Their text falls back to the Switch shared fonts (runtime/ov_system.c), which the fonts step extracts from the

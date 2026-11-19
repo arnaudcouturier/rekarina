@@ -13,13 +13,17 @@ the data. The translated shaders are 6 of the 7 GiB of an install's cache and co
 is written, copied into the game folder and read at a start as about 1.2 GiB instead of 7. A pack of the layout
 before (b'TKSPACK1': the same without the compression) is read and written anew in this one.
 
-    python tools\\pack_shader_cache.py <install folder>\\shader-cache [--keep]
+    python tools\\pack_shader_cache.py <install folder>\\shader-cache [--keep] [--merge-from <another pack>]
+
+--merge-from first adds the entries of another pack made under the same translator that this cache lacks (a union):
+a setup that prepares the shaders again keeps what the game folder's pack held.
 
 --keep leaves the loose files in place. Close the game first: a running rekarina.exe has read the old pack's index.
 """
 import argparse
 import os
 import re
+import shutil
 import struct
 import sys
 from concurrent.futures import ThreadPoolExecutor
@@ -84,6 +88,41 @@ def read_pack(path):
             if offset + length <= size and (head[:8] == MAGIC or kind < ZSTD):
                 out[(kind & 0xff, name)] = (offset, length, kind)
         return out, head[:8] == MAGIC_PLAIN
+
+
+def merge(pack_path, other_path):
+    """The entries of the pack at other_path that the pack at pack_path lacks, added to it (both made under the same
+    translator identity: their entries are named by what they hold). The stored bytes are copied as they are. Returns
+    (entries after, entries added); (0, 0) when other_path holds no pack. A setup that prepares the shaders again from a
+    fresh temp folder keeps what the game folder's pack held this way (installer/oot.py, tools/package_oot.py)."""
+    other, _ = read_pack(other_path)
+    if not other:
+        return 0, 0
+    mine, _ = read_pack(pack_path)
+    extra = [k for k in other if k not in mine]
+    if not extra:
+        return len(mine), 0
+    keys = sorted(set(mine) | set(other))
+    tmp = Path(pack_path).with_name(PACK + '.merge.tmp')
+    offset = 16 + 48 * len(keys)
+    index = []
+    with open(tmp, 'wb') as f, open(other_path, 'rb') as fo, (open(pack_path, 'rb') if mine else open(other_path, 'rb')) as fm:
+        f.write(bytes(offset))
+        for key in keys:
+            src, (at, length, kind) = (fm, mine[key]) if key in mine else (fo, other[key])
+            src.seek(at)
+            data = src.read(length)
+            if len(data) != length:
+                continue
+            f.write(data)
+            index.append(struct.pack('<32sIIQ', key[1], kind, length, offset))
+            offset += length
+        f.seek(0)
+        f.write(MAGIC + struct.pack('<II', len(index), 0) + b''.join(index))
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, pack_path)
+    return len(index), len(extra)
 
 
 def valid(kind, data):
@@ -175,9 +214,18 @@ def main():
     ap = argparse.ArgumentParser(description='Fold a shader cache into shader-cache.pack.')
     ap.add_argument('cache', type=Path, help='the shader-cache folder next to rekarina.exe')
     ap.add_argument('--keep', action='store_true', help='keep the loose files')
+    ap.add_argument('--merge-from', type=Path, metavar='PACK',
+                    help='first add the entries of that pack (made under the same translator) the cache lacks')
     a = ap.parse_args()
     if not a.cache.is_dir():
         sys.exit(f'{a.cache} is not a folder')
+    if a.merge_from and a.merge_from.is_file() and a.merge_from.resolve() != (a.cache / PACK).resolve():
+        if (a.cache / PACK).is_file():
+            total, added = merge(a.cache / PACK, a.merge_from)
+            print(f'{a.cache / PACK}: {added} entries of {a.merge_from} added ({total} in all)', flush=True)
+        else:
+            shutil.copy2(a.merge_from, a.cache / PACK)
+            print(f'{a.cache / PACK}: copied from {a.merge_from}', flush=True)
     n, new, skipped, size = pack(a.cache, a.keep)
     print(f'{a.cache / PACK}: {n} files, {size / 2**20:.0f} MiB ({new} loose files folded in'
           f'{", " + str(skipped) + " unreadable or empty skipped" if skipped else ""})', flush=True)

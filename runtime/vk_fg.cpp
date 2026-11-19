@@ -28,8 +28,10 @@
 
 extern "C" {
 #include "cfg.h"
+#include "gfx_wsys.h"
 #include "host.h"
 #include "platform/platform.h"
+#include "report.h"
 #include "vk.h"
 #include "vk_dlaa.h"
 #include "vk_ffx.h"
@@ -46,6 +48,8 @@ struct {
     const char *why = nullptr;   // why it is not running although asked, for the menu's row (vk_fg_off_why)
     VkQueue present = VK_NULL_HANDLE, acquire = VK_NULL_HANDLE;
     ffxContext sc = nullptr;   // the swapchain context
+    VkSwapchainKHR handle = VK_NULL_HANDLE;   // AMD's swapchain, the window's while it exists (vk_fg_swapchain)
+    int remake_failed = 0;     // its re-creations that failed in a row
     ffxContext fg = nullptr;   // the frame generation context
     VkExtent2D fg_ext = {0, 0};
     VkExtent2D fg_max = {0, 0};   // the context's largest render size
@@ -69,6 +73,13 @@ ffxReturnCode_t generate(ffxDispatchDescFrameGeneration *d, void *user) {
     return vk_ffx_dispatch((ffxContext *)user, &d->header);
 }
 
+// Frame generation stops for the rest of the run: the next present gives the window a plain swapchain again
+// (gfx_present.c create_swapchain), so a failure after AMD's swapchain took the window costs generation, not the game.
+void stop_running() {
+    F.failed = 1;
+    gfx_window_mark_dirty();
+}
+
 FfxApiResource image(const VkFfxImage *i) {
     VkImageCreateInfo ci = {};
     ci.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
@@ -83,7 +94,7 @@ FfxApiResource image(const VkFfxImage *i) {
 
 void fail(const char *what, unsigned r) {
     rt_log("fg: %s failed (%u): frame generation off for this run", what, r);
-    F.failed = 1;
+    stop_running();
     F.why = "AMD's frame generation did not start (the fg lines of the log say why)";
 }
 
@@ -92,7 +103,10 @@ void fail(const char *what, unsigned r) {
 extern "C" int vk_fg_wanted(void) {
     if (F.wanted < 0) {
         F.asked = F.wanted = !strcmp(cfg_value("REKARINA_FRAMEGEN"), "fsr3");
-        if (F.wanted && !vk_dlaa_wanted()) {
+        if (F.wanted && fg_guard_blocked()) {   // it stopped the last start while being set up (report.c)
+            F.why = FG_GUARD_WHY;
+            F.wanted = 0;
+        } else if (F.wanted && !vk_dlaa_wanted()) {
             rt_log("fg: frame generation needs DLSS or FSR 3.1 upscaling (any mode): off");
             F.why = "needs DLSS / DLAA on";
             F.wanted = 0;
@@ -112,7 +126,7 @@ extern "C" uint32_t vk_fg_queue_count(void) { return vk_fg_wanted() || vk_dlssg_
 // after the device exists and before the first swapchain.
 extern "C" void vk_fg_take_over(const char *why) {
     vk_fg_wanted();
-    if (F.wanted > 0 || F.failed) return;
+    if (F.wanted > 0 || F.failed || fg_guard_blocked()) return;
     F.asked = F.wanted = F.instead = 1;
     F.why = nullptr;
     rt_log("fg: AMD FSR frame generation in place of DLSS Frame Generation, which cannot run here (%s)", why);
@@ -146,7 +160,11 @@ extern "C" int vk_fg_offered(const char **why) {
 
 extern "C" void vk_fg_queues(VkQueue present, VkQueue acquire) { F.present = present, F.acquire = acquire; }
 
-extern "C" int vk_fg_active(void) { return F.sc != nullptr && !F.failed; }
+extern "C" int vk_fg_active(void) { return F.handle != VK_NULL_HANDLE && !F.failed; }
+
+extern "C" int vk_fg_swapchain(void) { return F.handle != VK_NULL_HANDLE; }
+
+extern "C" int vk_fg_failed(void) { return F.failed; }
 
 extern "C" const char *vk_fg_off_why(void) {
     if (!F.asked || vk_fg_active()) return nullptr;
@@ -155,9 +173,44 @@ extern "C" const char *vk_fg_off_why(void) {
 
 extern "C" int vk_fg_generating(void) { return vk_fg_active() && __atomic_load_n(&F.on, __ATOMIC_RELAXED); }
 
+// AMD's swapchain made again (a resize, the fullscreen switch at start, a present mode change). The two forms of the
+// library take this differently. FSR SDK 2's create replacement remakes the swapchain in place and takes the swapchain
+// itself as its last argument; its destroy deletes the swapchain for good (FidelityFX SDK 2.4.0,
+// ffx_provider_framegenerationswapchain_vk.cpp ffxApiCreateSwapchainVK, ffxApiDestroySwapchainVK). SDK 1's create
+// takes the swapchain context and makes a new swapchain once the old one is destroyed through that context
+// (FidelityFX SDK 1.1.4, ffx_provider_framegenerationswapchain_vk.cpp vkCreateSwapchainFFXAPI). 1.2.1 to 1.2.3 used
+// SDK 1's order with SDK 2's library: the destroy deleted the swapchain and the create took the context for one, a
+// call to an address outside every module at the first re-creation (a fullscreen window at start: the game never
+// started with AMD's frame generation on).
+static VkResult remake(const VkSwapchainCreateInfoKHR *ci, VkSwapchainKHR *sc) {
+    VkDevice dev = vk_ctx()->device;
+    VkResult r;
+    if (vk_ffx_sdk2()) {
+        r = F.fn.pOutCreateSwapchainFFXAPI(dev, ci, nullptr, sc, (void *)F.handle);
+        *sc = F.handle;   // the same swapchain, remade
+    } else {
+        if (F.handle) F.fn.pOutDestroySwapchainFFXAPI(dev, F.handle, nullptr, F.sc);
+        F.handle = VK_NULL_HANDLE;
+        r = F.fn.pOutCreateSwapchainFFXAPI(dev, ci, nullptr, sc, F.sc);
+        if (r == VK_SUCCESS) F.handle = *sc;
+    }
+    if (r == VK_SUCCESS) {
+        F.remake_failed = 0;
+    } else if (++F.remake_failed >= 3 || !F.handle) {   // the window cannot go on without a swapchain
+        rt_log("fg: AMD's swapchain could not be made again at %ux%u (%d)", ci->imageExtent.width, ci->imageExtent.height,
+               (int)r);
+        fail("the swapchain's re-creation", (unsigned)r);
+    }
+    return r;
+}
+
+// AMD's swapchain in the window's place: made at the first call, made again (in place with SDK 2) at the next ones.
+// The caller has destroyed a plain swapchain of the window before (AMD's takes its surface) and passes no
+// oldSwapchain. VK_ERROR_FEATURE_NOT_PRESENT when frame generation is not to run.
 extern "C" VkResult vk_fg_create_swapchain(const VkSwapchainCreateInfoKHR *ci, VkSwapchainKHR *sc) {
-    if (F.sc) return F.fn.pOutCreateSwapchainFFXAPI(vk_ctx()->device, ci, nullptr, sc, F.sc);
-    if (!vk_fg_wanted() || F.failed) return VK_ERROR_FEATURE_NOT_PRESENT;
+    if (F.failed) return VK_ERROR_FEATURE_NOT_PRESENT;
+    if (F.sc) return remake(ci, sc);
+    if (!vk_fg_wanted()) return VK_ERROR_FEATURE_NOT_PRESENT;
     if (!F.present || !vk_ffx_load()) {   // vk_ffx_load logs a library it could not load
         if (!F.why) {
             rt_log("fg: AMD FSR frame generation off: %s", F.present ? "AMD's FidelityFX libraries did not load"
@@ -185,6 +238,7 @@ extern "C" VkResult vk_fg_create_swapchain(const VkSwapchainCreateInfoKHR *ci, V
     api.header.type = FFX_API_CREATE_CONTEXT_DESC_TYPE_FRAMEGENERATIONSWAPCHAIN_VERSION_VK;
     api.version = FFX_FRAMEGENERATION_SWAPCHAIN_VK_VERSION;
     if (vk_ffx_sdk2()) d.header.pNext = &api.header;
+    fg_guard_arm("fsr3");   // a crash from here to the first generated frames: the next start goes without (report.c)
     ffxReturnCode_t r = vk_ffx_create(&F.sc, &d.header);
     if (r != FFX_API_RETURN_OK) {
         F.sc = nullptr;
@@ -196,17 +250,13 @@ extern "C" VkResult vk_fg_create_swapchain(const VkSwapchainCreateInfoKHR *ci, V
         fail("the swapchain functions", 0);
         return VK_ERROR_INITIALIZATION_FAILED;
     }
-    *sc = none;
+    *sc = F.handle = none;
     ffxQueryGetProviderVersion pv = {};
     pv.header.type = FFX_API_QUERY_DESC_TYPE_GET_PROVIDER_VERSION;
     vk_ffx_query(&F.sc, &pv.header);
     rt_log("fg: AMD FSR frame generation swapchain %s, %ux%u", pv.versionName ? pv.versionName : "(version unknown)",
            ci->imageExtent.width, ci->imageExtent.height);
     return VK_SUCCESS;
-}
-
-extern "C" void vk_fg_destroy_swapchain(VkSwapchainKHR sc) {
-    if (F.sc && sc) F.fn.pOutDestroySwapchainFFXAPI(vk_ctx()->device, sc, nullptr, F.sc);
 }
 
 extern "C" VkResult vk_fg_get_images(VkSwapchainKHR sc, uint32_t *n, VkImage *img) {
@@ -222,12 +272,12 @@ extern "C" VkResult vk_fg_present(const VkPresentInfoKHR *pi) {
 }
 
 extern "C" uint64_t vk_fg_presents(VkSwapchainKHR sc) {
-    return vk_fg_active() && F.fn.pOutGetLastPresentCountFFXAPI && sc ? F.fn.pOutGetLastPresentCountFFXAPI(sc) : 0;
+    return vk_fg_active() && F.fn.pOutGetLastPresentCountFFXAPI && sc == F.handle ? F.fn.pOutGetLastPresentCountFFXAPI(sc) : 0;
 }
 
 // The HDR10 metadata goes to AMD's swapchain through its own call (vk_hdr.c vk_hdr_metadata).
 extern "C" PFN_vkSetHdrMetadataEXT vk_fg_hdr_metadata_fn(void) {
-    return vk_fg_active() ? F.fn.pOutSetHdrMetadataEXT : nullptr;
+    return vk_fg_swapchain() ? F.fn.pOutSetHdrMetadataEXT : nullptr;
 }
 
 // An HDR10 swapchain (10-bit PQ or 16-bit float): frame generation is told its inputs are HDR.
@@ -240,6 +290,7 @@ extern "C" void vk_fg_frame(VkCommandBuffer cb, VkSwapchainKHR sc, VkFormat fmt,
                             VkImageView hudless_view, const int pic[4]) {
     (void)hudless_view;
     if (!vk_fg_active()) return;
+    fg_guard_running(F.generated);   // set up once it has generated a few hundred frames (report.c)
     vk_dlaa_hudless_wanted = 1;   // the upscaling pass keeps a copy of the picture before the HUD (vk_dlaa.c hudless)
     const VkCtx *c = vk_ctx();
     VkFfxImage depth, mv;
@@ -371,7 +422,27 @@ extern "C" void vk_fg_frame(VkCommandBuffer cb, VkSwapchainKHR sc, VkFormat fmt,
                (unsigned long long)F.paused, (unsigned long long)F.no_inputs);
 }
 
+// Everything of AMD's frame generation, in the SDK's order (FidelityFX SDK 2.4.0, frame-interpolation-swap-chain.md):
+// generation off and its context, then the swapchain context and the swapchain. SDK 1 destroys the swapchain through
+// its context, so there the swapchain goes before the context. The caller has waited for the device; the window's
+// views of AMD's images are gone.
 extern "C" void vk_fg_release(void) {
+    VkDevice dev = vk_ctx()->device;
+    if (F.fg && F.handle) {
+        ffxConfigureDescFrameGeneration off = {};
+        off.header.type = FFX_API_CONFIGURE_DESC_TYPE_FRAMEGENERATION;
+        off.swapChain = (void *)F.handle;
+        off.frameGenerationEnabled = false;
+        vk_ffx_configure(&F.fg, &off.header);
+    }
     if (F.fg) vk_ffx_destroy(&F.fg), F.fg = nullptr;
-    if (F.sc) vk_ffx_destroy(&F.sc), F.sc = nullptr;
+    if (vk_ffx_sdk2()) {
+        if (F.sc) vk_ffx_destroy(&F.sc);
+        if (F.handle && F.fn.pOutDestroySwapchainFFXAPI) F.fn.pOutDestroySwapchainFFXAPI(dev, F.handle, nullptr, nullptr);
+    } else {
+        if (F.handle && F.sc && F.fn.pOutDestroySwapchainFFXAPI) F.fn.pOutDestroySwapchainFFXAPI(dev, F.handle, nullptr, F.sc);
+        if (F.sc) vk_ffx_destroy(&F.sc);
+    }
+    F.sc = nullptr, F.handle = VK_NULL_HANDLE;
+    F.fg_ext = {0, 0};
 }

@@ -365,6 +365,72 @@ void report_crash_notice(void) {
     plat_message_box(RT_PORT_NAME, text);
 }
 
+// ---- frame generation that stopped the game
+// AMD's frame generation (vk_fg.cpp) and NVIDIA's (vk_dlssg.c, through Streamline) run in libraries this process cannot
+// catch a crash in, and they are set up at the start, before the settings menu could switch them off: 1.2.2's AMD
+// swapchain crashed at every start with a fullscreen window, and the player had to edit rekarina.ini to play again.
+// So a crash from the start of their set-up (fg_guard_arm) until they have generated FG_GUARD_FRAMES frames
+// (fg_guard_running), within ten minutes of it, leaves logs/framegen-stopped.txt with this build's version and the
+// setting (fg_guard_crashed, from main.c's crash handler). A start of the same version with the same setting then runs
+// without frame generation, says so in the log and in the menu's row (fg_guard_blocked), and keeps the file: the setting
+// in rekarina.ini is the player's and stays. Choosing frame generation in the menu removes the file (fg_guard_clear),
+// and a new version tries again by itself.
+static volatile int32_t fg_armed;
+static volatile uint64_t fg_frames, fg_armed_ns;
+static char fg_kind[16], fg_setting[16];   // the frame generation being set up; the setting that asked for it
+
+static int fg_guard_path(char *out, size_t n) {
+    char dir[PLAT_PATH_MAX * 3];
+    if (!game_folder(dir, sizeof dir)) return 0;
+    snprintf(out, n, "%s/logs/framegen-stopped.txt", dir);
+    return 1;
+}
+
+int fg_guard_blocked(void) {
+    static int known = -1;
+    if (known >= 0) return known;
+    known = 0;
+    char p[PLAT_PATH_MAX * 3 + 64], want[96];
+    if (!fg_guard_path(p, sizeof p)) return 0;
+    uint64_t size = 0;
+    char *b = (char *)plat_file_read(p, &size);
+    if (!b) return 0;
+    snprintf(want, sizeof want, "%s %s", rt_port_version, cfg_value("REKARINA_FRAMEGEN"));
+    known = size >= strlen(want) && !strncmp(b, want, strlen(want)) && (size == strlen(want) || b[strlen(want)] == '\n');
+    free(b);
+    if (known) rt_log("fg: frame generation off for this start: the last start stopped while it was being set up (%s; "
+                      "choosing frame generation again in the settings menu tries it once more)", p);
+    else plat_file_delete(p);   // another version or another setting: it is tried again
+    return known;
+}
+
+void fg_guard_arm(const char *kind) {
+    if (fg_armed) return;
+    snprintf(fg_kind, sizeof fg_kind, "%s", kind);
+    snprintf(fg_setting, sizeof fg_setting, "%s", cfg_value("REKARINA_FRAMEGEN"));   // dlss when AMD's runs in its place
+    fg_armed_ns = plat_now_ns();
+    __atomic_store_n(&fg_armed, 1, __ATOMIC_RELEASE);
+}
+
+void fg_guard_running(uint64_t frames) { fg_frames = frames; }
+
+void fg_guard_clear(void) {
+    char p[PLAT_PATH_MAX * 3 + 64];
+    if (fg_guard_path(p, sizeof p)) plat_file_delete(p);
+}
+
+void fg_guard_crashed(void) {
+    if (!__atomic_load_n(&fg_armed, __ATOMIC_ACQUIRE) || fg_frames >= FG_GUARD_FRAMES ||
+        plat_now_ns() - fg_armed_ns > 600ull * 1000000000ull)
+        return;
+    char p[PLAT_PATH_MAX * 3 + 64], line[96];
+    if (!fg_guard_path(p, sizeof p)) return;
+    int n = snprintf(line, sizeof line, "%s %s\n", rt_port_version, fg_setting);
+    if (plat_file_write(p, line, (size_t)n))
+        rt_log("fg: the game stopped while frame generation (%s) was being set up (%llu frames generated): the next start "
+               "runs without it (%s)", fg_kind, (unsigned long long)fg_frames, p);
+}
+
 int report_main(void) {
     char path[PLAT_PATH_MAX * 3 + 96];
     if (!report_make(path, sizeof path)) {

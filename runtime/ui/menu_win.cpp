@@ -40,8 +40,20 @@ static ImGuiKey key_of(WPARAM vk) {
     }
 }
 
+// The window the messages come to, for menu_window_client (window thread writes, the menu reads a whole handle).
+static HWND g_menu_hwnd;
+
+// DEBUG-MENUCLIENT: the client area the mouse positions are measured in, for the menu to compare with its own size.
+extern "C" int menu_window_client(int *w, int *h) {
+    RECT r;
+    HWND hw = g_menu_hwnd;
+    if (!hw || !GetClientRect(hw, &r)) return 0;
+    *w = r.right - r.left, *h = r.bottom - r.top;
+    return 1;
+}
+
 extern "C" int menu_window_msg(HWND h, UINT m, WPARAM w, LPARAM l, LRESULT *res) {
-    (void)h;
+    g_menu_hwnd = h;
     switch (m) {
     case WM_KEYDOWN:
     case WM_SYSKEYDOWN:

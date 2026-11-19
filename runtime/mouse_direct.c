@@ -19,6 +19,7 @@
 #include "platform/platform.h"
 
 #if __has_include("patches.h")
+#include "layout.h"
 #include "patches.h"
 #endif
 
@@ -362,13 +363,98 @@ static void camera_activity(Cpu *c) {
 // running total, so none misses counts another took; an object not seen for 200 ms starts from the total as it is (no
 // burst when a camera becomes active).
 // A camera whose angle is not where this writes (swimming: the copy and +0xa80's +0xdb4 differ by far more than a frame's
-// turn) does not take the counts at all: the update reports the mouse as not taken (accepts_mouse 0), so the HID update
-// (input.c mouse_camera) turns that camera through the right stick as in the stick mode, and the counts stay for it.
+// turn) is turned by oot_inject below.
 #define HOST_MOUSE_OOT (RT_PATCH_PAGE + 0xf80)
 #define HOST_MOUSE_OOT_FLAGS (RT_PATCH_PAGE + 0xf70)
 static _Thread_local uint64_t oot_moved;   // the object the mouse turned in this update (oot_camera_flags)
 static int64_t oot_total[2];
 static struct { uint64_t object, when; int64_t seen[2]; float turned[2]; } oot_seen[8];   // turned: last yaw, pitch added
+
+// The cameras that do not fit: the house cameras, the lock-on (attention) camera, the water's. Each turns the view by
+// the input this update stores (+0x538 x, +0x53c y; the stick after its curve) times a rate of its own, and none of
+// them holds the input to the stick's range (measured 2026-11-19 with the counts as input: the house camera 138 degrees
+// a second per unit, linear up to 1.8; the lock-on camera about 60; the swimming one about 107, as the land camera).
+// Until then such a camera got the mouse through the HID stick (input.c mouse_camera), calibrated for the land camera
+// and held to a full stick: the house turned faster than the mouse said, the lock-on slower, and a fast move was cut at
+// the stick's top speed everywhere ("the mouse is slow indoors, in the water"). Here the counts become that input: the
+// angle the mouse asks for in this update (0.08 degrees a count times the sensitivity, as the direct path) over the
+// update's time and the camera's rate, added to the stick's own input, without the curve or a cap. The rate is learnt
+// from the view the game made of it (the yaw's copy +0x52c; the pitch takes the same rate): every 8 updates, the
+// view's turn over the input given times its time, half way to it, kept within 20..600; a new spell (no call for 200 ms) starts from the land
+// camera's 107 and settles in about half a second. A camera that does not answer (input given, the view still for 4
+// such windows in a row) is left to the stick path for the rest of the spell. REKARINA_MOUSE_INJECT=0 leaves every such
+// camera to the stick path as before; a number fixes the rate (degrees a second per unit) instead of learning it.
+// Returns 1 when it took the update's mouse (the caller then reports the mouse as taken). Every register stays but s0.
+static int oot_inject(Cpu *c, uint64_t self, uint32_t flags, uint32_t sx, uint64_t now) {
+    static int mode = -1;   // 0 off, 1 learnt, 2 fixed
+    static double fixed_rate;
+    if (mode < 0) {
+        const char *e = cfg_get("REKARINA_MOUSE_INJECT");
+        mode = !e || !*e || !strcmp(e, "auto") ? 1 : atof(e) > 0 ? 2 : 0;
+        fixed_rate = mode == 2 ? atof(e) : 0;
+    }
+    if (!mode) return 0;
+    static uint64_t prev_now;
+    static float prev_view, prev_in[2];
+    static double prev_dt, acc_in, acc_view, rate;
+    static int acc_n, dead, refused;
+    double dt = prev_now && now > prev_now ? (now - prev_now) / 1e9 : 1.0 / 60;
+    float view = guest_float(self + 0x52c), pitch = guest_float(self + 0x528);
+    if (!prev_now || now - prev_now > 200000000ull) {   // a new spell
+        rate = mode == 2 ? fixed_rate : 107, acc_in = acc_view = 0, acc_n = dead = refused = 0;
+        prev_in[0] = prev_in[1] = 0, prev_view = view;
+    }
+    prev_now = now;
+    if (refused) return 0;
+    dt = dt < 0.001 ? 0.001 : dt > 0.05 ? 0.05 : dt;
+    float turned = remainderf(view - prev_view, 360.0f);
+    if (fabsf(turned) < 45) {   // a cut to another view is no turn
+        acc_in += prev_in[0] * prev_dt;
+        acc_view += turned;
+        if (++acc_n >= 8) {
+            if (fabs(acc_in) > 0.02) {
+                double r = -acc_view / acc_in;   // the stick's +x turns the view right: the yaw goes down
+                if (mode == 1 && r >= 20 && r <= 600) rate = 0.5 * rate + 0.5 * r;
+                dead = fabs(acc_view) < 0.2 ? dead + 1 : 0;
+                if (dead >= 4) {
+                    refused = 1;
+                    rt_log("mouse: a camera did not turn by the mouse given as its stick input: the stick path turns it");
+                    return 0;
+                }
+            }
+            acc_in = acc_view = 0, acc_n = 0;
+        }
+    }
+    prev_view = view;
+    int32_t dx, dy;
+    input_direct_mouse_sample(1, &dx, &dy);
+    float sensitivity = fminf(10, fmaxf(0, (float)cfg_double("REKARINA_MOUSE_SENS")));
+    // degrees this update; the stick's +x turns the view right as the mouse's +x does, its +y looks up
+    double turn_x = dx * 0.08 * sensitivity * (flags & 2 ? -1 : 1), turn_y = -dy * 0.08 * sensitivity * (flags & 4 ? -1 : 1);
+    float st[2], in[2];
+    memcpy(&st[0], &sx, 4);
+    uint32_t y0 = (uint32_t)c->v[0];
+    memcpy(&st[1], &y0, 4);
+    in[0] = st[0] + (float)(turn_x / (rate * dt));
+    in[1] = st[1] + (float)(turn_y / (rate * dt));
+    memcpy((void *)(uintptr_t)(self + 0x538), &in[0], sizeof in[0]);
+    uint32_t yb;
+    memcpy(&yb, &in[1], sizeof yb);
+    c->v[0] = yb;   // the caller's next instruction stores it at +0x53c
+    prev_in[0] = in[0], prev_in[1] = in[1], prev_dt = dt;
+    if (dx || dy) oot_moved = self;
+    static int logged;
+    if (!logged) logged = 1, rt_log("mouse: a camera the direct path does not fit takes the mouse as its stick input (no "
+                                    "curve, no cap, its rate learnt from the view)");
+    {   // DEBUG-MOUSELOG: one line per such update
+        static int on = -1;
+        if (on < 0) { const char *e = cfg_get("REKARINA_MOUSELOG"); on = e && *e == '1'; }
+        if (on)
+            rt_log("INJECT t=%.4f dt=%.4f dx=%d dy=%d in=%.3f %.3f view=%.3f pitch=%.3f cam=0 rate=%.1f", now / 1e9, dt, dx,
+                   dy, in[0], in[1], view, pitch, rate);
+    }
+    return 1;
+}
 static void oot_camera_input(Cpu *c) {
     uint64_t self = c->x[20];
     oot_moved = 0;
@@ -382,10 +468,11 @@ static void oot_camera_input(Cpu *c) {
     // stick's turn of a frame (under 2 degrees at 60 fps). The angle is written only while it is that close to the copy,
     // so another layout is left alone; a 1-degree test failed every other frame of a steady mouse (the frame's turn was
     // 1.09 degrees) and those frames' counts were lost: a jerky camera. Tested before the counts are taken, so a camera
-    // that does not fit leaves them to the stick path (above).
-    // Swimming: the view is another camera's and the one at +0xa80 stops (its yaw and pitch stay where they were;
-    // writing them turns nothing). The pitch copy shows it at once: on land it equals the camera's pitch within a
-    // hundredth of a degree, in the water it moved 10 to 15 degrees away in the first frames. So both angles are tested.
+    // that does not fit gets them as its stick input instead (oot_inject).
+    // Swimming, a house, the lock-on: the view is another camera's and the one at +0xa80 stops (its yaw and pitch stay
+    // where they were; writing them turns nothing). The pitch copy shows it at once: on land it equals the camera's pitch
+    // within a hundredth of a degree, in the water it moved 10 to 15 degrees away in the first frames. So both angles
+    // are tested.
     uint64_t cam = guest_pointer(self + 0xa80);
     float last_turn = 0, last_pitch = 0;
     plat_mutex_lock(&sample_lock);
@@ -399,10 +486,65 @@ static void oot_camera_input(Cpu *c) {
         static int on = -1;
         if (on < 0) { const char *e = cfg_get("REKARINA_MOUSELOG"); on = e && *e == '1'; }
         if (on)
-            rt_log("MOUSELOG t=%.3f self=%llx cam=%llx yaw=%.2f copy=%.2f pitch=%.2f pcopy=%.2f flags=%x lock=%.2f last=%.2f fits=%d",
+            rt_log("MOUSELOG t=%.3f self=%llx cam=%llx yaw=%.2f copy=%.2f pitch=%.2f pcopy=%.2f flags=%x lock=%.2f last=%.2f fits=%d "
+                   "vt=%llx camvt=%llx sx=%.3f sy=%.3f",
                    now / 1e9, (unsigned long long)self, (unsigned long long)cam, cam ? guest_float(cam + 0xdb4) : 0.0f,
                    guest_float(self + 0x52c), cam ? guest_float(cam + 0xd9c) : 0.0f, guest_float(self + 0x528), flags,
-                   guest_float(self + 0x5e0), last_turn, fits);
+                   guest_float(self + 0x5e0), last_turn, fits, (unsigned long long)(guest_pointer(self) - MOD_MAIN_BASE),
+                   cam ? (unsigned long long)(guest_pointer(cam) - MOD_MAIN_BASE) : 0ull, guest_float(self + 0x538),
+                   guest_float(self + 0x53c));
+    }
+    {   // DEBUG-CAMSCAN: REKARINA_CAMSCAN=1: twice a second, every float that equals the view's yaw (the copy +0x52c, in
+        // degrees, or its opposite, or either in radians) in the input object, the camera at +0xa80 and the objects their
+        // words point to (=2: and the objects those point to): where a camera that does not fit keeps its angle (compare
+        // the lines of two view angles)
+        static int on = -1;
+        static uint64_t next;
+        if (on < 0) { const char *e = cfg_get("REKARINA_CAMSCAN"); on = e && *e >= '1' && *e <= '2' ? *e - '0' : 0; }
+        if (on && now >= next) {
+            next = now + 500000000ull;
+            float y = guest_float(self + 0x52c);
+            const float pi = 3.14159265f;
+            float want[4] = {y, remainderf(y + 180.0f, 360.0f), y * pi / 180.0f, remainderf(y + 180.0f, 360.0f) * pi / 180.0f};
+            static uint8_t buf[0x1000];
+            static uint64_t seen[2048], ptrs[2048];
+            static int from1[2048], from2[2048], level[2048];
+            uint64_t roots[2] = {self, cam};
+            int n_seen = 0, hits = 0;
+            for (int r = 0; r < 2 && roots[r]; r++) {
+                int n_ptrs = 0;   // from1: the root's offset that held the pointer, from2: the next object's (-1: none)
+                from1[n_ptrs] = from2[n_ptrs] = -1, level[n_ptrs] = 0, ptrs[n_ptrs++] = roots[r];
+                for (int k = 0; k < n_ptrs && hits < 300; k++) {
+                    uint64_t base = ptrs[k];
+                    int dup = 0;
+                    for (int s2 = 0; s2 < n_seen && !dup; s2++) dup = seen[s2] == base;
+                    if (dup || n_seen >= 2048 || !plat_mem_read(base, buf, sizeof buf)) continue;
+                    seen[n_seen++] = base;
+                    for (int o = 0; o + 4 <= (int)sizeof buf; o += 4) {
+                        float f;
+                        memcpy(&f, buf + o, 4);
+                        for (int w = 0; w < 4; w++)
+                            if (fabsf(f - want[w]) < (w < 2 ? 0.05f : 0.001f) && f != 0.0f && hits < 300) {
+                                rt_log("CAMSCAN t=%.3f view=%.2f %s[%#x][%#x] obj %#llx +%#x = %.4f (%s)", now / 1e9, y,
+                                       r ? "cam" : "self", from1[k] < 0 ? 0 : from1[k], from2[k] < 0 ? 0 : from2[k],
+                                       (unsigned long long)base, o, f,
+                                       (const char *const[]){"deg", "deg+180", "rad", "rad+180"}[w]);
+                                hits++;
+                            }
+                        if (level[k] < on && !(o & 7) && n_ptrs < 2048) {   // words that point into guest memory
+                            uint64_t p;
+                            memcpy(&p, buf + o, 8);
+                            if (p >= 0x100000000ull && p < (1ull << 39) && !(p & 15)) {
+                                from1[n_ptrs] = level[k] == 0 ? o : from1[k];
+                                from2[n_ptrs] = level[k] == 0 ? -1 : o;
+                                level[n_ptrs] = level[k] + 1;
+                                ptrs[n_ptrs++] = p;
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
     // Once the angle is off, the stick keeps the mouse until it has been close for 30 updates in a row: the swimming
     // view passes near the kept angle at times, and each switch between the two paths was a jerk (player report).
@@ -411,6 +553,13 @@ static void oot_camera_input(Cpu *c) {
     else if (__atomic_load_n(&oot_stick_mode, __ATOMIC_RELAXED) && ++close_run >= 30)
         __atomic_store_n(&oot_stick_mode, 0, __ATOMIC_RELAXED);
     fits = fits && !__atomic_load_n(&oot_stick_mode, __ATOMIC_RELAXED);
+    // A camera that does not fit takes the counts as its stick input (oot_inject), unless that is switched off or
+    // the camera did not answer to it in this spell.
+    if (!fits && accept && direct_mode() && oot_inject(c, self, flags, sx, now)) {
+        __atomic_store_n(&accepts_mouse, 1, __ATOMIC_RELAXED);
+        __atomic_store_n(&last_update, now, __ATOMIC_RELEASE);
+        return;
+    }
     if (direct_mode() && accept) {
         static int changes;
         static int was_fit = 1;

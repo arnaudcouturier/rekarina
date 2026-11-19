@@ -1,0 +1,355 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Releases | Rekarina</title>
+<meta name="description" content="Every version of Rekarina with its release notes, its files and their SHA-256.">
+<meta name="theme-color" content="#2a1d12">
+<link rel="canonical" href="https://rekarina.dev/releases/">
+<link rel="icon" href="/assets/icon-32.png" sizes="32x32" type="image/png">
+<link rel="icon" href="/assets/icon-64.png" sizes="64x64" type="image/png">
+<link rel="apple-touch-icon" href="/assets/icon-180.png">
+<link rel="preload" href="/assets/fonts/Roboto-Medium.ttf" as="font" type="font/ttf" crossorigin>
+<link rel="stylesheet" href="/assets/site.css?v=20261120">
+<script src="/assets/site.js" defer></script>
+</head>
+<body>
+<canvas id="motes" aria-hidden="true"></canvas>
+<a class="skip" href="#top">Skip to content</a>
+
+<header class="band">
+  <div class="in">
+    <a class="logo" href="/" aria-label="Rekarina"><img src="/assets/logo-band.png" alt="Rekarina" width="360" height="66"></a>
+    <nav aria-label="Site">
+      <a href="/">Home</a>
+      <a href="/#help">Help</a>
+      <a href="https://discord.gg/6N8PKr9zZA" rel="noopener">Discord</a>
+    </nav>
+  </div>
+</header>
+
+<main id="top">
+
+<section class="block rels">
+  <div class="in">
+    <h2 class="rv">Releases</h2>
+    <p class="sub rv">Every version, the newest first. The launcher offers a new version by itself; these files are for a fresh install or a look back. The same releases with their source code are in <a href="https://git.rekarina.dev/rekarina/rekarina/releases" rel="noopener">the repository</a>.</p>
+    <div class="list">
+        <!-- release:list -->
+        <article class="rel panel rv" id="v1.2.4">
+          <div class="head"><h2>Rekarina 1.2.4</h2><span class="meta">20 November 2026 &middot; the newest</span></div>
+          <details class="notes" open>
+            <summary>Release notes</summary>
+            <h3>Rekarina 1.2.4: your reports, fixed</h3>
+            <p>A big thank you to everyone who reported problems after 1.2.1: nearly every line below is yours. Open the launcher and it offers the update.</p>
+            <p><b>Shaders and stutter</b></p>
+            <ul>
+              <li>Every setup prepares all the shaders again before you play, and an update keeps the ones you already have. 1.2.3 cut them down to the most used ones; your next setup run fills the rest back in (thanks huchi001).</li>
+              <li>No more freezes of a few seconds while playing: the pipeline cache is saved when the game closes instead of every 20 seconds (thanks Ranma_kun, huchi001).</li>
+            </ul>
+            <p><b>Frame generation</b></p>
+            <ul>
+              <li>FSR frame generation no longer stops the game from starting (thanks matthieugo).</li>
+              <li>DLSS Frame Generation is offered on RTX 40 and 50 cards again. A file of ours was missing from every release since 1.2.0 (thanks matthieugo, lifehawk).</li>
+              <li>If frame generation ever fails to start, the game starts without it and says so.</li>
+            </ul>
+            <p><b>Controls</b></p>
+            <ul>
+              <li>The dash on the left stick's press and the V key work now: they held the wrong button (thanks Valentyn_L, user7622421).</li>
+              <li>The mouse turns the camera the same everywhere: in houses, in water and while targeting it was slower or capped (thanks 호두의봄).</li>
+              <li>The ocarina no longer freezes the game when the mic input option is on (thanks 창엽, The Mystic's Shade, Valentyn_L).</li>
+              <li>The Controls tab now says what each button does in this game; it showed the wrong descriptions before.</li>
+              <li>The Rekarina menu remembers where you were, so you can close it, look, and keep tweaking (thanks Alejandro Sanz II).</li>
+            </ul>
+            <p><b>Launcher and setup</b></p>
+            <ul>
+              <li>A "Rekarina Launcher" shortcut in the game folder and in the Start menu, and one on the desktop if you want it (thanks Sir Flarigand).</li>
+              <li>"Open folder" opens the folder instead of starting a second launcher (thanks matthieugo).</li>
+              <li>The setup step "Drawing the button prompts" tries again by itself when it crashes, and says more if it keeps failing (thanks InkJelly80).</li>
+              <li>The setup form highlights whole rows.</li>
+            </ul>
+            <p><b>New</b></p>
+            <ul>
+              <li>Polish as a game language (thanks remson).</li>
+              <li>Weaker CPUs: with four threads the game's threads share the cores better and the frame is handed to the GPU on two threads. On my CPU held to four threads at 1080p: the field 51 → 59 fps (1% low 19 → 35), the village 52 → 56 fps, and far fewer long frames.</li>
+              <li>The game starts faster: a background read of 177,000 small files at every start is gone.</li>
+            </ul>
+            <p><b>Still open, I'm on it</b></p>
+            <ul>
+              <li>Crashes in the Market and around the castle on some PCs (thanks huchi001, mekka for the logs). I couldn't reproduce them here yet; the next crash log carries what I need.</li>
+              <li>Depth of field looks pixelated; bosses above 60 fps still need checking; flicker of distant shadows and trees; memory on 16 GB PCs.</li>
+              <li>Linux and Steam Deck: there's a #linux channel now, come help.</li>
+            </ul>
+            <p>Something broken? Esc, Advanced, Make a problem report, and post the zip in #bug-reports.</p>
+          </details>
+          <div class="files">
+          <a class="plate" href="https://dl.rekarina.dev/releases/1.2.4/Rekarina.exe">Rekarina.exe <small>155 MB</small></a>
+          <a class="plate" href="https://dl.rekarina.dev/releases/1.2.4/Rekarina-Setup-1.2.4-windows.zip">Setup as a .zip <small>155 MB</small></a>
+          <a class="plate" href="https://dl.rekarina.dev/releases/1.2.4/SHA256SUMS">SHA256SUMS</a>
+          </div>
+          <div class="sum"><b>SHA-256 of Rekarina.exe 1.2.4</b><code>cc7bc18cdeba23ca90e1797b2be46b6e5c405895a71b6a56bf2ae00513d14f68</code></div>
+        </article>
+        <article class="rel panel rv" id="v1.2.3">
+          <div class="head"><h2>Rekarina 1.2.3</h2><span class="meta">19 November 2026</span></div>
+          <details class="notes">
+            <summary>Release notes</summary>
+            <h3>Rekarina 1.2.3: no more hour-long shader step</h3>
+            <ul>
+              <li>If you downloaded Rekarina again instead of updating in the launcher, the setup prepared every shader before you could play. That took an hour or more on some PCs, and the timer sat at "2 mins" the whole time. Now it prepares only the shaders the game is known to use, and the launcher does the rest in the background while the game is closed.</li>
+              <li>The timer follows the real progress now.</li>
+              <li>1.2.2 fixed the update from 1.2.1, which stopped at once with "The setup stopped unexpectedly (exit code 1)".</li>
+            </ul>
+            <p>The easiest way to get it: open the launcher, it offers the update. Everything new since 1.2.0 is below.</p>
+            <p><b>Install anywhere, and much faster</b></p>
+            <ul>
+              <li>At its first start Rekarina.exe asks where to put everything: the launcher, its build files and the game go into the folder you pick. C: is not needed any more.</li>
+              <li>A first install takes about 25-35 minutes instead of 85 on my PC. It prepares the shaders the game is known to use; the launcher prepares the rarer ones in the background while the game is closed.</li>
+              <li>An update no longer prepares every shader again, and the prepared shaders take about 5 GB less on your disk.</li>
+            </ul>
+            <p><b>Frame generation that works</b></p>
+            <ul>
+              <li>Turn it on from the default mode and it switches on what it needs by itself (applies at the next start).</li>
+              <li>RTX 40 and 50 get DLSS Frame Generation; every other card (RTX 20 and 30, GTX, AMD, Intel) gets AMD FSR 3.1 frame generation.</li>
+            </ul>
+            <p><b>Weaker PCs</b></p>
+            <ul>
+              <li>On a CPU with fewer than six threads the game's own threads no longer fight for it. With my CPU held to four threads at 1080p the 1% low in the open field doubled (22 to 44 fps). Not a steady 60 on four threads yet.</li>
+            </ul>
+            <p><b>New</b></p>
+            <ul>
+              <li>Dash on its own input: the left stick's press while you move, or a key (V by default). Off by default, in Controls.</li>
+              <li>The song screen shows your controller's buttons (or your keys).</li>
+              <li>The action hint shows its buttons where your Xbox or PlayStation pad has them.</li>
+              <li>Render scale in steps of 5% (50 to 100) in the default mode.</li>
+              <li>The controller's Guide / PS button opens the Rekarina menu.</li>
+            </ul>
+            <p><b>Fixed</b></p>
+            <ul>
+              <li>The game froze after closing the ocarina's "audio input" notice with voice playing on.</li>
+              <li>The setup stopped at its first step when your Windows user name has a space in it.</li>
+              <li>A "Fatal Error: alloc: invalid block" box when starting the game from the launcher.</li>
+              <li>Above 60 fps: the first dungeon's boss circling the ceiling, the day passing too slowly, the sound job (music, song notes), the horse's fence jumps, moving floors, recording a song, twitching looped poses, cloth, the rigid web. Each fix only acts above 60 fps.</li>
+            </ul>
+            <p><b>Still open, I'm on it</b></p>
+            <ul>
+              <li>Flickering shadows and trees in the distance, the light inside the great tree, a shadow at the castle.</li>
+              <li>Memory: too much RAM on 16 GB PCs (15+ GB). Being worked on now.</li>
+              <li>A glitchy sound right after playing the ocarina: not reproduced yet. A problem report right after it happens would help a lot.</li>
+              <li>DLSS ghosting on the hero's tunic and hat.</li>
+              <li>The action hint's big button can keep the keyboard's key after you switch a pad on, until the next start.</li>
+              <li>Sharpness for every upscaler, HDR live preview, PsychoV35: coming. Linux and Steam Deck: not ready yet.</li>
+            </ul>
+            <p>Something broken? Esc, Advanced, Make a problem report, and post the zip in #bug-reports.</p>
+          </details>
+          <div class="files">
+          <a class="plate" href="https://dl.rekarina.dev/releases/1.2.3/Rekarina.exe">Rekarina.exe <small>155 MB</small></a>
+          <a class="plate" href="https://dl.rekarina.dev/releases/1.2.3/Rekarina-Setup-1.2.3-windows.zip">Setup as a .zip <small>155 MB</small></a>
+          <a class="plate" href="https://dl.rekarina.dev/releases/1.2.3/SHA256SUMS">SHA256SUMS</a>
+          </div>
+          <div class="sum"><b>SHA-256 of Rekarina.exe 1.2.3</b><code>3f08d06a50be8e55bbb1892725eed20f628b8330e2d16c8ac42a8af4026e34e3</code></div>
+        </article>
+        <article class="rel panel rv" id="v1.2.2">
+          <div class="head"><h2>Rekarina 1.2.2</h2><span class="meta">19 November 2026</span></div>
+          <details class="notes">
+            <summary>Release notes</summary>
+            <h3>Rekarina 1.2.2: the update works again</h3>
+            <p>1.2.1 could not update an existing install: the setup stopped at once with "The setup stopped unexpectedly (exit code 1)". My mistake, I tested the update the wrong way. Your game folder was never touched. 1.2.2 fixes it: open the launcher and update, or download it again. Everything from 1.2.1 is below.</p>
+            <p><b>Install anywhere, and much faster</b></p>
+            <ul>
+              <li>At its first start Rekarina.exe asks where to put everything: the launcher, its build files and the game go into the folder you pick. C: is not needed any more.</li>
+              <li>A first install takes about 25-35 minutes instead of 85 on my PC. It prepares the shaders the game is known to use; the launcher prepares the rarer ones in the background while the game is closed.</li>
+              <li>An update no longer prepares every shader again, and the prepared shaders take about 5 GB less on your disk.</li>
+            </ul>
+            <p><b>Frame generation that works</b></p>
+            <ul>
+              <li>Turn it on from the default mode and it switches on what it needs by itself (applies at the next start).</li>
+              <li>RTX 40 and 50 get DLSS Frame Generation; every other card (RTX 20 and 30, GTX, AMD, Intel) gets AMD FSR 3.1 frame generation.</li>
+            </ul>
+            <p><b>Weaker PCs</b></p>
+            <ul>
+              <li>On a CPU with fewer than six threads the game's own threads no longer fight for it. With my CPU held to four threads at 1080p the 1% low in the open field doubled (22 to 44 fps). Not a steady 60 on four threads yet.</li>
+            </ul>
+            <p><b>New</b></p>
+            <ul>
+              <li>Dash on its own input: the left stick's press while you move, or a key (V by default). Off by default, in Controls.</li>
+              <li>The song screen shows your controller's buttons (or your keys).</li>
+              <li>The action hint shows its buttons where your Xbox or PlayStation pad has them.</li>
+              <li>Render scale in steps of 5% (50 to 100) in the default mode.</li>
+              <li>The controller's Guide / PS button opens the Rekarina menu.</li>
+            </ul>
+            <p><b>Fixed</b></p>
+            <ul>
+              <li>The game froze after closing the ocarina's "audio input" notice with voice playing on.</li>
+              <li>The setup stopped at its first step when your Windows user name has a space in it.</li>
+              <li>A "Fatal Error: alloc: invalid block" box when starting the game from the launcher.</li>
+              <li>Above 60 fps: the first dungeon's boss circling the ceiling, the day passing too slowly, the sound job (music, song notes), the horse's fence jumps, moving floors, recording a song, twitching looped poses, cloth, the rigid web. Each fix only acts above 60 fps.</li>
+            </ul>
+            <p><b>Still open, I'm on it</b></p>
+            <ul>
+              <li>Flickering shadows and trees in the distance, the light inside the great tree, a shadow at the castle.</li>
+              <li>Memory: too much RAM on 16 GB PCs (15+ GB). Being worked on now.</li>
+              <li>A glitchy sound right after playing the ocarina: not reproduced yet. A problem report right after it happens would help a lot.</li>
+              <li>DLSS ghosting on the hero's tunic and hat.</li>
+              <li>The action hint's big button can keep the keyboard's key after you switch a pad on, until the next start.</li>
+              <li>Sharpness for every upscaler, HDR live preview, PsychoV35: coming. Linux and Steam Deck: not ready yet.</li>
+            </ul>
+            <p>Something broken? Esc, Advanced, Make a problem report, and post the zip in #bug-reports.</p>
+          </details>
+          <div class="files">
+          <a class="plate" href="https://dl.rekarina.dev/releases/1.2.2/Rekarina.exe">Rekarina.exe <small>155 MB</small></a>
+          <a class="plate" href="https://dl.rekarina.dev/releases/1.2.2/Rekarina-Setup-1.2.2-windows.zip">Setup as a .zip <small>155 MB</small></a>
+          <a class="plate" href="https://dl.rekarina.dev/releases/1.2.2/SHA256SUMS">SHA256SUMS</a>
+          </div>
+          <div class="sum"><b>SHA-256 of Rekarina.exe 1.2.2</b><code>a09da29b4a22d07800f20ac1974c7d53973c35139ffbb4ed1149ec21602047b4</code></div>
+        </article>
+        <article class="rel panel rv" id="v1.2.1">
+          <div class="head"><h2>Rekarina 1.2.1</h2><span class="meta">19 November 2026</span></div>
+          <details class="notes">
+            <summary>Release notes</summary>
+            <h3>Rekarina 1.2.1: a day of your reports</h3>
+            <p>Thanks to everyone who played 1.2.0 and wrote in the Discord and on Reddit: almost everything below came from you. Already playing? Open the launcher: it offers the update, and the game is not built from scratch again.</p>
+            <p><b>Install anywhere, and much faster</b></p>
+            <ul>
+              <li>At its first start Rekarina.exe asks where to put everything: the launcher, its build files and the game go into the folder you pick. C: is not needed any more.</li>
+              <li>A first install takes about 25-35 minutes instead of 85 on my PC. It prepares the shaders the game is known to use; the launcher prepares the rarer ones in the background while the game is closed. You can play right away.</li>
+              <li>An update no longer prepares every shader again.</li>
+              <li>The prepared shaders are stored compressed: about 5 GB less on your disk.</li>
+            </ul>
+            <p><b>Frame generation that works</b></p>
+            <ul>
+              <li>Turn it on from the default mode and it switches on what it needs by itself (applies at the next start).</li>
+              <li>RTX 40 and 50 cards get DLSS Frame Generation; every other card (RTX 20 and 30, GTX, AMD, Intel) gets AMD FSR 3.1 frame generation. The row only offers what your card can run and says why.</li>
+            </ul>
+            <p><b>Weaker PCs</b></p>
+            <ul>
+              <li>On a CPU with fewer than six threads the game's own threads no longer fight for it. With my CPU held to four threads at 1080p the 1% low in the open field doubled (22 to 44 fps) and the long hitches went away. Not a steady 60 on four threads yet.</li>
+            </ul>
+            <p><b>New</b></p>
+            <ul>
+              <li>Dash on its own input: the left stick's press while you move, or a key (V by default). Off by default, in Controls.</li>
+              <li>The song screen shows your controller's buttons (or your keys).</li>
+              <li>The action hint shows its buttons where your Xbox or PlayStation pad has them: A or cross at the bottom.</li>
+              <li>Render scale in steps of 5% (50 to 100) in the default mode.</li>
+              <li>The controller's Guide / PS button opens the Rekarina menu (Controls tab; the Xbox Game Bar may take it first).</li>
+            </ul>
+            <p><b>Fixed</b></p>
+            <ul>
+              <li>The game froze after closing the ocarina's "audio input" notice with voice playing on. The option now does nothing (no microphone support yet).</li>
+              <li>The setup stopped at its first step when your Windows user name has a space in it.</li>
+              <li>A "Fatal Error: alloc: invalid block" box when starting the game from the launcher.</li>
+              <li>Above 60 fps: the first dungeon's boss circling the ceiling, the day passing too slowly, the sound job running once a frame (music, battle music, song notes), the horse's fence jumps, moving floors such as a dungeon's barge, recording a song, twitching looped poses, cloth, the web that stayed rigid. Each fix only acts above 60 fps.</li>
+              <li>When a prompt set falls back to the Switch's look, the log says why.</li>
+            </ul>
+            <p><b>Still open, I'm on it</b></p>
+            <ul>
+              <li>Flickering shadows and trees in the distance, the light inside the great tree, a shadow at the castle. I have your clips, thank you.</li>
+              <li>Memory: too much RAM on 16 GB PCs (15+ GB). Next on my list.</li>
+              <li>A glitchy sound right after playing the ocarina: not reproduced yet. A problem report right after it happens would help a lot.</li>
+              <li>DLSS ghosting on the hero's tunic and hat (the default mode doesn't have it).</li>
+              <li>The big button of the action hint can keep the keyboard's key after you switch a pad on, until the next start.</li>
+              <li>Sharpness for every upscaler, HDR live preview, PsychoV35: coming.</li>
+              <li>Linux and Steam Deck: not ready yet.</li>
+            </ul>
+            <p>Something broken? Esc, Advanced, Make a problem report, and post the zip in #bug-reports.</p>
+          </details>
+          <div class="files">
+          <a class="plate" href="https://dl.rekarina.dev/releases/1.2.1/Rekarina.exe">Rekarina.exe <small>155 MB</small></a>
+          <a class="plate" href="https://dl.rekarina.dev/releases/1.2.1/Rekarina-Setup-1.2.1-windows.zip">Setup as a .zip <small>155 MB</small></a>
+          <a class="plate" href="https://dl.rekarina.dev/releases/1.2.1/SHA256SUMS">SHA256SUMS</a>
+          </div>
+          <div class="sum"><b>SHA-256 of Rekarina.exe 1.2.1</b><code>c0d924ab5dcfe9aff30929352630861ef43e13c6ea92ce46ff3aeb9c957316ca</code></div>
+        </article>
+        <article class="rel panel rv" id="v1.2.0">
+          <div class="head"><h2>Rekarina 1.2.0</h2><span class="meta">19 November 2026</span></div>
+          <details class="notes">
+            <summary>Release notes</summary>
+            <p>Rekarina 1.2.0</p>
+            <p>New</p>
+            <ul>
+              <li>Shaders are ready before play: Rekarina builds every shader and pipeline it knows of before play starts, so the game does not stop to build them while you play. The setup does this once (about a quarter of an hour more in its last step on a 16-thread processor); after that a start takes a few seconds. After a graphics driver update the game rebuilds them at its next start and shows "Preparing shaders..." with a count and the time left: about six minutes on a 16-thread processor, longer on fewer cores, once. You can close the window during it; the next start goes on from there (prep_screen = 0 in rekarina.ini hides the picture, the preparation still runs).</li>
+              <li>The prepared shaders are kept in one file instead of about 250,000 small ones: starts are faster, and an update of an earlier install folds its old shader files into it once.</li>
+              <li>Settings menu: number settings are sliders you drag with the mouse or step with the keys and the pad (mouse speed, dead zones, sharpness, colour, HDR, rumble); the default is marked on each bar.</li>
+              <li>Settings menu, pictures instead of paragraphs: the picture rows show the chain from the 3D scene through the upscaler and the game picture to the window, with your values; the controller rows show your controller live, every button and both sticks over their dead zones; the keyboard and mouse rows show a keyboard with the button each bound key presses; the overlay row shows frame times, the CPU and GPU time per frame and memory; the graphics card row shows the card, driver, memory, processor, display and the device profile the game chose, and why.</li>
+              <li>A problem report in one press: Esc, Advanced, Make a problem report (or Problem report in the launcher) writes one zip with the logs of the last five runs, your settings and the computer's details, and opens its folder. No saves, no game files, your user name taken out of every path; nothing is sent anywhere. When the game stops with an error it says so, and the next start and the launcher point to the report.</li>
+              <li>Video memory: the game now leaves room on the graphics card for a browser and the other programs you have open, and uses about 1.5 GB less of it in play.</li>
+              <li>The setup prepares the game's textures for your graphics card (the launcher's "Prepare textures" row can skip it), so a place seen for the first time does not stutter while its textures are converted. Textures without transparency are now kept at half the size.</li>
+              <li>The frame rate panel (F10) counts frames where they reach the screen, so its average and its lows are what you see.</li>
+              <li>Controllers: with several connected, the one you press is the one the game reads. A pad that is found but whose buttons do nothing (some 8BitDo pads, an Xbox One S pad over Bluetooth) can be read through the system's XInput / DirectInput (Controls, Controller driver: Compatibility).</li>
+              <li>Keyboard and mouse can be switched off while a controller is connected (Controls tab, off by default).</li>
+              <li>A screenshot key of its own: F12 (or F5, F6, F7, F9, or none) saves a PNG into the screenshots folder beside the game, without the menu and the overlays unless you ask for them.</li>
+              <li>The mouse pointer hides after 3 seconds without moving over the game window (1, 5, 10 seconds or never).</li>
+              <li>Mute in the background (Sound tab, off by default).</li>
+              <li>Frame limit: "No limit (240 FPS)" beside 30, 40, 45, 60, 90, 120, 144 and the monitor's rate.</li>
+              <li>The game's exe carries its name and version, for overlays and capture tools that file games by it.</li>
+              <li>A new install starts in base mode on every graphics card (the game's sharp picture without temporal upscaling); DLSS and frame generation are in the game's menu. An existing install keeps its settings.</li>
+            </ul>
+            <p>Fixed</p>
+            <ul>
+              <li>The stall a few seconds after every loading screen is gone.</li>
+              <li>Stutter while the hero turns around or runs: the game re-places its render targets every frame while the view turns, and the frame waited inside the graphics driver for each of them. Measured in a village on a 12 GB card: 1-2 frames over 25 ms a minute instead of 4-13, and far fewer visible frame-time jumps.</li>
+              <li>Walking no longer costs frame time: while the hero moves, the game re-sizes its shadow targets every frame, which moved every other render target with them; they keep their storage now.</li>
+              <li>Fewer long frames when you walk into a busy place: the textures the game streams in are made on background threads before the frame needs them. Measured walking into a town square on a 12 GB card: 41-54 frames over 25 ms in the first minute instead of 118-128.</li>
+              <li>The game's own code runs faster: the recompiled code finds the targets of its indirect calls where they are made and stores less before each call, and the game's threads wake each other with less waiting. Measured in a town square: the game's update is 8 percent shorter and the frame rate 5 percent higher.</li>
+              <li>Loading a save is about a second shorter, and the loading picture no longer waits for the game's own unpacking.</li>
+              <li>The game's own edge smoothing at the end of each frame did nothing; it works now (smoother edges in base mode).</li>
+              <li>The start of play after the title: the first seconds no longer read every texture file on the frame's thread.</li>
+              <li>The frame rate fell sharply after many map changes in one session (video memory held after eviction pushed the game past the card's budget). Measured on a 12 GB card: castle grounds after 22 map changes 97 fps instead of 23.</li>
+              <li>Grass, bushes and tree tops could be missing for seconds the first time a place was visited, while their pipelines were built: the pipelines of these draws are now built before play, and a combination met for the first time is drawn at once with a ready stand-in while its own pipeline is built (NVIDIA cards and AMD cards on Windows).</li>
+              <li>The graphics device could be lost after a map change (a pool's memory was read after the game had freed it): a freed pool's memory now waits until no frame in flight can name it.</li>
+              <li>The game's own "new version" notice never appeared (it asked a repository that is not public); it reads the site's release feed now, and switching the check on in the menu checks at once.</li>
+              <li>A new install on a Steam Deck got the monitor's rate as its frame limit instead of the Deck's 40.</li>
+              <li>In the menu, the arrow keys and Delete did nothing on a row just clicked with the mouse.</li>
+            </ul>
+            <p>Known issues</p>
+            <ul>
+              <li>A rare GPU crash (device lost) whose cause is not found. If it happens, the game stops with an error, and a crash dump file is now left beside the log for the problem report: please attach the report.</li>
+              <li>In the first dungeon's entrance room, in base mode without DLSS, a light shaft flickers.</li>
+              <li>The first seconds after a loading screen run slower while the new place's textures arrive, and in play single frames can still take 25-50 ms when the game brings in or moves textures (the open field, the graveyard, the lake).</li>
+              <li>With other programs holding much of the card's video memory (a video editor, many browser tabs), the game gets less than it wants and the long frames come back: a 12 GB card with 4-5 GB taken behaves like an 8 GB card.</li>
+              <li>Bushes on the path down from the castle were reported to flicker when the camera turns back toward the town; we could not reproduce it yet.</li>
+              <li>Other programs' sound may stutter for a moment when the game starts.</li>
+              <li>Boss fights were not tested (every dungeon map was).</li>
+              <li>Shaders: the setup prepares every program in the game's files and every combination and pipeline our test runs met (a pass through 67 of the game's 79 maps, under a minute each from one start position). A combination no run met is built the first time it appears: for most kinds a few milliseconds; grass and foliage are drawn with a stand-in meanwhile (on other cards than NVIDIA's and AMD's that patch is not drawn for up to a second). It is kept and never built again.</li>
+              <li>PCs with 16 GB of memory: the game uses about 16-17 GB of the computer's memory in play and commits 24-27 GB, so with 16 GB it pages to the disk, with stutter, and the system's page file must be large enough; 32 GB is recommended. Not run on a 16 GB PC. There the game also does not read the prepared textures ahead at its start, so a first visit after a restart of the PC reads them from the disk while it plays.</li>
+              <li>Windows only: 1.2.0 has no Linux release. A native Linux build exists in development but has not run on a real graphics card yet.</li>
+              <li>With the texture step skipped in the setup, the first visit of each place stutters while its textures are converted.</li>
+              <li>AMD GPUs have been run on one integrated Radeon only; Intel GPUs, a Steam Deck and a ROG Ally have not been run. Under Proton (Steam Deck) the game keeps its own copy of the game's memory for the graphics card, which costs a lot of processor time and memory: do not expect it to be smooth there yet.</li>
+              <li>Cards with 8 GB of video memory have not been measured in long sessions (many map changes in one run).</li>
+              <li>With frame generation on, the water's reflection (by the castle's drawbridge, by day) may flicker in the generated frames. Frame generation off avoids it.</li>
+            </ul>
+          </details>
+          <div class="files">
+          <a class="plate" href="https://dl.rekarina.dev/releases/1.2.0/Rekarina.exe">Rekarina.exe <small>155 MB</small></a>
+          <a class="plate" href="https://dl.rekarina.dev/releases/1.2.0/Rekarina-Setup-1.2.0-windows.zip">Setup as a .zip <small>155 MB</small></a>
+          <a class="plate" href="https://dl.rekarina.dev/releases/1.2.0/SHA256SUMS">SHA256SUMS</a>
+          </div>
+          <div class="sum"><b>SHA-256 of Rekarina.exe 1.2.0</b><code>c60b0a70b2ab448e613427d2cc9acebb9a925f8aa8f6d382375ee1b1245b01d2</code></div>
+        </article>
+        <!-- /release:list -->
+    </div>
+    <p class="foot">Each release's SHA256SUMS is signed with the project's key (SHA256SUMS.sig beside it), and the launcher installs an update only when that signature fits. To check a download by hand: <code>certutil -hashfile Rekarina.exe SHA256</code> in a terminal, and compare with the line under its version.</p>
+  </div>
+</section>
+
+</main>
+
+<footer>
+  <div class="in">
+    <div>
+      <img src="/assets/logo-band.png" alt="Rekarina" width="360" height="66">
+      <p>Rekarina is an independent, non-commercial fan project. It is not affiliated with, endorsed by or sponsored by the game's publisher or any platform holder. All trademarks belong to their owners.</p>
+      <p>This site hosts no game files, dumps or keys. You need your own copy of the game.</p>
+      <p>Rekarina stands on <a href="https://github.com/valentderah/totk-pc-recomp" rel="noopener">the recompiler</a> by Valiantsin Dzerakh. Rekarina is free software under the <a href="https://www.gnu.org/licenses/gpl-3.0.html" rel="noopener">GNU General Public License, version 3</a> (GPL-3.0). This site sets no cookies and loads nothing from other sites.</p>
+    </div>
+    <nav aria-label="Links">
+      <a href="https://discord.gg/6N8PKr9zZA" rel="noopener">Discord</a>
+      <a href="/#help">Help</a>
+      <a href="/releases/">Releases</a>
+      <a href="https://git.rekarina.dev/rekarina/rekarina" rel="noopener">Source code</a>
+    </nav>
+  </div>
+</footer>
+
+</body>
+</html>

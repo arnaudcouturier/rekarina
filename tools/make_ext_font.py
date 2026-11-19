@@ -7,6 +7,10 @@
 # The host has no original system fonts; button icons in game text (e.g. Mario's GameMsg/Key.msbt: U+E0E0 = A button) render as "?" when the glyph is missing. Letters come from macOS's Arial Rounded Bold, knocked out of a solid plate.
 # Usage: make_ext_font.py out.ttf [letter-font.ttf]; needs fontTools (pip install fonttools)
 import math, sys
+try:   # before fontTools: REKARINA_FONTTOOLS_PURE=1 keeps its compiled modules out (tools/fonttools_pure.py)
+    import fonttools_pure  # noqa: F401
+except ImportError:   # loaded by path from elsewhere (a test), tools/ not on sys.path
+    pass
 from fontTools.ttLib import TTFont
 from fontTools.fontBuilder import FontBuilder
 from fontTools.pens.ttGlyphPen import TTGlyphPen

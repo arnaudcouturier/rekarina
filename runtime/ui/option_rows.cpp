@@ -103,6 +103,8 @@ void opt_end(void) {
     ImGui::PopID();
 }
 
+const char *opt_focus_row(void) { return g_focus.text[0] ? g_focus.key : ""; }
+
 const char *opt_desc_text(void) { return g_shown.text; }
 const char *opt_desc_label(void) { return g_shown.label; }
 const char *opt_desc_key(void) { return g_shown.key; }

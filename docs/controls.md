@@ -140,7 +140,7 @@ bind_Y = pad:north, key:mouse_l
 
 ## Dash on its own input
 
-OoT has one button for two moves: held while the hero moves it dashes, pressed and let go it jumps (B; Left Shift on the keyboard). That is the game's own design, not a binding: no default binding puts two Switch buttons on one key or pad button. `REKARINA_STICK_DASH=1` (`stick_dash`, off by default, live; *Dash on the left stick's press* on the Controls tab) gives the dash an input of its own: a press of the gamepad's left stick while the stick is tilted past half way holds that button for the game until the stick comes back under a quarter, and `REKARINA_DASH_KEY` (`dash_key`, `v` by default, any key name of the `bind_` lines; *Dash key*) held with a direction does the same on the keyboard (`runtime/input.c`, `dash_apply`). The hero dashes without a jump first: the press of the stick that starts a dash does not reach the game as its own button, and a hold lasts at least 0.4 s, so a quick tap of the key is no jump either. The game's button keeps working as before, also during such a dash: its press and its release let go of the held button for two frames first, so the game sees them as its own (a jump out of the dash). In an input script `LCLICK` is the stick's press and `DASH` the key.
+OoT dashes while its A button is held as the hero moves; a press of A does the action at hand (talk, open, check). The pause menu's controller guide names A "Actions" and "Dash (Hold)" (X is "Jump"); E is A on the keyboard. That is the game's own design, not a binding: no default binding puts two Switch buttons on one key or pad button. `REKARINA_STICK_DASH=1` (`stick_dash`, off by default, live; *Dash on the left stick's press* on the Controls tab) gives the dash an input of its own: a press of the gamepad's left stick while the stick is tilted past half way holds that button for the game until the stick comes back under a quarter, and `REKARINA_DASH_KEY` (`dash_key`, `v` by default, any key name of the `bind_` lines; *Dash key*) held with a direction does the same on the keyboard (`runtime/input.c`, `dash_apply`). The press of the stick that starts a dash does not reach the game as its own button, and a hold lasts at least 0.4 s, so a quick tap of the key is not taken for a press of A. The game's button keeps working as before, also during such a dash: its press and its release let go of the held button for two frames first, so the game sees them as its own. Until 1.2.2 both held B instead, which does not dash (measured 2026-11-19: a run at 4.1-4.5 m/s with B held, 5.0-5.6 m/s with the stick's press or the key on A, no change in height). In an input script `LCLICK` is the stick's press and `DASH` the key.
 
 ## Mouse camera
 
@@ -177,6 +177,17 @@ camera's own yaw and pitch, 0.08 degrees a count times `mouse_sens` (the vertica
 the frame it reaches the game, where the stick tops out at about 107 degrees a second. The pitch stays where the mouse
 leaves it, as with the stick, and keeps the game's own limits. *Stick emulation* in the Controls tab (`mouse_mode =
 stick`) brings the mapping below back.
+
+Some views are another camera's, whose angle the direct path cannot write: the houses, the water and the lock-on (ZL)
+camera. Each of them turns by the stick input the update stores, times a rate of its own (measured: the house camera
+138 degrees a second per unit, the lock-on camera about 60, the swimming camera about 107 like the land camera), and
+none of them holds that input to a full stick (the house camera turned 249 degrees a second at 1.8). There the counts
+become that input (`oot_inject`): the angle the mouse asks for over the update's time and the camera's rate, without
+the stick's curve or its top speed, the rate learnt from the view within about half a second. Until 1.2.3 such a view
+got the mouse through the stick emulation, calibrated for the land camera and capped at a full stick, behind the
+stick's curve: off by the camera's rate (slow with ZL, fast in a house) and cut on a fast move in all of them. A
+camera that does not answer to it is left to the stick emulation. `REKARINA_MOUSE_INJECT=0` leaves all of them to the
+stick emulation as before; a number fixes the rate instead of learning it.
 
 In stick-emulation mode, mouse motion (raw input) becomes right-stick deflection. Each presented frame takes the counts moved since the last frame, divides by the frame time and sets the deflection to `counts per second * REKARINA_MOUSE_SENS / 3000` of full, held for that frame, so the turn rate does not depend on the frame rate. This is not mouselook: the game's stick curve and dead zone still apply, so very slow movements do nothing and a fast flick saturates. The mouse deflection competes with the gamepad and arrow keys by the larger-deflection rule.
 

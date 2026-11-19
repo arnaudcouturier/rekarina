@@ -12,16 +12,24 @@ Where things go (docs/distribution.md):
     https://rekarina.dev/releases/latest.json           the record the launcher reads (installer/update.py FEED)
     https://rekarina.dev/download                       a redirect to the newest Rekarina.exe (public/_redirects)
     the front page                                      the download button, the version and the file's SHA-256
+    https://rekarina.dev/releases/                      every version with its date, notes, files and SHA-256: the
+                                                        page public/releases/index.html, made from the history
+                                                        public/releases/releases.json
 
 The order is the one a launcher in the field needs: nothing is uploaded before the folder is proved to be a release
 the launchers will take (every file's SHA-256 is its line in SHA256SUMS, and SHA256SUMS.sig is one of the project
 keys' signature over it), the files go up and are read back before the record names them, and the page is deployed
 last. A version that is already on the download host is refused (--force replaces it): its files are cached for good.
+The history keeps every published version's record as it was published: a version it holds with other files is
+refused before anything is uploaded, --force or not.
 
 --dry-run checks the folder and says what would happen. Without --deploy the site's files are changed and the
-deploy command is printed; with it the site is deployed at the end.
+deploy command is printed; with it the site is deployed at the end. --history-only adds a release that is already on
+the download host to the history and the releases page (its files are read back from the host first) and changes
+nothing else; --date names the day it was published (the default is today).
 """
 import argparse
+import datetime
 import hashlib
 import html
 import json
@@ -40,6 +48,11 @@ SRC = SITE.parent
 BUCKET = 'rekarina-releases'
 DOWNLOADS = 'https://dl.rekarina.dev/releases'
 HOME = 'https://rekarina.dev/'
+HISTORY = PUBLIC / 'releases' / 'releases.json'
+RELEASES_PAGE = PUBLIC / 'releases' / 'index.html'
+REPO_RELEASES = 'https://git.rekarina.dev/rekarina/rekarina/releases'
+MONTHS = ('January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October',
+          'November', 'December')
 # The site's protection refuses urllib's own User-Agent with 403 (as it would any script that does not say what it is),
 # which read as "not there" and hid both the read-back and the check for a published version; the launcher sends its
 # own (installer/net.py user_agent).
@@ -147,12 +160,146 @@ def upload(dist, version, names):
     read_back(dist, version, names)
 
 
-def between(text, mark, new):
+def between(text, mark, new, page='public/index.html'):
     """text with what stands between <!-- release:mark --> and <!-- /release:mark --> replaced."""
     pattern = re.compile(rf'(<!-- release:{mark} -->).*?(<!-- /release:{mark} -->)', re.S)
     if not pattern.search(text):
-        fail(f'public/index.html has no release:{mark} block')
+        fail(f'{page} has no release:{mark} block')
     return pattern.sub(lambda m: f'{m.group(1)}\n{new}\n        {m.group(2)}', text, count=1)
+
+
+def inline(text):
+    """The HTML of one line of notes: **bold** and `code`, everything else escaped."""
+    codes = []
+
+    def keep(m):
+        codes.append(m.group(1))
+        return f'\0{len(codes) - 1}\0'
+    text = html.escape(re.sub(r'`([^`]+)`', keep, text), quote=False)
+    text = re.sub(r'\*\*(?=\S)(.+?)(?<=\S)\*\*', r'<b>\1</b>', text)
+    return re.sub(r'\0(\d+)\0', lambda m: f'<code>{html.escape(codes[int(m.group(1))], quote=False)}</code>', text)
+
+
+def markdown(text):
+    """The HTML of release notes. They use a small part of Markdown, and only that part is read: headings (#), paragraphs
+    (lines up to a blank line), lists ("- " or "* ", an item continued by its indented lines), **bold** and `code`.
+    Anything else is shown as the text it is. A heading becomes <h3> or smaller: the page's <h2> is the version's."""
+    out, para, items = [], [], []
+
+    def close():
+        if para:
+            out.append(f'<p>{inline(" ".join(para))}</p>')
+            para.clear()
+        if items:
+            out.append('<ul>\n' + '\n'.join(f'  <li>{inline(" ".join(i))}</li>' for i in items) + '\n</ul>')
+            items.clear()
+    for line in text.replace('\r\n', '\n').split('\n'):
+        indent = len(line) - len(line.lstrip(' \t'))
+        bare = line.strip()
+        heading = re.fullmatch(r'(#{1,6})\s+(.*?)(?:\s+#+)?', bare) if indent < 4 else None
+        item = re.fullmatch(r'[-*+]\s+(.*)', bare) if indent < 4 else None
+        if not bare:
+            close()
+        elif heading:
+            close()
+            level = min(6, max(3, len(heading.group(1)) + 1))
+            out.append(f'<h{level}>{inline(heading.group(2))}</h{level}>')
+        elif item:
+            if para:
+                out.append(f'<p>{inline(" ".join(para))}</p>')
+                para.clear()
+            items.append([item.group(1)])
+        elif items and indent:
+            items[-1].append(bare)
+        else:
+            if items:
+                close()
+            para.append(bare)
+    close()
+    return '\n'.join(out)
+
+
+def version_key(version):
+    return tuple(int(x) for x in version.split('.'))
+
+
+def load_history(path=HISTORY):
+    if not path.is_file():
+        return []
+    return json.loads(path.read_text(encoding='utf-8'))['releases']
+
+
+def history_entry(dist, version, names, sums, record, day):
+    """The history's record of a release: what the releases page shows of it, kept as it was published."""
+    files = []
+    for name in names:
+        if name.endswith('.sig'):
+            continue   # the signature is beside SHA256SUMS on the host; the page links what a player downloads
+        files.append({'name': name, 'size': (dist / name).stat().st_size,
+                      'sha256': sums.get(name) or sha256(dist / name)})
+    return {'version': version, 'date': day.isoformat(), 'notes': str(record.get('body') or ''), 'files': files}
+
+
+def add_release(history, entry):
+    """history with entry in it, and whether it was added. A version the history holds already keeps its record: the
+    same files again change nothing (a run that stopped is run again), other files under that version are refused."""
+    for old in history:
+        if old['version'] == entry['version']:
+            same = {f['name']: f['sha256'] for f in old['files']} == {f['name']: f['sha256'] for f in entry['files']}
+            if not same:
+                raise ValueError(f'{entry["version"]} is in the history with other files ({HISTORY.name}): a published '
+                                 f'version keeps its record; publish a new version instead')
+            return history, False
+    return history + [entry], True
+
+
+def long_date(iso):
+    d = datetime.date.fromisoformat(iso)
+    return f'{d.day} {MONTHS[d.month - 1]} {d.year}'
+
+
+def megabytes(size):
+    return f'{size / 1e6:.0f} MB' if size >= 1e6 else f'{max(1, round(size / 1e3))} KB'
+
+
+def render_releases(history):
+    """The release:list block of the releases page: one block per version, the newest first and open."""
+    blocks = []
+    for n, e in enumerate(sorted(history, key=lambda e: version_key(e['version']), reverse=True)):
+        v = html.escape(e['version'])
+        files = {f['name']: f for f in e['files']}
+        links = []
+        for name, label in (('Rekarina.exe', 'Rekarina.exe'), (f'Rekarina-Setup-{e["version"]}-windows.zip', 'Setup as a .zip'),
+                            ('SHA256SUMS', 'SHA256SUMS')):
+            if name in files:
+                size = '' if name == 'SHA256SUMS' else f' <small>{megabytes(files[name]["size"])}</small>'
+                links.append(f'          <a class="plate" href="{DOWNLOADS}/{v}/{html.escape(name)}">{html.escape(label)}{size}</a>')
+        exe = files.get('Rekarina.exe')
+        notes = markdown(e['notes']).replace('\n', '\n            ')
+        blocks.append(
+            f'        <article class="rel panel rv" id="v{v}">\n'
+            f'          <div class="head"><h2>Rekarina {v}</h2><span class="meta">{long_date(e["date"])}'
+            + (' &middot; the newest' if n == 0 else '') + '</span></div>\n'
+            f'          <details class="notes"{" open" if n == 0 else ""}>\n'
+            f'            <summary>Release notes</summary>\n'
+            f'            {notes}\n'
+            f'          </details>\n'
+            f'          <div class="files">\n' + '\n'.join(links) + '\n          </div>\n'
+            + (f'          <div class="sum"><b>SHA-256 of Rekarina.exe {v}</b><code>{exe["sha256"]}</code></div>\n'
+               if exe else '')
+            + '        </article>')
+    return '\n'.join(blocks)
+
+
+def write_history(history):
+    HISTORY.parent.mkdir(exist_ok=True)
+    with open(HISTORY, 'w', encoding='utf-8', newline='\n') as f:
+        json.dump({'releases': history}, f, indent=1, ensure_ascii=False)
+        f.write('\n')
+    page = RELEASES_PAGE.read_text(encoding='utf-8')
+    page = between(page, 'list', render_releases(history), 'public/releases/index.html')
+    with open(RELEASES_PAGE, 'w', encoding='utf-8', newline='\n') as f:
+        f.write(page)
 
 
 def write_site(dist, version, sums, record):
@@ -190,15 +337,40 @@ def main():
     ap.add_argument('--dry-run', action='store_true', help='check the folder and say what would be done')
     ap.add_argument('--force', action='store_true', help='replace a version that is already on the download host')
     ap.add_argument('--deploy', action='store_true', help='deploy the site at the end (wrangler deploy)')
+    ap.add_argument('--history-only', action='store_true',
+                    help='add a release that is on the download host already to the history and the releases page')
+    ap.add_argument('--date', type=datetime.date.fromisoformat, default=None,
+                    help='the day the release is published, YYYY-MM-DD (default: today)')
     a = ap.parse_args()
     version, names, sums, record = check(a.dist)
     print(f'publish_release: Rekarina {version}: the folder is a signed release '
           f'(Rekarina.exe {sums["Rekarina.exe"][:16]}...)')
+    entry = history_entry(a.dist, version, names, sums, record, a.date or datetime.date.today())
+    try:
+        history, added = add_release(load_history(), entry)
+    except ValueError as e:
+        fail(str(e))
     if a.dry_run:
-        for name in names:
-            print(f'  would upload {name} ({(a.dist / name).stat().st_size / 1e6:.1f} MB) to '
-                  f'{DOWNLOADS}/{version}/{name}')
-        print(f'  would write public/releases/latest.json, the /download redirect and the page for {version}')
+        if not a.history_only:
+            for name in names:
+                print(f'  would upload {name} ({(a.dist / name).stat().st_size / 1e6:.1f} MB) to '
+                      f'{DOWNLOADS}/{version}/{name}')
+            print(f'  would write public/releases/latest.json, the /download redirect and the page for {version}')
+        if added:
+            print(f'  would add {version} of {long_date(entry["date"])} to public/releases/releases.json:')
+            for f in entry['files']:
+                print(f'    {f["name"]:<36} {f["size"]:>11} bytes  {f["sha256"]}')
+            print(f'    notes: {len(entry["notes"].splitlines())} lines')
+        else:
+            print(f'  public/releases/releases.json has {version} with these very files already: its record stays')
+        print('  would write public/releases/index.html, listing ' +
+              ', '.join(e['version'] for e in sorted(history, key=lambda e: version_key(e['version']), reverse=True)))
+        return
+    if a.history_only:
+        read_back(a.dist, version, names)
+        write_history(history)
+        print('publish_release: public/releases/ ' + ('lists ' if added else 'listed ') + f'{version} '
+              f'({len(history)} versions); deploy from {SITE}: npx wrangler deploy')
         return
     if head(f'{DOWNLOADS}/{version}/SHA256SUMS') is None or a.force:
         upload(a.dist, version, names)
@@ -209,6 +381,7 @@ def main():
     else:
         fail(f'{version} is already on the download host; a published version is not replaced (--force does it)')
     write_site(a.dist, version, sums, record)
+    write_history(history)
     print('publish_release: the files are up and the site folder names them')
     if a.deploy:
         wrangler('deploy')

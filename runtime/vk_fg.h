@@ -6,7 +6,11 @@
 int vk_fg_wanted(void);                      // REKARINA_FRAMEGEN = fsr3 with DLSS or FSR 3.1 upscaling on (read once)
 uint32_t vk_fg_queue_count(void);            // graphics-family queues the device creates: 3 with frame generation, else 1
 void vk_fg_queues(VkQueue present, VkQueue acquire);   // vk_device.c, after the device exists
-int vk_fg_active(void);                      // the frame generation swapchain exists
+int vk_fg_active(void);                      // AMD's swapchain is the window's and generation has not failed
+// AMD's swapchain is the window's (frame generation may have failed since): its calls take the swapchain's presents,
+// acquires and images until the next present gives the window a plain swapchain again (vk_fg_release)
+int vk_fg_swapchain(void);
+int vk_fg_failed(void);                      // frame generation stopped for this run (the fg lines of the log say why)
 // Why AMD FSR frame generation is not running although REKARINA_FRAMEGEN was fsr3 at start (the menu's row), else NULL
 const char *vk_fg_off_why(void);
 // DLSS Frame Generation asked for where it cannot run: AMD FSR frame generation in its place (vk_dlssg.c, after the
@@ -16,10 +20,10 @@ int vk_fg_instead(void);
 // 1 when AMD FSR frame generation can run here (its libraries are beside the game), else 0 with *why (the menu's row)
 int vk_fg_offered(const char **why);
 int vk_fg_generating(void);                  // ... and the last frame had generation on (not paused for the menu)
-// gfx_present.c's swapchain calls while vk_fg_wanted: the first create makes AMD's swapchain context, later ones
-// (window resizes) its swapchain again. Non-success from the first: the plain swapchain path stays.
+// gfx_present.c's swapchain calls while vk_fg_wanted: the first create makes AMD's swapchain context and swapchain,
+// later ones (window resizes, the fullscreen switch) its swapchain again, in place with FSR SDK 2. Non-success from the
+// first: the plain swapchain path stays; after vk_fg_failed: the caller releases AMD's and makes a plain one.
 VkResult vk_fg_create_swapchain(const VkSwapchainCreateInfoKHR *ci, VkSwapchainKHR *sc);
-void vk_fg_destroy_swapchain(VkSwapchainKHR sc);
 VkResult vk_fg_get_images(VkSwapchainKHR sc, uint32_t *n, VkImage *img);
 VkResult vk_fg_acquire(VkSwapchainKHR sc, uint64_t timeout, VkSemaphore sem, uint32_t *idx);
 VkResult vk_fg_present(const VkPresentInfoKHR *pi);   // on the game's queue, its lock held by the caller
@@ -33,4 +37,5 @@ void vk_fg_frame(VkCommandBuffer cb, VkSwapchainKHR sc, VkFormat fmt, VkExtent2D
                  const int pic[4]);
 uint64_t vk_fg_presents(VkSwapchainKHR sc);   // frames the swapchain presented, generated ones included (0: off)
 PFN_vkSetHdrMetadataEXT vk_fg_hdr_metadata_fn(void);   // AMD's replacement for vkSetHdrMetadataEXT while active, else NULL
+// AMD's contexts and swapchain, in the SDK's order (after a device wait, with the window's views of its images gone)
 void vk_fg_release(void);

@@ -284,6 +284,7 @@ static void crash_handler(const PlatCrash *x) {
         rt_logf("  not on a guest thread\n");
     }
     kern_free_cores_note();
+    fg_guard_crashed();      // a frame generation set-up that stopped the game is left out at the next start (report.c)
     fflush(stderr);
     report_crash_notice();   // the player is told where the log is and how to make a report (report.c)
     plat_exit(71);

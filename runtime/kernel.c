@@ -17,6 +17,7 @@
 #include "ftrace.h"   // DEBUG-SVCTRACE
 #include "host.h"
 #include "kernel.h"
+#include "nvn_api.h"   // gfx_counters, for the hang dump
 #include "platform/platform.h"
 
 #define R_OK 0u
@@ -79,6 +80,7 @@ struct RtThread {
     int cur_core;              // core held while running guest code, -1 while blocked
     uint64_t cseq;
     RtThread *cnext;
+    int soft;                  // in kern_core_away_soft's host work: its core, while still held, is the host work's slot
     uint8_t *tlr, *tls;
     PlatJmp exit_jmp;          // the thread start; ExitThread jumps back to it
     // fibers
@@ -502,36 +504,101 @@ void kern_free_cores_note(void) {
 // once beside the thread that replays the frame and the host's own. On a processor with fewer logical processors than
 // that the host's scheduler decides who waits, by its time slices and without the game's priorities: with four
 // processors a woken main thread waited up to 33 ms for one while a background thread of the game kept running
-// (2026-11-19, the square and the field at 1080p: 1 % low 22-24 fps against 52-70). With n < NCORE the cores are
-// folded onto n slots (core c runs in slot c % n) and one thread runs per slot: a thread may take a slot when its
-// mask names a core of that slot, and everything that decides between threads (core_grant, core_kick, the yield,
-// the preemption) goes by the game's priorities as on any core. The game still sees NCORE cores: each thread is told
-// a core of its own mask that folds onto its slot (core_number), so two running threads never report the same core,
-// which is what the game's per-core data needs (free_cores above).
-// The default is one slot per logical processor the process may use, at most NCORE (so nothing changes with six or
+// (2026-11-19, the square and the field at 1080p: 1 % low 22-24 fps against 52-70). With n < NCORE at most n threads
+// hold a core at once (budget mode below), and everything that decides between threads (core_grant_budget,
+// core_kick, the yield, the preemption) goes by the game's priorities as on any core. REKARINA_FOLD_MAP=1 or 0 fold
+// the cores onto n slots instead, one thread per slot: a thread may take a slot when its mask names a core of that
+// slot, and is told a core of its own mask that folds onto its slot (core_number), so two running threads never report
+// the same core, which is what the game's per-core data needs (free_cores above).
+// The default is n = the logical processors the process may use, at most NCORE (so nothing changes with six or
 // more) and at least two. Measured with the process held to four processors (0x55), four slots against six: the
 // square 62.5 against 61.6-64.2 fps with a 1 % low of 38.9 against 20.7-24.1 and 15 frames over 25 ms against 22-33;
 // the field 72.7 against 70.6 fps, 1 % low 44.5 against 22.4, frames over 25 / 50 ms 31 / 1 against 107 / 10. Three
 // slots: the field better still (5 / 0), the square slower (58.5 fps). Five slots on six processors lost 6 % of the
 // square's frame rate for nothing, so six processors keep six.
 static int g_slots = NCORE;
+// Budget mode (REKARINA_FOLD_MAP=2, the default with fewer than NCORE processors): no folding at all. Every core is its
+// own, as with NCORE processors, and at most g_budget of them are held at once. Folded onto fixed slots, two cores
+// shared one, so a thread waited for its partner core's thread while another slot stood empty: with four processors
+// the game held 2.1 slots on average yet its threads waited 1.5-2.1 thread-seconds a second for one (2026-11-19, the
+// field and the village, sched trace). Under the budget a thread waits only while all g_budget cores are held (by
+// threads of better or equal priority: a better waiter takes the worst holder's core anywhere, core_kick) or while its
+// own core is held, as on the console. With four processors (0x55, 1080p), the budget and the three settings below
+// against the release's c % 4 fold: the square 58.8 against 58.1 fps (1 % low 35.2 / 35.1), the village 72.0 against
+// 69.8 (42.7 / 40.2, frames over 25 ms 24 / 51), the field 70.1 against 68.6 (43.2 / 41.1, over 50 ms 0 / 5); the
+// main thread's wait for a core 8-9 % of the time against 16-17 % (2026-11-19). Against fixed pairs (FOLD_MAP=1): the
+// village 62.7 against 57.0 fps (1 % low 33.3 / 25.1), the square 48.5 against 50.0 (both 26.8) on a busier machine.
+static int g_budget = NCORE;
+#define AP_FIRST_NS 250000ull   // a core waiter spins this long before it interrupts the owner (most waits end sooner)
+#define AP_FOLD_NS 20000ull     // the same with folded cores, where the spin takes a processor a slot holder needs
+// With fewer processors than cores (REKARINA_FOLD_* settings, each 0 off, 1 on; unset: on with fewer, off without):
+// g_soft: the replay inside the submit keeps its slot (kern_core_away_soft); g_fold_sleep: short sleeps keep the slot
+// while nothing waits for one (sleep_short); g_ap_first_ns: how long a core waiter spins before it interrupts an owner.
+static int g_soft, g_fold_sleep;
+static uint64_t g_ap_first_ns;
+static int g_slot_of[NCORE];          // the slot core c runs in (folded cores)
+static uint64_t g_slot_cores[NCORE];  // the cores of slot s
+
+static int fold_knob(const char *name, int folded) {
+    const char *e = cfg_get(name);
+    return e && *e ? atoi(e) != 0 : folded;
+}
 
 static void slots_init(void) {
     const char *e = cfg_env("REKARINA_GUEST_CORES");
     int cpus = (int)plat_cpu_usable();
     int n = e && *e ? atoi(e) : cpus < 2 ? 2 : cpus;
-    g_slots = n < 1 || n > NCORE ? NCORE : n;
-    if (g_slots != NCORE)
-        rt_log("kernel: the game's %d cores are folded onto %d: that many of its threads run at once (%d logical "
-               "processors; REKARINA_GUEST_CORES)", NCORE, g_slots, cpus);
+    n = n < 1 || n > NCORE ? NCORE : n;
+    int fewer = n != NCORE;
+    g_soft = fold_knob("REKARINA_FOLD_SUBMIT_SLOT", fewer);
+    g_fold_sleep = fold_knob("REKARINA_FOLD_SLEEP", fewer);
+    const char *sp = cfg_get("REKARINA_AP_SPIN_US");
+    g_ap_first_ns = sp && *sp ? (uint64_t)atoll(sp) * 1000 : fewer && fold_knob("REKARINA_FOLD_AP_SPIN", 1) ? AP_FOLD_NS : AP_FIRST_NS;
+    // REKARINA_FOLD_MAP: 2 (default) the budget above; 1 cores 0 and 1 a slot each and the workers' cores 2 and up
+    // sharing the rest in turn (OoT keeps its main thread on core 0 and crowds core 1 with a dozen background threads);
+    // 0 core c in slot c % n, as releases up to 1.2.2 did.
+    const char *fm = cfg_get("REKARINA_FOLD_MAP");
+    int mode = !fewer ? 0 : fm && *fm ? atoi(fm) : 2;
+    if (mode == 1 && n < 4) mode = 0;
+    if (mode == 2) g_budget = n, g_slots = NCORE;
+    else g_slots = n;
+    int folded = g_slots != NCORE;
+    char mapdesc[96];
+    int mo = 0;
+    for (int s = 0; s < g_slots; s++) g_slot_cores[s] = 0;
+    for (int c = 0; c < NCORE; c++) {
+        int s = mode != 1 ? c % g_slots : c < 2 ? c : 2 + (c - 2) % (g_slots - 2);
+        g_slot_of[c] = s;
+        g_slot_cores[s] |= 1ull << c;
+    }
+    mapdesc[0] = 0;
+    for (int s = 0; s < g_slots && folded; s++) {
+        mo += snprintf(mapdesc + mo, sizeof mapdesc - (size_t)mo, " {");
+        for (int c = 0; c < NCORE; c++)
+            if (g_slot_cores[s] >> c & 1) mo += snprintf(mapdesc + mo, sizeof mapdesc - (size_t)mo, "%s%d", mapdesc[mo - 1] == '{' ? "" : ",", c);
+        mo += snprintf(mapdesc + mo, sizeof mapdesc - (size_t)mo, "}");
+    }
+    if (fewer)
+        rt_log("kernel: %d logical processors for the game's %d cores: %s%s; the replay keeps its core %s, short sleeps "
+               "keep theirs %s, a core waiter spins %llu us before it interrupts (REKARINA_GUEST_CORES, REKARINA_FOLD_MAP, "
+               "REKARINA_FOLD_SUBMIT_SLOT, REKARINA_FOLD_SLEEP, REKARINA_AP_SPIN_US)", n, NCORE,
+               mode == 2 ? "at most that many of them held at once" : "folded onto as many slots", folded ? mapdesc : "",
+               g_soft ? "on" : "off", g_fold_sleep ? "on" : "off", (unsigned long long)(g_ap_first_ns / 1000));
+    else if (g_soft || g_fold_sleep || g_ap_first_ns != AP_FIRST_NS)
+        rt_log("kernel: the replay keeps its core %s, short sleeps keep theirs %s, a core waiter spins %llu us before it "
+               "interrupts (REKARINA_FOLD_SUBMIT_SLOT, REKARINA_FOLD_SLEEP, REKARINA_AP_SPIN_US)", g_soft ? "on" : "off",
+               g_fold_sleep ? "on" : "off", (unsigned long long)(g_ap_first_ns / 1000));
+}
+
+static int cores_held(void) {
+    int n = 0;
+    for (int i = 0; i < NCORE; i++) n += g_core_owner[i] != NULL;
+    return n;
 }
 
 static int core_allowed(const RtThread *t, int c) {
     if (g_slots == NCORE) return (int)((t->mask >> c) & 1);
-    if (c >= g_slots) return 0;
-    for (int i = c; i < NCORE; i += g_slots)
-        if (t->mask >> i & 1) return 1;
-    return 0;
+    return c < g_slots && (t->mask & g_slot_cores[c]) != 0;
 }
 
 // The core number the game is told for t: the core held, or with folded cores a core of t's mask in the slot held
@@ -540,10 +607,9 @@ static int core_number(const RtThread *t) {
     int s = t->cur_core;
     if (s < 0) return t->core;
     if (g_slots == NCORE) return s;
-    if (t->core >= 0 && t->core < NCORE && t->core % g_slots == s && (t->mask >> t->core & 1)) return t->core;
-    for (int i = s; i < NCORE; i += g_slots)
-        if (t->mask >> i & 1) return i;
-    return s;
+    if (t->core >= 0 && t->core < NCORE && g_slot_of[t->core] == s && (t->mask >> t->core & 1)) return t->core;
+    uint64_t m = t->mask & g_slot_cores[s];
+    return m ? __builtin_ctzll(m) : s;
 }
 
 // ---- asynchronous preemption (REKARINA_ASYNC_PREEMPT, on unless 0)
@@ -567,8 +633,7 @@ static int core_number(const RtThread *t) {
 //   core to a thread that then spun on that lock).
 // REKARINA_ASYNC_PREEMPT=0 keeps the old scheduling exactly: raw priorities, no interruption, no disable_count; =2 keeps
 // inheritance and the preemption disable without interrupting owners.
-#define AP_FIRST_NS 250000ull   // the waiter spins this long before the first interruption (most waits end sooner)
-#define AP_GAP_NS 1000000ull    // and interrupts the same owner at most this often
+#define AP_GAP_NS 1000000ull    // the waiter interrupts the same owner at most this often
 static int g_ap = -1, g_ap_int;   // g_ap_int: interrupt owners (REKARINA_ASYNC_PREEMPT=2: inheritance and disable only)
 static int g_ap_log;              // redirects logged so far (AP_LOG_N)
 #define AP_LOG_N 40
@@ -1186,6 +1251,23 @@ static void core_count(void) {
 
 static struct DgRel g_dg_rel;   // REKARINA_CORE_DIAG: the owner core_put is releasing, for core_grant
 
+// A core free for t: its ideal core (or that core's slot) first; -1 when every core it may run on is held.
+static int free_core_of(const RtThread *t) {
+    int ideal = t->core >= 0 && t->core < NCORE ? g_slot_of[t->core] : -1;
+    if (ideal >= 0 && core_allowed(t, ideal) && !g_core_owner[ideal]) return ideal;
+    for (int i = 0; i < NCORE; i++)
+        if (core_allowed(t, i) && !g_core_owner[i]) return i;
+    return -1;
+}
+
+// Whether waiter w would run if the holder of core c gave it up: c is a core of its mask, or (budget mode) another
+// of its cores is free and only the budget holds it back.
+static int waiter_gains(const RtThread *w, int c) {
+    return core_allowed(w, c) || (g_budget < NCORE && free_core_of(w) >= 0);
+}
+
+static void grant_to(RtThread *b, RtThread **bp, int c);
+
 static void core_grant(int c) {
     RtThread *b = NULL, **bp = NULL;
     int bpri = 0;
@@ -1198,7 +1280,32 @@ static void core_grant(int c) {
             bpri = pr;
         }
     }
-    if (!b) return;
+    if (b) grant_to(b, bp, c);
+}
+
+// Budget mode: a core came free, and with it the budget. The best waiter that has a free core of its mask takes one
+// (its ideal core first), which need not be the core given up.
+static void core_grant_budget(void) {
+    if (cores_held() >= g_budget) return;
+    RtThread *b = NULL, **bp = NULL;
+    int bpri = 0, bc = -1;
+    for (RtThread **p = &g_core_wait; *p; p = &(*p)->cnext) {
+        int pr = prio_of(*p);
+        if (b && (pr > bpri || (pr == bpri && (*p)->cseq > b->cseq))) continue;
+        int c = free_core_of(*p);
+        if (c < 0) continue;
+        b = *p, bp = p, bpri = pr, bc = c;
+    }
+    if (b) grant_to(b, bp, bc);
+}
+
+// Core c was given up: to the waiter it goes to.
+static void core_regrant(int c) {
+    if (g_budget < NCORE) core_grant_budget();
+    else core_grant(c);
+}
+
+static void grant_to(RtThread *b, RtThread **bp, int c) {
     *bp = b->cnext;
     b->cnext = NULL;
     b->cur_core = c;
@@ -1230,21 +1337,41 @@ static void core_put(RtThread *t) {
     t->cur_core = -1;
     t->preempt = 0;
     g_core_owner[c] = NULL;
-    core_grant(c);
+    core_regrant(c);
 }
 
-// Whether a waiter better than t may run on core c.
+// Whether a waiter better than t would run if t gave core c up.
 static int core_better_waiter(const RtThread *t, int c) {
     int tp = prio_of(t);
     for (const RtThread *w = g_core_wait; w; w = w->cnext)
-        if (core_allowed(w, c) && prio_of(w) < tp) return 1;
+        if (waiter_gains(w, c) && prio_of(w) < tp) return 1;
     return 0;
+}
+
+// ---- host work that keeps its slot (kern_core_away_soft; folded cores, REKARINA_FOLD_SUBMIT_SLOT)
+// The presenting thread replays each submission inside QueueSubmitCommands (vk_exec.c): 7-15 ms of host work a frame,
+// made without the virtual core, as the console's thread waits in IPC there. With the cores folded onto as many slots
+// as the process has processors, that is one busy thread more than processors whenever every slot is held, and the
+// host's scheduler takes a processor from the replay or from a slot holder for a time slice (four processors at the
+// square: the replay off its processor 1.35 ms a frame against 0.25 with sixteen, 2026-11-19). Kept, the slot stands
+// for the replay's processor: a game thread of better priority than the presenting thread takes it at once, without
+// the replay's cooperation (it needs no slot for its host work); a worse one waits as for a slot that runs game code.
+// Holding G: o's kept slot goes to the best thread that waits for it.
+static void soft_drop(RtThread *o) {
+    int c = o->cur_core;
+    if (c < 0) return;
+    o->cur_core = -1;
+    o->preempt = 0;
+    o->pre_since = 0;
+    g_core_owner[c] = NULL;
+    core_regrant(c);
 }
 
 // Asks holders to give their cores up, one holder per waiter: waiters best first, each claims the worst holder worse
 // than itself on a core it may run on that no better waiter claimed (a request already pending is reused). Asking
 // every worse holder made several drop their cores for one waiter; the spare cores went to worse waiters, which asked
-// again.
+// again. Budget mode: a waiter that has a free core of its own and waits for the budget claims the worst holder on any
+// core, as any core given up frees the budget.
 static void core_kick(void) {
     RtThread *w[64];
     int wp[64], op[NCORE], n = 0, claimed = 0;
@@ -1259,16 +1386,24 @@ static void core_kick(void) {
         wp[i] = pp;
     }
     for (int k = 0; k < n && claimed != (1 << NCORE) - 1; k++) {
-        int v = -1;
+        if (w[k]->cur_core >= 0) continue;   // granted a slot kept by host work (soft_drop below)
+        int v = -1, any = g_budget < NCORE && free_core_of(w[k]) >= 0;
         for (int i = 0; i < NCORE; i++) {
             RtThread *o = g_core_owner[i];
-            if ((claimed >> i & 1) || !core_allowed(w[k], i) || !o || op[i] <= wp[k]) continue;
+            if ((claimed >> i & 1) || !(any || core_allowed(w[k], i)) || !o || op[i] <= wp[k]) continue;
             RtThread *b = v < 0 ? NULL : g_core_owner[v];
-            if (!b || op[i] > op[v] || (op[i] == op[v] && o->preempt && !b->preempt)) v = i;
+            // a slot kept by host work first: taking it stops no game code
+            if (!b || (o->soft && !b->soft) ||
+                (o->soft == b->soft && (op[i] > op[v] || (op[i] == op[v] && o->preempt && !b->preempt))))
+                v = i;
         }
         if (v < 0) continue;
         claimed |= 1 << v;
         RtThread *o = g_core_owner[v];
+        if (o->soft) {   // its owner needs no slot for its host work: the slot goes to the best waiter at once
+            soft_drop(o);
+            continue;
+        }
         w[k]->target = o;
         if (o->preempt) continue;
         if (rt_trace & RT_TRACE_SCHED) {
@@ -1293,11 +1428,11 @@ static void core_take(RtThread *t) {
     }
     if (!(t->mask & ((1u << NCORE) - 1)))
         rt_fatal("kernel: thread %#x core mask %#llx has no application core", t->handle, (unsigned long long)t->mask);
-    int ideal = t->core >= 0 && t->core < NCORE ? t->core % g_slots : -1;   // its ideal core, or that core's slot
+    int ideal = t->core >= 0 && t->core < NCORE ? g_slot_of[t->core] : -1;   // its ideal core, or that core's slot
     int c = ideal >= 0 && core_allowed(t, ideal) && !g_core_owner[ideal] ? ideal : -1;
     for (int i = 0; c < 0 && i < NCORE; i++)
         if (core_allowed(t, i) && !g_core_owner[i]) c = i;
-    if (c >= 0) {
+    if (c >= 0 && cores_held() < g_budget) {
         t->cur_core = c;
         g_core_owner[c] = t;
         core_count();
@@ -1316,7 +1451,7 @@ static void core_take(RtThread *t) {
     core_kick();
     if (g_diag > 0) t->dg_cls = dg_class0(t);
     if (g_ap_int && t->target && t->cur_core < 0) {   // most waits end within microseconds: spin before interrupting
-        uint64_t end = kern_now_ns() + AP_FIRST_NS;
+        uint64_t end = kern_now_ns() + g_ap_first_ns;
         unlock();
         while (__atomic_load_n(&t->cur_core, __ATOMIC_RELAXED) < 0 && kern_now_ns() < end)
             for (int i = 0; i < 8 && __atomic_load_n(&t->cur_core, __ATOMIC_RELAXED) < 0; i++) plat_pause();
@@ -1390,7 +1525,7 @@ uint64_t kern_self_gpu_wait_ns(uint64_t *last_end) {   // the waits a host threa
 
 int kern_core_away(void) {
     RtThread *t = tcur;
-    if (!t || t->cur_core < 0) return 0;
+    if (!t || t->cur_core < 0 || t->soft) return 0;   // inside soft host work: the slot is already the host work's
     lock();
     core_put(t);
     acct(t, S_HOST);
@@ -1404,9 +1539,29 @@ void kern_core_back(int *away) {
     RtThread *t = tcur;
     if (!*away || !t) return;
     lock();
-    core_take(t);
+    if (t->soft) {   // kern_core_away_soft: the slot may still be held
+        t->soft = 0;
+        if (t->cur_core >= 0) acct(t, S_RUN);
+    }
+    core_take(t);   // returns at once with the slot held
     unlock();
     *away = 0;
+}
+
+// kern_core_away for long host work on the calling thread (the replay inside the submit): with g_soft the thread keeps
+// its slot for the work's processor and a better waiter takes it at once (soft_drop); kern_core_back ends either.
+int kern_core_away_soft(void) {
+    RtThread *t = tcur;
+    if (!t || t->cur_core < 0 || t->soft) return 0;
+    if (!g_soft) return kern_core_away();
+    lock();
+    t->soft = 1;
+    acct(t, S_HOST);
+    if (rt_trace & RT_TRACE_SCHED) t->wobj = (uintptr_t)__builtin_return_address(0) - plat_exe_base();
+    if (core_better_waiter(t, t->cur_core)) soft_drop(t);   // a better thread waits already
+    else t->preempt = 0, t->pre_since = 0;                    // a request for a waiter that got another slot
+    unlock();
+    return 1;
 }
 
 // A host lock taken without keeping the virtual core through a wait for it (the host waits section above).
@@ -1937,9 +2092,59 @@ void kern_main_stack(uint64_t *base, uint64_t *size) {
     *size = b ? MAIN_STACK : 0;
 }
 
+// ---- REKARINA_HANG_DUMP=<seconds> (DEBUG-HANGDUMP): when the game presents nothing for that long, the log gets every
+// guest thread once: what it waits on and its guest call chain (frame records from its x29, as the fatal report walks
+// them). For a game that stops without a crash (a wait nothing will end), where only the call chains name the place.
+static int hang_read(uint64_t a, uint64_t *v) { return a && !(a & 7) && plat_mem_read(a, v, 8); }
+
+static void hang_dump(void) {
+    static const char *const wname[] = {"none", "lock", "condvar", "address", "sync"};
+    char d[160];
+    lock();
+    int n = 0;
+    for (RtThread *t = g_all; t && n < 256; t = t->all, n++) {
+        Cpu *c = t->cur ? t->cur : t->cpu;
+        rt_log("HANGDUMP thread %#x id %llu prio %d%s: %s, wait %s on %#llx (address %#llx), last svc %#x, lr %s",
+               t->handle, (unsigned long long)t->id, t->prio, t->is_main ? " (main)" : "", s_name[t->st < S_N ? t->st : 0],
+               (unsigned)t->wkind < 5 ? wname[t->wkind] : "?", (unsigned long long)t->wobj, (unsigned long long)t->waddr,
+               t->dg_svc, c ? ldr_describe(c->x[30], d, sizeof d) : "-");
+        uint64_t fp = c ? c->x[29] : 0, next, lr;
+        for (int k = 0; k < 16 && hang_read(fp, &next) && hang_read(fp + 8, &lr); k++) {
+            rt_log("HANGDUMP   frame %2d: %s", k, ldr_describe(lr, d, sizeof d));
+            if (next <= fp || next - fp > (64u << 20)) break;
+            fp = next;
+        }
+    }
+    unlock();
+}
+
+static void hang_watch(void *arg) {
+    double limit = *(double *)arg;
+    uint64_t seen = ~0ull, since = plat_now_ns();
+    for (;;) {
+        plat_sleep_ns(500000000ull);
+        uint64_t f = __atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED), now = plat_now_ns();
+        if (f != seen) { seen = f, since = now; continue; }
+        if (f && (now - since) / 1e9 >= limit) {
+            rt_log("HANGDUMP no present for %.1f s after present %llu: the guest threads", (now - since) / 1e9,
+                   (unsigned long long)f);
+            hang_dump();
+            since = now + 3600ull * 1000000000ull;   // once an hour at most
+        }
+    }
+}
+
+static void hang_watch_start(void) {
+    static double limit;
+    const char *e = cfg_get("REKARINA_HANG_DUMP");
+    if (!e || !(limit = atof(e)) || limit <= 0) return;
+    if (plat_thread_spawn(hang_watch, &limit, "hang watch", 0)) rt_log("kernel: hang dump after %.1f s without a present", limit);
+}
+
 static void guest_main(void *p) {
     void (*fn)(Cpu *) = (void (*)(Cpu *))p;
     Cpu *c;
+    hang_watch_start();
     kern_main_thread(&c);
     if (!plat_jmp_save(&tcur->exit_jmp)) fn(c);
     thread_finish(tcur);
@@ -1968,6 +2173,38 @@ static void sleep_ns(RtThread *t, int64_t ns) {
         return;
     }
     plat_wait_ns((uint64_t)ns);
+}
+
+// Folded cores (g_fold_sleep): a sleep short enough to spin (SLEEP_SPIN_NS) spins holding its slot while no thread
+// waits for one, so a sleeper is never one busy thread more than the processors the slots stand for (above, the slot
+// is given up first and the spin is extra). Once a thread waits, the slot goes to it and the rest of the sleep yields
+// the processor at every pass. Called and returns with the slot held, G not held.
+static void sleep_short(RtThread *t, int64_t ns) {
+    lock();
+    acct(t, S_SLEEP);
+    t->wobj = (uint64_t)ns;
+    t->nblk++;
+    unlock();
+    uint64_t t0 = kern_now_ns(), end = t0 + (uint64_t)ns, now = t0;
+    int gave = 0;
+    while (now < end) {
+        if (!gave && __atomic_load_n(&g_core_wait, __ATOMIC_RELAXED)) {   // a racy look, as in rt_spin_gate
+            lock();
+            core_put(t);
+            unlock();
+            gave = 1;
+        }
+        if (gave) plat_yield();
+        else for (int i = 0; i < 8; i++) plat_pause();
+        now = kern_now_ns();
+    }
+    lock();
+    t->sl_n++;
+    t->sl_req += (uint64_t)ns;
+    t->sl_act += now - t0;
+    if (gave) core_take(t);
+    else acct(t, S_RUN);
+    unlock();
 }
 
 // ---- synchronization objects
@@ -2123,6 +2360,12 @@ static int kern_svc_(Cpu *c, uint32_t imm) {
             if (ns >= 500000 && ns <= 2000000 && x[30] == 0x7000570520ull && gfx_replay_async()) ns = 50000;
         }
 #endif
+        if (ns > 0 && ns <= (int64_t)SLEEP_SPIN_NS && g_fold_sleep && t->cur_core >= 0) {
+            uint64_t t0 = kern_now_ns();
+            sleep_short(t, ns);
+            if (kern_wait_meas && t->tid == kern_fs_main_tid) t->wt_end = kern_now_ns(), t->wt_ns += t->wt_end - t0;
+            return 1;
+        }
         if (ns > 0) {
             lock();
             core_put(t);
@@ -2154,7 +2397,7 @@ static int kern_svc_(Cpu *c, uint32_t imm) {
         int give = 0;
         int tp = prio_of(t);
         for (RtThread *w = g_core_wait; w && !give; w = w->cnext)
-            give = t->cur_core >= 0 && core_allowed(w, t->cur_core) && prio_of(w) <= tp;
+            give = t->cur_core >= 0 && waiter_gains(w, t->cur_core) && prio_of(w) <= tp;
         if (give) {
             core_put(t);
             core_take(t);

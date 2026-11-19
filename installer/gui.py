@@ -35,6 +35,20 @@ COLOR = {PENDING: '#808080', RUNNING: '#1a5fb4', DONE: '#26a269', SKIPPED: '#808
 PAD = 14
 
 
+def open_folder_window(path):
+    """Shows a folder in the system's file manager. On Windows the folder is named with a trailing separator and opened
+    with the 'explore' verb: ShellExecute's plain open of a path without an extension tries the program extensions
+    first, so a game folder D:\\Games\\Rekarina beside the single-file D:\\Games\\Rekarina.exe started that exe, another
+    launcher (player report 2026-11-19). A path that ends in a separator names the folder itself, and a program has no
+    'explore' verb, so no exe can be started by this."""
+    folder = str(path).rstrip('\\/')
+    if os.name == 'nt':
+        os.startfile(folder + '\\', 'explore')
+    else:
+        subprocess.Popen(['xdg-open', folder or '/'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                         start_new_session=True)
+
+
 def fix_tcl_paths():
     """The embeddable Python keeps Tcl/Tk next to python.exe (python/tcl); point Tcl at it when it is not found."""
     tcl = Path(sys.executable).resolve().parent / 'tcl'
@@ -57,7 +71,7 @@ class App:
         self.bound = []                  # (widget, option, id, params) retranslated on a language switch
         self.vars = {n: tk.StringVar() for n in ('base', 'update', 'keys', 'firmware', 'dest')}
         self.vars['lang'] = tk.StringVar()
-        self.lang_code = default_game_language(ui_lang)
+        self.lang_code = self.default_language(ui_lang)
         self.screen = None
         self.fitted = None               # the (width, height) fit last gave the window
 
@@ -145,15 +159,20 @@ class App:
     def lang_label(self, code):
         return self.cat('lang.' + code)
 
+    languages = ini.LANGUAGES   # the game languages the form offers (gui_oot.py: OoT's own)
+
+    def default_language(self, ui_lang):
+        return default_game_language(ui_lang)
+
     def fill_languages(self):
         code = self.selected_lang()
-        self.lang_box.configure(values=[self.lang_label(c) for c in ini.LANGUAGES])
+        self.lang_box.configure(values=[self.lang_label(c) for c in self.languages])
         self.vars['lang'].set(self.lang_label(code))
 
     def selected_lang(self):
         """The game language code behind the combobox text (kept when it is not one of the labels)."""
         shown = self.vars['lang'].get()
-        for code in ini.LANGUAGES:
+        for code in self.languages:
             for lang in UI_LANGUAGES:
                 if shown == Catalog(lang)('lang.' + code):
                     return code
@@ -304,7 +323,7 @@ class App:
         if state is not None:
             self.update_hint.configure(text=self.cat('ui.update_mode'))
             recorded = ini.canonical_language(state.get('lang'))
-            if recorded in ini.LANGUAGES and not self.lang_touched:
+            if recorded in self.languages and not self.lang_touched:
                 self.vars['lang'].set(self.lang_label(recorded))
         else:
             self.update_hint.configure(text='')
@@ -534,11 +553,7 @@ class App:
     def open_folder(self):
         dest = self.model.dest
         if dest and Path(dest).is_dir():
-            if os.name == 'nt':
-                os.startfile(dest)
-            else:
-                subprocess.Popen(['xdg-open', dest], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                                 start_new_session=True)
+            open_folder_window(dest)
 
 
 # ---- self test ---------------------------------------------------------------------------------------------------

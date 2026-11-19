@@ -606,6 +606,15 @@ PlatAppend *plat_append_open(const char *path) {
     return h == INVALID_HANDLE_VALUE ? NULL : (PlatAppend *)h;
 }
 
+PlatAppend *plat_append_shared(const char *path) {
+    wchar_t w[WPATH];
+    if (!widen(path, w, WPATH)) return NULL;
+    // append access only: every write goes to the end of the file, whichever process wrote last
+    HANDLE h = CreateFileW(w, FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL, OPEN_ALWAYS,
+                           FILE_ATTRIBUTE_NORMAL, NULL);
+    return h == INVALID_HANDLE_VALUE ? NULL : (PlatAppend *)h;
+}
+
 int plat_append_write(PlatAppend *f, const void *data, size_t n) {
     // Offset and OffsetHigh all ones: WriteFile appends at the end of the file, atomically against other writers.
     OVERLAPPED o = {.Offset = 0xffffffff, .OffsetHigh = 0xffffffff};
@@ -1211,6 +1220,69 @@ const void *plat_file_map(PlatFile *f) {
     return v;
 }
 
+struct PlatView { HANDLE file; void *data; int write; };
+
+static PlatView *view_of(HANDLE h, DWORD prot, DWORD access, uint64_t size, int write) {
+    HANDLE map = CreateFileMappingW(h, NULL, prot, (DWORD)(size >> 32), (DWORD)size, NULL);
+    void *v = map ? MapViewOfFile(map, access, 0, 0, 0) : NULL;
+    if (map) CloseHandle(map);   // the view keeps the mapping alive
+    PlatView *pv = v ? malloc(sizeof *pv) : NULL;
+    if (!pv) {
+        if (v) UnmapViewOfFile(v);
+        CloseHandle(h);
+        return NULL;
+    }
+    *pv = (PlatView){h, v, write};
+    return pv;
+}
+
+PlatView *plat_view_open(const char *path, const void **data, uint64_t *size) {
+    wchar_t w[WPATH];
+    LARGE_INTEGER len;
+    if (!widen(path, w, WPATH)) return NULL;
+    HANDLE h = CreateFileW(w, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (h == INVALID_HANDLE_VALUE) return NULL;
+    if (!GetFileSizeEx(h, &len) || len.QuadPart <= 0) {
+        CloseHandle(h);
+        return NULL;
+    }
+    PlatView *v = view_of(h, PAGE_READONLY, FILE_MAP_READ, (uint64_t)len.QuadPart, 0);
+    if (v) *data = v->data, *size = (uint64_t)len.QuadPart;
+    return v;
+}
+
+PlatView *plat_view_create(const char *path, uint64_t size, void **data) {
+    wchar_t w[WPATH];
+    if (!size || !widen(path, w, WPATH)) return NULL;
+    HANDLE h = CreateFileW(w, GENERIC_READ | GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (h == INVALID_HANDLE_VALUE) return NULL;
+    // the file's clusters are allocated here, so a full disk fails now and not in a write through the view
+    FILE_END_OF_FILE_INFO eof = {.EndOfFile.QuadPart = (LONGLONG)size};
+    if (!SetFileInformationByHandle(h, FileEndOfFileInfo, &eof, sizeof eof)) {
+        CloseHandle(h);
+        DeleteFileW(w);
+        return NULL;
+    }
+    PlatView *v = view_of(h, PAGE_READWRITE, FILE_MAP_WRITE, size, 1);
+    if (v) *data = v->data;
+    else DeleteFileW(w);
+    return v;
+}
+
+int plat_view_close(PlatView *v, uint64_t keep) {
+    if (!v) return 0;
+    int ok = 1;
+    if (v->write) ok = FlushViewOfFile(v->data, 0) != 0;
+    UnmapViewOfFile(v->data);
+    if (v->write) {
+        FILE_END_OF_FILE_INFO eof = {.EndOfFile.QuadPart = (LONGLONG)keep};
+        ok = ok && SetFileInformationByHandle(v->file, FileEndOfFileInfo, &eof, sizeof eof) && FlushFileBuffers(v->file);
+    }
+    CloseHandle(v->file);
+    free(v);
+    return ok;
+}
+
 static __thread DWORD fs_last_error;
 int plat_fs_os_error(void) { return (int)fs_last_error; }
 
@@ -1610,17 +1682,22 @@ int plat_clipboard_set(const char *utf8) {
     return ok;
 }
 
+// The folder with a trailing separator and the explore verb: the shell's plain open of a path without an extension
+// tries the program extensions first, and a folder with a program of its name beside it started that program (the
+// launcher's Open folder, player report 2026-11-19); a program has no explore verb.
 static DWORD WINAPI open_folder_main(void *arg) {
-    ShellExecuteW(NULL, L"open", arg, NULL, NULL, SW_SHOWNORMAL);
+    ShellExecuteW(NULL, L"explore", arg, NULL, NULL, SW_SHOWNORMAL);
     free(arg);
     return 0;
 }
 
 int plat_open_folder(const char *path) {
     wchar_t *w = malloc(WPATH * sizeof *w);
-    if (!w || !widen(path, w, WPATH)) return free(w), 0;
+    if (!w || !widen(path, w, WPATH - 1)) return free(w), 0;
     DWORD a = GetFileAttributesW(w);
     if (a == INVALID_FILE_ATTRIBUTES || !(a & FILE_ATTRIBUTE_DIRECTORY)) return free(w), 0;
+    size_t n = wcslen(w);
+    if (n && w[n - 1] != L'\\' && w[n - 1] != L'/') w[n] = L'\\', w[n + 1] = 0;
     // the shell can take a while to answer: not on the caller's thread (the present path)
     HANDLE t = CreateThread(NULL, 0, open_folder_main, w, 0, NULL);
     if (!t) return free(w), 0;

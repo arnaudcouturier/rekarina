@@ -335,6 +335,8 @@ void kern_main_stack(uint64_t *base, uint64_t *size);      // the main thread's 
 void kern_run_on_guest_main(void (*fn)(Cpu *c));           // start the guest main host thread, run fn there, join
 int kern_core_away(void);                                  // give the virtual core up around a blocking host wait
 void kern_core_back(int *away);
+int kern_core_away_soft(void);                             // kern_core_away for long host work (the replay): with
+                                                           // folded cores the slot is kept until a better thread takes it
 int kern_wait_off_core(void);                              // REKARINA_WAIT_OFF_CORE (on unless 0)
 // A host lock other threads may hold for milliseconds, from a guest thread that holds no other host lock: 1 when taken,
 // with every wait for it made without the virtual core; 0: take it the usual way (not on a core, the switch off, or

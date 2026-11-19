@@ -5,7 +5,10 @@
   "compatibility_date": "2026-11-01",
   "assets": {
     "directory": "./public",
-    "not_found_handling": "404-page"
+    "not_found_handling": "404-page",
+    // A folder's index.html is its page: /releases/ serves public/releases/index.html, and /releases (no slash) is
+    // redirected there. This is Cloudflare's default, written out because the releases page relies on it.
+    "html_handling": "auto-trailing-slash"
   },
   // The workers.dev address carries the account's own subdomain, so it stays off: the site is reached through its
   // domain only.

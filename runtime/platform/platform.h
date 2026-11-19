@@ -338,6 +338,8 @@ int plat_file_set_readonly(const char *path, int on);     // sets or clears the 
 // and reaches the file even if the process dies right after (no user-space buffer, no flush to the disk).
 typedef struct PlatAppend PlatAppend;
 PlatAppend *plat_append_open(const char *path);           // creates or truncates path; NULL on failure
+// path for appends, created when missing and kept as it is otherwise; other processes may append to it at the same time
+PlatAppend *plat_append_shared(const char *path);
 int plat_append_write(PlatAppend *f, const void *data, size_t n);   // 1 when all n bytes landed
 // Calls cb(name, ctx) for each file in dir whose name ends in ext (".in"); name has no directory part. cb returns 0 to
 // stop. Returns 0 when dir cannot be listed.
@@ -357,6 +359,15 @@ int64_t plat_file_pread(PlatFile *f, void *buf, uint32_t n, uint64_t off);
 typedef struct { uint64_t volume, file_id, size, write_time, create_time; } PlatFileId;
 int plat_file_id(PlatFile *f, PlatFileId *out);
 const void *plat_file_map(PlatFile *f);                   // a read-only view of the whole file, kept until exit; NULL
+// A large file read or written through a view instead of a buffer of its size: its pages are the file's (the OS may
+// drop or write them out under memory pressure) and count against no commit charge. plat_view_open: the whole of an
+// existing file, read-only (*data, *size). plat_view_create: a new file of size bytes at path (replaced if there),
+// writable. plat_view_close: for a created view, its data to the disk and the file cut to keep bytes (1 on success);
+// for an opened one keep is ignored. NULL / 0 on failure.
+typedef struct PlatView PlatView;
+PlatView *plat_view_open(const char *path, const void **data, uint64_t *size);
+PlatView *plat_view_create(const char *path, uint64_t size, void **data);
+int plat_view_close(PlatView *v, uint64_t keep);
 
 // ---- the host file system under the game's save data (fs_host.c). Calls that can fail return PLAT_FS_OK (0) or the
 // reason; other processes may open the same files meanwhile.

@@ -850,7 +850,9 @@ NVN_API(nvnQueueSubmitCommands) {
     int n = (int)arg_x(c, 1);
     const uint64_t *h = arg_p(c, 2);
     if (n < 0 || (n && !h)) rt_fatal("nvn: QueueSubmitCommands with %d handles at %p", n, (const void *)h);
-    NVN_BLOCKING();
+    // the replay below is this thread's host work: with folded cores its slot stands for the replay's processor
+    // (kernel.c kern_core_away_soft); queued for the replay thread, the submit only waits
+    __attribute__((cleanup(kern_core_back))) int nvn_away_ = gfx_replay_async() ? kern_core_away() : kern_core_away_soft();
     {   // DEBUG-SUBMITWAIT: REKARINA_SUBMIT_WAIT=<k> (0, the default: off): the k-th submission after a present waits for the
         // GPU work submitted up to that present. An A/B for frames that overlap (REKARINA_PRESENT_SYNC=c1): in OoT k = 1
         // and k = 3 (before the compute submission of culling, lights and fog is recorded) take the local light flicker of c1
@@ -891,10 +893,17 @@ NVN_API(nvnQueueSubmitCommands) {
         plat_mutex_unlock(&submit_lock);
         if (hs != local) free(hs);
     } else {
+        // DEBUG-SUBMITPRIO: REKARINA_SUBMIT_PRIO=1 (above normal) or 2 (highest): the host priority of this thread while
+        // it replays; 0, the default, leaves it as it is
+        static int sp = -1;
+        if (sp < 0) sp = rt_knob("SUBMIT_PRIO", "0");
+        int was = sp > 0 ? plat_thread_priority_get() : 0;
+        if (sp > 0) plat_thread_priority(sp > 1 ? PLAT_PRIO_HIGHEST : PLAT_PRIO_ABOVE_NORMAL);
         nvn_submit_prepare(h, n);
         nvn_submit_queue = q;
         f = gfx_backend()->submit(h, n);
         nvn_submit_queue = NULL;
+        if (sp > 0) plat_thread_priority(was);
     }
     uint64_t prev = __atomic_load_n(&last_fence, __ATOMIC_RELAXED);
     while (f > prev && !__atomic_compare_exchange_n(&last_fence, &prev, f, 1, __ATOMIC_RELEASE, __ATOMIC_RELAXED)) {}

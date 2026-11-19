@@ -429,16 +429,17 @@ static void walk_get(void) {
 }
 
 // ---- dash on an input of its own (REKARINA_STICK_DASH, off by default; REKARINA_DASH_KEY; both live)
-// OoT has one button for two moves: held while the hero moves it dashes, pressed and let go it jumps (the reports of
-// 2026-11-19: "I have to hold the button to dash and press the same button to jump"). With the option on, a press of
-// the gamepad's left stick while the stick is tilted, or the dash key held while a stick is tilted, holds that button
-// for the game, so the hero dashes without a jump first: L3 latches until the stick comes back near the middle, the key
-// dashes while held. The press of the stick that starts a dash does not reach the game as its own button. A hold ends
-// no sooner than DASH_MIN_NS after it began, so a quick tap of the key cannot become the game's tap (a jump). The
-// button itself keeps working as before: a press or a release of it while a dash holds it lets go of it for DASH_GAP_NS
-// first, so the game sees that press and release of its own (a jump out of the dash, as with the button alone).
-// A script's LCLICK counts as the stick's press and its DASH as the key (input scripts drive no physical button).
-#define DASH_BUTTON B_B
+// OoT dashes while its A button is held as the hero moves, and a press of A does the action at hand (the pause menu's
+// controller guide names A "Actions" and "Dash (Hold)"; E on the keyboard). With the option on, a press of the
+// gamepad's left stick while the stick is tilted, or the dash key held while a stick is tilted, holds A for the game:
+// L3 latches until the stick comes back near the middle, the key dashes while held. The press of the stick that starts
+// a dash does not reach the game as its own button. A hold ends no sooner than DASH_MIN_NS after it began, so a quick
+// tap of the key cannot become the game's tap (an action). The button itself keeps working as before: a press or a
+// release of it while a dash holds it lets go of it for DASH_GAP_NS first, so the game sees that press and release of
+// its own. A script's LCLICK counts as the stick's press and its DASH as the key (input scripts drive no physical
+// button). Until 1.2.2 the hold went to B, which does not dash: the hero kept a run's 4.1-4.5 m/s with B held, and
+// 5.0-5.6 m/s with the stick's press or the key on A, at the same height (run dash3, 2026-11-19).
+#define DASH_BUTTON B_A
 #define DASH_TILT_ON 16384           // a press of the stick counts while the stick is past half way
 #define DASH_TILT_OFF 8192           // a latched dash ends when the stick comes back under a quarter
 #define DASH_MIN_NS 400000000ull

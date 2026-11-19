@@ -40,6 +40,8 @@ float opt_bottom(void);
 void opt_focus_first(void);
 // The row of key (or button id) takes the cursor, scrolled into view, when it is next drawn.
 void opt_focus_key(const char *key);
+// The key of the row the cursor is on in this frame's page (as opt_focus_key takes it), "" when none is.
+const char *opt_focus_row(void);
 // The next row is greyed out like one the environment fixes, with note under its label and in its description.
 void opt_disable_next(UiTextId note);
 void opt_disable_next_text(const char *note);   // note must outlive the frame

@@ -15,8 +15,9 @@ folders below, nothing else.
                             made it from python.org's embeddable package and pinned wheels)
     llvm/                   llvm-mingw's clang and lld                                 (from --from)
     bin/                    ninja.exe (from --from), rekarina_xlate.exe and its .id (build/xlate/totk_xlate.exe,
-                            tools/build_xlate.py), rekarina_dlssg.dll (build/oot/totk_dlssg.dll: our own library
-                            between the game and Streamline)
+                            tools/build_xlate.py), rekarina_dlssg.dll (build/oot/totk_dlssg.dll or --dlssg: our
+                            own library between the game and Streamline; without it the tool stops, unless
+                            --no-dlssg)
     runtime/                the runtime's sources as in this tree (the setup compiles them with the player's lifted code)
                             and deps/: headers, import libraries and DLLs of SDL3, Opus, libvpx, Vulkan and VMA
                             (toolchain/deps-mingw)
@@ -281,6 +282,9 @@ def main():
     ap.add_argument('--notes', type=Path, help='with --site-url: a text file with the release notes for latest.json')
     ap.add_argument('--sign', type=Path, help='with --dist: the private key file (tools/release_sign.py keygen) that '
                                               'signs SHA256SUMS')
+    ap.add_argument('--dlssg', type=Path, help='our DLSS Frame Generation library (default build/oot/totk_dlssg.dll of '
+                                               'this tree; it is built with MSVC against the Streamline SDK)')
+    ap.add_argument('--no-dlssg', action='store_true', help='make the release without DLSS Frame Generation')
     a = ap.parse_args()
     base, out = a.base.resolve(), a.out.resolve()
     if (base / 'python' / 'bin' / 'python3').is_file():   # the Linux toolchain folder
@@ -293,9 +297,17 @@ def main():
     need = [base / 'python' / 'python.exe', base / 'python' / 'pythonw.exe', base / 'llvm' / 'bin' / 'clang.exe',
             base / 'bin' / 'ninja.exe', ROOT / 'build' / 'xlate' / 'totk_xlate.exe', ROOT / 'toolchain' / 'deps-mingw' / 'include',
             ROOT / 'runtime' / 'rekarina.ico', ROOT / 'installer' / 'launcher' / 'rekarina.c']
+    # Our library between the game and Streamline. Releases 1.2.0 to 1.2.3 were made from a tree that had none, after a
+    # warning nobody read: the game offered RTX 40 and 50 cards AMD's frame generation only (runtime/vk_dlssg.c
+    # vk_dlssg_offered looks for it). A release without it is now asked for by name.
+    shim = (a.dlssg or ROOT / 'build' / 'oot' / 'totk_dlssg.dll').resolve()
+    if not a.no_dlssg:
+        need.append(shim)
     missing = [str(p) for p in need if not p.exists()]
     if missing:
-        sys.exit('make_rekarina_release: missing: ' + ', '.join(missing))
+        sys.exit('make_rekarina_release: missing: ' + ', '.join(missing) +
+                 ('' if shim.is_file() or a.no_dlssg else ' (--dlssg names the DLSS Frame Generation library, --no-dlssg '
+                                                           'makes the release without it)'))
     if out.exists():
         if not (out / 'VERSION').is_file() or not (out / 'installer' / 'gui_oot.py').is_file():
             sys.exit(f'make_rekarina_release: {out} exists and is not a Rekarina setup folder: not replaced')
@@ -313,11 +325,10 @@ def main():
     shutil.copy2(xl, out / 'bin' / 'rekarina_xlate.exe')
     if xl.with_suffix('.id').is_file():   # the translator identity is the file's content, whatever its name
         shutil.copy2(xl.with_suffix('.id'), out / 'bin' / 'rekarina_xlate.id')
-    shim = ROOT / 'build' / 'oot' / 'totk_dlssg.dll'
-    if shim.is_file():
-        shutil.copy2(shim, out / 'bin' / 'rekarina_dlssg.dll')
+    if a.no_dlssg:
+        print('make_rekarina_release: --no-dlssg: the release goes without DLSS Frame Generation')
     else:
-        print(f'make_rekarina_release: no {shim}: the release goes without DLSS Frame Generation')
+        shutil.copy2(shim, out / 'bin' / 'rekarina_dlssg.dll')
     counts['runtime'] = copy_tree(ROOT / 'runtime', out / 'runtime')
     counts['deps'] = copy_tree(ROOT / 'toolchain' / 'deps-mingw', out / 'runtime' / 'deps', whole=True)
     counts['recomp'] = copy_tree(ROOT / 'recomp', out / 'recomp')

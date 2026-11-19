@@ -8,6 +8,7 @@ import http.client
 import io
 import json
 import re
+import shutil
 import sys
 import tempfile
 import time
@@ -561,7 +562,9 @@ class FontsTest(unittest.TestCase):
 
 class OotShaderStepsTest(unittest.TestCase):
     """The prompts step and the shader step of the OoT setup: each is redone for its own inputs only, an old record of
-    the shader step stands, and a first install prepares the variants play met."""
+    the shader step stands, every setup run prepares every variant (a folder of 1.2.1-1.2.3 that prepared the variants
+    play met gets the rest from what it holds), and a game folder that holds every variant under this translator
+    prepares nothing, whatever the temp folder holds."""
 
     def setUp(self):
         from installer import oot, runner
@@ -583,7 +586,7 @@ class OotShaderStepsTest(unittest.TestCase):
         self.calls = []
         build = base / 'temp' / 'build'
 
-        def run(ctx, step, script, args, parse=None):
+        def run(ctx, step, script, args, parse=None, env=None):
             self.calls.append((script.name, list(map(str, args))))
             if script.name == 'oot_prepare_shaders.py':
                 (build / 'shader-prepared.bin').write_bytes(b'p')
@@ -634,19 +637,35 @@ class OotShaderStepsTest(unittest.TestCase):
         (self.layout.tools / 'build_game.py').write_text('a new compile')   # nothing of the build is in it
         self.assertEqual(self.keys()[1], shaders)
 
-    def test_mode(self):
+    def dest_prepared(self, identity='identity-1', pack=b'a pack', state=True):
+        """The game folder as a package step leaves it: the translator's identity, the pack, shader-prepared.bin and,
+        with state, the pipeline cache and the driver's cache."""
+        dest = self.base / 'dest'
+        (dest / 'shader-cache').mkdir(parents=True, exist_ok=True)
+        (dest / 'rekarina_xlate.id').write_text(identity)
+        (dest / 'shader-prepared.bin').write_bytes(b'p')
+        if pack is not None:
+            (dest / 'shader-cache' / 'shader-cache.pack').write_bytes(pack)
+        if state:
+            (dest / 'pipeline-cache.bin').write_bytes(b'the pipelines play met')
+            (dest / 'nv-cache').mkdir(exist_ok=True)
+            (dest / 'nv-cache' / 'Rekarina.exe.bin').write_bytes(b'the driver')
+        return dest
+
+    def test_every_setup_run_prepares_every_variant(self):
+        """The owner's call of 2026-11-19: no background preparation, every variant before play, whatever the folder
+        prepared before and whatever an older launcher passes."""
         mode = self.oot.shader_mode
-        self.assertEqual(mode(self.ctx()), 'met')                                   # a first install
-        met = {'format': 1, 'release': '1.2.1', 'inputs': {}, 'steps': {'oot_prepare': {'key': 'k', 'shaders': 'met'}}}
-        self.assertEqual(mode(self.ctx(met)), 'met')
+        met = {'format': 1, 'release': '1.2.3', 'inputs': {}, 'shaders': 'met',
+               'steps': {'oot_prepare': {'key': 'k', 'shaders': 'met'}}}
         old = {'format': 1, 'release': '1.2.0', 'inputs': {}, 'steps': {'oot_prepare': {'key': 'k', 'release': '1.2.0'}}}
-        self.assertEqual(mode(self.ctx(old)), 'all')                                # the old setup prepared every variant
-        self.options.all_shaders = True
-        self.assertEqual(mode(self.ctx(met)), 'all')
-        self.options.all_shaders = False
-        met['shaders'] = 'all'
-        self.assertEqual(mode(self.ctx(met)), 'all')                                # kept through updates
-        self.assertNotEqual(self.keys(self.ctx(met))[1], self.keys(self.ctx())[1])  # and a mode is part of the key
+        for later in (False, True):
+            for flag in (False, True):
+                self.options.all_shaders, self.options.shaders_later = flag, later
+                for saved in (None, met, old):
+                    self.assertEqual(mode(self.ctx(saved)), 'all')
+        self.options.all_shaders, self.options.shaders_later = False, False
+        self.assertNotEqual(self.oot.Prepare().key(self.ctx(), 'met'), self.keys()[1])   # a met record is not current
 
     def test_an_old_record_stands_while_the_translator_is_the_one_that_prepared(self):
         build = self.base / 'temp' / 'build'
@@ -682,78 +701,105 @@ class OotShaderStepsTest(unittest.TestCase):
         (self.layout.tools / 'oot_romfs.py').write_text('another reader')
         self.assertTrue(plan(ctx.state).runs['oot_prepare'])                        # a new-form record follows its key
 
-    def test_a_first_install_prepares_what_play_met_and_all_on_request(self):
-        for flag, expect in ((False, True), (True, False)):
-            self.options.all_shaders = flag
+    def run_prepare(self, saved):
+        """run_steps over the extraction (a stand-in) and the shader step: the scripts the step ran, in order."""
+        extract = SimpleNamespace(id='oot_extract', transient=False, always=False, key=lambda ctx: 'dump-1',
+                                  current=lambda ctx, rec: True, adopts=lambda ctx, rec: False, run=lambda ctx: {})
+        ctx = self.ctx(saved)
+        ctx.keys.clear()
+        self.calls.clear()
+        self.assertEqual(self.runner.run_steps([extract, self.oot.Prepare()], ctx), 'ok')
+        self.assertFalse((self.base / 'temp' / 'build' / self.oot.Prepare.PREPARING).exists())   # the run finished
+        return ctx, [name for name, _ in self.calls]
+
+    def fresh_temp(self):
+        build = self.base / 'temp' / 'build'
+        shutil.rmtree(build)
+        build.mkdir()
+        return build
+
+    def test_a_first_install_prepares_every_variant(self):
+        for later in (False, True):   # the launcher's run screen passed --shaders-later until 1.2.3
+            self.options.shaders_later = later
             ctx = self.ctx()
             self.calls.clear()
             record = self.oot.Prepare().run(ctx)
             prepare = next(a for n, a in self.calls if n == 'oot_prepare_shaders.py')
-            self.assertEqual('--met-only' in prepare, expect)
-            self.assertEqual(record, {'shaders': 'met' if expect else 'all'})
-            self.assertEqual(ctx.state.get('shaders'), 'met' if expect else 'all')
-            self.assertIn('pack_shader_cache.py', [n for n, _ in self.calls])
+            self.assertNotIn('--met-only', prepare)
+            self.assertEqual((record, ctx.state.get('shaders')), ({'shaders': 'all'}, 'all'))
+            self.assertEqual([n for n, _ in self.calls], ['oot_prepare_shaders.py', 'pack_shader_cache.py'])   # no folder
 
-    def test_shaders_later_keeps_all_only_while_the_inputs_stand(self):
-        """The launcher's run screen (--shaders-later) never prepares the rest: a changed input prepares the variants
-        play met, which the background job completes; unchanged inputs keep 'all'."""
+    def test_a_folder_that_prepared_the_variants_play_met_prepares_the_rest_from_what_it_holds(self):
+        """A folder of 1.2.1-1.2.3 recorded 'met': its next setup run prepares every variant, from a fresh temp folder
+        or with the met run's output still in it, and what the game folder holds goes into the build folder first (its
+        pack merged in, its pipeline cache and the driver's cache), so the run translates and builds only the rest and
+        the package copies back everything the folder held. Another translator's folder gives nothing."""
         build = self.base / 'temp' / 'build'
-        (build / 'shader-prepared.bin').write_bytes(b'p')
-        ctx = self.ctx()
-        ctx.options.all_shaders = True
-        key = self.oot.Prepare().key(ctx)
-        state = {'format': 1, 'release': '1.2.1', 'inputs': {}, 'shaders': 'all',
-                 'steps': {'oot_prepare': {'key': key, 'shaders': 'all'}}}
-        self.options.all_shaders, self.options.shaders_later = False, True
-        self.assertEqual(self.oot.shader_mode(self.ctx(state)), 'all')
-        (self.layout.tools / 'prepare_shaders.py').write_text('a change of the inputs')
-        self.assertEqual(self.oot.shader_mode(self.ctx(state)), 'met')
-        ctx = self.ctx(state)
-        self.oot.Prepare().run(ctx)
-        self.assertEqual(ctx.state['shaders'], 'met')                               # the background job has work again
-        self.assertTrue(self.oot.shaders_only_met(ctx.state | {'steps': {'oot_prepare': {'shaders': 'met'}}}))
 
-    def test_a_fresh_temp_folder_prepares_what_play_met_and_leaves_the_rest_to_the_background(self):
-        """A folder whose record says every variant was prepared, run from the launcher's run screen (--shaders-later)
-        with no prepared output in the temp folder (the setup unpacked again, the temp folder cleaned, a run cut
-        short): the step prepares the variants play met and records that, so the launcher offers the rest to its
-        background job; the output in place, it is skipped as before; --all-shaders prepares every variant."""
+        def met():
+            return {'format': 1, 'release': '1.2.3', 'inputs': {}, 'shaders': 'met', 'steps': {
+                'oot_extract': {'key': 'dump-1'},
+                'oot_prepare': {'key': self.oot.Prepare().key(self.ctx(), 'met'), 'release': '1.2.3', 'shaders': 'met'}}}
+        self.assertEqual(self.oot.shader_case(self.ctx(met())), 'all')
+        for leftover in (False, True):
+            self.fresh_temp()
+            if leftover:
+                (build / 'shader-prepared.bin').write_bytes(b'p')
+            dest = self.dest_prepared(pack=b'the variants play met')
+            ctx, ran = self.run_prepare(met())
+            self.assertEqual(ran, ['pack_shader_cache.py', 'oot_prepare_shaders.py', 'pack_shader_cache.py'])
+            self.assertEqual(self.calls[0][1], [str(build / 'shader-cache'), '--merge-from',
+                                                str(dest / 'shader-cache' / 'shader-cache.pack')])
+            self.assertNotIn('--met-only', self.calls[1][1])
+            self.assertEqual((build / 'pipeline-cache.bin').read_bytes(), b'the pipelines play met')
+            self.assertEqual((build / 'nv-cache' / 'Rekarina.exe.bin').read_bytes(), b'the driver')
+            rec = ctx.state['steps']['oot_prepare']
+            self.assertEqual((rec['shaders'], ctx.state['shaders']), ('all', 'all'))
+            self.assertFalse(self.oot.shaders_only_met(ctx.state))
+        self.fresh_temp()
+        self.dest_prepared(identity='identity-0')                                 # another translator's folder
+        self.assertEqual(self.run_prepare(met())[1], ['oot_prepare_shaders.py', 'pack_shader_cache.py'])
+        self.assertFalse((build / 'pipeline-cache.bin').exists())
+        self.assertFalse((build / 'nv-cache').exists())
+
+    def test_a_folder_that_holds_every_variant_prepares_nothing(self):
+        """A record of every variant whose key stands and a game folder that holds the pack under this translator: the
+        step is done with no output in the temp folder (a setup unpacked again, a cleaned temp folder), and the
+        package step leaves the folder's pack as it is. 1.2.3 prepared the variants play met there and its package
+        replaced a pack of every variant (2 GB) with them (340 MB). A run cut short in the temp folder, another
+        translator's folder, a folder without its pack and a changed input prepare every variant."""
         build = self.base / 'temp' / 'build'
-        self.options.all_shaders = True
         key_all = self.oot.Prepare().key(self.ctx(), 'all')
-        self.options.all_shaders, self.options.shaders_later = False, True
-        extract = SimpleNamespace(id='oot_extract', transient=False, always=False, key=lambda ctx: 'dump-1',
-                                  current=lambda ctx, rec: True, adopts=lambda ctx, rec: False, run=lambda ctx: {})
 
         def folder():
-            return {'format': 1, 'release': '1.2.1', 'inputs': {}, 'shaders': 'all', 'steps': {
-                'oot_extract': {'key': 'dump-1'}, 'oot_prepare': {'key': key_all, 'release': '1.2.1', 'shaders': 'all'}}}
-
-        def run(saved):
-            ctx = self.ctx(saved)
-            ctx.keys.clear()
-            self.calls.clear()
-            self.assertEqual(self.runner.run_steps([extract, self.oot.Prepare()], ctx), 'ok')
-            prepare = [args for name, args in self.calls if name == 'oot_prepare_shaders.py']
-            return ctx, (None if not prepare else 'met' if '--met-only' in prepare[0] else 'all')
-
-        ctx, prepared = run(folder())                                               # nothing in the temp folder
-        self.assertEqual(prepared, 'met')
-        rec = ctx.state['steps']['oot_prepare']
-        self.assertEqual((rec['shaders'], ctx.state['shaders']), ('met', 'met'))   # nothing claims all
-        self.assertTrue(self.oot.shaders_only_met(ctx.state))                     # the launcher's job takes the rest
-        self.assertFalse((build / self.oot.Prepare.PREPARING).exists())
-        self.assertIsNone(run(ctx.state)[1])                                        # and the met record stands
-        self.assertIsNone(run(folder())[1])                                         # all prepared, the output there
-        for leftover in (self.oot.Prepare.PREPARING, self.oot.Prepare.JOURNAL):    # a run cut short
+            return {'format': 1, 'release': '1.2.3', 'inputs': {}, 'shaders': 'all', 'steps': {
+                'oot_extract': {'key': 'dump-1'}, 'oot_prepare': {'key': key_all, 'release': '1.2.3', 'shaders': 'all'}}}
+        dest = self.dest_prepared()
+        self.assertEqual(self.oot.shader_case(self.ctx(folder())), 'rerun')
+        ctx, ran = self.run_prepare(folder())
+        self.assertEqual(ran, [])
+        self.assertEqual(ctx.state['steps']['oot_prepare']['shaders'], 'all')
+        self.assertEqual(sorted(p.name for p in build.iterdir()), [])            # nothing for the package to copy
+        for leftover in (self.oot.Prepare.PREPARING, self.oot.Prepare.JOURNAL):   # a run cut short
             (build / leftover).write_bytes(b'')
-            self.assertEqual(run(folder())[1], 'met')
-            self.assertFalse((build / self.oot.Prepare.PREPARING).exists())       # the run finished
-            (build / leftover).unlink(missing_ok=True)
-        self.options.shaders_later, self.options.all_shaders = False, True        # the background job
-        ctx, prepared = run(ctx.state)
-        self.assertEqual((prepared, ctx.state['steps']['oot_prepare']['shaders'], ctx.state['shaders']), ('all', 'all', 'all'))
-        self.assertFalse(self.oot.shaders_only_met(ctx.state))
+            self.assertEqual(self.oot.shader_case(self.ctx(folder())), 'all')
+            self.assertEqual(self.run_prepare(folder())[1], ['pack_shader_cache.py', 'oot_prepare_shaders.py',
+                                                             'pack_shader_cache.py'])
+            self.fresh_temp()
+        self.assertEqual(self.run_prepare(folder())[1], [])
+        (dest / 'rekarina_xlate.id').write_text('identity-0')                    # another translator's folder
+        self.assertEqual(self.run_prepare(folder())[1], ['oot_prepare_shaders.py', 'pack_shader_cache.py'])
+        self.fresh_temp()
+        (dest / 'totk_xlate.id').write_text('identity-1')                         # its name before the rename
+        (dest / 'rekarina_xlate.id').unlink()
+        self.assertEqual(self.run_prepare(folder())[1], [])
+        (dest / 'shader-cache' / 'shader-cache.pack').unlink()                    # no pack
+        self.assertEqual(self.run_prepare(folder())[1], ['oot_prepare_shaders.py', 'pack_shader_cache.py'])
+        self.fresh_temp()
+        self.dest_prepared()
+        (self.layout.tools / 'prepare_shaders.py').write_text('a change of the inputs')
+        self.assertEqual(self.run_prepare(folder())[1], ['pack_shader_cache.py', 'oot_prepare_shaders.py',
+                                                         'pack_shader_cache.py'])
 
     def test_only_met_is_offered_the_rest(self):
         met = {'steps': {'oot_prepare': {'shaders': 'met'}}}
@@ -782,14 +828,229 @@ class OotShaderStepsTest(unittest.TestCase):
         self.assertEqual(self.oot.Prepare().key(ctx), ctx.keys['oot_prepare'])
 
 
+class LauncherShortcutTest(unittest.TestCase):
+    """installer/oot.py launcher_shortcuts: "Rekarina Launcher.lnk" in the game folder and "Rekarina.lnk" in the
+    player's Start menu, both to the launcher of the setup that runs, written at every run (the writer is mocked here;
+    test_real_shortcut writes one through the shell)."""
+
+    def setUp(self):
+        from installer import oot
+        self.oot = oot
+        self.tmp = tempfile.TemporaryDirectory()
+        base = self.base = Path(self.tmp.name)
+        self.setup, self.dest = base / 'home' / 'setup' / '1.2.4', base / 'game'
+        self.setup.mkdir(parents=True)
+        self.dest.mkdir()
+        (self.dest / oot.GAME_EXE).write_bytes(b'the game')
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def run_it(self, with_launcher=True, desktop=True):
+        if with_launcher:
+            (self.setup / self.oot.LAUNCHER_EXE).write_bytes(b'launcher')
+        ctx = SimpleNamespace(layout=SimpleNamespace(root=self.setup), dest=self.dest, reporter=Reporter(out=io.StringIO()),
+                              options=SimpleNamespace(no_desktop_shortcut=not desktop))
+        calls = []
+
+        def fake(link, target, workdir, description):
+            calls.append((Path(link), Path(target), Path(workdir)))
+            Path(link).write_bytes(b'lnk')
+            return True, ''
+        # the player's own folders are the test's: never the real desktop or Start menu
+        with mock.patch.object(self.oot, 'WIN', True), mock.patch.object(self.oot, 'write_shortcut', fake), \
+                mock.patch.object(self.oot, 'start_menu_folder', lambda: self.base / 'start'), \
+                mock.patch.object(self.oot, 'desktop_folder', lambda: self.base / 'desktop'):
+            made = self.oot.launcher_shortcuts(ctx)
+        return made, calls
+
+    def test_game_folder_start_menu_desktop(self):
+        made, calls = self.run_it()
+        launcher = self.setup / self.oot.LAUNCHER_EXE
+        links = [self.dest / 'Rekarina Launcher.lnk', self.base / 'start' / 'Rekarina.lnk',
+                 self.base / 'desktop' / 'Rekarina Launcher.lnk']
+        self.assertEqual(calls, [(link, launcher, self.setup) for link in links])
+        self.assertEqual(made, links)
+
+    def test_no_desktop_when_the_form_says_no(self):
+        _, calls = self.run_it(desktop=False)
+        self.assertEqual([link.parent for link, _, _ in calls], [self.dest, self.base / 'start'])
+
+    def test_newest_setup_wins(self):
+        self.run_it()
+        self.setup = self.base / 'home' / 'setup' / '1.2.5'   # a setup downloaded anew runs next
+        self.setup.mkdir(parents=True)
+        _, calls = self.run_it()
+        self.assertTrue(all(target == self.setup / self.oot.LAUNCHER_EXE for _, target, _ in calls))
+
+    def test_no_launcher_no_shortcut(self):   # a source checkout
+        self.assertEqual(self.run_it(with_launcher=False), ([], []))
+
+    @unittest.skipUnless(sys.platform == 'win32', 'Windows shortcuts')
+    def test_real_shortcut(self):
+        import subprocess
+        target = Path(sys.executable)
+        link = self.base / 'Rekarina Launcher.lnk'
+        ok, said = self.oot.write_shortcut(link, target, target.parent, 'test')
+        self.assertTrue(ok, said)
+        read = subprocess.run(['powershell', '-NoProfile', '-NonInteractive', '-Command',
+                               '$s = (New-Object -ComObject WScript.Shell).CreateShortcut($env:L); '
+                               '$s.TargetPath; $s.WorkingDirectory'], env=dict(__import__('os').environ, L=str(link)),
+                              capture_output=True, text=True, timeout=60)
+        self.assertEqual([Path(p) for p in read.stdout.split('\n') if p.strip()], [target, target.parent])
+
+
+class OotComponentsShimTest(unittest.TestCase):
+    """Our DLSS Frame Generation library (rekarina_dlssg.dll) reaches the game folder of an RTX 40 or 50 card. Releases
+    1.2.0 to 1.2.3 carried none, and the game offered such a card AMD's frame generation only: a release that carries
+    it changes the components step's key for those cards, so a folder set up before gets it at its next update, and
+    the record names it, so the step runs again when it is gone."""
+
+    def setUp(self):
+        from installer import components, oot
+        self.oot, self.components = oot, components
+        self.tmp = tempfile.TemporaryDirectory()
+        base = Path(self.tmp.name)
+        self.shim = base / 'bin' / oot.SHIM
+        self.shim.parent.mkdir()
+        self.dest = base / 'game'
+        self.dest.mkdir()
+        self.layout = SimpleNamespace(shim=self.shim, release='1.2.4')
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def ctx(self, gpu):
+        ctx = runner.Context(self.layout, self.dest, Path(self.tmp.name) / 'temp', Reporter(out=io.StringIO()),
+                             SimpleNamespace(), state=None)
+        ctx.gpu = gpu   # installer/oot.py host_gpu: asked once
+        return ctx
+
+    @unittest.skipUnless(sys.platform == 'win32', 'the libraries are Windows ones (components.groups_for)')
+    def test_the_shim_is_in_the_key_and_the_record_of_a_card_that_runs_it(self):
+        rtx40 = self.components.Gpu('NVIDIA GeForce RTX 4070 SUPER', 'nvidia', 12 << 30)
+        rtx30 = self.components.Gpu('NVIDIA GeForce RTX 3080', 'nvidia', 10 << 30)
+        step = self.oot.Components()
+        without = {g.name: step.key(self.ctx(g)) for g in (rtx40, rtx30)}
+        self.shim.write_bytes(b'our library')
+        self.assertNotEqual(step.key(self.ctx(rtx40)), without[rtx40.name])   # a release that carries it: once more
+        self.assertEqual(step.key(self.ctx(rtx30)), without[rtx30.name])      # a card without it: nothing to do
+        (self.dest / 'nvngx_dlssg.dll').write_bytes(b'NVIDIA')
+        installed = {'installed': [], 'present': ['nvngx_dlssg.dll'], 'kept': [], 'failed': {}}
+        with mock.patch.object(self.components, 'install', return_value=installed):
+            record = step.run(self.ctx(rtx40))
+        self.assertTrue((self.dest / self.oot.SHIM).is_file())
+        self.assertIn(self.oot.SHIM, record['files'])
+        self.assertTrue(step.current(self.ctx(rtx40), record))
+        (self.dest / self.oot.SHIM).unlink()
+        self.assertFalse(step.current(self.ctx(rtx40), record))                # gone: the step runs again
+
+
+class ToolSteadyTest(unittest.TestCase):
+    """installer/oot.py tool_steady: a tool that failed runs again; the same failure twice is the tool's own, failures
+    that differ every time are reported as an unstable machine. Real processes of this Python, made to fail."""
+
+    def setUp(self):
+        from installer import oot
+        self.oot = oot
+        self.tmp = tempfile.TemporaryDirectory()
+        base = self.base = Path(self.tmp.name)
+        self.ctx = SimpleNamespace(temp=base / 'temp', reporter=Reporter(out=io.StringIO(), log_path=base / 'setup.log'),
+                                   layout=SimpleNamespace(python=Path(sys.executable), root=base))
+        self.count = base / 'count'
+
+    def tearDown(self):
+        self.ctx.reporter.log_file.close()
+        self.tmp.cleanup()
+
+    def tool(self, body):
+        """A tool script that counts its runs in self.count (n: this run's number, from 1) and then runs body."""
+        script = self.base / 'tool.py'
+        head = ('import os, sys\n'
+                'from pathlib import Path\n'
+                'c = Path(sys.argv[1])\n'
+                'n = int(c.read_text()) + 1 if c.exists() else 1\n'
+                'c.write_text(str(n))\n')
+        script.write_text(head + body, encoding='utf-8')
+        return script
+
+    def test_fails_once_then_works(self):
+        script = self.tool('sys.exit(3 if n == 1 else 0)\n')
+        code, log = self.oot.tool_steady(self.ctx, 'step', script, [self.count])
+        self.assertEqual((code, self.count.read_text()), (0, '2'))
+        self.assertTrue(log.with_name(log.stem + '.1.log').is_file())   # the failed run's log is kept
+
+    def test_same_failure_twice_is_the_tools(self):
+        script = self.tool('raise ValueError("bad input")\n')
+        code, log = self.oot.tool_steady(self.ctx, 'step', script, [self.count])
+        self.assertEqual((code, self.count.read_text()), (1, '2'))
+        self.assertIn('ValueError: bad input', log.read_text(encoding='utf-8'))
+
+    def test_different_failures_are_unstable(self):
+        script = self.tool('raise TypeError(f"run {n}")\n')   # each run ends another way, as the player's did
+        with self.assertRaises(self.oot.Unstable) as caught:
+            self.oot.tool_steady(self.ctx, 'step', script, [self.count])
+        self.assertEqual((caught.exception.tries, caught.exception.tool, self.count.read_text()), (3, 'tool.py', '3'))
+        error = caught.exception.error()
+        self.assertEqual(error.id, 'oot.unstable')
+        from installer.guilogic import Catalog
+        self.assertIn('tool.py', Catalog('en')(error.id, **error.params))
+
+    def test_a_crash_leaves_its_stack(self):
+        """An access violation in the first run: the exit code says it crashed, faulthandler wrote where."""
+        script = self.tool('import faulthandler\n'
+                           'def deep():\n'
+                           '    faulthandler._read_null()   # a read of address 0, as the player\'s crash was\n'
+                           'if n == 1:\n'
+                           '    deep()\n')
+        code, log = self.oot.tool_steady(self.ctx, 'step', script, [self.count])
+        self.assertEqual(code, 0)
+        first = log.with_name(log.stem + '.1.log').read_text(encoding='utf-8')
+        self.assertIn('access violation', first)
+        self.assertIn('tool.py", line 8 in deep', first)
+        said = (self.base / 'setup.log').read_text(encoding='utf-8')
+        self.assertIn('crashed', said)
+        self.assertTrue(self.oot.crashed(int(re.search(r'exit code (-?\d+)', said).group(1))))
+
+    def test_long_failure_runs_once(self):
+        script = self.tool('sys.exit(3)\n')
+        code, _ = self.oot.tool_steady(self.ctx, 'step', script, [self.count], tries=2, within=-1)
+        self.assertEqual((code, self.count.read_text()), (3, '1'))
+
+    def test_env_reaches_the_tool(self):
+        script = self.tool('sys.exit(0 if os.environ.get("REKARINA_FONTTOOLS_PURE") == "1" else 5)\n')
+        code, _ = self.oot.tool_steady(self.ctx, 'step', script, [self.count], env={'REKARINA_FONTTOOLS_PURE': '1'})
+        self.assertEqual(code, 0)
+
+
+class FontToolsPureTest(unittest.TestCase):
+    """tools/fonttools_pure.py: with REKARINA_FONTTOOLS_PURE=1 fontTools' compiled modules are not loaded, its Python
+    source is (skipped where fontTools has none compiled)."""
+
+    def test_source_modules(self):
+        import subprocess
+        probe = ('import sys; sys.path.insert(0, sys.argv[1]); import fonttools_pure; '
+                 'import fontTools.misc.bezierTools as b, fontTools.pens.boundsPen; print(b.__file__)')
+        try:
+            import fontTools.misc.bezierTools as b
+        except ImportError:
+            self.skipTest('no fontTools')
+        if b.__file__.endswith('.py'):
+            self.skipTest('this fontTools has no compiled modules')
+        for value, compiled in (('1', False), ('', True)):
+            env = dict(__import__('os').environ, REKARINA_FONTTOOLS_PURE=value)
+            out = subprocess.run([sys.executable, '-c', probe, str(ROOT / 'tools')], capture_output=True, text=True, env=env)
+            self.assertEqual(out.returncode, 0, out.stderr)
+            self.assertEqual(out.stdout.strip().endswith('.py'), not compiled, out.stdout)
+
+
 class OotMainTest(unittest.TestCase):
     """installer/oot.py main() up to the steps, started the way the launcher's run screen starts it (--shaders-later) on
     folders that earlier setups made. The estimate before the steps runs before ctx.plan() fills the steps' keys: 1.2.1
-    stopped there with a KeyError on every folder whose shaders were prepared all, before its first step. The shader
-    step prepares every variant in the foreground only when it has nothing to do: 1.2.2 prepared them all, for an hour
-    and more under a "2 min" estimate, when a setup unpacked again (a fresh temp folder) met a folder that had prepared
-    all. And a failure outside the steps reaches the window as an error and the end of the run, with the traceback in
-    the log."""
+    stopped there with a KeyError on every folder whose shaders were prepared all, before its first step. The estimate
+    names what the shader step will do: 1.2.2 prepared every variant, for an hour and more under a "2 min" estimate, when
+    a setup unpacked again (a fresh temp folder) met a folder that had prepared all. And a failure outside the steps
+    reaches the window as an error and the end of the run, with the traceback in the log."""
 
     def setUp(self):
         from installer import oot
@@ -843,7 +1104,10 @@ class OotMainTest(unittest.TestCase):
         ctx.keys['oot_extract'] = self.oot.Extract().key(ctx)
         return self.oot.Prepare().key(ctx, 'all')
 
-    def test_shaders_later_on_every_kind_of_folder_reaches_the_steps(self):
+    def test_every_kind_of_folder_reaches_the_steps_with_the_estimate_of_what_it_prepares(self):
+        """Every variant, and the estimate of every variant unless the step has nothing to do: its output in the temp
+        folder, or (a fresh temp folder) a game folder that holds the pack under this translator. Whatever the launcher
+        passes: --shaders-later (1.2.1-1.2.3) and --all-shaders (since) change nothing."""
         old = {'format': 1, 'release': '1.2.0', 'inputs': {}, 'steps': {   # 1.2.0 wrote no 'shaders' field: all
             'oot_prepare': {'key': 'the old form', 'release': '1.2.0', 'finished': 't', 'seconds': 1.0}}}
 
@@ -851,39 +1115,47 @@ class OotMainTest(unittest.TestCase):
             return {'format': 1, 'release': '1.2.1', 'inputs': {}, **({'shaders': 'all'} if shaders == 'all' else {}),
                     'steps': {'oot_prepare': {'key': key, 'release': '1.2.1', 'shaders': shaders}}}
         unchanged = prepared('all', self.prepared_all_key())
-        # (name, state, what the temp folder's build holds, the mode, the estimate's case of the shader step)
+        # (name, state, what the temp folder's build and the game folder hold, the estimate's case of the shader step)
         cases = (
-            ('a 1.2.0 folder, the translator that prepared it', old, 'output', 'all', 'rerun'),
-            ('all, the inputs unchanged', unchanged, 'output', 'all', 'rerun'),
-            ('all, the inputs unchanged, a fresh temp folder', unchanged, '', 'met', 'first'),
-            ('all, the inputs unchanged, a run cut short', unchanged, 'output marker', 'met', 'first'),
-            ("all, the inputs unchanged, the driver's phase of an earlier setup cut short", unchanged, 'output journal',
-             'met', 'first'),
-            ('all, the inputs changed', prepared('all'), 'output', 'met', 'first'),
-            ('the variants play met', prepared('met'), 'output', 'met', 'first'),
-            ('a new folder', None, '', 'met', 'first'),
+            ('a 1.2.0 folder, the translator that prepared it', old, 'output', 'rerun'),
+            ('all, the inputs unchanged', unchanged, 'output', 'rerun'),
+            ('all, the inputs unchanged, a fresh temp folder', unchanged, '', 'all'),
+            ('all, the inputs unchanged, a fresh temp folder, the pack in the game folder', unchanged, 'folder', 'rerun'),
+            ('all, the inputs unchanged, a run cut short', unchanged, 'output marker folder', 'all'),
+            ("all, the inputs unchanged, the driver's phase of an earlier setup cut short", unchanged,
+             'output journal folder', 'all'),
+            ('all, the inputs changed', prepared('all'), 'output folder', 'all'),
+            ('the variants play met', prepared('met'), 'output folder', 'all'),
+            ('a new folder', None, '', 'all'),
         )
         files = {'output': 'shader-prepared.bin', 'marker': self.oot.Prepare.PREPARING, 'journal': self.oot.Prepare.JOURNAL}
-        for name, saved, holds, mode, case in cases:
-            with self.subTest(name):
-                (self.dest / state.NAME).unlink(missing_ok=True)
-                for what, file in files.items():
-                    (self.build / file).unlink(missing_ok=True)
-                    if what in holds.split():
-                        (self.build / file).write_bytes(b'p')
-                code, events, seen = self.start(saved)
-                self.assertEqual(code, 0, self.stderr)
-                self.assertEqual([e['type'] for e in events], ['start', 'eta', 'end'])
-                self.assertEqual(events[-1]['result'], 'ok')
-                self.assertEqual(events[1]['steps']['oot_prepare']['case'], case)
-                self.assertEqual(seen['mode'], mode)   # the decision for --shaders-later, as before the steps' keys
+        folder = {'rekarina_xlate.id': b'identity-1', 'shader-prepared.bin': b'p', 'shader-cache/shader-cache.pack': b'a pack'}
+        for flag in ('--shaders-later', '--all-shaders'):
+            for name, saved, holds, case in cases:
+                with self.subTest(name, flag=flag):
+                    (self.dest / state.NAME).unlink(missing_ok=True)
+                    for what, file in files.items():
+                        (self.build / file).unlink(missing_ok=True)
+                        if what in holds.split():
+                            (self.build / file).write_bytes(b'p')
+                    for file, data in folder.items():
+                        (self.dest / file).unlink(missing_ok=True)
+                        if 'folder' in holds.split():
+                            (self.dest / file).parent.mkdir(exist_ok=True)
+                            (self.dest / file).write_bytes(data)
+                    code, events, seen = self.start(saved, flag)
+                    self.assertEqual(code, 0, self.stderr)
+                    self.assertEqual([e['type'] for e in events], ['start', 'eta', 'end'])
+                    self.assertEqual(events[-1]['result'], 'ok')
+                    self.assertEqual(events[1]['steps']['oot_prepare']['case'], case)
+                    self.assertEqual(seen['mode'], 'all')
         (self.build / 'shader-prepared.bin').write_bytes(b'p')
         (self.build / 'rekarina_xlate.id').write_text('identity-0')   # another translator prepared the old folder
-        self.assertEqual(self.start(old)[2]['mode'], 'met')
+        self.assertEqual(self.start(old)[1][1]['steps']['oot_prepare']['case'], 'all')
 
-    def test_the_background_job_prepares_all_whatever_the_temp_folder_holds(self):
-        """--all-shaders (installer/shaderjob.py): every variant, with the estimate of every variant unless the step has
-        nothing to do."""
+    def test_all_shaders_prepares_all_whatever_the_temp_folder_holds(self):
+        """--all-shaders (the launcher's flag after 1.2.3, and installer/shaderjob.py's): every variant, with the
+        estimate of every variant unless the step has nothing to do."""
         met = {'format': 1, 'release': '1.2.1', 'inputs': {}, 'steps': {'oot_prepare': {'key': 'k', 'shaders': 'met'}}}
         code, events, seen = self.start(met, '--all-shaders')
         self.assertEqual((code, seen['mode'], events[1]['steps']['oot_prepare']['case']), (0, 'all', 'all'))

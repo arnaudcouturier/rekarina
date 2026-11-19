@@ -102,6 +102,9 @@ static struct {
     PFN_vkCmdSetColorWriteMaskEXT set_wmask;
     PFN_vkCmdSetAlphaToCoverageEnableEXT set_a2c;
     char cache_path[PLAT_PATH_MAX * 2];
+    int cache_unloaded;                // REKARINA_PIPELINE_CACHE_LOAD=0: the file was not handed to the driver; not saved
+    int cache_fresh;                   // --warm-shaders on NVIDIA: the file is not loaded, only written (vk_pipeline_warm_shaders)
+    uint64_t cache_bytes;              // the cache's size when it was loaded or last saved (autosave_in_play)
     VkPipeStats stats;
 } P = {.lock = PLAT_MUTEX_INIT};
 
@@ -174,34 +177,46 @@ static void cache_path_init(void) {
 }
 
 // Cache data whose header names another device or driver is dropped before Vulkan sees it.
+// The file (626 MB after a full preparation) is handed to the driver through a read-only view of it, not a buffer it
+// was read into: the driver keeps a copy of its own anyway, and the buffer was as much private memory again at the
+// start (commit charge on a 16 GB PC, beside the file's pages the OS caches either way).
+// DEBUG-PCLOAD: REKARINA_PIPELINE_CACHE_LOAD=0 starts with an empty cache and never writes the file (the pipelines come
+// from the driver's own disk cache or are compiled), to see what the driver keeps of ours.
+// The log says how large the file was and how long the driver took to take it in (a refused one starts empty).
 static void cache_load(VkCtx *c) {
     cache_path_init();
-    void *data = NULL;
+    const void *data = NULL;
+    uint64_t len = 0;
     size_t size = 0;
-    FILE *f = P.cache_path[0] ? fopen(P.cache_path, "rb") : NULL;
-    if (f) {
-        fseek(f, 0, SEEK_END);
-        long len = ftell(f);
-        fseek(f, 0, SEEK_SET);
-        if (len > (long)sizeof(VkPipelineCacheHeaderVersionOne) && (data = malloc((size_t)len)) &&
-            fread(data, 1, (size_t)len, f) == (size_t)len)
-            size = (size_t)len;
-        fclose(f);
+    P.cache_unloaded = !rt_knob("PIPELINE_CACHE_LOAD", "1");
+    if (P.cache_unloaded) rt_log("vk_pipeline: %s not loaded and not saved (REKARINA_PIPELINE_CACHE_LOAD=0)", P.cache_path);
+    if (P.cache_fresh && c->props.vendorID != 0x10de) P.cache_fresh = 0;
+    if (P.cache_fresh)
+        rt_log("vk_pipeline: %s not loaded: written new from what this run builds (vk_pipeline_warm_shaders)", P.cache_path);
+    double t0 = (double)plat_now_ns() / 1e6;
+    PlatView *v = P.cache_path[0] && !P.cache_unloaded && !P.cache_fresh ? plat_view_open(P.cache_path, &data, &len) : NULL;
+    if (v && len > sizeof(VkPipelineCacheHeaderVersionOne) && len <= SIZE_MAX) {
         VkPipelineCacheHeaderVersionOne h;
-        if (size) memcpy(&h, data, sizeof h);
-        if (size && (h.headerVersion != VK_PIPELINE_CACHE_HEADER_VERSION_ONE || h.vendorID != c->props.vendorID ||
-                     h.deviceID != c->props.deviceID || memcmp(h.pipelineCacheUUID, c->props.pipelineCacheUUID, VK_UUID_SIZE))) {
+        memcpy(&h, data, sizeof h);
+        size = (size_t)len;
+        if (h.headerVersion != VK_PIPELINE_CACHE_HEADER_VERSION_ONE || h.vendorID != c->props.vendorID ||
+            h.deviceID != c->props.deviceID || memcmp(h.pipelineCacheUUID, c->props.pipelineCacheUUID, VK_UUID_SIZE)) {
             rt_log("vk_pipeline: %s was written by another device or driver; starting empty", P.cache_path);
             size = 0;
         }
     }
     VkPipelineCacheCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO, .initialDataSize = size,
                                     .pInitialData = size ? data : NULL};
+    P.cache_bytes = size;
     if (vkCreatePipelineCache(c->device, &ci, NULL, &P.cache) != VK_SUCCESS) {
-        ci.initialDataSize = 0, ci.pInitialData = NULL;
+        rt_log("vk_pipeline: the driver refused %s (%.1f MiB); starting empty", P.cache_path, size / 1048576.0);
+        ci.initialDataSize = 0, ci.pInitialData = NULL, P.cache_bytes = 0;
         if (vkCreatePipelineCache(c->device, &ci, NULL, &P.cache) != VK_SUCCESS) P.cache = VK_NULL_HANDLE;
     }
-    free(data);
+    plat_view_close(v, 0);   // the driver copied what it keeps
+    if (size)
+        rt_log("vk_pipeline: pipeline cache of %.1f MiB handed to the driver in %.0f ms", size / 1048576.0,
+               (double)plat_now_ns() / 1e6 - t0);
 }
 
 static void keys_open(void);
@@ -1706,6 +1721,24 @@ static VkPipelineLayout half_layout(Layout *l, int h) {
     return l->half[h];
 }
 
+// The pipeline cache a build goes into: pipeline-cache.bin's (P.cache), or none while this thread builds for the
+// preparation on NVIDIA (lb_warm_worker). The preparation (--prepare-shaders, and --warm-shaders in the game folder at
+// the setup) builds every prepared variant's stage library and compute pipeline once, so that the driver's own disk
+// cache (nv-cache, kept per executable name) holds them. Built through P.cache they went into pipeline-cache.bin as
+// well: some 56,000 entries play never asks the file for, since a draw takes a library missing from it from the
+// driver's disk cache in about a millisecond (the note above mesh_gpl_on) and the entry step's pipelines are in the
+// file anyway. Releases to 1.2.3 read the file with a 32-bit size and dropped one over 2 GiB, so their first start after
+// a setup built the entry step without it and its exit wrote the small file; 1.2.4 loads it. In a copy of a 1.2.4
+// game folder (RTX 5070, 2026-11-20) the setup's --warm-shaders wrote 3,057,551,174 bytes in 42 s with them and
+// 626,675,543 in 16 s without; a 30 s start with the large file held 22.2 GB of commit and 17.0 GB of working set in
+// play against 19.2 and 14.6, reached the game in 4.0-4.5 s against 2.1, and its exit wrote the 2.9 GiB again (1.3-1.4 s
+// of the driver's copy, 5.5-5.9 s of file); with either file the entry step built all 10,847 recorded pipelines from it
+// in 5.5-6.4 s of thread time and play built and translated nothing. Other drivers keep their own disk cache to a
+// limited size (AMD's evicted a prepared build folder's libraries), so there the file still holds the libraries.
+// REKARINA_WARM_APP_CACHE=1 keeps them in it on NVIDIA too.
+static _Thread_local int build_no_app_cache;
+static VkPipelineCache build_cache(void) { return build_no_app_cache ? VK_NULL_HANDLE : P.cache; }
+
 // Builds one library from the pipeline's state; key is the library's key (PrKey: fin holds the added outputs).
 static VkPipeline lib_create(int kind, const VkPipeState *s, const GKey *k, VkPipelineLayout lay, const void *key) {
     // indexed by kind: every kind needs its entry (LIB_PRM read past the end of a 4-entry table, and NVIDIA's driver
@@ -1843,7 +1876,7 @@ static VkPipeline lib_create(int kind, const VkPipeState *s, const GKey *k, VkPi
         ri.depthAttachmentFormat = (VkFormat)k->depth, ri.stencilAttachmentFormat = (VkFormat)k->stencil;
         pi.pColorBlendState = &cb, pi.pMultisampleState = &ms;
     }
-    if (vkCreateGraphicsPipelines(P.device, P.cache, 1, &pi, NULL, &pipe) != VK_SUCCESS) pipe = VK_NULL_HANDLE;
+    if (vkCreateGraphicsPipelines(P.device, build_cache(), 1, &pi, NULL, &pipe) != VK_SUCCESS) pipe = VK_NULL_HANDLE;
 out:
     if (m) vkDestroyShaderModule(P.device, m, NULL);
     for (int i = 0; i < 2; i++)
@@ -2743,7 +2776,7 @@ static VkPipeline compute_create(const GfxShader *cs, const Layout *l) {
     }
     VkPipeline pipe = VK_NULL_HANDLE;
     if (pipestats_on()) ci.flags |= VK_PIPELINE_CREATE_CAPTURE_STATISTICS_BIT_KHR;   // DEBUG-PIPESTATS
-    if (vkCreateComputePipelines(P.device, P.cache, 1, &ci, NULL, &pipe) != VK_SUCCESS) pipe = VK_NULL_HANDLE;
+    if (vkCreateComputePipelines(P.device, build_cache(), 1, &ci, NULL, &pipe) != VK_SUCCESS) pipe = VK_NULL_HANDLE;
     { const GfxShader *ps[1] = {cs}; VkShaderStageFlags pst[1] = {VK_SHADER_STAGE_COMPUTE_BIT}; pipestats_log(pipe, ps, pst, 1); }
     vkDestroyShaderModule(P.device, m, NULL);
     return pipe;
@@ -4580,11 +4613,13 @@ static void lb_stop(void) {
 
 // Preparation: one prepared variant at a time into the driver's disk cache (private shader copy, nothing kept). arg is
 // the worker's journal slot.
+static int warm_no_app_cache;   // lb_warm_prepared: the builds below go past P.cache (build_cache)
 static void lb_warm_worker(void *arg) {
     int slot = (int)(intptr_t)arg;
+    build_no_app_cache = warm_no_app_cache;
     for (;;) {
         size_t i = (size_t)plat_inc64(&LB.next) - 1;
-        if (i >= LB.n) return;
+        if (i >= LB.n) break;
         int owned = 0, skip = skip_listed(LB.e[i].iid);
         const GfxShader *sh = skip ? NULL : gfx_shader_load_private(LB.e[i].iid, &owned);
         int st = sh ? gfx_shader_stage(sh) : -1;
@@ -4619,6 +4654,7 @@ static void lb_warm_worker(void *arg) {
         plat_mutex_unlock(&LB.stat);
         if (d % 4000 == 0) lb_report("preparation progress");
     }
+    build_no_app_cache = 0;   // the calling thread may build for play afterwards (the suspects run on the caller)
 }
 
 // Preparation: every variant of <dir>/shader-prepared.bin on every core at normal priority.
@@ -4639,6 +4675,9 @@ static void lb_warm_prepared(const char *dir) {
     SK.journal = plat_fs_create(jp, NULL);   // skip_init removed a leftover one
     if (!SK.journal) rt_log("vk_pipeline: cannot create %s: a driver crash in this run will not be recorded", jp);
     LB.n = n, LB.idle = 0, LB.t0 = now_ms();
+    warm_no_app_cache = vk_ctx()->props.vendorID == 0x10de && !rt_knob("WARM_APP_CACHE", "0");
+    rt_log("vk_pipeline: the prepared variants go %s", warm_no_app_cache ? "into the driver's disk cache only (build_cache)"
+                                                                            : "into the driver's disk cache and pipeline-cache.bin");
     static const uint32_t no_pr[16], no_fs[4];
     lb_state(no_pr, no_fs);
 #ifdef GAME_NS2
@@ -4721,9 +4760,14 @@ int vk_pipeline_prepare_shaders(void) {
 // and pipeline-cache.bin written: the setup runs this in the game folder (installer/oot.py, Package), so the first start
 // finds those pipelines built instead of building them (almost five minutes on 16 threads with a cold driver cache,
 // 2026-11-16). REKARINA_PIPE_PREBUILD=0 leaves that part out, as it leaves the entry step out.
+// On NVIDIA the file is not loaded first (P.cache_fresh, cache_load): what it is written with is what the entry step builds,
+// and a file a setup of 1.2.4 filled with every prepared library (build_cache) is written small again at the next
+// setup. REKARINA_WARM_FRESH_CACHE=0 loads it as before.
 static int pw_no_lb;   // --warm-shaders: the entry step starts no boot prebuild after it (the process ends)
 int vk_pipeline_warm_shaders(void) {
     int pipes = cfg_bool("REKARINA_PIPE_PREBUILD");
+    // (only when the entry step runs below: without it nothing would fill the file again)
+    P.cache_fresh = pipes && rt_knob("WARM_FRESH_CACHE", "1");
     if (pipes) {   // before ensure_init: keys_open reads the key files with A.on only, and prebuild_start must leave
         vk_pipeline_async_enable();   // them to the entry step below
         K.warm = 1;
@@ -5288,7 +5332,7 @@ void vk_pipeline_save(void) {
                    (unsigned long long)LB.cs_draw, LB.cs_draw ? LB.cs_draw_ms / (double)LB.cs_draw : 0.0, LB.cs_draw_max);
     }
     gfx_shader_record_flush(1);
-    if (!P.ready || !P.cache || !P.cache_path[0]) return;
+    if (!P.ready || !P.cache || !P.cache_path[0] || P.cache_unloaded) return;
     // Not under P.lock: the driver synchronises P.cache, and holding P.lock through the copy and the file write (about
     // 60 ms on the 1.4.3 fight) stopped every pipeline lookup of the replay, a freeze at each 20 s autosave.
     plat_mutex_lock(&save_lock);
@@ -5296,18 +5340,84 @@ void vk_pipeline_save(void) {
         plat_mutex_unlock(&save_lock);
         return;
     }
+    // The driver writes the data straight into a view of a new file beside the cache, which then replaces it: a buffer
+    // of the cache's size (626 MB) was private memory at every save, every 20 s while new pipelines came, and its
+    // bytes went through the file cache a second time (--warm-shaders saving a 2.2 GB cache: the process's peak commit
+    // 10,520 MiB with the buffer, 8,612 through the view, 2026-11-19). VK_INCOMPLETE (pipelines added since the size was asked, beyond
+    // the room left for them) writes nothing, as before: the next save tries again.
     size_t size = 0;
     void *data = NULL;
-    if (vkGetPipelineCacheData(P.device, P.cache, &size, NULL) == VK_SUCCESS && size && (data = malloc(size)) &&
-        vkGetPipelineCacheData(P.device, P.cache, &size, data) == VK_SUCCESS) {
-        if (!plat_file_write_atomic(P.cache_path, data, size)) rt_log("vk_pipeline: cannot write %s", P.cache_path);
+    double t0 = now_ms(), t1 = 0, t2 = 0;
+    if (vkGetPipelineCacheData(P.device, P.cache, &size, NULL) == VK_SUCCESS && size) {
+        t1 = now_ms();
+        // Nothing new since the file was loaded or written (the driver gives the same size back): not written. The
+        // 1.2.4 check's four starts each wrote the same 3,057,551,174 bytes again, 1.3-1.4 s of the driver's copy and
+        // 1.3-1.6 s of file at every exit, on an NVMe disk (5.5-5.9 s of file in the copy of the game folder above
+        // build_cache). REKARINA_PIPE_SAVE_SAME=1 writes it anyway.
+        static int same_skip = -1;
+        if (same_skip < 0) same_skip = !rt_knob("PIPE_SAVE_SAME", "0");
+        if (same_skip && (uint64_t)size == __atomic_load_n(&P.cache_bytes, __ATOMIC_RELAXED)) {
+            static int said;
+            if (said < 4 && ++said)
+                rt_log("vk_pipeline: pipeline cache unchanged (%.1f MiB, as loaded or last written): not written again",
+                       size / 1048576.0);
+            plat_mutex_unlock(&save_lock);
+            return;
+        }
+        char tmp[sizeof P.cache_path + 32];
+        snprintf(tmp, sizeof tmp, "%s.%u.tmp", P.cache_path, (unsigned)plat_process_id());
+        size_t room = size + (4u << 20);
+        PlatView *v = plat_view_create(tmp, room, &data);
+        if (v) {
+            size_t got = room;
+            VkResult r = vkGetPipelineCacheData(P.device, P.cache, &got, data);
+            t2 = now_ms();
+            int ok = plat_view_close(v, r == VK_SUCCESS ? got : 0) && r == VK_SUCCESS && got;
+            if (!ok || !plat_file_replace(tmp, P.cache_path)) {
+                plat_file_delete(tmp);
+                if (r != VK_INCOMPLETE) rt_log("vk_pipeline: cannot write %s", P.cache_path);
+            } else {
+                __atomic_store_n(&P.cache_bytes, (uint64_t)got, __ATOMIC_RELAXED);
+                rt_log("vk_pipeline: pipeline cache saved at frame %llu: %.1f MiB; the driver's size %.0f ms and copy %.0f "
+                       "ms, the file %.0f ms", (unsigned long long)__atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED),
+                       got / 1048576.0, t1 - t0, t2 - t1, now_ms() - t2);
+            }
+        } else if ((data = malloc(size)) && vkGetPipelineCacheData(P.device, P.cache, &size, data) == VK_SUCCESS) {
+            if (!plat_file_write_atomic(P.cache_path, data, size)) rt_log("vk_pipeline: cannot write %s", P.cache_path);
+            else __atomic_store_n(&P.cache_bytes, (uint64_t)size, __ATOMIC_RELAXED);
+            free(data);
+        } else {
+            free(data);
+        }
     }
-    free(data);
     plat_mutex_unlock(&save_lock);
 }
 
-// The game never shuts the device down (boot.c and the window end the process), so the cache is saved while it
-// runs: at most every 20 s, and only after new pipelines were built. New pipeline keys are appended every 2 s.
+// Saving in play: a player's cache holds the prepared variants, about 1 GB, and NVIDIA's driver holds every pipeline
+// creation while vkGetPipelineCacheData copies it, also one that uses another cache. On a 948 MiB cache (RTX 5070,
+// Ryzen 7 9700X, NVMe, 2026-11-19) a creation on another thread waited for the whole copy: 116-137 ms into a buffer,
+// 344 ms into a view of a new file as above, 425-649 ms in a game run; the file then took 481-1332 ms more. That came
+// every 20 s while play built new pipelines, and on a slower machine or disk it is longer, so draws that need a new
+// pipeline then stand still. A cache over AUTOSAVE_MAX_MB is therefore saved when the game ends only
+// (gfx_window_closed, the game's exit, vk_pipeline_shutdown): what play adds to it is in the driver's own disk cache as
+// well (nv-cache), so a crash before the exit costs little. REKARINA_PIPE_AUTOSAVE=1 saves it in play anyway (the
+// behaviour before, for a comparison), 0 never in play.
+#define AUTOSAVE_MAX_MB 64
+static int autosave_in_play(void) {
+    const char *k = cfg_get("REKARINA_PIPE_AUTOSAVE");
+    if (k && *k) return atoi(k) != 0;
+    uint64_t mb = __atomic_load_n(&P.cache_bytes, __ATOMIC_RELAXED) >> 20;
+    if (mb <= AUTOSAVE_MAX_MB) return 1;
+    static int told;
+    if (!told++)
+        rt_log("vk_pipeline: the pipeline cache holds %llu MiB: saved when the game ends, not during play",
+               (unsigned long long)mb);
+    return 0;
+}
+
+// The game never shuts the device down (boot.c and the window end the process), so a small cache is saved while it
+// runs: at most every 20 s, and only after new pipelines were built (autosave_in_play). New pipeline keys are appended
+// every 2 s.
 static void autosave_once(void) {
     static uint64_t last_n, last_ms, last_keys;
     if (!P.ready) return;
@@ -5319,7 +5429,7 @@ static void autosave_once(void) {
     vk_pipeline_stats(&s);
     if (s.graphics + s.compute == last_n) return;
     last_n = s.graphics + s.compute, last_ms = now;
-    vk_pipeline_save();
+    if (autosave_in_play()) vk_pipeline_save();
 }
 
 // On its own thread: the save (vkGetPipelineCacheData and the file write, about 60 ms) and the key appends (a flush to

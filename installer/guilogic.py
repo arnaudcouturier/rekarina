@@ -123,6 +123,22 @@ def ui_language_for_langid(langid):
     return PRIMARY_LANGS.get(langid & 0x3ff, 'en')
 
 
+LANG_POLISH = 0x15   # a Windows LANGID's primary language: Polish
+
+
+def system_language():
+    """'pl' when the system's display language is Polish (Windows' LANGID, else LC_ALL / LC_MESSAGES / LANG), else ''.
+    OoT ships Polish text; the window has no Polish of its own, so this is asked apart from windows_ui_language."""
+    if os.name != 'nt':
+        loc = (os.environ.get('LC_ALL') or os.environ.get('LC_MESSAGES') or os.environ.get('LANG') or '').lower()
+        return 'pl' if loc.startswith('pl') else ''
+    try:
+        langid = ctypes.windll.kernel32.GetUserDefaultUILanguage()
+    except (AttributeError, OSError):
+        return ''
+    return 'pl' if langid & 0x3ff == LANG_POLISH else ''
+
+
 def default_game_language(ui):
     """The game language the form starts with: the window's own where the game has it and draws it with its own
     fonts. A Chinese or Korean window still starts with English: that game text needs the Switch shared fonts

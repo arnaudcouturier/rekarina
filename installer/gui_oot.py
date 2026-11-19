@@ -53,8 +53,8 @@ from . import shots as screenshots
 from . import state as statefile
 from tkinter import font as tkfont
 
-from .gui import App, GLYPH, POLL_MS, fix_tcl_paths, grab
-from .guilogic import UI_LANGUAGES, Model, amount, describe_event, parse_line, windows_ui_language
+from .gui import App, GLYPH, POLL_MS, fix_tcl_paths, grab, open_folder_window
+from .guilogic import UI_LANGUAGES, Model, amount, describe_event, parse_line, system_language, windows_ui_language
 
 # ---- theme ---------------------------------------------------------------------------------------------------------
 # Everything about the look is in this block: the colours, the fonts, and how each kind of widget is drawn. The rest
@@ -155,19 +155,27 @@ def theme(root):
     s.configure('StepDone.TLabel', foreground=DONE_TEXT)                      # the finish screen's list of steps
     s.configure('StepFailed.TLabel', foreground=RED)
     s.configure('StepWait.TLabel', foreground=DIM)
-    # a row of the form, like a setting in the game: its name on a khaki strip, its value in a dark cell at the right
+    # a row of the form, like a setting in the game: its name on a khaki strip, its value in a dark cell at the right.
+    # The whole row is lighter while the pointer is anywhere on it (RekarinaApp.hover_rows): its widgets then carry
+    # ttk's 'user1' state, which the styles below map to the lighter colours (ROW_HOT, INSET_HOT).
     s.configure('Row.TLabel', background=ROW, foreground=CREAM, font='RekBody')
+    s.map('Row.TLabel', background=[('user1', ROW_HOT)])
     s.configure('TEntry', fieldbackground=INSET, foreground=CREAM, insertcolor=CREAM, bordercolor=INSET, lightcolor=INSET,
                 darkcolor=INSET, selectbackground=AMBER, selectforeground=CREAM, padding=(8, 5))
-    s.map('TEntry', bordercolor=[('focus', CREAM)], lightcolor=[('focus', INSET)], darkcolor=[('focus', INSET)])
-    # a drop-down: the same dark cell, its arrow on the cell's own colour
+    s.map('TEntry', fieldbackground=[('user1', INSET_HOT)], bordercolor=[('focus', CREAM), ('user1', INSET_HOT)],
+          lightcolor=[('user1', INSET_HOT), ('focus', INSET)], darkcolor=[('user1', INSET_HOT), ('focus', INSET)])
+    # a drop-down: the same dark cell, its arrow on the cell's own colour. Lighter under the pointer as one cell: ttk's
+    # 'active' state is given to the one part of the drop-down under the pointer (its edge, its text, its arrow), so a
+    # look keyed to it lit the edge and the arrow by turns while the pointer crossed the cell; 'hover' is the whole
+    # widget's, 'user1' the whole row's.
     s.configure('TCombobox', fieldbackground=INSET, background=INSET, foreground=CREAM, arrowcolor=CREAM, arrowsize=13,
                 bordercolor=INSET, lightcolor=INSET, darkcolor=INSET, selectbackground=INSET, selectforeground=CREAM,
                 padding=(8, 5))
-    s.map('TCombobox', fieldbackground=[('readonly', 'active', INSET_HOT), ('readonly', INSET)],
-          background=[('active', INSET_HOT)], foreground=[('readonly', CREAM)],
-          selectbackground=[('readonly', 'active', INSET_HOT), ('readonly', INSET)], selectforeground=[('readonly', CREAM)],
-          bordercolor=[('focus', CREAM)], lightcolor=[('active', INSET_HOT)], darkcolor=[('active', INSET_HOT)])
+    s.map('TCombobox', fieldbackground=[('readonly', 'user1', INSET_HOT), ('readonly', 'hover', INSET_HOT), ('readonly', INSET)],
+          background=[('user1', INSET_HOT), ('hover', INSET_HOT)], foreground=[('readonly', CREAM)],
+          selectbackground=[('readonly', 'user1', INSET_HOT), ('readonly', 'hover', INSET_HOT), ('readonly', INSET)],
+          selectforeground=[('readonly', CREAM)], bordercolor=[('focus', CREAM), ('user1', INSET_HOT)],
+          lightcolor=[('user1', INSET_HOT), ('hover', INSET_HOT)], darkcolor=[('user1', INSET_HOT), ('hover', INSET_HOT)])
     s.configure('Band.TCombobox', bordercolor=ROW_EDGE)                       # on the band the cell has its own edge
     s.map('Band.TCombobox', bordercolor=[('focus', CREAM)])
     # the plates: the game's "Save / Load / Settings" buttons
@@ -180,9 +188,10 @@ def theme(root):
     # "Browse...": a dark cell in the row, like the value beside it
     s.configure('Cell.TButton', background=INSET, bordercolor=INSET, lightcolor=INSET, darkcolor=INSET, font='RekText',
                 padding=(12, 2))   # the cell gives it its height: a tall script's line still fits
-    s.map('Cell.TButton', background=[('pressed', '#14110b'), ('active', INSET_HOT)],
-          lightcolor=[('pressed', '#14110b'), ('active', INSET_HOT)], darkcolor=[('pressed', '#14110b'), ('active', INSET_HOT)],
-          bordercolor=[('focus', CREAM), ('active', ROW_EDGE)])
+    s.map('Cell.TButton', background=[('pressed', '#14110b'), ('active', INSET_HOT), ('user1', INSET_HOT)],
+          lightcolor=[('pressed', '#14110b'), ('active', INSET_HOT), ('user1', INSET_HOT)],
+          darkcolor=[('pressed', '#14110b'), ('active', INSET_HOT), ('user1', INSET_HOT)],
+          bordercolor=[('focus', CREAM), ('active', ROW_EDGE), ('user1', INSET_HOT)])
     # the one thing to press next
     s.configure('Go.TButton', background=AMBER, foreground=CREAM, bordercolor=AMBER_EDGE, lightcolor=AMBER, darkcolor=AMBER,
                 font='RekPlate', padding=(26, 8))
@@ -452,6 +461,7 @@ class OotForm:
     dlls: str = ''
     toolchain: str = ''
     textures: bool = True   # the setup's texture step (installer/oot.py --no-textures when off)
+    desktop: bool = True    # a launcher shortcut on the desktop (installer/oot.py --no-desktop-shortcut when off)
     all_shaders: bool = False   # the launcher's background job: every variant of every shader (installer/oot.py --all-shaders)
 
     def installed_state(self):
@@ -473,7 +483,7 @@ class OotForm:
             found.append('ui.oot_missing_game')
         if not self.dest.strip():
             found.append('ui.need_dest')
-        if not update_mode and self.lang not in ini.LANGUAGES:
+        if not update_mode and self.lang not in ini.LANGUAGES_OOT:
             found.append('ui.need_lang')
         if self.dlls.strip() and not Path(self.dlls.strip()).is_dir():
             found.append('ui.oot_missing_dlls')
@@ -487,8 +497,10 @@ class OotForm:
                 cmd += [flag, value.strip()]
         if not self.textures:
             cmd.append('--no-textures')
-        # a run on the run screen never prepares the rest of the shaders (the background job does: shaderjob.py)
-        cmd.append('--all-shaders' if self.all_shaders else '--shaders-later')
+        if not self.desktop:
+            cmd.append('--no-desktop-shortcut')
+        # every setup run prepares every shader variant in the foreground (oot.shader_mode); the flag is for the record
+        cmd.append('--all-shaders')
         if root:
             cmd += ['--root', str(root)]
         if temp:
@@ -539,11 +551,18 @@ class Job:
 
 
 class RekarinaApp(App):
+    languages = ini.LANGUAGES_OOT
+
+    def default_language(self, ui_lang):
+        """Polish Windows starts the form on Polish, a game language the window itself is not in."""
+        return 'pl' if system_language() == 'pl' else super().default_language(ui_lang)
+
     def __init__(self, root, ui_lang, layout, args=None):
         self.args = args
         self.extra = {n: tk.StringVar() for n in ('game', 'dlls')}
         self.prompts_var = tk.StringVar()
         self.textures_var = tk.StringVar()
+        self.desktop_var = tk.StringVar()
         self.tracker = eta.Tracker()     # the times of the step list
         self.step_times = {}
         self.job = None                  # the launcher's own running work, or None
@@ -963,7 +982,7 @@ class RekarinaApp(App):
         self.comp_label = line(INK_WARN, 'RekText', ('home:comp',), SHEET_TEXT - 190)
         self.comp_retry = Plate(self, 'plate40', 150, self.retry_components, 'RekStrong', tags + ('home:comp',))
         self.bind_text(self.comp_retry, 'text', 'ui.oot_components_retry')
-        # the shaders: a first install prepares the variants play met; the launcher prepares the rest in the background
+        # the shaders' background job's row (never shown since every setup run prepares every variant: shader_wanted)
         self.shaders_name = line(INK_DIM, 'RekText', ('home:shaders',), 90)
         self.shaders_status = line(INK, 'RekText', ('home:shaders',), SHEET_TEXT - 100)
         self.shaders_detail = line(INK, 'RekText', ('home:shaders',), SHEET_TEXT - 100)
@@ -1107,10 +1126,10 @@ class RekarinaApp(App):
                                                     names=', '.join(self.cat('comp.' + g) for g in lacking)))
         self.refresh_update()
 
-    # ---- the shaders' background preparation ----------------------------------------------------------------------
-    # The setup's first run prepares the variants play met. The rest are prepared here, by themselves (shaderjob.py): a
-    # child at low priority while the window is open and no game runs. Play stops it, starts the game, hides the window
-    # and takes the job up again when the game has ended. Closing the window stops it; the next start goes on.
+    # ---- the shaders' background preparation (not started since 2026-11-19: shader_wanted) ----------------------------
+    # 1.2.1 to 1.2.3: the setup's first run prepared the variants play met and the rest were prepared here, by
+    # themselves (shaderjob.py): a child at low priority while the window was open and no game ran. Play stopped it,
+    # started the game, hid the window and took the job up again when the game had ended.
 
     shader_job = None
     shader_hidden = False       # the window is hidden while the game runs, for the job's sake
@@ -1118,9 +1137,10 @@ class RekarinaApp(App):
     shader_error = ''
 
     def shader_wanted(self):
-        """True when the game folder prepared the variants play met only, and this window may still do the rest."""
-        return (self.shader_finished is None and self.game_exe().is_file() and
-                oot.shaders_only_met(self.form().installed_state()) and not self.form().problems())
+        """Never since the owner's call of 2026-11-19: a setup run prepares every variant in the foreground and a folder
+        that prepared the variants play met only gets the rest at its next setup run (oot.shader_mode), so the window
+        starts no background job and the home sheet shows no shader row. The job's code stays for now."""
+        return False
 
     def shader_command(self):
         python = Path(sys.executable) if self.layout.dev else self.layout.python
@@ -1214,8 +1234,8 @@ class RekarinaApp(App):
 
     def open_game_folder(self):
         dest = self.vars['dest'].get().strip()
-        if dest and Path(dest).is_dir() and os.name == 'nt':
-            os.startfile(dest)
+        if dest and Path(dest).is_dir():
+            open_folder_window(dest)
 
     def last_run_failed(self):
         """True when the game's last run ended with an error: its log (logs/rekarina.log beside the game, the newest run)
@@ -1251,12 +1271,7 @@ class RekarinaApp(App):
             if isinstance(value, Exception):
                 messagebox.showerror(self.cat('ui.oot_title'), self.cat('ui.oot_report_failed', detail=str(value)[:300]))
                 return
-            folder = value.parent
-            if os.name == 'nt':
-                os.startfile(str(folder))
-            else:
-                subprocess.Popen(['xdg-open', str(folder)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                                 start_new_session=True)
+            open_folder_window(value.parent)
         self.background(work, then)
 
     def open_settings(self):
@@ -1554,11 +1569,7 @@ class RekarinaApp(App):
             folder.mkdir(parents=True, exist_ok=True)
         except OSError:
             return
-        if os.name == 'nt':
-            os.startfile(str(folder))
-        else:
-            subprocess.Popen(['xdg-open', str(folder)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                             start_new_session=True)
+        open_folder_window(folder)
 
     def rebuild_mods(self):
         """The setup on this game folder, for the mods' code patches the build lacks: the translate, compile and
@@ -1822,11 +1833,7 @@ class RekarinaApp(App):
             folder.mkdir(parents=True, exist_ok=True)
         except OSError:
             return
-        if os.name == 'nt':
-            os.startfile(str(folder))
-        else:
-            subprocess.Popen(['xdg-open', str(folder)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                             start_new_session=True)
+        open_folder_window(folder)
 
     def check_updates(self, force=False):
         if self.checking or self.job:
@@ -2197,6 +2204,7 @@ class RekarinaApp(App):
         self.root.title(self.cat('ui.oot_title'))
         self.fill_prompts()
         self.fill_textures()
+        self.fill_desktop()
         self.refresh_home()
         self.refresh_mods(rescan=False)
 
@@ -2262,6 +2270,12 @@ class RekarinaApp(App):
         self.textures_on = True
         self.textures_box.bind('<<ComboboxSelected>>', self.pick_textures)
         self.fill_textures()
+        # a "Rekarina Launcher" shortcut on the desktop, as asked (the game folder's and the Start menu's are always made:
+        # installer/oot.py launcher_shortcuts)
+        self.desktop_box = choice(row('ui.oot_desktop'), self.desktop_var)
+        self.desktop_on = True
+        self.desktop_box.bind('<<ComboboxSelected>>', self.pick_desktop)
+        self.fill_desktop()
         entry(row('ui.oot_dlls', self.pick_dlls), self.extra['dlls'])
         self.dlls_help = self.label(f, 'ui.oot_dlls_help', wraplength=WRAP, justify='left', style='Dim.TLabel')
         self.dlls_help.pack(anchor='w', pady=(2, 0))
@@ -2276,7 +2290,59 @@ class RekarinaApp(App):
         self.form_error = ttk.Label(f, style='Err.TLabel', wraplength=WRAP, justify='left')
         self.form_notice = self.notice(f)
         self.form_notice.pack(fill='x', pady=(12, 0))
+        self.hover_rows(rows.winfo_children())
         return f
+
+    row_hot = row_leaving = None   # the form's row under the pointer; the row the pointer may have just left
+
+    def hover_rows(self, strips):
+        """Each row of the form is lighter as a whole while the pointer is anywhere on it, as a setting of the game's
+        menu is under the pointer (option_rows.cpp, kRowHot): the strip, its name, the cell and the values in it.
+        The row is made of several windows (the strip, the name, the cell, the field, Browse), and the pointer going
+        from one to another gives Tk a Leave of the one and an Enter of the other. So a Leave only asks for the row to
+        be put out once the events at hand are through (after_idle); the Enter that comes with it keeps it lit, and
+        the row neither blinks nor goes out while the pointer is still on it."""
+        def tree(w):
+            yield w
+            for child in w.winfo_children():
+                yield from tree(child)
+
+        for strip in strips:
+            tag = f'RekRow{strip.winfo_id()}'
+            for w in tree(strip):
+                w.bindtags((tag,) + w.bindtags())   # first, and the widget's own bindings still run after it
+            self.root.bind_class(tag, '<Enter>', lambda _e, s=strip: self.row_pointer(s, True))
+            self.root.bind_class(tag, '<Leave>', lambda _e, s=strip: self.row_pointer(s, False))
+
+    def row_pointer(self, strip, inside):
+        if inside:
+            self.row_leaving = None
+            self.light_row(strip)
+        else:
+            self.row_leaving = strip
+            self.root.after_idle(self.row_left)
+
+    def row_left(self):
+        if self.row_leaving is not None and self.row_leaving is self.row_hot:
+            self.light_row(None)
+        self.row_leaving = None
+
+    def light_row(self, strip):
+        """The row `strip` lighter and the one lit before back to its colours; None puts the lit one out."""
+        if strip is self.row_hot:
+            return
+        for row, hot in ((self.row_hot, False), (strip, True)):
+            if row is None or not row.winfo_exists():
+                continue
+            stack = [row]
+            while stack:
+                w = stack.pop()
+                stack.extend(w.winfo_children())
+                if isinstance(w, ttk.Widget):
+                    w.state(['user1' if hot else '!user1'])
+                elif isinstance(w, tk.Frame):
+                    w.configure(background=ROW_HOT if hot else ROW)
+        self.row_hot = strip
 
     def form_help(self, id):
         """The form's help paragraph says the text of `id`, and keeps saying it after a language change."""
@@ -2303,6 +2369,15 @@ class RekarinaApp(App):
     def fill_textures(self):
         self.textures_box.configure(values=[self.cat('ui.oot_textures_yes'), self.cat('ui.oot_textures_no')])
         self.textures_box.current(0 if self.textures_on else 1)
+
+    def fill_desktop(self):
+        self.desktop_box.configure(values=[self.cat('ui.oot_desktop_yes'), self.cat('ui.oot_desktop_no')])
+        self.desktop_box.current(0 if self.desktop_on else 1)
+
+    def pick_desktop(self, _event=None):
+        i = self.desktop_box.current()
+        if i >= 0:
+            self.desktop_on = i == 0
 
     def pick_textures(self, _event=None):
         i = self.textures_box.current()
@@ -2344,6 +2419,7 @@ class RekarinaApp(App):
     def form(self):
         return OotForm(game=self.extra['game'].get(), dest=self.vars['dest'].get(), lang=self.selected_lang(),
                        prompts=self.prompts_code, dlls=self.extra['dlls'].get(), textures=self.textures_on,
+                       desktop=self.desktop_on,
                        toolchain=str(self.args.toolchain) if self.args and self.args.toolchain else '')
 
     def refresh_form(self):

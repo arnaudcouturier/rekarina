@@ -136,33 +136,143 @@ static void oe_display_version(Cpu *c) {   // void GetDisplayVersion(DisplayVers
     if (out) memset(out, 0, 16), strcpy(out, "1.1.1");
 }
 
-// ---- audio input: the host has no microphone
+// ---- audio input: a microphone that hears silence
 // OoT's option that plays its instrument by voice (or by a real instrument) listens through two input streams of the
-// SDK's stream interface (SDK 22: nn::audio::OpenInputStream and the calls below, 16-bit mono at 48 kHz). It lists the
-// virtual input devices first and opens the streams only when there is one; the host answers none
-// (ListVirtualInputDevices below), so nothing is opened. With the option on, the game still purges and starts both
-// streams when it begins to listen (main+0x336ee10 checks the option, not whether the streams were opened: the
-// console always has a microphone), and the SDK's own PurgeInputStream / StartInputStream read through the stream's
-// implementation pointer, which is null in a stream that was never opened. The game stopped there (player report
-// 2026-11-19: "the game crashes if voice recognition is enabled"). Every input stream call is answered here for a
-// stream that does not exist: it cannot be opened or started, it is closed, and it holds no frames, so the option does
-// nothing and the buttons play as before.
+// SDK's stream interface (SDK 22: nn::audio::OpenInputStream and the calls below, 16-bit mono at 48 kHz). At its start
+// the game lists the virtual input devices and, when there is one, opens a stream on it and one on the "true raw"
+// device (GetTrueRawAudioInputDevice); with the option on it starts both when it begins to listen (main+0x336ee10:
+// purge, then start a stream whose state is not 2) and reads what they hold each frame (at most 256 frames:
+// main+0x336dd78 GetInputStreamFilledFrameCount, ReadInputStream). The host has no microphone. Until 1.2.2 it listed
+// none, so no stream was opened and every stream call answered for a stream that does not exist; with the option on
+// the game still froze when the instrument came out (player report 2026-11-19, on 1.2.2). Now there is one device of
+// each kind, as a console always has, and their streams record silence at their own rate, so the game listens as on
+// a console in a quiet room. REKARINA_MIC=none lists no device, as before (a test of the old way).
 #define R_AUDIO_NO_INPUT (153u | 1u << 9)   // a failure of the audio module; the game tests these results for zero only
+enum { MIC_STREAMS = 4, MIC_STOPPED = 1, MIC_STARTED = 2 };
+#define MIC_MAGIC 0x52454b41ull   // "REKA": the high word of the handle in the stream's first word
+static struct {
+    int used, state, frame_bytes, rate;
+    int64_t capacity, taken;   // the frames the stream holds at most; the frames read or dropped since its start
+    uint64_t since;            // plat_now_ns at its start
+} mic[MIC_STREAMS];
+static PlatMutex mic_lock = PLAT_MUTEX_INIT;
+
+static int mic_none(void) {
+    static int v = -1;
+    if (v < 0) { const char *e = cfg_get("REKARINA_MIC"); v = e && !strcmp(e, "none"); }
+    return v;
+}
 static void audin_log(const char *what) {
     static int told;
-    if (!told++) rt_log("audio input: the game asks for a microphone (%s): the host has none, its voice input stays silent", what);
+    if (!told++)
+        rt_log(mic_none() ? "audio input: the game asks for a microphone (%s): none is listed (REKARINA_MIC=none)"
+                          : "audio input: the game opens a microphone (%s): the host gives it silence", what);
+}
+static int mic_slot(Cpu *c) {   // the stream in x0 as one of ours, -1 when it is not (never opened, or closed)
+    uint64_t *stream = arg_p(c, 0);
+    if (!stream || (*stream >> 32) != MIC_MAGIC) return -1;
+    int s = (int)(*stream & 0xffffffffu);
+    return s >= 0 && s < MIC_STREAMS && mic[s].used ? s : -1;
+}
+static int64_t mic_filled(int s) {   // holding mic_lock: the frames recorded and not read, the oldest overwritten
+    if (mic[s].state != MIC_STARTED) return 0;
+    int64_t made = (int64_t)((plat_now_ns() - mic[s].since) / 1000) * mic[s].rate / 1000000;
+    if (made - mic[s].taken > mic[s].capacity) mic[s].taken = made - mic[s].capacity;
+    return made - mic[s].taken;
+}
+// int ListVirtualInputDevices(AudioDeviceName *names, int count): one device (an AudioDeviceName is 256 bytes)
+static void audin_list(Cpu *c) {
+    char *names = arg_p(c, 0);
+    int count = (int)arg_x(c, 1);
+    if (mic_none() || !names || count < 1) { ret_x(c, 0); return; }
+    memset(names, 0, 256);
+    strcpy(names, "rekarina-silence");
+    ret_x(c, 1);
+}
+static void audin_true_raw(Cpu *c) {   // GetTrueRawAudioInputDevice(AudioDeviceName *)
+    char *name = arg_p(c, 0);
+    if (name) memset(name, 0, 256), strcpy(name, "rekarina-silence-raw");
+    ret_x(c, 0);
 }
 // Result OpenInputStream(InputStreamType *, [os::SystemEvent *,] void *buffer, size_t, const AudioDeviceName &,
-// const StreamFormat &, int frames[, int]): the first word of the stream is its implementation pointer
-static void audin_open(Cpu *c) {
+// const StreamFormat &, int frames[, int]): the first word of the stream is its implementation pointer, here the
+// handle of one of ours; the format is {sample format (2: 16-bit), channels, sample rate}
+static void mic_open(Cpu *c, int at) {
     uint64_t *stream = arg_p(c, 0);
+    const int32_t *fmt = arg_p(c, at + 3);
+    int frames = (int)arg_x(c, at + 4);
     if (stream) *stream = 0;
     audin_log("OpenInputStream");
-    ret_x(c, R_AUDIO_NO_INPUT);
+    if (mic_none() || !stream) { ret_x(c, R_AUDIO_NO_INPUT); return; }
+    int bytes = fmt && fmt[0] >= 1 && fmt[0] <= 5 ? (fmt[0] == 1 ? 1 : fmt[0] == 2 ? 2 : fmt[0] == 3 ? 3 : 4) : 2;
+    int channels = fmt && fmt[1] >= 1 && fmt[1] <= 8 ? fmt[1] : 1;
+    int rate = fmt && fmt[2] >= 8000 && fmt[2] <= 192000 ? fmt[2] : 48000;
+    plat_mutex_lock(&mic_lock);
+    int s = 0;
+    while (s < MIC_STREAMS && mic[s].used) s++;
+    if (s < MIC_STREAMS) {
+        mic[s].used = 1, mic[s].state = MIC_STOPPED, mic[s].frame_bytes = bytes * channels, mic[s].rate = rate;
+        mic[s].capacity = frames > 0 ? frames : rate / 10, mic[s].taken = 0, mic[s].since = 0;
+        *stream = MIC_MAGIC << 32 | (uint64_t)s;
+    }
+    plat_mutex_unlock(&mic_lock);
+    if (s == MIC_STREAMS) { ret_x(c, R_AUDIO_NO_INPUT); return; }
+    rt_log("audio input: stream %d of silence: %d channel(s) of %d bytes at %d Hz, %d frames held", s, channels, bytes,
+           rate, frames);
+    ret_x(c, 0);
 }
+static void audin_open(Cpu *c) { mic_open(c, 1); }
+static void audin_open_event(Cpu *c) { mic_open(c, 2); }
 static void audin_start(Cpu *c) {   // Result StartInputStream(InputStreamType *)
+    int s = mic_slot(c);
     audin_log("StartInputStream");
-    ret_x(c, R_AUDIO_NO_INPUT);
+    if (s < 0) { ret_x(c, R_AUDIO_NO_INPUT); return; }
+    plat_mutex_lock(&mic_lock);
+    if (mic[s].state != MIC_STARTED) mic[s].state = MIC_STARTED, mic[s].since = plat_now_ns(), mic[s].taken = 0;
+    plat_mutex_unlock(&mic_lock);
+    ret_x(c, 0);
+}
+static void audin_stop(Cpu *c) {   // void StopInputStream(InputStreamType *)
+    int s = mic_slot(c);
+    if (s >= 0) mic[s].state = MIC_STOPPED;
+}
+static void audin_purge(Cpu *c) {   // void PurgeInputStream(InputStreamType *): what it holds is dropped
+    int s = mic_slot(c);
+    if (s < 0) return;
+    plat_mutex_lock(&mic_lock);
+    mic[s].taken += mic_filled(s);
+    plat_mutex_unlock(&mic_lock);
+}
+static void audin_close(Cpu *c) {   // void CloseInputStream(InputStreamType *)
+    int s = mic_slot(c);
+    if (s < 0) return;
+    mic[s].used = 0;
+    *(uint64_t *)arg_p(c, 0) = 0;
+}
+static void audin_state(Cpu *c) {   // InputStreamState GetInputStreamState(const InputStreamType *): 0 closed
+    int s = mic_slot(c);
+    ret_x(c, s < 0 ? 0 : (uint64_t)mic[s].state);
+}
+static void audin_filled(Cpu *c) {   // int GetInputStreamFilledFrameCount(const InputStreamType *)
+    int s = mic_slot(c);
+    if (s < 0) { ret_x(c, 0); return; }
+    plat_mutex_lock(&mic_lock);
+    int64_t n = mic_filled(s);
+    plat_mutex_unlock(&mic_lock);
+    ret_x(c, (uint64_t)n);
+}
+static void audin_read(Cpu *c) {   // int ReadInputStream(InputStreamType *, void *buffer, int frames): silence
+    int s = mic_slot(c);
+    uint8_t *out = arg_p(c, 1);
+    int want = (int)arg_x(c, 2);
+    if (s < 0 || !out || want <= 0) { ret_x(c, 0); return; }
+    plat_mutex_lock(&mic_lock);
+    int64_t n = mic_filled(s);
+    if (n > want) n = want;
+    mic[s].taken += n;
+    plat_mutex_unlock(&mic_lock);
+    memset(out, 0, (size_t)n * (size_t)mic[s].frame_bytes);
+    ret_x(c, (uint64_t)n);
 }
 // InputStreamStatistics GetInputStreamStatistics(InputStreamType *, bool reset): three 64-bit counts, returned in
 // memory (x8)
@@ -241,21 +351,20 @@ HOST_OVERRIDE("_ZN2nn5audio26GetAudioDeviceOutputVolumeEPKNS0_15AudioDeviceNameE
 HOST_OVERRIDE("_ZN2nn5audio40SetDeviceOutputVolumeAutoTuneModeEnabledEb", audio_set_autotune);
 HOST_OVERRIDE("_ZN2nn5audio39IsDeviceOutputVolumeAutoTuneModeEnabledEv", audio_autotune);
 HOST_OVERRIDE("_ZN2nn5audio39AcquireAudioDeviceNotificationForOutputEPNS_2os11SystemEventE", audio_notification);
-// SDK 22 lists the virtual input devices (the Switch 2's microphone routing) through auddmg:u at boot: the host has
-// no microphone (nxnative audio.md "No virtual audio input devices (SDK 22)", found on OoT)
-HOST_OVERRIDE("_ZN2nn5audio23ListVirtualInputDevicesEPNS0_15AudioDeviceNameEi", h_zero);
-// the input streams the game would open on such a device (audin_open): none can be opened, and a stream never opened
-// is closed (state 0), empty, and takes Stop, Purge and Close as nothing
+// SDK 22 lists the virtual input devices (the Switch 2's microphone routing) through auddmg:u at boot: one device of
+// silence, and its "true raw" twin (audio input above)
+HOST_OVERRIDE("_ZN2nn5audio23ListVirtualInputDevicesEPNS0_15AudioDeviceNameEi", audin_list);
+HOST_OVERRIDE("_ZN2nn5audio26GetTrueRawAudioInputDeviceEPNS0_15AudioDeviceNameE", audin_true_raw);
 HOST_OVERRIDE("_ZN2nn5audio15OpenInputStreamEPNS0_15InputStreamTypeEPvmRKNS0_15AudioDeviceNameERKNS0_12StreamFormatEi", audin_open);
 HOST_OVERRIDE("_ZN2nn5audio15OpenInputStreamEPNS0_15InputStreamTypeEPNS_2os11SystemEventEPvmRKNS0_15AudioDeviceNameERKNS0_12StreamFormatEii",
-              audin_open);
+              audin_open_event);
 HOST_OVERRIDE("_ZN2nn5audio16StartInputStreamEPNS0_15InputStreamTypeE", audin_start);
-HOST_OVERRIDE("_ZN2nn5audio15StopInputStreamEPNS0_15InputStreamTypeE", h_ok);
-HOST_OVERRIDE("_ZN2nn5audio16PurgeInputStreamEPNS0_15InputStreamTypeE", h_ok);
-HOST_OVERRIDE("_ZN2nn5audio16CloseInputStreamEPNS0_15InputStreamTypeE", h_nothing);
-HOST_OVERRIDE("_ZN2nn5audio19GetInputStreamStateEPKNS0_15InputStreamTypeE", h_zero);
-HOST_OVERRIDE("_ZN2nn5audio30GetInputStreamFilledFrameCountEPKNS0_15InputStreamTypeE", h_zero);
-HOST_OVERRIDE("_ZN2nn5audio15ReadInputStreamEPNS0_15InputStreamTypeEPvi", h_zero);
+HOST_OVERRIDE("_ZN2nn5audio15StopInputStreamEPNS0_15InputStreamTypeE", audin_stop);
+HOST_OVERRIDE("_ZN2nn5audio16PurgeInputStreamEPNS0_15InputStreamTypeE", audin_purge);
+HOST_OVERRIDE("_ZN2nn5audio16CloseInputStreamEPNS0_15InputStreamTypeE", audin_close);
+HOST_OVERRIDE("_ZN2nn5audio19GetInputStreamStateEPKNS0_15InputStreamTypeE", audin_state);
+HOST_OVERRIDE("_ZN2nn5audio30GetInputStreamFilledFrameCountEPKNS0_15InputStreamTypeE", audin_filled);
+HOST_OVERRIDE("_ZN2nn5audio15ReadInputStreamEPNS0_15InputStreamTypeEPvi", audin_read);
 HOST_OVERRIDE("_ZN2nn5audio24GetInputStreamStatisticsEPNS0_15InputStreamTypeEb", audin_statistics);
 HOST_OVERRIDE("_ZN2nn3hid13GetJcmsHandleERKjRKNS0_8JcmsTypeE", jcms_handle);
 HOST_OVERRIDE("_ZN2nn3hid9StartJcmsERKNS0_10JcmsHandleE", h_nothing);
