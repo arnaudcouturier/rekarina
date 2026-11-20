@@ -140,9 +140,40 @@ static void push(Ev e) {
 
 extern "C" void menu_event_key(int key, int down) { push({EV_KEY, key, down, 0, 0}); }
 extern "C" void menu_event_mouse_pos(float x, float y) { push({EV_POS, 0, 0, x, y}); }
+extern "C" void menu_event_pointer(float x, float y, int sw, int sh) { push({EV_POS, sw, sh, x, y}); }
 extern "C" void menu_event_mouse_button(int button, int down) { push({EV_BUTTON, button, down, 0, 0}); }
 extern "C" void menu_event_wheel(float dx, float dy) { push({EV_WHEEL, 0, 0, dx, dy}); }
 extern "C" void menu_event_focus(int focused) { push({EV_FOCUS, focused, 0, 0, 0}); }
+
+#ifdef _WIN32
+extern "C" int menu_window_client(int *w, int *h);   // ui/menu_win.cpp: the client area the pointer is in
+extern "C" int menu_window_post_click(float fx, float fy);   // ui/menu_win.cpp: the script's winclick
+extern "C" int menu_window_command(int op, int a, int b);   // ui/menu_win.cpp: the script's winpos, winsize, winkey
+extern "C" unsigned menu_window_dpi(void);                  // ui/menu_win.cpp
+extern "C" int menu_window_pointer(char *out, int n);       // ui/menu_win.cpp: DEBUG-MENUCLIENT
+#endif
+static int g_script_real;   // frames a script lets the window's own pointer events through (winclick)
+
+// The one place a mouse position becomes a place in the menu. The window adapter measures it in its client area; the
+// menu lays out over the swapchain image, which the window shows stretched over that client area. The two are one size
+// as long as the swapchain follows the window, but not while a swapchain waits to be made again after a resize, nor
+// in a window Windows scales for DPI (its client area and mouse positions are in scaled pixels, the swapchain in the
+// monitor's): the position is taken as a fraction of the client area, which is the same fraction of the image.
+// A difference of the two sizes is logged, once for each pair of sizes (the first 20).
+static ImVec2 pointer_to_menu(const Ev &e, ImVec2 menu) {
+    if (e.a <= 0 || e.b <= 0 || menu.x <= 0 || menu.y <= 0) return ImVec2(e.x, e.y);   // already in the menu's pixels
+    if (fabsf(menu.x - (float)e.a) > 0.5f || fabsf(menu.y - (float)e.b) > 0.5f) {
+        static int seen[20][4], n_seen;
+        int key[4] = {e.a, e.b, (int)menu.x, (int)menu.y}, known = 0;
+        for (int i = 0; i < n_seen && !known; i++) known = !memcmp(seen[i], key, sizeof key);
+        if (!known && n_seen < 20) {
+            memcpy(seen[n_seen++], key, sizeof key);
+            rt_log("menu: the pointer comes in a %dx%d client area and the menu draws at %.0fx%.0f: positions scaled by "
+                   "%.4f x %.4f", e.a, e.b, menu.x, menu.y, menu.x / (float)e.a, menu.y / (float)e.b);
+        }
+    }
+    return ImVec2(e.x * menu.x / (float)e.a, e.y * menu.y / (float)e.b);
+}
 
 static void drain_events(ImGuiIO &io) {
     Ev q[EV_MAX];
@@ -155,7 +186,11 @@ static void drain_events(ImGuiIO &io) {
         const Ev &e = q[i];
         switch (e.type) {
         case EV_KEY: io.AddKeyEvent((ImGuiKey)e.a, e.b != 0); break;
-        case EV_POS: io.AddMousePosEvent(e.x, e.y); break;
+        case EV_POS: {
+            ImVec2 p = pointer_to_menu(e, io.DisplaySize);
+            io.AddMousePosEvent(p.x, p.y);
+            break;
+        }
         case EV_BUTTON: io.AddMouseButtonEvent(e.a, e.b != 0); break;
         case EV_WHEEL: io.AddMouseWheelEvent(e.x, e.y); break;
         case EV_FOCUS: io.AddFocusEvent(e.a != 0); break;
@@ -656,6 +691,11 @@ static void test_parse(void) {
 //   set <KEY>=<value>               cfg_set (REKARINA_ optional), as REKARINA_MENU_TEST_SET does
 //   shot <name>                     this frame's swapchain image as <REKARINA_MENU_TEST_DIR>/<name>.png
 //   log <text>                      a line in the log
+// Windows only, through the window procedure as the system sends them (the real input path):
+//   winclick <fx> <fy>              a left click at that fraction of the client area
+//   winpos <x> <y>                  the window's top-left corner there (negative: off the first monitor)
+//   winsize <w> <h>                 the client area that size
+//   winkey F11                      a key pressed (F11: borderless over the monitor and back)
 enum { SCRIPT_MAX = 512 };
 struct ScriptStep { uint64_t frame; char op[12]; char arg[96]; };
 static struct {
@@ -743,6 +783,17 @@ static void script_frame(uint64_t frame, const MenuTarget *t, const char **shot)
             *shot = path;
         } else if (!strcmp(s.op, "log")) {
             rt_log("menu: script: %s", s.arg);
+#ifdef _WIN32
+        } else if (!strcmp(s.op, "winclick")) {   // winclick <fx> <fy>: a real click through the window procedure, at
+            float fx = 0, fy = 0;                 // that fraction of the client area (the pointer's own path)
+            if (sscanf(s.arg, "%f %f", &fx, &fy) == 2 && menu_window_post_click(fx, fy)) g_script_real = 6;
+        } else if (!strcmp(s.op, "winpos") || !strcmp(s.op, "winsize")) {   // winpos <x> <y>: the window's top-left
+            int a = 0, b = 0;                                                  // corner; winsize <w> <h>: its client area
+            if (sscanf(s.arg, "%d %d", &a, &b) == 2) menu_window_command(s.op[3] == 'p' ? 1 : 2, a, b);
+        } else if (!strcmp(s.op, "winkey")) {   // winkey F11 (or a virtual-key number): pressed as the keyboard would
+            int vk = !strcmp(s.arg, "F11") ? 0x7A : atoi(s.arg);
+            if (vk > 0) menu_window_command(3, vk, 0);
+#endif
         } else if (!strcmp(s.op, "key") && io) {
             char name[24] = "";
             int frames = 2;
@@ -1662,9 +1713,6 @@ static int g_focus_page = -1;   // this tab's first row takes the cursor once it
 // every opening). "" for a tab the cursor has not been on.
 static char g_last_row[TABS][64];
 static int g_restore_row;   // frames left to put the cursor back on g_last_row (the opening's own nav init runs first)
-#ifdef _WIN32
-extern "C" int menu_window_client(int *w, int *h);   // ui/menu_win.cpp (DEBUG-MENUCLIENT)
-#endif
 
 static void request_tab(int tab) { g_tab_request = tab; }
 
@@ -2171,6 +2219,16 @@ extern "C" void menu_perf_cycle(void) {
     g_perf_save.store(1);
 }
 
+// The window thread, closing: the write a row's change (opt_save_tick) or F10 left pending goes out now. g_save_pending
+// is the frame thread's copy and is not touched; a frame that runs after this finds nothing left to write.
+extern "C" void menu_settings_flush(void) {
+    int row = opt_save_pending(), f10 = g_perf_save.exchange(0);
+    if (!row && !f10) return;
+    rt_log("menu: the window closes with a changed setting not written yet: written now");
+    opt_save_tick(1);
+    if (f10) cfg_save();   // writes only what is still changed
+}
+
 // The device the game renders on, for perfmon's GPU counters (by LUID), NVML (by name) and ADL (by PCI bus, else
 // name); once, before full mode.
 static void perf_gpu_once(const MenuTarget *t) {
@@ -2642,8 +2700,11 @@ extern "C" int menu_overlay_frame(uint64_t frame, const MenuTarget *t, const cha
             int cw = 0, ch = 0;
             if (menu_window_client(&cw, &ch) && (said < 3 || cw != (int)t->width || ch != (int)t->height) && said < 20) {
                 said++;
-                rt_log("menu: opened over %ux%u, the window's client area is %dx%d%s", t->width, t->height, cw, ch,
-                       cw != (int)t->width || ch != (int)t->height ? ": the mouse lands off" : "");
+                char where[320];
+                if (menu_window_pointer(where, (int)sizeof where) <= 0) snprintf(where, sizeof where, "no pointer");
+                rt_log("menu: opened over %ux%u, the window's client area is %dx%d at %u DPI%s; %s", t->width, t->height,
+                       cw, ch, menu_window_dpi(),
+                       cw != (int)t->width || ch != (int)t->height ? " (the pointer is scaled to the menu)" : "", where);
             }
         }
 #endif
@@ -2663,9 +2724,14 @@ extern "C" int menu_overlay_frame(uint64_t frame, const MenuTarget *t, const cha
         drain_events(io);
         pad_events(io, reset, frame);
     } else if (g_script.active) {   // a menu script: its own input only (script_frame queued it), the real queue dropped
-        plat_mutex_lock(&ev_lock);
-        ev_n = 0;
-        plat_mutex_unlock(&ev_lock);
+        if (g_script_real > 0) {        // but a winclick's own messages, which come through the window procedure
+            g_script_real--;
+            drain_events(io);
+        } else {
+            plat_mutex_lock(&ev_lock);
+            ev_n = 0;
+            plat_mutex_unlock(&ev_lock);
+        }
         pad_events(io, reset, frame);
     } else {   // the test hook's pages: the user's input in a background test window must not change settings
         plat_mutex_lock(&ev_lock);

@@ -397,6 +397,20 @@ void flight_frame(uint64_t frame, uint64_t now_ns, uint64_t interval_ns, const u
             }
         double l = sum / n;
         uint64_t f = frame - FLASH_LAG;
+        {   // DEBUG-DUMPRETURN (vk_dump.c): the first frame twice as bright as a dark spell of 60 frames or more before it
+            // (the pause menu closing)
+            static uint64_t dark_n;
+            static double dark_l;
+            if (l < 50) {
+                dark_l = dark_n ? (dark_l * (double)dark_n + l) / (double)(dark_n + 1) : l, dark_n++;
+            } else {
+                if (dark_n >= 60 && l > dark_l * 1.8) {
+                    void vk_dump_arm_return(uint64_t returned);
+                    vk_dump_arm_return(f);
+                }
+                dark_n = 0;
+            }
+        }
         // REKARINA_FLIGHT_FLASH_DARK=<percent of the running mean> (default 35): 80 also counts the frames that lose their
         // lighting but keep fog, particles and HUD (vk_texture.c sweep_pressure has what they were)
         static double dark_at = 0;

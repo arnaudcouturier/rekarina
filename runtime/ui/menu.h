@@ -28,10 +28,16 @@ extern "C" {
 int menu_is_open(void);
 void menu_toggle(void);                   // F1 / Esc on the keyboard, Minus+Plus on the pad
 void menu_perf_cycle(void);               // F10: the performance overlay off, fps, full
+// A changed setting still waiting for its write (rekarina.ini is written a moment after the last change) is written
+// now. The window's close path calls it: "Quit game" or the close button right after a change kept nothing otherwise.
+void menu_settings_flush(void);
 
-// ---- events from the window adapter, used only while the menu is open. key: an ImGuiKey; coordinates in pixels of the
-// window's client area, which is the swapchain image.
+// ---- events from the window adapter, used only while the menu is open. key: an ImGuiKey. menu_event_pointer: a mouse
+// position in a space_w x space_h space (the window's client area as the adapter measures it); the menu maps it to its
+// own drawing size, the swapchain image's, which the window shows stretched over the client area. menu_event_mouse_pos:
+// a position already in the menu's pixels.
 void menu_event_key(int key, int down);
+void menu_event_pointer(float x, float y, int space_w, int space_h);
 void menu_event_mouse_pos(float x, float y);
 void menu_event_mouse_button(int button, int down);   // 0 left, 1 right, 2 middle
 void menu_event_wheel(float dx, float dy);

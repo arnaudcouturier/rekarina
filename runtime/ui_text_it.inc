@@ -79,7 +79,7 @@
     [UI_MENU_HDR] = "Uscita HDR",
     [UI_MENU_HDR_DESC] = "Alte luci brillanti su uno schermo HDR. Richiede l'HDR attivo in Windows (\"Usa HDR\") o in un "
                          "compositor Wayland con gestione del colore; altrimenti l'immagine resta SDR. Vale dopo il "
-                         "riavvio. Il profilo colore qui sopra è per l'SDR e non viene usato in HDR.",
+                         "riavvio.",
     [UI_MENU_HDR_PEAK] = "Luminosità di picco",
     [UI_MENU_HDR_PEAK_DESC] = "Il picco del tuo schermo in nit; le alte luci più brillanti si fermano lì.",
     [UI_MENU_HDR_GAME] = "Luminosità di gioco",

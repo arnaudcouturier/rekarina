@@ -157,6 +157,7 @@ void gfx_window_focus_changed(int in) {
 void gfx_window_closed(void) {
     int restart = plat_cas32(&g_restart, 0, 0) != 0;
     rt_log("gfx: window closed; %s", restart ? "restarting" : "exiting");
+    menu_settings_flush();   // a setting changed just before "Quit game" or the close button
     fs_save_flush();
     vk_pipeline_save();
     prep_report();   // what play still had to build (prep.c)
@@ -483,6 +484,14 @@ static int create_swapchain(void) {
     wsys_client_size(&cw, &ch);
     VkExtent2D ext = caps.currentExtent.width != UINT32_MAX ? caps.currentExtent
                                                             : (VkExtent2D){(uint32_t)cw, (uint32_t)ch};
+    {   // DEBUG-SCEXTENT: REKARINA_DEBUG_SC_EXTENT=<w>x<h> makes the swapchain that size whatever the window's, the case
+        // of a swapchain not made again after the window changed (the menu's pointer scaling is checked with it). Outside
+        // the Vulkan rules on Windows; NVIDIA stretches the image to the window.
+        unsigned fw, fh;
+        const char *f = cfg_get("REKARINA_DEBUG_SC_EXTENT");
+        if (f && sscanf(f, "%ux%u", &fw, &fh) == 2 && fw >= 64 && fh >= 64 && fw <= 8192 && fh <= 8192 && ext.width)
+            ext = (VkExtent2D){fw, fh};
+    }
     if (!ext.width || !ext.height) return 0;
     uint32_t nf = 0;
     vkGetPhysicalDeviceSurfaceFormatsKHR(c->phys, g_surface, &nf, NULL);
@@ -1306,8 +1315,8 @@ static void present_image(VkImage src, VkImageLayout layout, VkFormat fmt, int w
                      VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_TRANSFER_BIT,
                      VK_ACCESS_2_TRANSFER_WRITE_BIT);
     }
-    // Colour adjustment (REKARINA_COLOR_*, vk_color.c), or on an HDR10 swapchain the PQ encode (vk_hdr.c; the adjustment is
-    // for SDR): a copy of the crop takes the game image's place below
+    // Colour adjustment (REKARINA_COLOR_*, vk_color.c), or on an HDR10 swapchain the PQ encode (vk_hdr.c), which grades with
+    // the same values: a copy of the crop takes the game image's place below
     VkImage graded = !general ? VK_NULL_HANDLE : g_sc_hdr ? vk_hdr_encode(cb, slot, src, fmt, rect)
                                                          : vk_color_record(cb, slot, src, fmt, rect);
     const int grect[4] = {0, 0, cw, ch};

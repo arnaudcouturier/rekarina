@@ -1120,6 +1120,23 @@ Movies. All 26 are AV1 in WebM, decoded by the game's own lifted decoder. A new 
 (`build/oot/script2.txt`) plays the title movie, the prologue and the rider nightmare with picture and sound
 (`REKARINA_TRACE=audio`: levels above zero through them, three Opus decoders, no errors).
 
+Movies on cards without tensor cores (2026-11-20). A player's GTX 1650 Super showed every movie at 17 fps, each frame
+waiting about 56 ms for the GPU; a movie's event script counts the game's updates as 60 Hz frames, so the movies also
+played at under a third of their speed. The cost is the network every movie picture goes through (agl's NDVE, see
+docs/oot-xlate.md): on an RTX 5070 the title movie took 4.4 ms of GPU a frame with the tensor cores and 9.0 ms with
+the translator's shared-memory stand-in for HMMA, 7.4 ms of them in the network's U-Net (passes 1-11). A body of
+subgroup shuffles for the stand-in gave the same bits and was 4.7 times slower (43 ms: 32 shuffles an HMMA cost more
+than the stand-in's wide shared-memory loads). `runtime/vk_movienet.c` keeps the whole network as long as the card
+holds the movie's rate: while a movie plays it measures the GPU time of its frames, and when that does not fit the
+movie's frame time (90 % of 16.7 ms) it leaves the U-Net out of the movies for the rest of the session: its dispatches
+are skipped and pass 12 runs a pipeline that adds only its bias (under 4e-6) to the picture; the upscaler runs as
+before. The title movie then takes 1.5 ms of GPU a frame with the stand-in; full-size shots of the same movie frames
+with and without the U-Net differ by 0.6-1.1 levels of 255 on average (PSNR 43-50 dB). On the RTX 5070 the network
+stays whole (8.9 ms measured with the stand-in, 4.4 with the tensor cores); a card about four times slower would need
+some 36 ms with it and some 6 ms without the U-Net. `REKARINA_MOVIE_UNET=1` keeps it whole everywhere, `=0` leaves it
+out of every movie, `REKARINA_MOVIE_FIT_MS` tests the cut on a fast card. The CPU was never the limit: the replay of a
+movie frame takes 0.5-1 ms, also with four processors.
+
 Video memory. At 1440p the game holds about 6.5 GiB: textures 4.3 GiB (ASTC transcoded to BC3 2.8 GiB), mirrors
 0.6 GiB. When another program holds most of the card the system's budget for the game falls under that (After Effects
 with 7 GiB: 5.4 GiB of budget), Windows moves images to system memory and the village runs at 13 fps. The game says so
@@ -3775,3 +3792,37 @@ Seen in two smoke runs of 200 s (the forest, then the field, a 240 cap, 70-140 f
 sound job ran 1188-1201 times per 20 s, cloth steps of 16.667 ms became 8.4-16.6 ms, and 13,698-21,785 steps of
 one-frame loops a 20 s window were made whole. The horse, the recording, the web and a song's playback were not met in
 those runs. With every set's switch at 0 the log lists the nine as off and none of their places runs.
+
+## 2026-11-20: the exposure step after the pause menu (late sums over a gap)
+
+After every close of the pause menu the whole picture was brighter for a moment. Measured on the village save with
+the menu opened three times (2, 6 and 15 s, `REKARINA_INPUT_SCRIPT`) and the flight recorder's thumbnails of every
+frame: 93 -> 101 of 255 for exactly 15 frames from the second frame after the close, then back, a flat step; at a
+60 fps cap and with no cap alike 15 frames, so it counts frames. Not the aging of released targets: the same with
+`REKARINA_TEX_DROP_AGE=0`, `TEX_VRAM_PRESSURE=0` and `TEX_EVICT=0`.
+
+It is the auto exposure. The sky LUT pass's exposure factor (`REKARINA_PROBE_FS=1893e0a44a9ee521`, its fs c4[2].w,
+10000 / 2^EV) is 9.77 in the village, EV 10, its lower clamp, and 11.22 (EV 9.8) in those 15 frames. The game
+(f_7000337060) reads the four float sums the environment cube's compute pass adds into (word 3 the luma), resets
+them, and pushes 1 - clamp((luma / 256 - lo) / (hi - lo)) into a ring of 15 whose average enters EV = 10 - 3 *
+average (f_70003b94b0). In the village every push is 0 (the luma is above hi); EV 9.8 is one push of 1 in 15: one
+read that found no sum at all.
+
+The sums are written after the frame's results point, so they go into guest memory at the next frame's wait (late
+sums, `vk_memory.c`): the read in the game's update K sees frame K-2's sum, where the console's sees K-1 (its wait for
+the frame returns when the frame is complete). In a steady run that only shifts the exposure by a frame. The menu draws
+no scene and adds no sums; after the close the first read found the stale word from before the menu and the second
+found nothing, the frame two before it being a menu frame, and was pushed as a black picture
+(`REKARINA_LATE_LOG=<frames>` with `REKARINA_LATE_WATCH=<word>`: the word at every wait and submission end). With `REKARINA_LATE_SUMS=0` the step
+after the menu goes, but 15-frame steps come at random, four in a minute: the race the late sums were made for.
+
+Fix: the bridge in `vk_mem_late_apply`. When a wait opens a new delivery slot for a range that has no sum for it but
+has the newer frame's sum queued, that frame's sum goes in at once, after a wait for the frame's tail, and also stays
+queued for its own slot, so the next read sees it again instead of nothing. In a steady run every slot has its sum and
+nothing changes. Village, two closes each, `REKARINA_LATE_BRIDGE=0` against the default: at a 60 fps cap the factor
+was 11.22 for 15 frames after both closes without the bridge and 9.77 throughout with it; with no cap (159 fps) the
+same, steps after the closes at 4348 and 7114 without it and none in three closes with it. The bridge went in at the
+gaps of the run only: after the loading screen (4 small ranges) and after each close (the 3 exposure ranges and the
+4 small ones), nowhere in play. Its wait costs once per close: the second frame after it took 12.6-14.6 ms against
+8.7-9.5 ms without (the first frame after a close takes 14-19 ms either way); frames over 25 ms in 100 s 16 against
+13, mean frame 6.89 against 6.86 ms.

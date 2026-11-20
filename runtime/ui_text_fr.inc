@@ -78,8 +78,7 @@
     [UI_MENU_HDR] = "Sortie HDR",
     [UI_MENU_HDR_DESC] = "Hautes lumières éclatantes sur un écran HDR. Le HDR doit être activé dans Windows (« Utiliser "
                          "HDR ») ou dans un compositeur Wayland avec gestion des couleurs ; sinon l'image reste en SDR. "
-                         "S'applique après un redémarrage. Le profil de couleur ci-dessus est prévu pour le SDR et n'est "
-                         "pas utilisé en HDR.",
+                         "S'applique après un redémarrage.",
     [UI_MENU_HDR_PEAK] = "Luminosité maximale",
     [UI_MENU_HDR_PEAK_DESC] = "Le pic de votre écran en nits ; les hautes lumières les plus vives s'y arrêtent.",
     [UI_MENU_HDR_GAME] = "Luminosité du jeu",

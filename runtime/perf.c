@@ -41,7 +41,10 @@ void perf_set_overlay(int mode) {
     __atomic_store_n(&perf_on, perf_base || mode == 2, __ATOMIC_RELAXED);
 }
 
-int perf_gpu_timing(void) { return (rt_trace & RT_TRACE_PERF) || __atomic_load_n(&overlay, __ATOMIC_RELAXED) == 2; }
+int vk_movienet_timing(void);   // vk_movienet.c: a movie measured for its network
+int perf_gpu_timing(void) {
+    return (rt_trace & RT_TRACE_PERF) || __atomic_load_n(&overlay, __ATOMIC_RELAXED) == 2 || vk_movienet_timing();
+}
 
 // Whether something reads the frame clock's GPU timestamps now (gfx_present.c bt_write takes them only then): the
 // performance overlay in either mode (its frame rate, lows and graph), REKARINA_FRAMETIMES, the pacing log. With all of

@@ -79,7 +79,7 @@
     [UI_MENU_HDR] = "Salida HDR",
     [UI_MENU_HDR_DESC] = "Luces intensas en una pantalla HDR. Requiere tener el HDR activado en Windows (\"Usar HDR\") o "
                          "en un compositor de Wayland con gestión de color; sin él la imagen sigue en SDR. Se aplica "
-                         "tras reiniciar. El perfil de color de arriba es para SDR y no se usa en HDR.",
+                         "tras reiniciar.",
     [UI_MENU_HDR_PEAK] = "Brillo máximo",
     [UI_MENU_HDR_PEAK_DESC] = "El pico de tu pantalla en nits; las luces más intensas se detienen ahí.",
     [UI_MENU_HDR_GAME] = "Brillo del juego",

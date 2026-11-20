@@ -20,6 +20,8 @@ int report_folder(char *out, size_t n);
 // 1 when the previous run's log (logs/rekarina.1.log at this start) ended with an error: a crash (FATAL), a lost GPU
 // device or a failed start. Read once.
 int report_last_run_failed(void);
+// 1 when that log says the graphics device was lost (vk_crumbs.c turns the pass marks on for this run). Read once.
+int report_last_run_lost_device(void);
 // `rekarina --make-report`: makes the report without starting the game, prints its path, shows the folder; exit code.
 int report_main(void);
 // At the end of a crash or a fatal error of a game run that writes logs/rekarina.log (a player's run, not a test run

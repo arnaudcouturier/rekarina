@@ -196,7 +196,16 @@ static int row_text(const char *key, const char *label, const char *desc, const 
     }
     // A row clicked with the mouse keeps the cursor: the keys and the pad then step it and Delete resets it at once,
     // where ImGui would first want a key press to show its cursor again.
-    if (clicked && ImGui::IsMouseReleased(0)) ImGui::SetNavCursorVisible(true);
+    if (clicked && ImGui::IsMouseReleased(0)) {
+        ImGui::SetNavCursorVisible(true);
+        // DEBUG-MENUCLIENT: the first clicks of a session, where the menu took them (its pixels, the swapchain's)
+        static int said;
+        if (said < 40) {
+            said++;
+            ImVec2 mp = ImGui::GetIO().MousePos, r0 = ImGui::GetItemRectMin(), r1 = ImGui::GetItemRectMax();
+            rt_log("menu: a click at %.0f,%.0f took the row %s at %.0f-%.0f", mp.x, mp.y, key, r0.y, r1.y);
+        }
+    }
     bool hov = ImGui::IsItemHovered(), foc = ImGui::IsItemFocused() && ImGui::GetCurrentContext()->NavCursorVisible;
     int step = clicked && !off ? 2 : 0;
     g_held = false;
@@ -367,6 +376,8 @@ int opt_text_row(const char *id, const char *label, const char *value, const cha
 }
 
 // ---- writing a setting: at once in memory (live settings follow), to rekarina.ini a moment later (opt_save_tick)
+// The deadline is read and taken with atomics: the window thread's close path (menu_settings_flush) takes a pending write
+// while the frame thread may be ticking it.
 static uint64_t g_save_at;   // plat_now_ns deadline of the pending write; 0 none
 static bool g_save_logged;
 
@@ -380,11 +391,15 @@ static void apply(const char *key, const char *value) {
     opt_save_soon();
 }
 
-void opt_save_soon(void) { g_save_at = plat_now_ns() + 400000000ull; }
+void opt_save_soon(void) { __atomic_store_n(&g_save_at, plat_now_ns() + 400000000ull, __ATOMIC_RELEASE); }
+
+int opt_save_pending(void) { return __atomic_load_n(&g_save_at, __ATOMIC_ACQUIRE) != 0; }
 
 int opt_save_tick(int force) {
-    if (!g_save_at || (!force && plat_now_ns() < g_save_at)) return g_save_at != 0;
-    g_save_at = 0;
+    uint64_t at = __atomic_load_n(&g_save_at, __ATOMIC_ACQUIRE);
+    if (!at || (!force && plat_now_ns() < at)) return at != 0;
+    if (!__atomic_compare_exchange_n(&g_save_at, &at, 0, false, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE))
+        return __atomic_load_n(&g_save_at, __ATOMIC_ACQUIRE) != 0;   // changed meanwhile: the next tick has it
     if (!cfg_save() && !g_save_logged) {
         g_save_logged = true;
         rt_log("menu: could not write the settings file; the changed settings hold for this session");

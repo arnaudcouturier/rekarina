@@ -103,5 +103,7 @@ int opt_bind_row(const char *key, const char *label, UiTextId desc, const char *
 // closes. opt_save_tick: on every frame the menu lays out; force: write now if anything is pending. 1 while a write is
 // pending.
 int opt_save_tick(int force);
+// 1 while a changed setting waits for its write (any thread).
+int opt_save_pending(void);
 // A change made outside a row (Reset, F10): rekarina.ini is written as after a row's change.
 void opt_save_soon(void);

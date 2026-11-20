@@ -186,12 +186,57 @@ static double monitor_rate_hz(HMONITOR mon) {
     return hz;
 }
 
+// Windows' HDR ("Use HDR", advanced colour) on the display the window is on: an SDR swapchain there is composed into
+// HDR with Windows' SDR content brightness, which makes the picture pale and milky next to the same game with HDR off.
+// Logged when it changes, with what to do, while REKARINA_HDR is off: a player's "washed-out colours" then shows in the
+// log. -1 unknown, 0 off, 1 on.
+static int monitor_hdr_on(HMONITOR mon) {
+    MONITORINFOEXW mi = {.cbSize = sizeof mi};
+    if (!GetMonitorInfoW(mon, (MONITORINFO *)&mi)) return -1;
+    UINT32 np = 0, nm = 0;
+    int on = -1;
+    if (GetDisplayConfigBufferSizes(QDC_ONLY_ACTIVE_PATHS, &np, &nm) != ERROR_SUCCESS || !np || !nm) return -1;
+    DISPLAYCONFIG_PATH_INFO *paths = calloc(np, sizeof *paths);
+    DISPLAYCONFIG_MODE_INFO *modes = calloc(nm, sizeof *modes);
+    if (paths && modes && QueryDisplayConfig(QDC_ONLY_ACTIVE_PATHS, &np, paths, &nm, modes, NULL) == ERROR_SUCCESS)
+        for (UINT32 i = 0; i < np && on < 0; i++) {
+            DISPLAYCONFIG_SOURCE_DEVICE_NAME src = {.header = {.type = DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME,
+                                                               .size = sizeof src,
+                                                               .adapterId = paths[i].sourceInfo.adapterId,
+                                                               .id = paths[i].sourceInfo.id}};
+            if (DisplayConfigGetDeviceInfo(&src.header) != ERROR_SUCCESS || wcscmp(src.viewGdiDeviceName, mi.szDevice))
+                continue;
+            DISPLAYCONFIG_GET_ADVANCED_COLOR_INFO ac = {.header = {.type = DISPLAYCONFIG_DEVICE_INFO_GET_ADVANCED_COLOR_INFO,
+                                                                   .size = sizeof ac,
+                                                                   .adapterId = paths[i].targetInfo.adapterId,
+                                                                   .id = paths[i].targetInfo.id}};
+            if (DisplayConfigGetDeviceInfo(&ac.header) == ERROR_SUCCESS) on = ac.advancedColorEnabled ? 1 : 0;
+        }
+    free(paths);
+    free(modes);
+    return on;
+}
+
+static void hdr_mode_note(HMONITOR mon) {
+    static int last = -2;
+    int on = monitor_hdr_on(mon);
+    if (on == last) return;
+    last = on;
+    if (on == 1 && !cfg_bool("REKARINA_HDR"))
+        rt_log("gfx: Windows has HDR on for this display and the game's picture is SDR: Windows shows it with its SDR "
+               "content brightness, which looks pale or washed out; HDR in the Screen tab, or \"Use HDR\" off in Windows' "
+               "display settings, avoids that");
+    else if (on >= 0)
+        rt_log("gfx: Windows HDR is %s for this display", on ? "on" : "off");
+}
+
 // Window thread. force: the display mode changed, measure even on the same monitor.
 static void refresh_rate_update(HWND h, int force) {
     HMONITOR mon = MonitorFromWindow(h, MONITOR_DEFAULTTOPRIMARY);
     if (!force && mon == g_rate_mon) return;
     g_rate_mon = mon;
     gfx_window_set_refresh(monitor_rate_hz(mon));
+    hdr_mode_note(mon);
 }
 
 int gfx_window_monitor_size(int *w, int *h) {
@@ -336,6 +381,14 @@ static void window_main(void *arg) {
     // button flashes, and REKARINA_FULLSCREEN waits for the first activation.
     // REKARINA_BACKGROUND_WINDOW=1 (test runs): no flashing, never fullscreen at start, and F11 keeps the window's place.
     int background = g_background = cfg_get("REKARINA_BACKGROUND_WINDOW") && atoi(cfg_get("REKARINA_BACKGROUND_WINDOW"));
+    {   // DEBUG-DPIAWARE: REKARINA_DEBUG_DPI_AWARENESS=unaware|system makes the window with that DPI awareness instead of
+        // the manifest's per-monitor one (a window takes its thread's at creation), as a compatibility override of the
+        // exe would; on a monitor at another scale than 100 % Windows then scales its client area and mouse positions.
+        const char *aw = cfg_get("REKARINA_DEBUG_DPI_AWARENESS");
+        DPI_AWARENESS_CONTEXT ctx = !aw ? NULL : !strcmp(aw, "unaware") ? DPI_AWARENESS_CONTEXT_UNAWARE
+                                               : !strcmp(aw, "system") ? DPI_AWARENESS_CONTEXT_SYSTEM_AWARE : NULL;
+        if (ctx && SetThreadDpiAwarenessContext(ctx)) rt_log("gfx: DEBUG-DPIAWARE: the window is made %s", aw);
+    }
     g_hwnd = CreateWindowExW(0, wc.lpszClassName, L"" RT_WINDOW_TITLE, WND_STYLE, CW_USEDEFAULT, CW_USEDEFAULT, ow, oh, NULL,
                              NULL, inst, NULL);
     if (!g_hwnd) {

@@ -105,16 +105,37 @@ void versions_query() {
     rt_log("ffx: upscaler versions on this device: %s", line);
 }
 
-// REKARINA_FSR_VERSION (applies to the next context; the menu changes it live): auto leaves the choice to the library,
-// which takes FSR 4 where the card runs it; a number takes the first listed version of that generation ("4", "3"), a
-// full name that one ("3.1.6"). 0: no override (auto, SDK 1, or a version the device does not list, said once).
-uint64_t fsr_version() {
-    const char *want = cfg_value("REKARINA_FSR_VERSION");
-    if (!A.v2 || !want || !*want || !strcmp(want, "auto")) return 0;
-    versions_query();
+// The first listed upscaler version whose name starts with want ("4", "3", "3.1.6"), 0 when none does.
+uint64_t listed(const char *want) {
     size_t len = strlen(want);
     for (int i = 0; i < V.n; i++)
         if (!strncmp(V.name[i], want, len) && (V.name[i][len] == 0 || V.name[i][len] == '.')) return V.id[i];
+    return 0;
+}
+
+// REKARINA_FSR_VERSION (applies to the next context; the menu changes it live): auto leaves the choice to the library,
+// which takes FSR 4 where the card runs it; a number takes the first listed version of that generation ("4", "3"), a
+// full name that one ("3.1.6"). 0: no override (auto, SDK 1, or a version the device does not list, said once).
+// FSR 4 needs two device extensions the library cannot enable itself (vk_device.c, fsr4_ready): where the library lists
+// FSR 4 but the device was made without them, FSR 3.1 runs in its place, for auto and for "4" alike.
+uint64_t fsr_version() {
+    const char *want = cfg_value("REKARINA_FSR_VERSION");
+    if (!A.v2) return 0;
+    int is_auto = !want || !*want || !strcmp(want, "auto");
+    if (!vk_ctx()->fsr4_ready && (is_auto || want[0] == '4')) {
+        versions_query();
+        uint64_t v3 = listed("3");
+        if (listed("4") && v3) {
+            static int said;
+            if (!said++)
+                rt_log("ffx: the library offers FSR 4, which needs VK_KHR_cooperative_matrix and VK_EXT_shader_float8 on "
+                       "the device; it was made without them: FSR 3.1 runs");
+            return v3;
+        }
+    }
+    if (is_auto) return 0;
+    versions_query();
+    if (uint64_t v = listed(want)) return v;
     static char told[16];
     if (strncmp(told, want, sizeof told - 1)) {
         snprintf(told, sizeof told, "%s", want);
@@ -162,6 +183,9 @@ Up *context_for(uint32_t w, uint32_t h, uint32_t ow, uint32_t oh) {
         api.header.pNext = d.header.pNext, d.header.pNext = &api.header;
         if (ver) ov.header.pNext = d.header.pNext, d.header.pNext = &ov.header;
     }
+    // said before the library runs: a crash inside it then names the context it was making
+    rt_log("ffx: making an FSR context at %ux%u -> %ux%u (%s)", w, h, ow, oh,
+           ver ? "the version chosen here" : "the library's choice");
     ffxReturnCode_t r = A.create(&slot->ctx, &d.header, nullptr);
     if (r != FFX_API_RETURN_OK) {
         rt_log("ffx: FSR context creation at %ux%u -> %ux%u failed (%u)", w, h, ow, oh, (unsigned)r);

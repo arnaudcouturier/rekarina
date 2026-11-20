@@ -74,7 +74,7 @@
     [UI_MENU_HDR] = "HDR 출력",
     [UI_MENU_HDR_DESC] = "HDR 디스플레이에서 밝은 하이라이트를 표시합니다. Windows에서 HDR을 켜거나(\"HDR 사용\") 색 관리를 "
                          "지원하는 Wayland 컴포지터에서 HDR을 켜야 하며, 그렇지 않으면 영상은 SDR로 유지됩니다. 재시작 "
-                         "후 적용됩니다. 위의 색상 프로필은 SDR용이며 HDR에서는 사용되지 않습니다.",
+                         "후 적용됩니다.",
     [UI_MENU_HDR_PEAK] = "최대 밝기",
     [UI_MENU_HDR_PEAK_DESC] = "디스플레이의 최대 밝기(니트)입니다. 가장 밝은 하이라이트가 이 값에서 멈춥니다.",
     [UI_MENU_HDR_GAME] = "게임 밝기",

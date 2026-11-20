@@ -469,6 +469,7 @@ int probe_window(void);                                    // gfx_window_probe.c
 int probe_shader(void);                                    // gfx_shader.c
 int probe_census_dir(char *dir, size_t n);                 // gfx_shader_probe.c: build/<version>/shaders for the probes
 int probe_vkmem(void), probe_vkexec(void), probe_astc(void);                 // tex_probe.c, vk_exec_probe.c, astc_probe.c
+int probe_color(void);                                    // color_probe.c
 int probe_movie(void);                                     // movie_probe.c: host VP9 movie::Decoder on one RomFS movie
 int probe_codec(const char *path);                         // ns2_codec.c (GAME_NS2): one WebM through the host nn::codec
                                                            // video decoder, as OoT's movie library calls it

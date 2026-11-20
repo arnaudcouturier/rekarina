@@ -37,7 +37,7 @@ static int save_ok = 1;                         // the last cfg_save_to wrote (o
 // Every name the runtime reads (and the patch sets in generated/), without the prefix. A file key outside this list is
 // logged as unknown. A new variable goes here too, or its ini key logs a harmless "unknown key" line.
 static const char *const known[] = {
-    "AB", "AMIIBO_DIR", "ANISO", "ARRIVE_HOLD", "ARRIVE_HOLD_MS", "ARRIVE_POOL_MS", "TPOOL_CHECK_EVERY", "APP_POOL", "ASPECT", "ASPECT_PATCH", "ASSUME_FOCUS", "ASTC", "ASTC_BC", "ASTC_TIME", "TEX_CACHE", "TEX_CACHE_MB", "ASYNC_PREEMPT", "AUDIO", "AUDIO_CHANNELS", "AUDIO_OFF", "AUDIO_PREFILL_MS",
+    "AB", "AMIIBO_DIR", "ANISO", "ARRIVE_HOLD", "ARRIVE_HOLD_MS", "ARRIVE_POOL_MS", "TPOOL_CHECK_EVERY", "APP_POOL", "ASPECT", "ASPECT_PATCH", "ASSUME_FOCUS", "ASTC", "ASTC_BC", "ASTC_TIME", "TEX_CACHE", "TEX_CACHE_MB", "ASYNC_PREEMPT", "AUDIO", "AUDIO_CHANNELS", "AUDIO_OFF", "AUDIO_PREFILL_MS", "AUDIO_RAMP",
     "BACKGROUND_WINDOW", "BIND_A", "BIND_B", "BIND_DOWN", "BIND_L", "BIND_LCLICK", "BIND_LEFT", "BIND_LSTICK_DOWN", "BIND_LSTICK_LEFT",
     "BIND_LSTICK_RIGHT", "BIND_LSTICK_UP", "BIND_MINUS",
     "BIND_PLUS", "BIND_R", "BIND_RCLICK", "BIND_RIGHT", "BIND_RSTICK_DOWN", "BIND_RSTICK_LEFT", "BIND_RSTICK_RIGHT", "BIND_RSTICK_UP",
@@ -46,7 +46,7 @@ static const char *const known[] = {
     "BIND_ZL", "BIND_ZR", "BLOCK_VIEWS_3D", "CLOTH_REALTIME", "COLOR_BRIGHTNESS", "COLOR_CONTRAST", "COLOR_GAMMA",
     "COLOR_PRESET", "COLOR_SATURATION", "CONTACT_DEBUG", "CONTACT_SHADOWS", "CORE_DIAG", "CRIT", "CRIT_OUT",
     "DEFER_GRACE", "POOL_QUARANTINE", "DESC_TEMPLATE", "DEVICE_PROFILE", "DISCORD_APP_ID", "DISCORD_IMAGE", "DISCORD_RPC", "DLAA", "DLAA_JITTER", "DLAA_MV", "DLAA_MASKDEBUG", "DLAA_MVDEBUG", "DLAA_OBJMV", "DLAA_PJITTER", "DLAA_PJ_YS", "DLAA_SURVEY", "DLAA_TIMES", "DLSS", "DLSSG_UNAVAILABLE", "DLSS_CHAR_MASK", "DLSS_PRESET", "DLSS_REACTIVE", "DUMP", "DUMP_BUF", "DUMP_DIR",
-    "DUMP_LOG", "EXEFS", "FEEDBACK", "FIX_C0", "FIX_ZERO", "FLIGHT", "FLIGHT_AT", "FLIGHT_DIR", "FLIGHT_FRAMES",
+    "DUMP_LOG", "DUMP_RETURN", "EXEFS", "FEEDBACK", "FIX_C0", "FIX_ZERO", "FLIGHT", "FLIGHT_AT", "FLIGHT_DIR", "FLIGHT_FRAMES",
     "FLIGHT_SPIKE_MS", "FLIGHT_THUMB", "FLIGHT_THUMBS", "FLUSH_SPAN", "FLUSH_UPLOAD", "TEX_EVICT", "FOLIAGE_SHADOW_CULL", "FOLIAGE_SHADOW_VRS", "FOV", "FOV_PATCH", "FPS60", "FPS_LIMIT", "FRAMETIMES", "FREEZE_IDLE", "FREEZE_WHOLE", "FREE_CORES",
     "FAST_TEXT", "FULLSCREEN", "FXAA", "GPL", "GPL_DRAW_BUILD", "GPU", "GPU_INDEX", "GPU_NAME", "HDR", "HDR_GAME_NITS", "HDR_HUE",
     "HDR_PEAK_NITS", "HDR_UI_NITS", "HIGHFPS_FIX", "INPUT", "INPUT_RECORD", "INPUT_SCRIPT", "LANG", "LIB_PREBUILD",
@@ -60,11 +60,11 @@ static const char *const known[] = {
     "PROFILE_MAIN", "PROFILE_RENDER", "PROMPTS", "PUSH_SKIP", "PUSH_STAGE", "RDOC", "RDOC_DIR", "RDOC_DLL", "REALTIME", "REC_END", "REEXEC",
     "RENDER_SCALE", "REPLAY_ASYNC",
     "REPLAY_CHECK", "RESOLVE_CHECK", "RESTART_WAIT", "ROMFS", "ROMFS_INDEX", "ROMFS_MMAP", "ROMFS_MODS", "ROMFS_PATCHES",
-    "REPLAY_THREADS", "ROMFS_PROOF_DIR", "ROMFS_VERIFY", "RSTICK_DEADZONE", "RUMBLE", "RUMBLE_CURVE", "RUMBLE_STRENGTH", "RUMBLE_TRIGGERS", "SECTIONS", "SHADER_CACHE",
+    "REPLAY_THREADS", "ROMFS_PROOF_DIR", "ROMFS_VERIFY", "RSTICK_DEADZONE", "RUMBLE", "RUMBLE_CURVE", "RUMBLE_GAP_MS", "RUMBLE_STRENGTH", "RUMBLE_TRIGGERS", "SECTIONS", "SHADER_CACHE",
     "SHADER_MEMO", "SHADOW_RANGE", "SHADOW_RES", "SHADOW_SCALE", "SHARED_FONTS", "SHARPNESS", "SHOTS", "SHOTS_DIR",
-    "SHOTS_FULL", "SPEED_PROBE", "SPIN", "SPIN_HANDOFF_US", "FOLD_MAP", "FOLD_SUBMIT_SLOT", "FOLD_SLEEP", "FOLD_AP_SPIN", "AP_SPIN_US", "SUBMIT_PRIO", "SPLIT_DRAWS", "SPLIT_IN_PASS", "SPLIT_US", "STICK_DEADZONE", "STICK_SENS",
+    "SHOTS_FULL", "SPEED_PROBE", "SPIN", "SPIN_HANDOFF_US", "TEX_OVER", "FOLD_MAP", "FOLD_SUBMIT_SLOT", "FOLD_SLEEP", "FOLD_AP_SPIN", "AP_SPIN_US", "SUBMIT_PRIO", "SPLIT_DRAWS", "SPLIT_IN_PASS", "SPLIT_US", "STICK_DEADZONE", "STICK_SENS",
     "SWKBD_ANSWER",
-    "FSR_VERSION", "CS_KEEP", "MESH_INDICES", "MESH_TASK", "VRAM_BUDGET_MB", "VMA_DUMP", "SNAP_RING_MB", "TEX_EVICT_CLASS", "TPOOL_HIDE", "POOLTAB", "VMA_BLOCK_MB", "TEX_SUBALLOC_KB",
+    "FSR_VERSION", "CS_KEEP", "MOVIE_UNET", "MESH_INDICES", "MESH_TASK", "VRAM_BUDGET_MB", "VMA_DUMP", "SNAP_RING_MB", "TEX_EVICT_CLASS", "TPOOL_HIDE", "POOLTAB", "VMA_BLOCK_MB", "TEX_SUBALLOC_KB",
     "SWKBD_TEST", "TEST_PAD", "UPDATE_CHECK", "TEST_PREPARE_SHADERS", "TEST_STALL", "FIXED_SCENE", "FRAMEGEN", "REFLEX", "GAME_ASPECT", "GAME_RES", "SCENE_SCALE", "SHADOW_COMPARE", "TAA", "TEX_ALIAS", "TEX_MEMO", "TEX_QUALITY", "TEX_SAME_REG", "DLAA_WARM", "DLAA_SHARPEN", "TPOOL_PUMP_MS", "MOVIE_FPS", "TEX_VRAM_PRESSURE", "TIMER_1MS", "PROCESS_PRIORITY", "RENDER_CORE", "GPU_LOAD_ZERO", "GPU_PASSTIME", "OQLOG", "PRED_ZERO", "RES_GUARD", "TPOOL", "TPOOL_MS", "TPOOL_REGBITS", "PAR_UB_JOIN", "HEAP_CHECK", "EVICT_QUIET", "USNAP_HELD_LOCK", "TPOOL_OLD_MS", "EVICT_HOLD_MS", "PRESSURE_KEEP_USED", "TRACE", "TXD_TRANSPOSE", "UBO_SNAPSHOT", "UPSCALER", "VK_DYN_A2C", "VK_DYN_VERTEX", "VK_NO_FLOAT64",
     "VK_PRESENT", "VK_RECORDER", "VK_SSBO_ALIGN", "VK_SUBGROUP", "VK_SUBGROUP_PIN", "VK_VALIDATION", "VOLUME", "VRAM_HEADROOM", "VS_OUTS",
     "WALK_KEY", "WALK_SCALE", "STICK_DASH", "DASH_KEY", "WB_EXACT", "WB_FENCE_LIMIT", "WB_MERGE", "WINDOW_SIZE", "XLATE", "XLATE_ID", "XLATE_KEEP", "XLATE_PROCS",
@@ -199,10 +199,11 @@ static const CfgMeta metas[] = {
     // the order of the menu's own list (ui/menu.cpp tab_menu langs[], after "Automatic")
     {"MENU_LANG", "", "en|de|es|fr|it|nl|pt|pt-BR|ru|ja|ko|zh-Hans|zh-Hant", LIVE},
     {"AMIIBO_DIR", "", NULL, LIVE},
-    // Discord Rich Presence (discord_rpc.c): off by default, the Menu tab of the settings menu switches it.
+    // Discord Rich Presence (discord_rpc.c): on by default, as other ports show theirs; the status names only the port
+    // and the play time, Discord's own settings can hide it, and the Menu tab of the settings menu switches it off.
     // The update notice (update_note.c): one request for the newest release when the game starts.
     {"UPDATE_CHECK", "1", "0|1", LIVE},
-    {"DISCORD_RPC", "0", "0|1", LIVE},
+    {"DISCORD_RPC", "1", "0|1", LIVE},
 #ifdef GAME_OOT   // Rekarina's own Discord application and its art asset (the key Discord gave the uploaded file)
     {"DISCORD_APP_ID", "1571222830069194843", NULL, LIVE},
     {"DISCORD_IMAGE", "discord-icon", NULL, LIVE},
@@ -819,6 +820,14 @@ static int find_ini(void) {
 }
 
 int cfg_save(void) {
+    // REKARINA_INI_READONLY=1 (test runs from a shared build folder): changes made in the run stay in it; the file beside
+    // the exe, which every other run reads, is not written.
+    if (cfg_from_env(PREFIX "INI_READONLY") && cfg_bool(PREFIX "INI_READONLY")) {
+        static int said;
+        if (!said++) rt_log("cfg: REKARINA_INI_READONLY: " RT_INI_FILE " is not written in this run");
+        __atomic_store_n(&save_ok, 1, __ATOMIC_RELEASE);
+        return 1;
+    }
     if (find_ini()) return cfg_save_to(ini_path);
     __atomic_store_n(&save_ok, 0, __ATOMIC_RELEASE);
     return 0;

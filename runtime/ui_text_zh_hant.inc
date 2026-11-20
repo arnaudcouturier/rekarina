@@ -71,8 +71,7 @@
     [UI_MENU_HDR_GROUP] = "HDR",
     [UI_MENU_HDR] = "HDR 輸出",
     [UI_MENU_HDR_DESC] = "在 HDR 顯示器上呈現明亮的高光。需要在 Windows 中開啟 HDR（「使用 HDR」），"
-                         "或使用支援色彩管理的 Wayland 合成器；否則畫面維持 SDR。重新啟動後生效。"
-                         "上方的色彩設定檔僅用於 SDR，HDR 下不會套用。",
+                         "或使用支援色彩管理的 Wayland 合成器；否則畫面維持 SDR。重新啟動後生效。",
     [UI_MENU_HDR_PEAK] = "峰值亮度",
     [UI_MENU_HDR_PEAK_DESC] = "顯示器的峰值亮度（尼特）；最亮的高光以此為上限。",
     [UI_MENU_HDR_GAME] = "遊戲亮度",

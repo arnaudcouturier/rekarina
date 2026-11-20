@@ -309,6 +309,7 @@ typedef struct {
     Pic *held[HOLD_CAP];                  // decoded, waiting for a buffer
     int nheld, eos_pending;
     int live;                             // counted in g_movies_live: from Initialize or a sample after the end, to the end of stream or Finalize
+    uint64_t live_frame, live_ns, live_pics;   // where the movie stood when it went live (set_live: its rate in the log)
     int64_t eos_ts;
     Pic *last;                            // the last picture put in a buffer (end of stream shows it again)
     Buf buf[CV_BUFS];
@@ -593,9 +594,26 @@ static void worker(void *arg) {
 // Decoders playing a movie: frame_rate.c holds the frame rate meanwhile.
 static int g_movies_live;
 int codec_movie_live(void) { return __atomic_load_n(&g_movies_live, __ATOMIC_RELAXED) > 0; }
+// Each movie's rate goes into the log when it ends: the frames shown meanwhile and the pictures handed to the game a
+// second. Its event script counts the game's updates as 60 Hz frames (frame_rate.c movie_cap_hz), so a movie shown at
+// 17 fps also plays at under a third of its speed, and a report of slow movies (a player's 1.2.3 log: 17.2 fps through the
+// title movie, every frame waiting for the GPU) can be read off these two lines.
 static void set_live(Dec *d, int live) {
-    if (__atomic_exchange_n(&d->live, live, __ATOMIC_RELAXED) != live)
-        __atomic_add_fetch(&g_movies_live, live ? 1 : -1, __ATOMIC_RELAXED);
+    if (__atomic_exchange_n(&d->live, live, __ATOMIC_RELAXED) == live) return;
+    __atomic_add_fetch(&g_movies_live, live ? 1 : -1, __ATOMIC_RELAXED);
+    uint64_t frame = __atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED), now = plat_now_ns();
+    if (live) {
+        d->live_frame = frame, d->live_ns = now, d->live_pics = d->pictures;
+        rt_log("codec: %s decoder %u: a movie plays from frame %llu", codec_name(d->codec), d->serial,
+               (unsigned long long)frame);
+        void boot_shots_arm(uint64_t n);   // DEBUG-MOVIESHOTS: REKARINA_SHOTS_ARM=<count>:<step> shoots from the first movie's start
+        boot_shots_arm(frame + 1);
+    } else if (d->live_ns && now > d->live_ns) {
+        double s = (double)(now - d->live_ns) / 1e9;
+        rt_log("codec: %s decoder %u: the movie ran %.1f s to frame %llu: %.1f frames shown a second, %.1f pictures given "
+               "to the game a second", codec_name(d->codec), d->serial, s, (unsigned long long)frame,
+               (double)(frame - d->live_frame) / s, (double)(d->pictures - d->live_pics) / s);
+    }
 }
 
 // With d->mu held: drop a decode in flight and wait for the worker to leave it. Returns whether the calling guest

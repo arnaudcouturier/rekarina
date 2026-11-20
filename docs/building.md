@@ -294,6 +294,7 @@ change passes these, all run with `.venv`:
 | `tests\flags_check.py` | the function-local flag helpers of `runtime\cpu.h` against its packed ones | no |
 | `tests\excl_mt.py` | the exclusive monitor helpers under contention and ABA, on several threads | no |
 | `tests\jumptables_check.py` | `recomp/jumptables.py` against a Unicorn oracle; must report 0 disagreements, on 1.4.3 too | yes |
+| `tests\build_content_test.py` | `tools/build_game.py`'s content stamps: an output whose source, header, flags or compiler changed is made again whatever the file times say; a build folder without the record makes its runtime objects again | no |
 
 A `--cpu v2` build passes the same differential tests with `--cflags=-march=x86-64-v2`; they compile `runtime/fma.c`
 too, so they check the software fma the v2 build links rather than the C runtime's.

@@ -109,6 +109,28 @@
      "sha256": "c7036a3dcf6aa902a4d8428e89b121f6e377df340188f9c13730627f71d5bc60"
     }
    ]
+  },
+  {
+   "version": "1.2.5",
+   "date": "2026-11-20",
+   "notes": "## Rekarina 1.2.5: fixes from your reports\n\nThanks again for all the reports. Open the launcher and it offers the update.\n\n**Fixed**\n- The update from 1.2.2 to 1.2.4 could stop with a \"link failed\" error: the setup reused part of an older build. The setup now rebuilds by what changed, not by file dates, and heals a folder an earlier update left half-built (thanks matthieugo).\n- The picture no longer gets brighter for a moment after you close the map or the inventory.\n- Movies play smoothly on cards without tensor cores, like the GTX 10 and 16 series (thanks Alejandro Sanz II, Doulos).\n- Colour profiles now work with HDR on (thanks Dr Dyaddae).\n- No more click at the end of each ocarina note (thanks matthieugo).\n- Joy-Cons no longer drop out when you hold a note with strong vibration (thanks 아무개).\n- On an ultrawide screen the Rekarina menu picks the row under the mouse again (thanks 호두의봄).\n- A setting you change right before quitting is saved (thanks 호두의봄).\n- AMD RX 9000 cards get what FSR 4 needs, and fall back to FSR 3.1 where it's missing (thanks mekka). I have no such card here: please tell me how it goes.\n\n**New**\n- An uninstaller: the launcher's Advanced tab, a shortcut in the game folder, or Windows' installed apps list. It asks whether to keep your saves, which stay in the game folder.\n- Your Discord status shows \"Playing Rekarina\" while you play. You can turn it off in the menu.\n- The launcher shortcut in the game folder always points to a launcher that's there.\n- If the graphics card is ever lost, the crash report now has what I need to find out why.\n\n**Still open, I'm on it**\n- The game can freeze when you enter the building beside the Market's gate (thanks 아무개). Looking into it now.\n- Flickering of distant shadows, tree crowns and bushes, and of lamp light at night and on water.\n- Crashes in the Market and around the castle on some PCs (thanks huchi001, mekka).\n- After switching controllers, button pictures already on screen keep the old look until a restart.\n- Depth of field looks pixelated; bosses above 60 fps still need checking; memory on 16 GB PCs; Linux and Steam Deck.\n\nSomething broken? Esc, Advanced, Make a problem report, and post the zip in #bug-reports.\n",
+   "files": [
+    {
+     "name": "Rekarina.exe",
+     "size": 155324718,
+     "sha256": "335501acd50b123d8fe2e20d43af3ae2667de17427d557a4cf4cff9571dfe576"
+    },
+    {
+     "name": "Rekarina-Setup-1.2.5-windows.zip",
+     "size": 154892590,
+     "sha256": "b04940683e122821ff80bbb94cf8f29b18e34c64b32614bf00f32693f3a846c7"
+    },
+    {
+     "name": "SHA256SUMS",
+     "size": 178,
+     "sha256": "4494e6d04fb0b9f772a0a0b1b360bb7ae7f89c3a4cfada320375006efdc7dea4"
+    }
+   ]
   }
  ]
 }

@@ -18,6 +18,7 @@
 #include "host.h"
 #include "nvn_api.h"
 #include "vk.h"
+#include "report.h"
 
 static PFN_vkCmdWriteBufferMarkerAMD write_marker;
 static VkBuffer buf;
@@ -135,9 +136,22 @@ static VkPassMark ring[VK_PASS_MARKS];
 static uint32_t seq;                        // marks made; only the replay thread writes it
 
 // REKARINA_PASS_CRUMBS: unset, buffer marks where VK_AMD_buffer_marker exists; 1, also NVIDIA checkpoints; 0, neither.
+// After a run whose graphics device was lost (report.c report_last_run_lost_device: logs/rekarina.1.log at this start),
+// a player's run (one that writes logs/rekarina.log) marks its passes as REKARINA_PASS_CRUMBS=1 would, unless the
+// setting says otherwise: the logs that two players sent of such losses said only which submission's part the GPU was
+// in (2026-11-19), and the marks cost about a tenth of the GPU's frame, so not every run pays for them.
+static int marks_after_loss(void) {
+    static int on = -1;
+    if (on < 0) {
+        const char *e = cfg_get("REKARINA_PASS_CRUMBS");
+        on = (!e || !*e) && rt_log_path() && report_last_run_lost_device();
+    }
+    return on;
+}
+
 int vk_pass_marks_want_nv(void) {
     const char *e = cfg_get("REKARINA_PASS_CRUMBS");
-    return e && *e && strcmp(e, "0") != 0;
+    return (e && *e && strcmp(e, "0") != 0) || marks_after_loss();
 }
 
 static void pass_marks_init(VkCtx *c) {
@@ -148,8 +162,9 @@ static void pass_marks_init(VkCtx *c) {
     // village has ~295 passes and dispatches, each marked at its start and at its end, and a mark at the end of the
     // pipe makes the GPU finish what is in flight before it goes on: with the marks the native 2560x1440 scene took
     // 13.5 ms of GPU time a frame, without them 12.2 (68 against 75 fps, standing camera, RTX 5070).
-    if ((!e || !*e) && !cfg_get("REKARINA_GPU_PASSTIME")) off = 1;   // the pass timing needs the marks
+    if ((!e || !*e) && !cfg_get("REKARINA_GPU_PASSTIME") && !marks_after_loss()) off = 1;   // the pass timing needs the marks
 #endif
+    if (marks_after_loss()) rt_log("vk: the last run lost the graphics device: this one marks its passes for the report");
     set_checkpoint = c->has_nv_checkpoints
                          ? (PFN_vkCmdSetCheckpointNV)vkGetDeviceProcAddr(c->device, "vkCmdSetCheckpointNV") : NULL;
     pm_amd = !off && write_marker && words;

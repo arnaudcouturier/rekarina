@@ -77,7 +77,7 @@
     [UI_MENU_HDR] = "Saída HDR",
     [UI_MENU_HDR_DESC] = "Realces brilhantes num ecrã HDR. Requer o HDR ligado no Windows («Utilizar HDR») ou num "
                          "compositor Wayland com gestão de cor; sem isso a imagem fica em SDR. Aplica-se após "
-                         "reiniciar. O perfil de cor acima é para SDR e não é usado em HDR.",
+                         "reiniciar.",
     [UI_MENU_HDR_PEAK] = "Brilho máximo",
     [UI_MENU_HDR_PEAK_DESC] = "O pico do teu ecrã em nits; os realces mais brilhantes ficam por aí.",
     [UI_MENU_HDR_GAME] = "Brilho do jogo",

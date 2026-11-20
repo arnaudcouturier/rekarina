@@ -37,9 +37,51 @@
     <p class="sub rv">Every version, the newest first. The launcher offers a new version by itself; these files are for a fresh install or a look back. The same releases with their source code are in <a href="https://git.rekarina.dev/rekarina/rekarina/releases" rel="noopener">the repository</a>.</p>
     <div class="list">
         <!-- release:list -->
-        <article class="rel panel rv" id="v1.2.4">
-          <div class="head"><h2>Rekarina 1.2.4</h2><span class="meta">20 November 2026 &middot; the newest</span></div>
+        <article class="rel panel rv" id="v1.2.5">
+          <div class="head"><h2>Rekarina 1.2.5</h2><span class="meta">20 November 2026 &middot; the newest</span></div>
           <details class="notes" open>
+            <summary>Release notes</summary>
+            <h3>Rekarina 1.2.5: fixes from your reports</h3>
+            <p>Thanks again for all the reports. Open the launcher and it offers the update.</p>
+            <p><b>Fixed</b></p>
+            <ul>
+              <li>The update from 1.2.2 to 1.2.4 could stop with a "link failed" error: the setup reused part of an older build. The setup now rebuilds by what changed, not by file dates, and heals a folder an earlier update left half-built (thanks matthieugo).</li>
+              <li>The picture no longer gets brighter for a moment after you close the map or the inventory.</li>
+              <li>Movies play smoothly on cards without tensor cores, like the GTX 10 and 16 series (thanks Alejandro Sanz II, Doulos).</li>
+              <li>Colour profiles now work with HDR on (thanks Dr Dyaddae).</li>
+              <li>No more click at the end of each ocarina note (thanks matthieugo).</li>
+              <li>Joy-Cons no longer drop out when you hold a note with strong vibration (thanks 아무개).</li>
+              <li>On an ultrawide screen the Rekarina menu picks the row under the mouse again (thanks 호두의봄).</li>
+              <li>A setting you change right before quitting is saved (thanks 호두의봄).</li>
+              <li>AMD RX 9000 cards get what FSR 4 needs, and fall back to FSR 3.1 where it's missing (thanks mekka). I have no such card here: please tell me how it goes.</li>
+            </ul>
+            <p><b>New</b></p>
+            <ul>
+              <li>An uninstaller: the launcher's Advanced tab, a shortcut in the game folder, or Windows' installed apps list. It asks whether to keep your saves, which stay in the game folder.</li>
+              <li>Your Discord status shows "Playing Rekarina" while you play. You can turn it off in the menu.</li>
+              <li>The launcher shortcut in the game folder always points to a launcher that's there.</li>
+              <li>If the graphics card is ever lost, the crash report now has what I need to find out why.</li>
+            </ul>
+            <p><b>Still open, I'm on it</b></p>
+            <ul>
+              <li>The game can freeze when you enter the building beside the Market's gate (thanks 아무개). Looking into it now.</li>
+              <li>Flickering of distant shadows, tree crowns and bushes, and of lamp light at night and on water.</li>
+              <li>Crashes in the Market and around the castle on some PCs (thanks huchi001, mekka).</li>
+              <li>After switching controllers, button pictures already on screen keep the old look until a restart.</li>
+              <li>Depth of field looks pixelated; bosses above 60 fps still need checking; memory on 16 GB PCs; Linux and Steam Deck.</li>
+            </ul>
+            <p>Something broken? Esc, Advanced, Make a problem report, and post the zip in #bug-reports.</p>
+          </details>
+          <div class="files">
+          <a class="plate" href="https://dl.rekarina.dev/releases/1.2.5/Rekarina.exe">Rekarina.exe <small>155 MB</small></a>
+          <a class="plate" href="https://dl.rekarina.dev/releases/1.2.5/Rekarina-Setup-1.2.5-windows.zip">Setup as a .zip <small>155 MB</small></a>
+          <a class="plate" href="https://dl.rekarina.dev/releases/1.2.5/SHA256SUMS">SHA256SUMS</a>
+          </div>
+          <div class="sum"><b>SHA-256 of Rekarina.exe 1.2.5</b><code>335501acd50b123d8fe2e20d43af3ae2667de17427d557a4cf4cff9571dfe576</code></div>
+        </article>
+        <article class="rel panel rv" id="v1.2.4">
+          <div class="head"><h2>Rekarina 1.2.4</h2><span class="meta">20 November 2026</span></div>
+          <details class="notes">
             <summary>Release notes</summary>
             <h3>Rekarina 1.2.4: your reports, fixed</h3>
             <p>A big thank you to everyone who reported problems after 1.2.1: nearly every line below is yours. Open the launcher and it offers the update.</p>

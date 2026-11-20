@@ -1,29 +1,29 @@
 {
- "tag_name": "v1.2.4",
- "name": "Rekarina 1.2.4",
+ "tag_name": "v1.2.5",
+ "name": "Rekarina 1.2.5",
  "html_url": "https://rekarina.dev/",
- "body": "## Rekarina 1.2.4: your reports, fixed\n\nA big thank you to everyone who reported problems after 1.2.1: nearly every line below is yours. Open the launcher and it offers the update.\n\n**Shaders and stutter**\n- Every setup prepares all the shaders again before you play, and an update keeps the ones you already have. 1.2.3 cut them down to the most used ones; your next setup run fills the rest back in (thanks huchi001).\n- No more freezes of a few seconds while playing: the pipeline cache is saved when the game closes instead of every 20 seconds (thanks Ranma_kun, huchi001).\n\n**Frame generation**\n- FSR frame generation no longer stops the game from starting (thanks matthieugo).\n- DLSS Frame Generation is offered on RTX 40 and 50 cards again. A file of ours was missing from every release since 1.2.0 (thanks matthieugo, lifehawk).\n- If frame generation ever fails to start, the game starts without it and says so.\n\n**Controls**\n- The dash on the left stick's press and the V key work now: they held the wrong button (thanks Valentyn_L, user7622421).\n- The mouse turns the camera the same everywhere: in houses, in water and while targeting it was slower or capped (thanks 호두의봄).\n- The ocarina no longer freezes the game when the mic input option is on (thanks 창엽, The Mystic's Shade, Valentyn_L).\n- The Controls tab now says what each button does in this game; it showed the wrong descriptions before.\n- The Rekarina menu remembers where you were, so you can close it, look, and keep tweaking (thanks Alejandro Sanz II).\n\n**Launcher and setup**\n- A \"Rekarina Launcher\" shortcut in the game folder and in the Start menu, and one on the desktop if you want it (thanks Sir Flarigand).\n- \"Open folder\" opens the folder instead of starting a second launcher (thanks matthieugo).\n- The setup step \"Drawing the button prompts\" tries again by itself when it crashes, and says more if it keeps failing (thanks InkJelly80).\n- The setup form highlights whole rows.\n\n**New**\n- Polish as a game language (thanks remson).\n- Weaker CPUs: with four threads the game's threads share the cores better and the frame is handed to the GPU on two threads. On my CPU held to four threads at 1080p: the field 51 → 59 fps (1% low 19 → 35), the village 52 → 56 fps, and far fewer long frames.\n- The game starts faster: a background read of 177,000 small files at every start is gone.\n\n**Still open, I'm on it**\n- Crashes in the Market and around the castle on some PCs (thanks huchi001, mekka for the logs). I couldn't reproduce them here yet; the next crash log carries what I need.\n- Depth of field looks pixelated; bosses above 60 fps still need checking; flicker of distant shadows and trees; memory on 16 GB PCs.\n- Linux and Steam Deck: there's a #linux channel now, come help.\n\nSomething broken? Esc, Advanced, Make a problem report, and post the zip in #bug-reports.\n",
+ "body": "## Rekarina 1.2.5: fixes from your reports\n\nThanks again for all the reports. Open the launcher and it offers the update.\n\n**Fixed**\n- The update from 1.2.2 to 1.2.4 could stop with a \"link failed\" error: the setup reused part of an older build. The setup now rebuilds by what changed, not by file dates, and heals a folder an earlier update left half-built (thanks matthieugo).\n- The picture no longer gets brighter for a moment after you close the map or the inventory.\n- Movies play smoothly on cards without tensor cores, like the GTX 10 and 16 series (thanks Alejandro Sanz II, Doulos).\n- Colour profiles now work with HDR on (thanks Dr Dyaddae).\n- No more click at the end of each ocarina note (thanks matthieugo).\n- Joy-Cons no longer drop out when you hold a note with strong vibration (thanks 아무개).\n- On an ultrawide screen the Rekarina menu picks the row under the mouse again (thanks 호두의봄).\n- A setting you change right before quitting is saved (thanks 호두의봄).\n- AMD RX 9000 cards get what FSR 4 needs, and fall back to FSR 3.1 where it's missing (thanks mekka). I have no such card here: please tell me how it goes.\n\n**New**\n- An uninstaller: the launcher's Advanced tab, a shortcut in the game folder, or Windows' installed apps list. It asks whether to keep your saves, which stay in the game folder.\n- Your Discord status shows \"Playing Rekarina\" while you play. You can turn it off in the menu.\n- The launcher shortcut in the game folder always points to a launcher that's there.\n- If the graphics card is ever lost, the crash report now has what I need to find out why.\n\n**Still open, I'm on it**\n- The game can freeze when you enter the building beside the Market's gate (thanks 아무개). Looking into it now.\n- Flickering of distant shadows, tree crowns and bushes, and of lamp light at night and on water.\n- Crashes in the Market and around the castle on some PCs (thanks huchi001, mekka).\n- After switching controllers, button pictures already on screen keep the old look until a restart.\n- Depth of field looks pixelated; bosses above 60 fps still need checking; memory on 16 GB PCs; Linux and Steam Deck.\n\nSomething broken? Esc, Advanced, Make a problem report, and post the zip in #bug-reports.\n",
  "assets": [
   {
-   "name": "Rekarina-Setup-1.2.4-windows.zip",
-   "browser_download_url": "https://dl.rekarina.dev/releases/1.2.4/Rekarina-Setup-1.2.4-windows.zip",
-   "size": 154845936,
-   "digest": "sha256:8c072802206c2428eabc7ee8b1afb667b60c70c703115b51154a6438dac69742"
+   "name": "Rekarina-Setup-1.2.5-windows.zip",
+   "browser_download_url": "https://dl.rekarina.dev/releases/1.2.5/Rekarina-Setup-1.2.5-windows.zip",
+   "size": 154892590,
+   "digest": "sha256:b04940683e122821ff80bbb94cf8f29b18e34c64b32614bf00f32693f3a846c7"
   },
   {
    "name": "Rekarina.exe",
-   "browser_download_url": "https://dl.rekarina.dev/releases/1.2.4/Rekarina.exe",
-   "size": 155278112,
-   "digest": "sha256:cc7bc18cdeba23ca90e1797b2be46b6e5c405895a71b6a56bf2ae00513d14f68"
+   "browser_download_url": "https://dl.rekarina.dev/releases/1.2.5/Rekarina.exe",
+   "size": 155324718,
+   "digest": "sha256:335501acd50b123d8fe2e20d43af3ae2667de17427d557a4cf4cff9571dfe576"
   },
   {
    "name": "SHA256SUMS",
-   "browser_download_url": "https://dl.rekarina.dev/releases/1.2.4/SHA256SUMS",
+   "browser_download_url": "https://dl.rekarina.dev/releases/1.2.5/SHA256SUMS",
    "size": 178
   },
   {
    "name": "SHA256SUMS.sig",
-   "browser_download_url": "https://dl.rekarina.dev/releases/1.2.4/SHA256SUMS.sig",
+   "browser_download_url": "https://dl.rekarina.dev/releases/1.2.5/SHA256SUMS.sig",
    "size": 129
   }
  ]

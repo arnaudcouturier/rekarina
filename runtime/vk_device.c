@@ -442,6 +442,10 @@ typedef struct {
     VkPhysicalDeviceShaderAtomicFloatFeaturesEXT af;
     VkPhysicalDevicePipelineExecutablePropertiesFeaturesKHR pep;   // DEBUG-PIPESTATS
     VkPhysicalDeviceCooperativeMatrixFeaturesNV cm;
+#ifdef VK_EXT_SHADER_FLOAT8_EXTENSION_NAME
+    VkPhysicalDeviceCooperativeMatrixFeaturesKHR cmk;   // FSR 4 (vk_ffx.cpp)
+    VkPhysicalDeviceShaderFloat8FeaturesEXT f8;
+#endif
     VkPhysicalDevicePresentTimingFeaturesEXT pt;      // DEBUG-PRESENTTIMING
     VkPhysicalDevicePresentId2FeaturesKHR pid2;
 #ifdef GAME_NS2
@@ -476,9 +480,9 @@ static int create_device(void) {
     VkExtensionProperties *ep = calloc(ne ? ne : 1, sizeof *ep);
     vkEnumerateDeviceExtensionProperties(g_vk.phys, NULL, &ne, ep);
 #ifdef GAME_NS2
-    const char *ext[53];   // one more: VK_EXT_mesh_shader (and one for DEBUG-PIPESTATS, one for cooperative matrices)
+    const char *ext[55];   // one more: VK_EXT_mesh_shader (and one for DEBUG-PIPESTATS, one for cooperative matrices)
 #else
-    const char *ext[52];
+    const char *ext[54];   // two for FSR 4's extensions
 #endif
     uint32_t n_ext = 0;
     for (size_t i = 0; i < sizeof k_required_ext / sizeof *k_required_ext; i++) ext[n_ext++] = k_required_ext[i];
@@ -587,6 +591,22 @@ static int create_device(void) {
         }
     }
 #endif
+    // FSR 4 (vk_ffx.cpp): AMD's upscaler library runs FSR 4's network with cooperative matrices of 8-bit floats, and its
+    // shaders need VK_KHR_cooperative_matrix and VK_EXT_shader_float8 enabled on the device with their features; the
+    // library offers FSR 4 by the card, not by what the application enabled. On AMD cards that have both;
+    // REKARINA_FSR4_EXTS=0 leaves them out, and FSR 3.1 then runs in FSR 4's place (vk_ffx.cpp fsr_version).
+    int fsr4_exts = 0;
+#ifdef VK_EXT_SHADER_FLOAT8_EXTENSION_NAME
+    if (g_vk.props.vendorID == 0x1002 && rt_knob("FSR4_EXTS", "1") &&
+        has_ext(ep, ne, VK_KHR_COOPERATIVE_MATRIX_EXTENSION_NAME) && has_ext(ep, ne, VK_EXT_SHADER_FLOAT8_EXTENSION_NAME) &&
+        n_ext + 2 <= sizeof ext / sizeof *ext) {
+        ext[n_ext++] = VK_KHR_COOPERATIVE_MATRIX_EXTENSION_NAME;
+        ext[n_ext++] = VK_EXT_SHADER_FLOAT8_EXTENSION_NAME;
+        CHAIN(cmk, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COOPERATIVE_MATRIX_FEATURES_KHR);
+        CHAIN(f8, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_FLOAT8_FEATURES_EXT);
+        fsr4_exts = 1;
+    }
+#endif
     // DEBUG-PIPESTATS: REKARINA_PIPESTATS=1: the driver's statistics of each pipeline (vk_pipeline.c pipestats_log)
     if (cfg_get("REKARINA_PIPESTATS") && has_ext(ep, ne, VK_KHR_PIPELINE_EXECUTABLE_PROPERTIES_EXTENSION_NAME)) {
         ext[n_ext++] = VK_KHR_PIPELINE_EXECUTABLE_PROPERTIES_EXTENSION_NAME;
@@ -616,6 +636,16 @@ static int create_device(void) {
     // stays on: guest shaders index constant buffers freely and out-of-range reads must stay harmless).
     vkGetPhysicalDeviceFeatures2(g_vk.phys, &c->f2);
     if (g_vk.has_present_timing && !(c->pt.presentTiming && c->pid2.presentId2)) g_vk.has_present_timing = 0;
+#ifdef VK_EXT_SHADER_FLOAT8_EXTENSION_NAME
+    if (fsr4_exts) {
+        g_vk.fsr4_ready = c->cmk.cooperativeMatrix && c->f8.shaderFloat8 && c->f8.shaderFloat8CooperativeMatrix &&
+                          c->f12.shaderFloat16 && c->f12.shaderInt8;
+        rt_log("vk: FSR 4's extensions on (VK_KHR_cooperative_matrix: cooperativeMatrix %d; VK_EXT_shader_float8: "
+               "shaderFloat8 %d, shaderFloat8CooperativeMatrix %d; shaderFloat16 %d, shaderInt8 %d): FSR 4 %s",
+               (int)c->cmk.cooperativeMatrix, (int)c->f8.shaderFloat8, (int)c->f8.shaderFloat8CooperativeMatrix,
+               (int)c->f12.shaderFloat16, (int)c->f12.shaderInt8, g_vk.fsr4_ready ? "can run" : "cannot run here");
+    }
+#endif
     if (cfg_get("REKARINA_PRESENT_TIMING"))
         rt_log("vk: present timing %s (presentTiming %d, presentAtAbsoluteTime %d, presentId2 %d)",
                g_vk.has_present_timing ? "on" : "not available", (int)c->pt.presentTiming, (int)c->pt.presentAtAbsoluteTime,
@@ -698,6 +728,9 @@ static int create_device(void) {
     VkDeviceCreateInfo di = {.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO, .pNext = &c->f2, .queueCreateInfoCount = nqi,
                              .pQueueCreateInfos = qi, .enabledExtensionCount = n_ext, .ppEnabledExtensionNames = ext};
     VkResult r = vk_dlssg_create_device(g_vk.instance, g_vk.phys, &di, &g_vk.device);
+#ifdef GAME_NS2
+    int coop_features = c->cm.cooperativeMatrix && c->f12.shaderFloat16;   // read before the chain is freed
+#endif
     free(c);
     if (r != VK_SUCCESS) { rt_log("vk: vkCreateDevice failed (%d)", (int)r); return 0; }
     vk_dlssg_device_ready(g_vk.device);
@@ -721,7 +754,7 @@ static int create_device(void) {
     // vk_mem_gmem_table); shaderInt64 is required above. Read by gfx_shader_set_host, which vk_caps_init calls.
     gfx_shader_gmem = g_vk.has_buffer_device_address;
     gfx_shader_float_atomics = g_vk.has_atomic_float && rt_knob("FLOAT_ATOMICS", "1");
-    gfx_shader_coop_matrix = coop_ok && c->cm.cooperativeMatrix && c->f12.shaderFloat16;
+    gfx_shader_coop_matrix = coop_ok && coop_features;
     rt_log("vk: HMMA.16816 %s", gfx_shader_coop_matrix ? "on cooperative matrices (VK_NV_cooperative_matrix)" : "emulated in shared memory");
     {   // REKARINA_MESH_INDICES=auto|whole|split: how a mesh shader's entry point stores a primitive's indices (translator
         // patch 0041). Split (a thread per index byte) is what NVIDIA has run since the first mesh draw and stays there;
@@ -852,6 +885,7 @@ void vk_device_fault_report(VkResult r) {
     done = 1;
     vk_crumbs_report();
     vk_pass_marks_report();
+    vk_texture_vram_history_report();
     VkCtx *c = vk_ctx();
     PFN_vkGetDeviceFaultInfoEXT get =
         c && c->has_device_fault ? (PFN_vkGetDeviceFaultInfoEXT)vkGetDeviceProcAddr(c->device, "vkGetDeviceFaultInfoEXT")

@@ -115,7 +115,7 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_HDR] = "HDR output",
     [UI_MENU_HDR_DESC] = "Bright highlights on an HDR display. Needs HDR turned on in Windows (\"Use HDR\") or in a "
                          "Wayland compositor with colour management; without it the picture stays SDR. Applies after a "
-                         "restart. The colour profile above is for SDR and is not used in HDR.",
+                         "restart.",
     [UI_MENU_HDR_PEAK] = "Peak brightness",
     [UI_MENU_HDR_PEAK_DESC] = "Your display's peak in nits; the brightest highlights stop there.",
     [UI_MENU_HDR_GAME] = "Game brightness",
@@ -686,7 +686,7 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_MENU_HDR] = "Вывод HDR",
     [UI_MENU_HDR_DESC] = "Яркие блики на HDR-дисплее. Нужен включённый HDR в Windows («Использовать HDR») или "
                          "Wayland-композитор с управлением цветом; без него картинка остаётся SDR. Применяется после "
-                         "перезапуска. Цветовой профиль выше — для SDR и в HDR не используется.",
+                         "перезапуска.",
     [UI_MENU_HDR_PEAK] = "Пиковая яркость",
     [UI_MENU_HDR_PEAK_DESC] = "Пик вашего дисплея в нитах; самые яркие блики останавливаются на нём.",
     [UI_MENU_HDR_GAME] = "Яркость игры",
@@ -1591,7 +1591,7 @@ static const char *const text_pt_br[UI_TEXT_COUNT] = {
     [UI_MENU_HDR] = "Saída HDR",
     [UI_MENU_HDR_DESC] = "Realces brilhantes em uma tela HDR. Precisa do HDR ligado no Windows (\"Usar HDR\") ou num "
                          "compositor Wayland com gerenciamento de cor; sem isso a imagem continua SDR. Vale após "
-                         "reiniciar. O perfil de cor acima é para SDR e não é usado em HDR.",
+                         "reiniciar.",
     [UI_MENU_HDR_PEAK] = "Brilho máximo",
     [UI_MENU_HDR_PEAK_DESC] = "O pico da sua tela em nits; os realces mais claros param aí.",
     [UI_MENU_HDR_GAME] = "Brilho do jogo",
@@ -2305,7 +2305,7 @@ static const char *const text_zh_hans[UI_TEXT_COUNT] = {
     [UI_MENU_HDR_GROUP] = "HDR",
     [UI_MENU_HDR] = "HDR 输出",
     [UI_MENU_HDR_DESC] = "在 HDR 显示器上呈现明亮的高光。需要在 Windows 中开启 HDR（“使用 HDR”），或使用带色彩管理的 Wayland 合成器；否则画面保持 "
-                         "SDR。重启后生效。上方的色彩配置用于 SDR，在 HDR 下不使用。",
+                         "SDR。重启后生效。",
     [UI_MENU_HDR_PEAK] = "峰值亮度",
     [UI_MENU_HDR_PEAK_DESC] = "显示器的峰值亮度（尼特）；最亮的高光止于此。",
     [UI_MENU_HDR_GAME] = "游戏亮度",

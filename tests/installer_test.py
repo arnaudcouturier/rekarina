@@ -857,12 +857,22 @@ class LauncherShortcutTest(unittest.TestCase):
             calls.append((Path(link), Path(target), Path(workdir)))
             Path(link).write_bytes(b'lnk')
             return True, ''
-        # the player's own folders are the test's: never the real desktop or Start menu
+        from installer import uninstall
+        self.uninstall_calls = []
+        # the player's own folders are the test's: never the real desktop, Start menu or "Apps & features" entry
         with mock.patch.object(self.oot, 'WIN', True), mock.patch.object(self.oot, 'write_shortcut', fake), \
                 mock.patch.object(self.oot, 'start_menu_folder', lambda: self.base / 'start'), \
-                mock.patch.object(self.oot, 'desktop_folder', lambda: self.base / 'desktop'):
+                mock.patch.object(self.oot, 'desktop_folder', lambda: self.base / 'desktop'), \
+                mock.patch.object(uninstall, 'install', lambda *a, **k: self.uninstall_calls.append((a, k)) or []):
             made = self.oot.launcher_shortcuts(ctx)
         return made, calls
+
+    def test_uninstaller_set_up_with_the_shortcuts(self):
+        self.run_it()
+        self.assertEqual(len(self.uninstall_calls), 1)
+        args, kwargs = self.uninstall_calls[0]
+        self.assertEqual(args[0], self.dest)
+        self.assertEqual(kwargs['setup'], self.setup)
 
     def test_game_folder_start_menu_desktop(self):
         made, calls = self.run_it()
@@ -898,6 +908,96 @@ class LauncherShortcutTest(unittest.TestCase):
                                '$s.TargetPath; $s.WorkingDirectory'], env=dict(__import__('os').environ, L=str(link)),
                               capture_output=True, text=True, timeout=60)
         self.assertEqual([Path(p) for p in read.stdout.split('\n') if p.strip()], [target, target.parent])
+
+
+class EnsureShortcutsTest(unittest.TestCase):
+    """installer/oot.py ensure_shortcuts, at the launcher's start: every install path ends with the launcher one click
+    away. The shortcuts are written when missing, when their launcher is gone or older (a newer setup started, a setup
+    run cancelled after an update); one to the same or a newer launcher stays; the desktop's only when there is one.
+    The shell's reader and writer are stand-ins here; the folders are the test's own."""
+
+    def setUp(self):
+        from installer import oot, uninstall
+        self.oot, self.uninstall = oot, uninstall
+        self.tmp = tempfile.TemporaryDirectory()
+        base = self.base = Path(self.tmp.name)
+        self.dest = base / 'game'
+        self.dest.mkdir()
+        (self.dest / oot.GAME_EXE).write_bytes(b'the game')
+        self.old = self.setup('1.2.3')
+        self.new = self.setup('1.2.5')
+        self.targets = {}   # link -> the launcher it points at (the stand-in's "disk")
+        (base / 'start').mkdir()
+        (base / 'desktop').mkdir()
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def setup(self, version):
+        root = self.base / 'home' / 'setup' / version
+        root.mkdir(parents=True)
+        (root / 'VERSION').write_text(version + '\n', encoding='utf-8')
+        (root / self.oot.LAUNCHER_EXE).write_bytes(b'launcher')
+        return root
+
+    def link(self, path, target):
+        path.write_bytes(b'lnk')
+        self.targets[path] = target
+
+    def run_it(self, root, release):
+        written, installed = [], []
+
+        def fake_write(link, target, workdir, description):
+            self.link(Path(link), Path(target))
+            written.append(Path(link))
+            return True, ''
+        layout = SimpleNamespace(root=root, release=release)
+        with mock.patch.object(self.oot, 'WIN', True), mock.patch.object(self.oot, 'write_shortcut', fake_write), \
+                mock.patch.object(self.oot, 'shortcut_target', lambda link: self.targets.get(Path(link))), \
+                mock.patch.object(self.oot, 'start_menu_folder', lambda: self.base / 'start'), \
+                mock.patch.object(self.oot, 'desktop_folder', lambda: self.base / 'desktop'), \
+                mock.patch.object(self.uninstall, 'install', lambda *a, **k: installed.append(a) or []):
+            made = self.oot.ensure_shortcuts(layout, self.dest, log=lambda _t: None)
+        return made, written, installed
+
+    def test_missing_are_written_and_the_desktop_is_left_to_the_player(self):
+        made, _, installed = self.run_it(self.new, '1.2.5')
+        self.assertEqual(made, [self.dest / 'Rekarina Launcher.lnk', self.base / 'start' / 'Rekarina.lnk'])
+        self.assertEqual(installed, [(self.dest, '1.2.5')])   # the uninstaller's parts, the game folder lacking them
+
+    def test_an_older_launcher_is_replaced_and_the_same_one_stays(self):
+        self.link(self.dest / 'Rekarina Launcher.lnk', self.old / self.oot.LAUNCHER_EXE)
+        self.link(self.base / 'start' / 'Rekarina.lnk', self.new / self.oot.LAUNCHER_EXE)
+        self.link(self.base / 'desktop' / 'Rekarina Launcher.lnk', self.old / self.oot.LAUNCHER_EXE)
+        made, _, _ = self.run_it(self.new, '1.2.5')
+        self.assertEqual(made, [self.dest / 'Rekarina Launcher.lnk', self.base / 'desktop' / 'Rekarina Launcher.lnk'])
+        self.assertTrue(all(t == self.new / self.oot.LAUNCHER_EXE for t in self.targets.values()))
+
+    def test_a_newer_launcher_elsewhere_stays(self):
+        self.link(self.dest / 'Rekarina Launcher.lnk', self.new / self.oot.LAUNCHER_EXE)
+        self.link(self.base / 'start' / 'Rekarina.lnk', self.new / self.oot.LAUNCHER_EXE)
+        made, _, _ = self.run_it(self.old, '1.2.3')   # the old setup's launcher started by hand
+        self.assertEqual(made, [])
+
+    def test_a_launcher_that_is_gone_is_replaced(self):
+        gone = self.base / 'home' / 'setup' / '1.2.9' / self.oot.LAUNCHER_EXE
+        self.link(self.dest / 'Rekarina Launcher.lnk', gone)
+        self.link(self.base / 'start' / 'Rekarina.lnk', gone)
+        made, _, _ = self.run_it(self.old, '1.2.3')
+        self.assertEqual(len(made), 2)
+
+    def test_after_an_in_place_update_the_shortcuts_already_fit(self):
+        """The launcher's own update swaps the release inside the same folder: the shortcuts' path is the new
+        launcher's (installer/update.py "How the swap works"), and nothing is rewritten."""
+        self.link(self.dest / 'Rekarina Launcher.lnk', self.old / self.oot.LAUNCHER_EXE)
+        self.link(self.base / 'start' / 'Rekarina.lnk', self.old / self.oot.LAUNCHER_EXE)
+        (self.old / 'VERSION').write_text('1.2.5\n', encoding='utf-8')   # the folder now holds 1.2.5
+        made, _, _ = self.run_it(self.old, '1.2.5')
+        self.assertEqual(made, [])
+
+    def test_no_game_no_shortcut(self):
+        (self.dest / self.oot.GAME_EXE).unlink()
+        self.assertEqual(self.run_it(self.new, '1.2.5'), ([], [], []))
 
 
 class OotComponentsShimTest(unittest.TestCase):

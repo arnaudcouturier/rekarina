@@ -40,7 +40,8 @@ typedef struct VkCtx {
         has_calibrated,                     // VK_KHR/EXT_calibrated_timestamps (GPU idle split in the perf line)
         has_hdr_metadata,                   // VK_EXT_hdr_metadata (vk_hdr.c vk_hdr_metadata)
         has_atomic_float,                   // VK_EXT_shader_atomic_float with shaderBufferFloat32AtomicAdd
-        has_present_timing;                 // DEBUG-PRESENTTIMING: VK_EXT_present_timing + VK_KHR_present_id2 (REKARINA_PRESENT_TIMING=1)
+        has_present_timing,                 // DEBUG-PRESENTTIMING: VK_EXT_present_timing + VK_KHR_present_id2 (REKARINA_PRESENT_TIMING=1)
+        fsr4_ready;                         // VK_KHR_cooperative_matrix + VK_EXT_shader_float8 on: FSR 4 can run (vk_ffx.cpp)
 #ifdef GAME_NS2
     int has_mesh_shader;                    // VK_EXT_mesh_shader with task and mesh shaders (NVN2 mesh draws)
     int has_vrs;                            // VK_KHR_fragment_shading_rate, the rate set per draw (vk_exec_draw.c mesh_shading_rate)
@@ -172,6 +173,10 @@ void vk_fsr_release(void);   // before the device goes away
 // scales that one instead, crop {0, 0, w, h}); VK_NULL_HANDLE = nothing recorded. src is in GENERAL, fmt its format.
 VkImage vk_color_record(VkCommandBuffer cb, unsigned slot, VkImage src, VkFormat fmt, const int crop[4]);
 void vk_color_release(void);   // before the device goes away
+// On an HDR10 swapchain vk_hdr_encode grades instead: vk_color_hdr fills adj (brightness, contrast, saturation, gamma)
+// and returns 1 when a profile is set (logged per picture size); vk_color_not_drawn_hdr says once when it could not.
+int vk_color_hdr(float adj[4], const int crop[4]);
+void vk_color_not_drawn_hdr(void);
 // HDR output (vk_hdr.c). vk_hdr_wanted: REKARINA_HDR, read once. vk_hdr_surface_format: the HDR10 surface format when wanted
 // and offered (1). vk_hdr_set_active: gfx_present.c says whether the swapchain is HDR10 (vk_hdr_active). vk_hdr_encode:
 // like vk_color_record, src's crop as PQ code values (RGBA16F, crop {0, 0, w, h}). vk_hdr_ui_target / vk_hdr_ui_compose:
@@ -610,6 +615,7 @@ void vk_texture_census(VkTexCensus *s);
 void vk_texture_shutdown(void);                     // vk_mem_shutdown calls it
 void vk_texture_new_submit(void);                   // a queue submit starts: draw bindings check storage again
 void vk_texture_room_for(uint64_t bytes);           // a buffer pool's mirror waits for this much room (vk_memory.c)
+void vk_texture_vram_history_report(void);         // vk_device_fault_report: the last minute of video memory
 uint32_t vk_texture_epoch(void);                    // the write-watch snapshot epoch vk_texture_new_submit started
 // vk_texture.c "lookups as of a place in the command stream": a draw stretch's mark, a thread's limit (returns the one
 // before), the limit in force, and whether slot id resolves under it as it does without one.
@@ -858,5 +864,17 @@ void vk_pipeline_autosave(void);           // vk_pipeline_save at most every 20 
 void vk_pipeline_shutdown(void);           // waits for background builds, saves, destroys pipelines, layouts and the
                                            // cache; before vk_shutdown
 int vk_pipeline_selftest(void);            // one graphics and one compute pipeline from census shaders; 0 on success
+
+// vk_movienet.c: the movies' network without its U-Net where a movie frame does not fit the movie's frame time: whether
+// it is left out now, whether a dispatch of this program is skipped, whether it is pass 12, pass 12's module that adds
+// nothing of the U-Net (NULL for another program), the GPU timing a movie needs meanwhile (perf.c), the per-present
+// measurement (vk_backend.c); vk_pipeline.c builds pass 12's pass-through pipeline
+int vk_movienet_on(void);
+int vk_movienet_skip(const GfxShader *cs);
+int vk_movienet_is_pass12(const GfxShader *cs);
+uint32_t *vk_movienet_module(const GfxShader *cs, const uint32_t *code, uint64_t words, uint64_t *out_words);
+int vk_movienet_timing(void);
+void vk_movienet_frame(void);
+VkPipeline vk_pipeline_compute_passthrough(const GfxShader *cs, const VkPipeInfo **info);
 
 #include "vk_rec.h"   // last: its macros route the vkCmd* calls of every file that includes vk.h

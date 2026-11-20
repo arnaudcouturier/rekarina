@@ -6045,6 +6045,12 @@ static void op_dispatch(VkExec *ex, const p_dispatch *d) {
     VkPipeline p = vk_pipeline_compute(cs, &info);
     if (vk_pipeline_compute_pending()) return left_out(LO_CS_PIPE, ex->prog->serial, cs);   // being compiled beside (vk_pipeline.c)
     if (!p || !info) return warn_once(W_PIPELINE, "a compute pipeline could not be created: dispatches with it are skipped");
+    if (vk_movienet_skip(cs)) return;   // the movies' U-Net where a movie frame does not fit its time (vk_movienet.c)
+    if (vk_movienet_on() && vk_movienet_is_pass12(cs)) {   // and pass 12 then adds nothing of it
+        const VkPipeInfo *pi = NULL;
+        VkPipeline pp = vk_pipeline_compute_passthrough(cs, &pi);
+        if (pp && pi) p = pp, info = pi;
+    }
     {   // DEBUG-SKIPCS: REKARINA_SKIP_CS=<input id prefix, 16 hex>[,...]: these dispatches are not run, to measure what they cost
         static const char *want;
         static int want_read;

@@ -79,7 +79,7 @@
     [UI_MENU_HDR] = "HDR-uitvoer",
     [UI_MENU_HDR_DESC] = "Felle hooglichten op een HDR-scherm. HDR moet aanstaan in Windows (\"HDR gebruiken\") of in een "
                          "Wayland-compositor met kleurbeheer; anders blijft het beeld SDR. Wordt toegepast na een "
-                         "herstart. Het kleurprofiel hierboven is voor SDR en wordt in HDR niet gebruikt.",
+                         "herstart.",
     [UI_MENU_HDR_PEAK] = "Piekhelderheid",
     [UI_MENU_HDR_PEAK_DESC] = "De piekhelderheid van je scherm in nits; de felste hooglichten stoppen daar.",
     [UI_MENU_HDR_GAME] = "Helderheid spel",

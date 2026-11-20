@@ -39,6 +39,11 @@ objects Ninja just rebuilt (new mtime). A mismatch deletes the object, Ninja rec
 summary line. A fork checks the hardlinked generated objects against build/<version>/obj/objects.sha256 (read-only; a
 bad shared object stops the fork and asks for a main build run, which recompiles it and breaks the shared inode).
 
+Content stamps. Ninja decides by file times, and a release folder's sources carry the release archive's times, which
+can be older than the objects an earlier release's setup left in temp/. So obj/inputs.sha256 records what each object
+and the exe were made from (sources, headers from Ninja's deps log, command, compiler version), and an output whose
+inputs changed is deleted before Ninja runs (the comment at INPUTS; tests/build_content_test.py).
+
 Compile jobs share a memory budget (MEM_BUDGET, default the smaller of 50 GiB and 80% of RAM) at JOB_MEM per job, so a
 big machine does not run out of memory on the largest chunks. Each phase reports its wall time and the peak memory
 of its processes (Windows job object accounting: committed private bytes).
@@ -396,10 +401,14 @@ def port_version():
     return path.read_text(encoding='utf-8').strip() if path.is_file() else 'unknown'
 
 
-def ninja_file(gen, out, mods, pool_depth, skip=(), prebuilt=False, runtime_lib=None, make_lib=False):
+def ninja_file(gen, out, mods, pool_depth, skip=(), prebuilt=False, runtime_lib=None, make_lib=False, edges=None):
     """build.ninja text, and the object lists per module. With prebuilt the generated objects already exist in
     out/obj and are link inputs without a compile edge. runtime_lib: a prebuilt library replaces the runtime objects
-    except INSTALL_SIDE. make_lib: build only that library, from the runtime objects except INSTALL_SIDE."""
+    except INSTALL_SIDE. make_lib: build only that library, from the runtime objects except INSTALL_SIDE. edges, a
+    dict, receives {output: (its command without $in and $out, [its inputs])} for every compile and the link (the
+    content stamps below)."""
+    if edges is None:
+        edges = {}
     inc = f'-I {cmd_path(RUNTIME)} -I {cmd_path(gen)}'
     vma = f'{cmd_path(DEPS / "include")} -I {cmd_path(DEPS / "include" / "vma")}' if DEPS else cmd_path(vma_include())
     imgui = cmd_path(RUNTIME / 'third_party' / 'imgui')
@@ -453,15 +462,19 @@ def ninja_file(gen, out, mods, pool_depth, skip=(), prebuilt=False, runtime_lib=
     hot_list = os.environ.get('REKARINA_HOT_OBJS')
     hot_objs = {l.split()[0] for l in open(hot_list) if l.strip()} if hot_list else set()
     hot_flags = ' '.join('-O2' if f == '-O1' else f for f in GEN_FLAGS) + ' ' + inc
+    gen_pgo = PGO_INPUT if PGO_INPUT and os.environ.get('REKARINA_PGO_RUNTIME_ONLY') != '1' else None
     for mod, files in mods.items():
         objs[mod] = []
         for f in files:
             o = out / 'obj' / mod / (f.stem + '.o')
             if not prebuilt:
                 lines.append(f'build {ninja_path(o)}: cc_gen {ninja_path(f)}{"" if os.environ.get("REKARINA_PGO_RUNTIME_ONLY") == "1" else pgo_dep}')
-                if Path(o).name in hot_objs:   # REKARINA_HOT_OBJS: the chunks where the profile finds the game's time
+                hot = Path(o).name in hot_objs
+                if hot:   # REKARINA_HOT_OBJS: the chunks where the profile finds the game's time
                     lines.append(f'  genflags = {hot_flags}')
                 lines.append('  pool = gen')
+                edges[o] = (f'{cache}{cmd_arg(CLANG.as_posix())} {hot_flags if hot else " ".join(GEN_FLAGS) + " " + inc}',
+                            [f] + ([gen_pgo] if gen_pgo else []))
             objs[mod].append(o)
     rt = []
     sources = runtime_sources(skip)
@@ -475,11 +488,13 @@ def ninja_file(gen, out, mods, pool_depth, skip=(), prebuilt=False, runtime_lib=
         o = runtime_object(out, src)
         if src.suffix == '.rc':   # windres writes no depfile: the files rekarina.rc embeds are listed by hand
             write_version_header(out)
-            lines.append(f'build {ninja_path(o)}: rc {ninja_path(src)} | {ninja_path(RUNTIME / "rekarina.manifest")} '
-                         f'{ninja_path(RUNTIME / "totk.ico")} {ninja_path(RUNTIME / "rekarina.ico")} '
-                         f'{ninja_path(out / "rekarina_version.h")}')
+            embeds = [RUNTIME / 'rekarina.manifest', RUNTIME / 'totk.ico', RUNTIME / 'rekarina.ico', out / 'rekarina_version.h']
+            lines.append(f'build {ninja_path(o)}: rc {ninja_path(src)} | ' + ' '.join(ninja_path(e) for e in embeds))
+            edges[o] = (f'{WINDRES.as_posix()} {" ".join(f for f in RT_FLAGS if f.startswith("-DGAME_"))}', [src] + embeds)
         else:
             lines.append(f'build {ninja_path(o)}: cc_rt {ninja_path(src)}{pgo_dep}')
+            edges[o] = (f'{cache}{cmd_arg(CLANG.as_posix())} {" ".join(RT_FLAGS)} {rt_inc}',
+                        [src] + ([PGO_INPUT] if PGO_INPUT else []))
         rt.append(o)
     objs['runtime'] = rt
     every = [o for v in objs.values() for o in v]
@@ -497,6 +512,10 @@ def ninja_file(gen, out, mods, pool_depth, skip=(), prebuilt=False, runtime_lib=
         lines += ['', 'rule link_lib',
                   f'  command = $cc $ldflags @$out.rsp -Wl,--whole-archive {cmd_path(runtime_lib)} -Wl,--no-whole-archive $libs -o $out',
                   '  rspfile = $out.rsp', '  rspfile_content = $in_newline', '  description = LINK $out']
+    # the link's own inputs besides the objects: the runtime library and the static and import libraries of deps/lib
+    lib_files = sorted(p for p in (DEPS / 'lib').glob('*') if p.is_file()) if DEPS else []
+    edges[exe] = (f'{rule} {" ".join(LINK_FLAGS)} {" ".join(libs)} {len(every)} objects',
+                  ([runtime_lib] if runtime_lib else []) + lib_files)
     lines += ['', f'build {ninja_path(exe)}: {rule} ' + ' '.join(ninja_path(o) for o in every) +
               (f' | {ninja_path(runtime_lib)}' if runtime_lib else ''),
               'build objects: phony ' + ' '.join(ninja_path(o) for o in every), f'default {ninja_path(exe)}', '']
@@ -672,6 +691,129 @@ def verify_objects(out, objs, borrowed, main_out, pairs, base, env):
             print(f'build_game: warning: {len(unrecorded)} shared objects have no current hash in '
                   f'{flag_path(main_out / "obj" / MANIFEST)}; build {flag_path(main_out)} once to record them')
     print(f'objects verified: {verified}, recompiled after a hash mismatch: {recompiled} ({time.monotonic() - t0:.1f} s)')
+
+
+# ---- Content stamps: what each object was compiled from
+#
+# Ninja compiles an object again when an input has a newer file time than the object. In a checkout every file is
+# written on this machine and that holds. In a release folder it does not: the sources come out of the release archive
+# with the archive's file times, which are DOS local times without a time zone, written in the maintainer's zone and read
+# in the player's. installer/update.py stage() sets each unpacked file's time from the archive with time.mktime (the
+# player's zone), the launcher's swap (installer/launcher/rekarina.c apply_update) renames the staged entries into place
+# and keeps those times, and a folder unpacked by hand gets whatever the unpacker sets. temp/ (the generated C and the
+# objects of the last build) is kept across updates. So a source of a newer release can carry an older time than the
+# object an earlier release's setup compiled from its old version, and Ninja keeps the old object: the update from 1.2.2
+# to 1.2.4 compiled a new main.o (a header of it came out newer) beside the old report.o and the link failed on
+# fg_guard_crashed (2026-11-20).
+#
+# So the content decides as well. obj/inputs.sha256 holds, per output, a SHA-256 of what it was made from: the compiler's
+# version, the edge's command, and the content of its source, of every header Ninja's deps log lists for it (the depfile
+# clang wrote at its last compile) and of the profile or other files the edge names. Before Ninja runs, an output whose
+# record differs from its inputs now is deleted, and Ninja makes it again. A build folder without the record (made before
+# this check) compiles all its runtime objects again (about a minute) and keeps its generated objects: their C is written
+# on this machine by the lift, so Ninja's times hold for it, and the runtime headers they include (cpu.h, simd.h,
+# simd_fp.h) are the same in every release from 1.2.0 to 1.2.4. The record is written after the compile and the link.
+INPUTS = 'inputs.sha256'
+_content = {}
+
+
+def norm_path(p):
+    """p (relative to ROOT, or absolute) as one key per file."""
+    return os.path.normcase(os.path.normpath(os.path.join(ROOT, p)))
+
+
+def output_key(p):
+    """An output's key in the deps log: its real path (a worktree's build/ is a junction into the main checkout)."""
+    return os.path.normcase(os.path.realpath(os.path.join(ROOT, p)))
+
+
+def content_sha(p):
+    n = norm_path(p)
+    if n not in _content:
+        try:
+            _content[n] = file_sha256(n)
+        except OSError:
+            _content[n] = 'missing'
+    return _content[n]
+
+
+def ninja_deps(ninja_file_path, env):
+    """{output_key of an output: the inputs Ninja's deps log lists for it} (empty without a log)."""
+    r = subprocess.run([str(NINJA), '-f', str(ninja_file_path), '-t', 'deps'], cwd=ROOT, env=env, capture_output=True,
+                       text=True, errors='replace')
+    deps, cur = {}, None
+    for line in r.stdout.splitlines():
+        if not line.strip():
+            cur = None
+        elif line[0] not in ' \t':
+            cur = deps.setdefault(output_key(line.split(': #deps')[0]), [])
+        elif cur is not None:
+            cur.append(line.strip())
+    return deps
+
+
+def compiler_id():
+    """clang's version line: objects of another compiler (a release that brings a new toolchain) are made again."""
+    try:
+        r = subprocess.run([str(CLANG), '--version'], capture_output=True, text=True, timeout=120)
+        return (r.stdout.splitlines() or ['unknown'])[0]
+    except (OSError, subprocess.SubprocessError):
+        return 'unknown'
+
+
+def inputs_key(ident, cmd, files):
+    root = os.path.normcase(str(ROOT))
+    h = hashlib.sha256(f'{ident}\n{cmd}\n'.encode())
+    for n in sorted({norm_path(f) for f in files}):
+        rel = os.path.relpath(n, root) if n.startswith(root + os.sep) else n
+        h.update(f'{rel.replace(os.sep, "/")} {content_sha(n)}\n'.encode())
+    return h.hexdigest()
+
+
+def read_inputs(path):
+    """{output relative to the build folder: key}, None when the file is missing."""
+    if not path.is_file():
+        return None
+    out = {}
+    for line in path.read_text(encoding='utf-8').splitlines():
+        key, _, rel = line.partition(' ')
+        if rel:
+            out[rel] = key
+    return out
+
+
+def current_keys(out, edges, env, outputs):
+    deps, ident = ninja_deps(out / 'build.ninja', env), compiler_id()
+    return {o.relative_to(out).as_posix(): inputs_key(ident, edges[o][0], edges[o][1] + deps.get(output_key(o), []))
+            for o in outputs}
+
+
+def drop_stale_by_content(out, edges, env):
+    """Delete each existing output whose recorded inputs differ from its inputs now (see above), before Ninja runs."""
+    t0 = time.monotonic()
+    old = read_inputs(out / 'obj' / INPUTS)
+    present = [o for o in edges if o.is_file()]
+    if old is None:
+        stale = [o for o in present if o.relative_to(out).as_posix().startswith('obj/runtime/')]
+        why = 'no record of what they were compiled from: a build folder from before this check'
+    else:
+        now = current_keys(out, edges, env, present)
+        stale = [o for o in present if old.get(o.relative_to(out).as_posix()) != now[o.relative_to(out).as_posix()]]
+        why = 'their source, a header, the flags or the compiler changed since they were made'
+    for o in stale:
+        o.unlink()
+    if stale:
+        names = ', '.join(o.name for o in stale[:8]) + (', ...' if len(stale) > 8 else '')
+        print(f'build_game: {len(stale)} outputs made again by content ({why}): {names}')
+    print(f'content check: {len(present)} outputs, {len(stale)} to make again ({time.monotonic() - t0:.1f} s)', flush=True)
+
+
+def record_inputs(out, edges, env, outputs):
+    """Write the record for outputs (made and current now), keeping the other entries."""
+    path = out / 'obj' / INPUTS
+    keys = read_inputs(path) or {}
+    keys.update(current_keys(out, edges, env, [o for o in outputs if o.is_file()]))
+    write_if_changed(path, ''.join(f'{k} {rel}\n' for rel, k in sorted(keys.items())))
 
 
 # ---- Windows job object: peak memory of a process tree
@@ -972,8 +1114,9 @@ def main():
     if runtime_lib and missing:
         sys.exit(f'build_game: {", ".join(missing)} missing from {flag_path(RUNTIME)}: the release must ship every '
                  f'INSTALL_SIDE source beside {runtime_lib.name}')
+    edges = {}
     text, objs, exe = ninja_file(gen, out, mods, jobs, skip, pairs is not None, runtime_lib,
-                                 args.make_runtime_lib)
+                                 args.make_runtime_lib, edges)
     write_if_changed(out / 'build.ninja', text)
 
     env = dict(os.environ)
@@ -983,6 +1126,7 @@ def main():
     nfiles = sum(len(v) for v in mods.values())
     print(f'build_game: {nfiles} generated files in {len(linked)} modules ({", ".join(linked)}), {jobs} jobs', flush=True)
 
+    drop_stale_by_content(out, edges, env)   # file times of release sources do not say what changed
     code, dt, peak_one, peak_all = run_measured(base + ['objects'], env)
     print(f'compile: {dt:.1f} s, peak {mib(peak_one)} per process' + (f', {mib(peak_all)} all processes' if WIN else ''))
     if code:
@@ -991,6 +1135,7 @@ def main():
         size = sum(o.stat().st_size for o in files)
         print(f'  {mod:8} {len(files):5} objects {mib(size):>14}')
     verify_objects(out, objs, pairs is not None, main_out, pairs, base, env)
+    record_inputs(out, edges, env, [o for o in edges if o != exe])
     if args.cpu == 'v2':
         # Inline assembly, target attributes and intrinsics pass -march=x86-64-v2 by; one vmovdqa of a YMM register
         # stops a CPU without AVX (tools/check_isa.py)
@@ -1007,6 +1152,8 @@ def main():
         print(f'build_game: link failed, {flag_path(exe)} is the old one (a running rekarina.exe from this dir locks it)',
               file=sys.stderr)
         sys.exit(code)
+    if exe in edges:
+        record_inputs(out, edges, env, [exe])
     if args.make_runtime_lib:
         print(f'{below_root(exe)}: {mib(exe.stat().st_size)}')
         return

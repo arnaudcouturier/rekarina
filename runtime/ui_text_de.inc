@@ -79,7 +79,7 @@
     [UI_MENU_HDR] = "HDR-Ausgabe",
     [UI_MENU_HDR_DESC] = "Helle Spitzlichter auf einem HDR-Bildschirm. HDR muss in Windows („HDR verwenden“) oder in "
                          "einem Wayland-Compositor mit Farbmanagement eingeschaltet sein; sonst bleibt das Bild SDR. "
-                         "Gilt nach einem Neustart. Das Farbprofil oben ist für SDR und wird in HDR nicht verwendet.",
+                         "Gilt nach einem Neustart.",
     [UI_MENU_HDR_PEAK] = "Spitzenhelligkeit",
     [UI_MENU_HDR_PEAK_DESC] = "Die Spitzenhelligkeit deines Bildschirms in Nits; die hellsten Spitzlichter enden dort.",
     [UI_MENU_HDR_GAME] = "Spielhelligkeit",

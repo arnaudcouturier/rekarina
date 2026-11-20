@@ -5154,6 +5154,7 @@ static struct {
     LateSum q[LATE_N];
     int n, failed;
     uint64_t deferred, applied, words, stores;   // since the last log; stores: words taken as stored (late_shadow)
+    uint64_t bridged;                            // sums put in early over a gap (vk_mem_late_apply)
 } LS;
 static PlatMutex late_lock = PLAT_MUTEX_INIT;
 
@@ -5191,8 +5192,51 @@ static uint32_t late_room(uint32_t n) {
     return at;
 }
 
+// DEBUG-LATELOG: REKARINA_LATE_LOG=<from>-<to> (frames): the frame being built when it is in that range, else 0;
+// REKARINA_LATE_WATCH=<guest address>: a float word whose value the log follows (late_watch).
+static uint64_t late_log_frame(void) {
+    static int init;
+    static uint64_t lf, lt;
+    if (!init) {
+        init = 1;
+        const char *x = cfg_env("REKARINA_LATE_LOG");
+        if (x && *x) {
+            lf = strtoull(x, NULL, 10);
+            const char *d = strchr(x, '-');
+            lt = d ? strtoull(d + 1, NULL, 10) : lf;
+        }
+    }
+    if (!lt) return 0;
+    uint64_t fr = __atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED) + 1;
+    return fr >= lf && fr <= lt ? fr : 0;
+}
+static void late_watch(const char *where, uint64_t a, uint64_t b) {
+    static uint64_t addr = 1;
+    if (addr == 1) {
+        const char *x = cfg_env("REKARINA_LATE_WATCH");
+        addr = x && *x ? strtoull(x, NULL, 16) : 0;
+    }
+    uint64_t fr;
+    if (!addr || !(fr = late_log_frame())) return;
+    float v;
+    memcpy(&v, (const void *)(uintptr_t)addr, 4);
+    rt_log("LATEW frame %llu %s %llu %llu done %llu: %g", (unsigned long long)fr, where, (unsigned long long)a,
+           (unsigned long long)b, (unsigned long long)vk_sync_fence_done(), v);
+}
+
 // vk_mem_mirror_end, before the merge: the float-sum ranges written after the results point leave snl for the ring.
 static int late_defer(VkCommandBuffer cb, uint64_t fence) {
+    uint64_t lfr = late_log_frame();
+    if (lfr) {   // DEBUG-LATELOG: the float sums of each submission, and whether they go late
+        int nf = 0;
+        for (int i = 0; i < nsnl; i++) nf += snl[i].fadd;
+        if (nf)
+            rt_log("LATED frame %llu fence %llu: %d float-sum ranges (first %#llx+%#llx), results on %d sent %d",
+                   (unsigned long long)lfr, (unsigned long long)fence, nf,
+                   (unsigned long long)(snl[0].r->import_lo + snl[0].off), (unsigned long long)snl[0].size,
+                   vk_sync_results_on(), vk_sync_results_sent());
+        late_watch("submit-end fence", fence, 0);
+    }
     if (!nsnl || mirror_verify || !vk_sync_results_on() || !vk_sync_results_sent() || !late_on()) return 0;
     int any = 0;
     for (int i = 0; i < nsnl; i++) any |= snl[i].fadd && snl[i].size <= LATE_MAX && !(snl[i].size & 3);
@@ -5264,10 +5308,91 @@ static LateShadow *late_shadow(uint64_t addr, uint64_t size) {
     return lru;
 }
 
-// A game thread, its wait for `before` done: the sums of every submission before that value (wb_merge.comp's rule for
-// a float sum, word by word; late_shadow for the words that are no sums).
+// The delivery slot of each range the late sums serve (late_lock): the newest wait value at which one of its sums went
+// into guest memory (vk_mem_late_apply's bridge).
+#define LATE_SLOTS 16
+typedef struct { uint64_t addr, size, slot, used; } LateSlot;
+static LateSlot late_slots[LATE_SLOTS];
+static uint64_t late_slot_clock;
+static LateSlot *late_slot(uint64_t addr, uint64_t size, int make) {
+    LateSlot *lru = &late_slots[0];
+    for (int i = 0; i < LATE_SLOTS; i++) {
+        LateSlot *x = &late_slots[i];
+        if (x->addr == addr && x->size == size && x->used) { x->used = ++late_slot_clock; return x; }
+        if (x->used < lru->used) lru = x;
+    }
+    if (!make) return NULL;
+    *lru = (LateSlot){addr, size, 0, ++late_slot_clock};
+    return lru;
+}
+
+// late_lock held: one late sum into guest memory (wb_merge.comp's rule for a float sum, word by word; late_shadow for
+// the words that are no sums). The ring was invalidated after its copies completed.
+static void late_put(const LateSum *e, uint64_t before, const char *how) {
+    const uint32_t *v = (const uint32_t *)(LS.map + e->post), *p = (const uint32_t *)(LS.map + e->pre);
+    uint32_t *g = (uint32_t *)(uintptr_t)e->addr;
+    LateShadow *sh = late_shadow(e->addr, e->size);
+    {   // DEBUG-LATELOG: each sum applied meanwhile, its first changed words as guest before (+ the GPU's change), to
+        // follow the auto exposure's inputs through a pause
+        uint64_t fr = late_log_frame();
+        if (fr) {
+            char ln[1200];
+            int o2 = snprintf(ln, sizeof ln, "LATELOG frame %llu before %llu fence %llu %#llx+%#llx%s:", (unsigned long long)fr,
+                              (unsigned long long)before, (unsigned long long)e->fence, (unsigned long long)e->addr,
+                              (unsigned long long)e->size, how);
+            int shown = 0, changed = 0;
+            for (uint64_t w = 0; w < e->size / 4; w++) {
+                if (v[w] == p[w]) continue;
+                changed++;
+                if (shown >= 8 || o2 > 1100) continue;
+                float fc, fv, fp;
+                memcpy(&fc, &g[w], 4), memcpy(&fv, &v[w], 4), memcpy(&fp, &p[w], 4);
+                o2 += snprintf(ln + o2, sizeof ln - (size_t)o2, " w%llu %.6g (+%.6g)", (unsigned long long)w, fc, fv - fp);
+                shown++;
+            }
+            rt_log("%s changed %d", ln, changed);
+        }
+    }
+    for (uint64_t w = 0; w < e->size / 4; w++) {
+        if (v[w] == p[w]) continue;
+        uint32_t cur = g[w], o = v[w];
+        // The word still holds what this function wrote last: the game has not written it since, so it is no sum
+        // being read and reset, and the GPU's word stands as it is (late_shadow).
+        int ours = sh && late_stores && sh->have[w] && cur == sh->last[w];
+        if (cur != p[w] && !ours) {
+            float fc, fv, fp;
+            memcpy(&fc, &cur, 4), memcpy(&fv, &v[w], 4), memcpy(&fp, &p[w], 4);
+            fc += fv - fp;
+            memcpy(&o, &fc, 4);
+        } else if (cur != p[w]) {
+            LS.stores++;
+        }
+        g[w] = o;
+        if (sh) sh->last[w] = o, sh->have[w] = 1;
+        LS.words++;
+    }
+    LS.applied++;
+}
+
+// A game thread, its wait for `before` done: the sums of every submission before that value go into guest memory.
+//
+// The bridge over a gap. The game reads such a sum right after its wait for the frame before; on the console that wait
+// returns when the frame's work is complete, so each read sees the frame just before it. Here the wait returns at that
+// frame's results point and its sums go in at the next frame's wait: each read sees the frame before the one before.
+// In a steady run that only shifts the exposure by a frame. But after frames that produced no sum (the pause menu, which
+// draws no scene) the first read after the sums resume found none: the game takes it as a black picture and pushes it
+// into its 15-frame average, and the auto exposure stepped a fifth of a stop brighter for exactly 15 frames after every
+// menu close (village, 60 fps: sky LUT factor 9.77 -> 11.22, EV 10 -> 9.8, from the second frame after the close;
+// 2026-11-20). So when a wait opens a new delivery slot for a range that has no sum for it but has the newer one
+// waiting (the frame just before, whose tail still runs), that frame's sum goes in now, once its work is complete, as on
+// the console; it also stays queued for its own slot, so the next read sees it again instead of nothing. The wait for the
+// frame's tail falls only on such a gap (once after each pause). REKARINA_LATE_BRIDGE=0: no bridge.
+#define LATE_BRIDGE_MAX 8
 void vk_mem_late_apply(uint64_t before) {
+    late_watch("wait returned for", before, 0);   // DEBUG-LATELOG
     if (!__atomic_load_n(&LS.n, __ATOMIC_RELAXED)) return;
+    static int bridge_on = -1;
+    if (bridge_on < 0) bridge_on = rt_knob("LATE_BRIDGE", "1");
     uint64_t done = vk_sync_fence_done();
     plat_mutex_lock(&late_lock);
     int k = 0, inval = 0;
@@ -5278,30 +5403,46 @@ void vk_mem_late_apply(uint64_t before) {
             continue;
         }
         if (!inval) inval = 1, vmaInvalidateAllocation(vk_ctx()->vma, LS.alloc, 0, VK_WHOLE_SIZE);
-        const uint32_t *v = (const uint32_t *)(LS.map + e->post), *p = (const uint32_t *)(LS.map + e->pre);
-        uint32_t *g = (uint32_t *)(uintptr_t)e->addr;
-        LateShadow *sh = late_shadow(e->addr, e->size);
-        for (uint64_t w = 0; w < e->size / 4; w++) {
-            if (v[w] == p[w]) continue;
-            uint32_t cur = g[w], o = v[w];
-            // The word still holds what this function wrote last: the game has not written it since, so it is no sum
-            // being read and reset, and the GPU's word stands as it is (late_shadow).
-            int ours = sh && late_stores && sh->have[w] && cur == sh->last[w];
-            if (cur != p[w] && !ours) {
-                float fc, fv, fp;
-                memcpy(&fc, &cur, 4), memcpy(&fv, &v[w], 4), memcpy(&fp, &p[w], 4);
-                fc += fv - fp;
-                memcpy(&o, &fc, 4);
-            } else if (cur != p[w]) {
-                LS.stores++;
-            }
-            g[w] = o;
-            if (sh) sh->last[w] = o, sh->have[w] = 1;
-            LS.words++;
-        }
-        LS.applied++;
+        late_put(e, before, "");
+        LateSlot *s = late_slot(e->addr, e->size, 1);
+        if (s->slot < before) s->slot = before;
     }
     __atomic_store_n(&LS.n, k, __ATOMIC_RELAXED);
+    // The bridge's candidates: the oldest newer sum of each known range that this slot leaves without one, where no
+    // older sum of the range still waits for its work (that one comes at a later wait of this slot, as before).
+    uint64_t want = 0, ba[LATE_BRIDGE_MAX], bs[LATE_BRIDGE_MAX];
+    int nb = 0;
+    for (int i = 0; bridge_on && i < k; i++) {
+        const LateSum *e = &LS.q[i];
+        if (e->fence < before) continue;
+        LateSlot *s = late_slot(e->addr, e->size, 0);
+        if (!s || s->slot >= before) continue;
+        int older = 0;
+        for (int j = 0; j < k; j++) older |= LS.q[j].addr == e->addr && LS.q[j].size == e->size && LS.q[j].fence < before;
+        if (older) continue;
+        if (!want || e->fence < want) want = e->fence, nb = 0;
+        if (e->fence == want && nb < LATE_BRIDGE_MAX) ba[nb] = e->addr, bs[nb] = e->size, nb++;
+    }
+    plat_mutex_unlock(&late_lock);
+    if (!nb || !vk_sync_fence_wait(want, 100000000ull)) return;   // the frame's tail; a value never submitted: no bridge
+    plat_mutex_lock(&late_lock);
+    vmaInvalidateAllocation(vk_ctx()->vma, LS.alloc, 0, VK_WHOLE_SIZE);
+    for (int i = 0; i < LS.n; i++) {
+        const LateSum *e = &LS.q[i];
+        if (e->fence != want) continue;
+        for (int b = 0; b < nb; b++) {
+            if (ba[b] != e->addr || bs[b] != e->size) continue;
+            LateSlot *s = late_slot(e->addr, e->size, 1);
+            if (s->slot >= before) break;   // another thread's wait bridged this slot meanwhile
+            late_put(e, before, " bridged");
+            s->slot = before;
+            if (++LS.bridged <= 20 || LS.bridged % 100 == 0)
+                rt_log("vk: late sums: %#llx+%#llx had no sum for the wait for %llu; the frame before's went in early (%llu so far)",
+                       (unsigned long long)e->addr, (unsigned long long)e->size, (unsigned long long)before,
+                       (unsigned long long)LS.bridged);
+            break;
+        }
+    }
     plat_mutex_unlock(&late_lock);
 }
 

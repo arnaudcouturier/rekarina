@@ -48,7 +48,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
-from . import components, eta, ini, mods, net, oot, saves, shaderjob, update
+from . import components, eta, ini, mods, net, oot, saves, shaderjob, uninstall, update
 from . import shots as screenshots
 from . import state as statefile
 from tkinter import font as tkfont
@@ -410,6 +410,7 @@ PROGRESS_EVERY = 0.2   # seconds between two progress events a job's thread send
 FACTS = ('ui.oot_fact_gpu', 'ui.oot_fact_preset', 'ui.oot_fact_components', 'ui.oot_fact_mods')   # the home sheet's table
 MODS_TOP, MODS_ROWS = 126, 7      # the Mods page: the first row's top on the stage; the rows it shows at once
 SAVES_ROWS = 6                    # the Saves page: the rows it shows at once
+UNINSTALL_ROWS = 6                # the Uninstall page: the folders it lists at once (the last stands for the rest)
 SAVES_MARK = {saves.PORT: '\u25c6', saves.EMULATOR: '\u25c7', saves.FOLDER: '\u25cb', saves.ARCHIVE: '\u25cb'}
 MODS_MARK = {'on': '\u2714', 'off': '\u25cb', 'no': '\u2013'}   # as the step marks: done, waiting, left out
 
@@ -584,6 +585,9 @@ class RekarinaApp(App):
         self.save_own, self.save_backups = None, []                 # the game folder's save; what imports replaced
         self.save_note, self.save_busy = None, False                # (colour, text) under the list; a copy is running
         self.save_asked = None           # the source whose import waits for Replace to be pressed
+        self.un_plan, self.un_error = None, None   # the Uninstall page: what uninstall.ps1 -List said; why it could not
+        self.un_asked = False            # "Delete everything" was pressed: its second confirmation is shown
+        self.forced_uninstall = None     # the self test's stand-in for the plan
         self.menu_font = load_menu_font(layout.runtime)
         self.base_font = 'Segoe UI' if os.name == 'nt' else 'DejaVu Sans'
         self.fonts = set_fonts(root, ui_lang if ui_lang in UI_LANGUAGES else 'en', self.menu_font, self.base_font)
@@ -623,6 +627,9 @@ class RekarinaApp(App):
             root.after(2000, self.shader_tick)
             self.background(components.detect, self.got_gpu)
             self.check_updates()
+            if self.game_exe().is_file():   # the shortcuts point at a launcher that is there (oot.ensure_shortcuts)
+                layout, dest = self.layout, self.mods_dest()
+                self.background(lambda: oot.ensure_shortcuts(layout, dest, log=lambda _t: None), lambda _v: None)
             if getattr(args, 'after_update', False):
                 self.background(lambda: update.cleanup(self.layout.root), lambda _value: None)
                 if self.form().installed_state() is not None:   # rebuild what the new release changed
@@ -680,6 +687,7 @@ class RekarinaApp(App):
         self.build_run_stage()
         self.build_mods_stage()
         self.build_saves_stage()
+        self.build_uninstall_stage()
         self.build_stage_log()
         for key, step in (('<Down>', 1), ('<Right>', 1), ('<Up>', -1), ('<Left>', -1)):
             c.bind(key, lambda _e, step=step, rows=key in ('<Down>', '<Up>'): self.arrow(step, rows))
@@ -701,8 +709,8 @@ class RekarinaApp(App):
         if not hasattr(self, 'stage'):   # gui.py's own first screen, before the stage is there
             return super().show(name)
         changed, self.screen = name != self.screen, name
-        drawn = name in ('home', 'run', 'mods', 'saves')
-        for tag in ('scr:home', 'scr:run', 'scr:mods', 'scr:saves'):
+        drawn = name in ('home', 'run', 'mods', 'saves', 'uninstall')
+        for tag in ('scr:home', 'scr:run', 'scr:mods', 'scr:saves', 'scr:uninstall'):
             self.stage.itemconfigure(tag, state='normal' if tag == 'scr:' + name else 'hidden')
         if changed:
             self.cursor_keys = False
@@ -715,12 +723,16 @@ class RekarinaApp(App):
                 self.refresh_mods()
             elif name == 'saves':
                 self.refresh_saves()
+            elif name == 'uninstall':
+                self.refresh_uninstall()
             else:
                 self.refresh_run()
             if changed:
                 self.stage.focus_set()
                 if name == 'home':   # the cursor starts on Play, as the game's menus start on their first entry
                     self.set_cursor(next((p for p in self.cursor_order() if p.enabled), None))
+                elif name == 'uninstall':   # on "Keep my saves", the choice made when nothing else is pressed
+                    self.set_cursor(self.un_keep)
         else:
             for f in self.frames.values():
                 f.pack_forget()
@@ -771,7 +783,7 @@ class RekarinaApp(App):
             self.go_home()
         elif self.screen == 'finish':
             self.leave_finish()
-        elif self.screen in ('mods', 'saves'):
+        elif self.screen in ('mods', 'saves', 'uninstall'):
             self.go_home()
 
     # ---- the cursor ------------------------------------------------------------------------------------------------
@@ -811,7 +823,7 @@ class RekarinaApp(App):
             self.place_cursor()
 
     def pointer_on(self, plate):
-        if self.screen == 'home' and plate is not self.cursor_on:
+        if self.screen in ('home', 'uninstall') and plate is not self.cursor_on:
             self.set_cursor(plate)
 
     def move_cursor(self, step, leave=False):
@@ -829,7 +841,7 @@ class RekarinaApp(App):
 
     def press_cursor(self):
         p = self.cursor_on
-        if p is not None and p in self.cursor_order() and (self.screen == 'home' or self.cursor_keys):
+        if p is not None and p in self.cursor_order() and (self.screen in ('home', 'uninstall') or self.cursor_keys):
             p.invoke()
         elif self.screen == 'mods':   # the cursor is in the list: the chosen mod's switch
             self.toggle_mod()
@@ -960,10 +972,13 @@ class RekarinaApp(App):
         self.home_play.place(34, 100)
         self.bind_text(self.home_play, 'text', 'ui.oot_play')
         y = 202
-        for id, command in (('ui.oot_home_mods', self.open_mods), ('ui.oot_home_saves', self.open_saves),
-                            ('ui.oot_home_settings', self.open_settings),
-                            ('ui.open_folder', self.open_game_folder), ('ui.oot_home_update', lambda: self.show('form')),
-                            ('ui.oot_home_report', self.make_report)):
+        plates = (('ui.oot_home_mods', self.open_mods), ('ui.oot_home_saves', self.open_saves),
+                  ('ui.oot_home_settings', self.open_settings),
+                  ('ui.open_folder', self.open_game_folder), ('ui.oot_home_update', lambda: self.show('form')),
+                  ('ui.oot_home_report', self.make_report))
+        if os.name == 'nt':   # the uninstaller is PowerShell's (installer/uninstall.py)
+            plates += (('ui.oot_home_uninstall', self.open_uninstall),)
+        for id, command in plates:
             p = Plate(self, 'plate46', 266, command, 'RekPlate', tags)
             p.place(34, y)
             self.bind_text(p, 'text', id)
@@ -1827,6 +1842,137 @@ class RekarinaApp(App):
         self.refresh_saves()
         return 'break'
 
+    # ---- the Uninstall page -----------------------------------------------------------------------------------------
+    # What uninstall.ps1 would remove (installer/uninstall.py plan), with the space each takes, and a clear choice: Keep
+    # my saves (the cursor's, the default: everything of ours but the game folder's profile\, which a new install into
+    # the same folder finds), or Delete everything, which asks again, naming the saves' folder, with the cursor moved to
+    # Back. Either starts the script in a PowerShell of its own, waiting for this window to close, and the window closes.
+
+    def build_uninstall_stage(self):
+        c, tags = self.stage, ('scr:uninstall',)
+        title = StageText(c, c.create_text(34, 78, anchor='nw', fill=CREAM, font='RekTitle', tags=tags))
+        self.bind_text(title, 'text', 'ui.uninstall_title')
+        self.un_rows = []
+        for i in range(UNINSTALL_ROWS):
+            y, row_tags = MODS_TOP + i * STEP_PITCH, tags + (f'un:row{i}',)
+            row = c.create_image(34, y, image=self.art['row'], anchor='nw', tags=row_tags)
+            shade = c.create_text(34 + 25, y + 24, anchor='w', fill=PLATE_SHADE, font='RekBody', tags=row_tags)
+            name = c.create_text(34 + 24, y + 23, anchor='w', fill=CREAM, font='RekBody', tags=row_tags)
+            note = c.create_text(0, y + 24, anchor='w', fill=DIM, font='RekSmall', tags=row_tags)
+            value = c.create_text(34 + 722 + 164, y + 23, fill=CREAM, font='RekText', tags=row_tags)
+            self.un_rows.append((row, shade, name, note, value))
+        self.un_total = c.create_image(34, 0, image=self.art['total'], anchor='nw', tags=tags)
+        self.un_free = c.create_text(0, 0, anchor='w', fill=CREAM, font='RekBody', tags=tags)
+        self.un_line = c.create_text(34, 0, anchor='nw', fill=SOFT, font='RekText', width=STAGE_W - 68, tags=tags)
+        make = lambda kind, id, command: (lambda p: (self.bind_text(p, 'text', id), p)[1])(   # noqa: E731
+            Plate(self, kind, 120, command, 'RekStrong', tags))
+        self.un_keep = make('go40', 'ui.uninstall_keep', lambda: self.do_uninstall(True))
+        self.un_all = make('plate40', 'ui.uninstall_all', self.ask_uninstall_all)
+        self.un_all_yes = make('plate40', 'ui.uninstall_all_yes', lambda: self.do_uninstall(False))
+        self.un_back = make('plate40', 'ui.back', self.go_home)
+        c.itemconfigure('scr:uninstall', state='hidden')
+
+    def open_uninstall(self):
+        self.un_plan, self.un_error, self.un_asked = None, None, False
+        self.show('uninstall')
+        if self.forced_uninstall is not None:
+            return self.got_uninstall_plan(self.forced_uninstall)
+        dest = self.mods_dest()
+        self.background(lambda: uninstall.plan(dest), self.got_uninstall_plan)
+
+    def got_uninstall_plan(self, value):
+        if isinstance(value, Exception):
+            self.un_plan, self.un_error = None, str(value)
+        else:
+            self.un_plan, self.un_error = value, None
+        self.refresh_uninstall()
+
+    @staticmethod
+    def size_text(n):
+        return f'{n / (1 << 30):.1f} GB' if n >= 1 << 30 else f'{max(1, round(n / (1 << 20)))} MB'
+
+    def refresh_uninstall(self):
+        """The page from the plan. Only while it is shown: showing a screen shows all its items."""
+        if getattr(self, 'screen', None) != 'uninstall':
+            return
+        c, plan = self.stage, self.un_plan
+        items = plan['items'] if plan else []
+        shown = items[:UNINSTALL_ROWS]
+        if len(items) > UNINSTALL_ROWS:   # the last row stands for the rest
+            rest = items[UNINSTALL_ROWS - 1:]
+            shown[-1] = {'kind': 'more', 'path': self.cat('ui.uninstall_more', n=len(rest)),
+                         'bytes': sum(i['bytes'] for i in rest)}
+        for i, (row, shade, name, note, value) in enumerate(self.un_rows):
+            it = shown[i] if i < len(shown) else None
+            c.itemconfigure(f'un:row{i}', state='normal' if it else 'hidden')
+            if not it:
+                continue
+            label = self.cat('ui.uninstall_kind_' + it['kind']) if it['kind'] != 'more' else ''
+            room = 722 - 24 - 32 - (self.fonts['RekBody'].measure(label) + 16 if label else 0)
+            c.itemconfigure(name, text=label)
+            c.itemconfigure(shade, text=label)
+            c.itemconfigure(note, text=self.clip(str(it['path']), 'RekSmall', room))
+            c.coords(note, 34 + 24 + (self.fonts['RekBody'].measure(label) + 16 if label else 0), MODS_TOP + i * STEP_PITCH + 24)
+            c.itemconfigure(value, text=self.size_text(it['bytes']))
+        y = MODS_TOP + max(1, len(shown)) * STEP_PITCH + 6
+        c.coords(self.un_total, 34, y)
+        free = self.cat('ui.uninstall_free', size=self.size_text(plan['total_bytes'])) if items else ''
+        c.itemconfigure(self.un_free, text=free)
+        c.coords(self.un_free, 34 + 18, y + 22)
+        if self.un_error is not None:
+            fill, line = RED, self.cat('ui.uninstall_failed', detail=self.un_error)
+        elif plan is None:
+            fill, line = SOFT, self.cat('ui.uninstall_reading')
+        elif not items:
+            fill, line = SOFT, self.cat('ui.uninstall_none')
+        elif self.un_asked:
+            fill, line = NOTE, self.cat('ui.uninstall_all_confirm', path=plan['saves'])
+        else:
+            parts = [self.cat('ui.uninstall_saves_stay', path=plan['saves'], size=self.size_text(plan['saves_bytes']))
+                     if plan.get('saves_bytes') else self.cat('ui.uninstall_no_saves')]
+            if plan.get('shortcuts') or plan.get('registry'):
+                parts.append(self.cat('ui.uninstall_also'))
+            parts.append(self.cat('ui.uninstall_dump'))
+            fill, line = SOFT, ' '.join(parts)
+        c.itemconfigure(self.un_line, text=line, fill=fill)
+        c.coords(self.un_line, 34, y + 44 + 12)
+        idle = bool(items) and not self.job and not self.process
+        self.un_all.show(not self.un_asked)
+        self.un_all_yes.show(self.un_asked)
+        for p, on in ((self.un_keep, idle), (self.un_all, idle and bool(plan and plan.get('saves_bytes'))),
+                      (self.un_all_yes, idle)):
+            p.state(['!disabled' if on else 'disabled'])
+        left = [self.un_keep] + [p for p in (self.un_all, self.un_all_yes) if p.shown]
+        for p in left + [self.un_back]:
+            p.fit(pad=22, least=96)
+        x, y = 34, STAGE_H - 58
+        for p in left:
+            p.place(x, y)
+            x += p.width + 10
+        self.un_back.place(STAGE_W - 34 - self.un_back.width, y)
+        self.place_cursor()
+
+    def ask_uninstall_all(self):
+        """Delete everything: the second confirmation, naming the saves' folder; the cursor goes to Back, so Enter
+        pressed once more takes nothing."""
+        if not self.un_plan or not self.un_plan.get('saves_bytes'):
+            return 'break'
+        self.un_asked = True
+        self.refresh_uninstall()
+        self.set_cursor(self.un_back)
+        return 'break'
+
+    def do_uninstall(self, keep_saves):
+        if not self.un_plan or not self.un_plan['items'] or self.job or self.process or self.forced_uninstall is not None:
+            return 'break'
+        try:
+            uninstall.start(self.mods_dest(), keep_saves)
+        except (OSError, subprocess.SubprocessError) as e:
+            self.un_error = str(e)
+            return self.refresh_uninstall()
+        self.root.after(100, self.root.destroy)   # the script waits for this process before it removes anything
+        return 'break'
+
     def open_saves_folder(self):
         folder = saves.profile_dir(self.mods_dest())
         try:
@@ -2557,8 +2703,22 @@ SAMPLE_NOTES = ('Rekarina 1.0.1\n\n- Shorter loading between areas.\n- The water
                 '- New button prompt set for PlayStation pads.\n- The setup downloads DLSS and FSR 3.1 by itself.\n\n'
                 'The update keeps your saves, settings and shader caches. After it the setup rebuilds the game from the '
                 'dump you already have; that takes a few minutes.')
-SCREENS = ('form', 'form-textures-help', 'form-space', 'home', 'home-update', 'home-shaders-running', 'home-shaders-waiting', 'home-shaders-done', 'mods', 'mods-empty', 'saves', 'saves-ask', 'saves-empty', 'update', 'run',
-           'components', 'ok', 'failed')
+SCREENS = ('form', 'form-textures-help', 'form-space', 'home', 'home-update', 'home-shaders-running', 'home-shaders-waiting', 'home-shaders-done', 'mods', 'mods-empty', 'saves', 'saves-ask', 'saves-empty',
+           'uninstall', 'uninstall-ask', 'update', 'run', 'components', 'ok', 'failed')
+
+
+def sample_uninstall():
+    """What uninstall.ps1 -List says for a usual install, for the pictures."""
+    home = 'C:\\Games\\Rekarina'
+    items = [{'path': home + '\\game', 'kind': 'game', 'bytes': 15_900_000_000},
+             {'path': home + '\\setup\\1.2.5', 'kind': 'setup', 'bytes': 10_400_000_000},
+             {'path': home + '\\setup\\1.2.4', 'kind': 'setup', 'bytes': 1_100_000_000},
+             {'path': 'C:\\Users\\Player\\AppData\\Local\\Rekarina', 'kind': 'appdata', 'bytes': 2_400_000},
+             {'path': 'C:\\Users\\Player\\AppData\\Roaming\\Rekarina', 'kind': 'appdata', 'bytes': 12_000}]
+    return {'game': home + '\\game', 'items': items, 'total_bytes': sum(i['bytes'] for i in items),
+            'shortcuts': ['C:\\Users\\Player\\AppData\\Roaming\\Microsoft\\Windows\\Start Menu\\Programs\\Rekarina.lnk'],
+            'registry': 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\Rekarina',
+            'saves': home + '\\game\\profile', 'saves_bytes': 1_400_000, 'dumps_kept': [], 'refused': []}
 
 
 def sample_mods():
@@ -2683,6 +2843,12 @@ def selftest(layout, shots=None):
             app.save_asked, app.save_note = None, None
             app.refresh_saves()
             shot(f'oot-saves-empty-{lang}')
+            app.forced_uninstall = sample_uninstall()
+            app.open_uninstall()
+            shot(f'oot-uninstall-{lang}')
+            app.ask_uninstall_all()
+            shot(f'oot-uninstall-ask-{lang}')
+            app.forced_uninstall = None
             for name, events in (('update', SAMPLE_UPDATE), ('run', SAMPLE_RUN), ('components', SAMPLE_COMPONENTS),
                                  ('ok', SAMPLE_OK), ('failed', SAMPLE_FAIL)):
                 play(app, events)

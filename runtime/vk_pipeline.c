@@ -2747,16 +2747,25 @@ static uint32_t *meshc_module(const uint32_t *code, uint64_t words) {
     return c;
 }
 
-static VkPipeline compute_create(const GfxShader *cs, const Layout *l) {
+static VkPipeline compute_create_v(const GfxShader *cs, const Layout *l, int passthrough) {
     uint64_t words;
     const uint32_t *code = gfx_shader_spirv(cs, &words);
     int emu = gfx_shader_stage(cs) == GFX_STAGE_MSC || gfx_shader_stage(cs) == GFX_STAGE_TSC;   // task kernels name it too
     uint32_t *patched = emu ? meshc_module(code, words) : NULL;
     if (emu && !patched) return VK_NULL_HANDLE;
     if (patched) code = patched;
+    uint64_t nw = 0;
+    uint32_t *net = passthrough && !emu ? vk_movienet_module(cs, code, words, &nw) : NULL;   // the movies' pass 12 alone
+    if (passthrough && !net) {
+        free(patched);
+        return VK_NULL_HANDLE;
+    }
+    if (net) code = net, words = nw;
     VkShaderModule m = make_module(code, words);
-    free(patched);
-    if (!m) return VK_NULL_HANDLE;
+    if (!m) {
+        free(patched), free(net);
+        return VK_NULL_HANDLE;
+    }
     VkPipelineShaderStageRequiredSubgroupSizeCreateInfo rqc;
     VkComputePipelineCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
                                       .stage = {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
@@ -2779,7 +2788,34 @@ static VkPipeline compute_create(const GfxShader *cs, const Layout *l) {
     if (vkCreateComputePipelines(P.device, build_cache(), 1, &ci, NULL, &pipe) != VK_SUCCESS) pipe = VK_NULL_HANDLE;
     { const GfxShader *ps[1] = {cs}; VkShaderStageFlags pst[1] = {VK_SHADER_STAGE_COMPUTE_BIT}; pipestats_log(pipe, ps, pst, 1); }
     vkDestroyShaderModule(P.device, m, NULL);
+    // (the module's words are read above for the subgroup pin and the local size: freed only now, after them)
+    free(patched), free(net);
     return pipe;
+}
+static VkPipeline compute_create(const GfxShader *cs, const Layout *l) { return compute_create_v(cs, l, 0); }
+static Layout *compute_layout(const GfxShader *cs, Bindings *B, const char **why);   // below
+
+// Pass 12 of the movies' network as vk_movienet.c runs it once the U-Net is left out: its own table entry (key compute
+// 2), built at its first dispatch on this thread (one pipeline, once a session); VK_NULL_HANDLE when it cannot be.
+VkPipeline vk_pipeline_compute_passthrough(const GfxShader *cs, const VkPipeInfo **info) {
+    if (info) *info = NULL;
+    if (!cs || !ensure_init()) return VK_NULL_HANDLE;
+    struct { const GfxShader *cs; uint32_t compute; } k = {cs, 2};
+    uint64_t h = key_hash(&k, sizeof k);
+    plat_mutex_lock(&P.lock);
+    Pipe *p = pipe_find(&k, sizeof k, h);
+    if (!p) {
+        const char *why = NULL;
+        Bindings B = {0};
+        Layout *l = compute_layout(cs, &B, &why);
+        VkPipeline pipe = why ? VK_NULL_HANDLE : compute_create_v(cs, l, 1);
+        rt_log("vk_pipeline: pass 12 of the movies' network without the U-Net %s", pipe ? "built" : "could not be built");
+        p = pipe_add(&k, sizeof k, h, pipe, l, l && !why ? &B : NULL, VK_PIPELINE_BIND_POINT_COMPUTE, 0);
+    }
+    plat_mutex_unlock(&P.lock);
+    if (!p || !p->info.pipeline) return VK_NULL_HANDLE;
+    if (info) *info = &p->info;
+    return p->info.pipeline;
 }
 
 // The layout of a compute shader in *B; NULL with *why on failure. Caller holds P.lock.

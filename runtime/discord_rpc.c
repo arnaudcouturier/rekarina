@@ -1,7 +1,9 @@
 // Discord Rich Presence: "Playing " RT_PORT_NAME with the elapsed play time in the player's Discord status, through
 // the local IPC of a running Discord client (platform.h's plat_ipc_*). Nothing leaves the machine but the activity
-// itself, and nothing is sent while REKARINA_DISCORD_RPC is off (the default: the status is information about the
-// player's session). REKARINA_DISCORD_APP_ID names the application whose name and artwork Discord shows — the default
+// itself: the application's name, the play time and its art, no game version, place or anything of the play. On by
+// default, as other ports' statuses are; nothing is sent while REKARINA_DISCORD_RPC is 0 (the settings menu's Menu tab),
+// and Discord's own activity settings can hide it. REKARINA_DISCORD_APP_ID names the application whose name and
+// artwork Discord shows — the default
 // is the build's own application (cfg.c: "Rekarina" for OoT, "TotK Recomp" for TotK); a
 // player who wants their own name or art registers an application at discord.com/developers and puts its id in the
 // ini file — and REKARINA_DISCORD_IMAGE the key of its uploaded art asset ("discord-icon" for Rekarina: Discord names an
@@ -158,25 +160,33 @@ static uint32_t next_nonce(void) {
     return (uint32_t)plat_inc32(&n);
 }
 
-// The activity as one SET_ACTIVITY frame: the game update and the port version as the details line ("Game 1.4.3 ·
-// Recomp 0.3.7": the port version without its +commit suffix, the art's hover text keeps the full one; the dot goes
-// as a JSON escape), the process's start as the timestamp Discord counts the elapsed time from, and the application's
-// art asset. 1 when the client answered (a slow answer that ran out of the 2 s read is fine: the next drain takes
-// it), 0 when the connection broke.
-static int send_activity(PlatIpc *p, const char *image) {
+// The activity as one SET_ACTIVITY frame: the process's start as the timestamp Discord counts the elapsed time from,
+// and the application's art asset with the port's name as its hover text. Discord shows the application's name as
+// "Playing <name>"; no details or state line is sent. 1 when the client answered (a slow answer that ran out of the
+// 2 s read is fine: the next drain takes it), 0 when the connection broke. *accepted: 1 when the answer is the
+// client's SET_ACTIVITY reply, 0 for an ERROR event (its message logged), -1 when no answer was read.
+static int send_activity(PlatIpc *p, const char *image, int *accepted) {
     char json[512];
     uint64_t start = (plat_unix_time_ns() - plat_process_uptime_ns()) / 1000000000ull;
-    int port_len = (int)strcspn(rt_port_version, "+");
     snprintf(json, sizeof json,
-             "{\"cmd\":\"SET_ACTIVITY\",\"nonce\":\"%u\",\"args\":{\"pid\":%lu,\"activity\":{\"details\":\"Game "
-             "%s \u00b7 Recomp %.*s\",\"timestamps\":{\"start\":%llu},\"assets\":{\"large_image\":\"%s\","
-             "\"large_text\":\"" RT_PORT_NAME " %s\"}}}}",
-             next_nonce(), (unsigned long)plat_process_id(), rt_game_version_text(), port_len, rt_port_version,
-             (unsigned long long)start, image, rt_port_version);
+             "{\"cmd\":\"SET_ACTIVITY\",\"nonce\":\"%u\",\"args\":{\"pid\":%lu,\"activity\":{\"timestamps\":"
+             "{\"start\":%llu},\"assets\":{\"large_image\":\"%s\",\"large_text\":\"" RT_PORT_NAME "\"}}}}",
+             next_nonce(), (unsigned long)plat_process_id(), (unsigned long long)start, image);
+    *accepted = -1;
     if (!write_frame(p, OP_FRAME, json)) return 0;
     uint32_t op = 0;
     char answer[ANSWER_CAP];
-    return read_frame(p, &op, answer, sizeof answer, 2000) >= 0;
+    int r = read_frame(p, &op, answer, sizeof answer, 2000);
+    if (r == 1 && op == OP_FRAME) {
+        if (strstr(answer, "\"evt\":\"ERROR\"")) {
+            const char *m = strstr(answer, "\"message\":\"");
+            rt_log("discord: the client refused the activity: %.200s", m ? m + 11 : answer);
+            *accepted = 0;
+        } else if (strstr(answer, "\"cmd\":\"SET_ACTIVITY\"")) {
+            *accepted = 1;
+        }
+    }
+    return r >= 0;
 }
 
 // ---- the presence thread
@@ -218,7 +228,10 @@ static void discord_main(void *arg) {
             }
         }
         if (ipc && plat_now_ms() >= send_at) {
-            if (send_activity(ipc, image)) {
+            int accepted;
+            if (send_activity(ipc, image, &accepted)) {
+                if (accepted == 1 && !send_at)   // the first send of a connection: the log says the status is shown
+                    rt_log("discord: the client accepted the activity: \"Playing " RT_PORT_NAME "\" with the play time");
                 send_at = plat_now_ms() + 60000;
             } else {
                 rt_log("discord: the connection broke; reconnecting");
@@ -249,7 +262,9 @@ int probe_discord(void) {
         return 0;
     }
     fprintf(stderr, "discord: connected (app %s)\n", app_id);
-    CHECK(send_activity(p, image), "SET_ACTIVITY written and answered");
+    int accepted;
+    CHECK(send_activity(p, image, &accepted), "SET_ACTIVITY written and answered");
+    CHECK(accepted == 1, "the client accepted the activity (its SET_ACTIVITY reply, no ERROR event)");
     fprintf(stderr, "discord: activity set; the status shows it for ten seconds, then the connection closes\n");
     plat_sleep_ms(10000);
     plat_ipc_close(p);

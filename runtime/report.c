@@ -327,10 +327,18 @@ int report_make(char *path, size_t n) {
     return ok;
 }
 
+static int lost_device = -1;   // report_last_run_failed: the previous run's log says its graphics device was lost
+
+int report_last_run_lost_device(void) {
+    if (lost_device < 0) report_last_run_failed();
+    return lost_device > 0;
+}
+
 int report_last_run_failed(void) {
     static int known = -1;
     if (known >= 0) return known;
     known = 0;
+    lost_device = 0;
     char dir[PLAT_PATH_MAX * 3], p[PLAT_PATH_MAX * 3 + 64];
     if (!game_folder(dir, sizeof dir)) return 0;
     snprintf(p, sizeof p, "%s/logs/" RT_FILE_STEM ".1.log", dir);
@@ -346,6 +354,8 @@ int report_last_run_failed(void) {
             b[got] = 0;
             for (int64_t i = 0; i < got; i++) if (!b[i]) b[i] = ' ';
             known = strstr(b, "FATAL") != NULL || strstr(b, "vk: device lost") != NULL;
+            lost_device = strstr(b, "vk: device lost") != NULL || strstr(b, "the device is lost") != NULL ||
+                          strstr(b, "failed (-4") != NULL;
         }
     }
     free(b);

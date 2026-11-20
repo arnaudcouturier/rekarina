@@ -300,7 +300,32 @@ unless the form's **Desktop shortcut** row says No (`--no-desktop-shortcut`), "R
 (`installer/oot.py` `launcher_shortcuts`). They point at the launcher of the setup that ran, in its own folder, with
 its icon, and are written again at every run, so a setup downloaded anew moves them to its launcher. The shell writes
 them (WScript.Shell through PowerShell, the paths passed in its environment); one that cannot be written is logged
-and costs nothing else. Linux gets none (its setup has no launcher executable).
+and costs nothing else. Linux gets none (its setup has no launcher executable). The launcher also checks them at
+every start (`installer/oot.py` `ensure_shortcuts`): the game folder's and the Start menu's are written when missing,
+when their launcher is gone, or when it is older than the one starting (a newer setup downloaded and opened on its
+home screen, a setup run cancelled after an update); one to the same or a newer launcher stays, and the desktop's is
+only followed, never made there. The launcher's own update swaps the release inside its folder, so the shortcuts'
+path already names the new launcher. A setup unpacked from the zip release lies anywhere: the uninstaller finds it
+through these shortcuts.
+
+**Uninstalling.** `installer/uninstall.ps1` removes everything Rekarina put on the PC, for a clean reinstall, and is
+the one implementation for every way in: the launcher's **Uninstall Rekarina** plate (home screen; its page lists the
+folders with their sizes and the space freed, from the script's `-List`), the "Uninstall Rekarina" shortcut in the game
+folder, and the per-user "Apps & features" entry (`HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\Rekarina`,
+no administrator). Every setup run that leaves a game in the folder copies the script there as
+`rekarina-uninstall.ps1`, writes that shortcut and the entry (`installer/uninstall.py install`, from
+`launcher_shortcuts`). What goes: the game folder, the `<home>\setup\<version>` folders with their working files, the
+launcher's files in `%LOCALAPPDATA%\Rekarina` and `%APPDATA%\Rekarina`, the Start menu and desktop shortcuts that point
+into those folders, and the entry. Each folder only when it carries our marks (`rekarina-install.json` with
+`Rekarina.exe` or `rekarina.ini` for a game folder; `unpacked.txt`, or `Rekarina-Launcher.exe` with `installer\oot.py`,
+for a setup folder); a drive's root and the system's and the user's own folders never; a dump or keys file
+(`.nup .nsp .xci .nsz .xcz .keys`) stays wherever it lies, and a link or junction goes as a link, never what it points to.
+The player chooses with two buttons: **Keep my saves** (the default, with the cursor) leaves the game folder's
+`profile\` where it is, so a new install into the same folder finds it; **Delete everything** asks a second time,
+naming that folder and saying it cannot be undone, and stops there at a no. From the launcher the script runs in a
+PowerShell of its own once the launcher's process has ended (`-WaitPid`), so it can remove the launcher's folder too.
+`python tests/uninstall_test.py` runs it on scratch installs (application data, Start menu, desktop and registry key
+of the test's own).
 
 **No preparation in the background.** 1.2.1 to 1.2.3 prepared the rest of the variants of a `met` folder from the
 launcher itself (`installer/shaderjob.py`: the setup with `--all-shaders` as a child at below-normal priority while the

@@ -1029,6 +1029,24 @@ void vk_dump_arm_now(const char *why) {
     dump_frame = __atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED) + 1;
     rt_log("vk_dump: %s: frame %llu is dumped from here on", why, (unsigned long long)dump_frame);
 }
+// DEBUG-DUMPRETURN: REKARINA_DUMP_RETURN=<n>[:<from frame>] with REKARINA_DUMP=t<ticks never reached> and
+// REKARINA_FLIGHT=1: the frame n presents after the scene came back from a dark spell (the pause menu closing; flight.c's
+// flash watch sees it) is dumped, the first time past <from frame> only (the boot's loading screens are dark spells too).
+void vk_dump_arm_return(uint64_t returned) {
+    static int ofs = -2;
+    static uint64_t from;
+    if (ofs == -2) {
+        const char *e = cfg_get("REKARINA_DUMP_RETURN");
+        ofs = e && *e ? atoi(e) : -1;
+        const char *c = e ? strchr(e, ':') : NULL;
+        from = c ? strtoull(c + 1, NULL, 10) : 0;
+    }
+    if (ofs < 0 || returned < from || !dump_tick || dump_frame != UINT64_MAX) return;
+    uint64_t now = __atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED), at = returned + (uint64_t)ofs;
+    dump_frame = at > now ? at : now + 1;
+    rt_log("vk_dump: the scene came back at frame %llu: frame %llu is dumped", (unsigned long long)returned,
+           (unsigned long long)dump_frame);
+}
 // DEBUG-DUMPAFTER: REKARINA_DUMP_AFTER_CLEARS=<n> with REKARINA_DUMP=t<ticks never reached>: the frame after the first frame
 // with n clears or more (past frame 3200, the frame before it with fewer) is dumped whole (vk_exec.c pl_frame).
 void vk_dump_arm_after(uint64_t frame, uint64_t clears, uint64_t before) {

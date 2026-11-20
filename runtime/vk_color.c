@@ -9,8 +9,10 @@
 // picture and is adjusted with it; the in-game menu is drawn later, straight into the swapchain image, and is not.
 // The source view of slot s is destroyed when slot s records again (present_image has waited for that slot's fence);
 // the output image is shared by all slots, and each frame's first barrier orders it after the previous frame's reads.
+// On an HDR10 swapchain this pass does not run: the PQ encode grades with the same values (vk_color_hdr).
 #include "vk.h"
 
+#include <stdio.h>
 #include <string.h>
 
 #include "cfg.h"
@@ -136,11 +138,51 @@ static void barrier(VkCommandBuffer cb, VkImage img, VkImageLayout from, VkPipel
     vkCmdPipelineBarrier2(cb, &d);
 }
 
+// Why the adjustment is not drawn, said once per reason (a player's "the colour profile does nothing" shows its cause in
+// the log): 1 the pass could not be set up, 2 its image of the crop's size could not be made, 3 the source's view,
+// 4 the HDR10 encode that grades it on an HDR10 swapchain could not run (vk_hdr.c vk_hdr_encode).
+static void not_drawn(int why, const int *crop) {
+    static int said[5];
+    if (why < 1 || why > 4 || said[why]++) return;
+    static const char *const text[] = {"", "its compute pass could not be set up", "its %dx%d image could not be made",
+                                       "the game picture's view could not be made",
+                                       "the HDR10 encode could not run (the picture goes out unconverted)"};
+    char line[160];
+    snprintf(line, sizeof line, text[why], crop ? crop[2] : 0, crop ? crop[3] : 0);
+    rt_log("vk: the colour profile is not applied: %s", line);
+}
+
+// "Applied", said again for each picture size and each output kind (SDR here, HDR10 in vk_hdr_encode).
+static void applied(const int crop[4], int hdr) {
+    static uint32_t said_w[2], said_h[2];
+    if (said_w[hdr] == (uint32_t)crop[2] && said_h[hdr] == (uint32_t)crop[3]) return;
+    said_w[hdr] = (uint32_t)crop[2], said_h[hdr] = (uint32_t)crop[3];
+    rt_log("vk: the colour profile is applied to the %dx%d picture%s (brightness %+.0f %%, contrast %.0f %%, "
+           "saturation %.0f %%, gamma %.2f)", crop[2], crop[3], hdr ? " in HDR10" : "", C.adj[0] * 100, C.adj[1] * 100,
+           C.adj[2] * 100, C.adj[3]);
+}
+
+void vk_color_not_drawn_hdr(void) {
+    if (adjusting()) not_drawn(4, NULL);
+}
+
+// On an HDR10 swapchain the PQ encode grades the picture with the same four values (shaders/hdr_encode.comp, in the
+// sRGB code values of the picture relative to its white, highlights above it included): 1 and the values in adj when
+// the profile changes anything.
+int vk_color_hdr(float adj[4], const int crop[4]) {
+    if (!adjusting()) return 0;
+    memcpy(adj, C.adj, sizeof C.adj);
+    applied(crop, 1);
+    return 1;
+}
+
 VkImage vk_color_record(VkCommandBuffer cb, unsigned slot, VkImage src, VkFormat fmt, const int crop[4]) {
     if (!adjusting()) return VK_NULL_HANDLE;
     VkCtx *c = vk_ctx();
     if (!C.tried) init(c);
-    if (!C.ok || !ensure_image(c, (uint32_t)crop[2], (uint32_t)crop[3])) return VK_NULL_HANDLE;
+    if (!C.ok) return not_drawn(1, crop), VK_NULL_HANDLE;
+    if (!ensure_image(c, (uint32_t)crop[2], (uint32_t)crop[3])) return not_drawn(2, crop), VK_NULL_HANDLE;
+    applied(crop, 0);
     slot %= SLOTS;
     if (C.src_view[slot]) vkDestroyImageView(c->device, C.src_view[slot], NULL);
     VkImageViewCreateInfo vi = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, .image = src,
@@ -148,6 +190,7 @@ VkImage vk_color_record(VkCommandBuffer cb, unsigned slot, VkImage src, VkFormat
                                 .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
     if (vkCreateImageView(c->device, &vi, NULL, &C.src_view[slot]) != VK_SUCCESS) {
         C.src_view[slot] = VK_NULL_HANDLE;
+        not_drawn(3, crop);
         return VK_NULL_HANDLE;
     }
     const VkPipelineStageFlags2 CS = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, ALL = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;

@@ -1112,6 +1112,78 @@ def launcher_shortcuts(ctx):
         ctx.reporter.log(f'shortcut {link} -> {launcher}: ' + ('written' if ok else f'not written ({said})'))
         if ok:
             made.append(link)
+    # The uninstaller beside the game and the Windows "Apps & features" entry (installer/uninstall.py), at every run:
+    # they follow the game folder and the version
+    if (ctx.dest / GAME_EXE).is_file():
+        from . import uninstall
+        try:
+            uninstall.install(ctx.dest, getattr(ctx.layout, 'release', ''), setup=ctx.layout.root, log=ctx.reporter.log)
+        except (OSError, subprocess.SubprocessError) as e:
+            ctx.reporter.log(f'uninstaller: not set up ({e})')
+    return made
+
+
+def shortcut_target(link):
+    """The program a Windows shortcut starts (the shell's own reader through PowerShell), None when it cannot be read."""
+    script = '(New-Object -ComObject WScript.Shell).CreateShortcut($env:REKARINA_LNK).TargetPath'
+    try:
+        proc = subprocess.run(['powershell', '-NoProfile', '-NonInteractive', '-Command', script],
+                              env=dict(os.environ, REKARINA_LNK=str(link)), capture_output=True, text=True, timeout=60,
+                              creationflags=subprocess.CREATE_NO_WINDOW if WIN else 0)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    out = proc.stdout.strip()
+    return Path(out) if proc.returncode == 0 and out else None
+
+
+def version_key(text):
+    """'1.2.5' (or '1.2.5-dev') as (1, 2, 5); None for anything else."""
+    m = re.match(r'(\d+(?:\.\d+)*)', (text or '').strip())
+    return tuple(int(x) for x in m.group(1).split('.')) if m else None
+
+
+def ensure_shortcuts(layout, dest, log=print):
+    """The launcher's start (Windows, a release folder with its launcher, a game in dest): the shortcuts a setup run
+    writes, kept pointing at a launcher that is there. "Rekarina Launcher" in the game folder and "Rekarina" in the
+    Start menu are written when they are missing, when their launcher is gone, or when it is older than this one (a
+    newer setup downloaded and started, whose setup has not run yet; a setup run cancelled after an update). The
+    desktop one only when it exists: whether there is one was the player's choice. A shortcut to the same launcher or
+    a newer one stays. The uninstaller's parts (installer/uninstall.py) are written when the game folder lacks its
+    script. Returns the links written."""
+    launcher = layout.root / LAUNCHER_EXE
+    if not WIN or not launcher.is_file() or not (Path(dest) / GAME_EXE).is_file():
+        return []
+    dest = Path(dest)
+    start, desk = start_menu_folder(), desktop_folder()
+    links = [dest / LAUNCHER_LINK] + ([start / START_LINK] if start else [])
+    if desk and (desk / LAUNCHER_LINK).is_file():
+        links.append(desk / LAUNCHER_LINK)
+    mine = version_key(getattr(layout, 'release', ''))
+    same = lambda a, b: os.path.normcase(os.path.abspath(a)) == os.path.normcase(os.path.abspath(b))   # noqa: E731
+    made = []
+    for link in links:
+        target = shortcut_target(link) if link.is_file() else None
+        if target is not None and target.is_file():
+            if same(target, launcher):
+                continue
+            version = target.parent / 'VERSION'
+            theirs = version_key(version.read_text(encoding='utf-8', errors='replace')) if version.is_file() else None
+            if theirs and mine and theirs >= mine:
+                continue
+        try:
+            link.parent.mkdir(parents=True, exist_ok=True)
+            ok, said = write_shortcut(link, launcher, layout.root, 'Rekarina launcher: build, update and start the game')
+        except (OSError, subprocess.SubprocessError) as e:
+            ok, said = False, str(e)
+        log(f'shortcut {link} -> {launcher}: ' + ('written at the launcher\'s start' if ok else f'not written ({said})'))
+        if ok:
+            made.append(link)
+    from . import uninstall
+    if not (dest / uninstall.GAME_SCRIPT).is_file():
+        try:
+            uninstall.install(dest, getattr(layout, 'release', ''), setup=layout.root, log=log)
+        except (OSError, subprocess.SubprocessError) as e:
+            log(f'uninstaller: not set up ({e})')
     return made
 
 

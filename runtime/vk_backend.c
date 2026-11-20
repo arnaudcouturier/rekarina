@@ -164,6 +164,7 @@ static void present_image(const tex_t *t, const int crop[4], uint64_t at_ns, uin
     plat_cond_broadcast(&pcv);
     plat_mutex_unlock(&pl);
     if (rdoc_active()) { vk_present_drain(); rdoc_after_present(frame); }
+    vk_movienet_frame();   // a movie's GPU time measured for its network (vk_movienet.c)
     {   // DEBUG-GPUCSV: REKARINA_GPU_CSV=<path>: per present the frame number, the GPU busy ns reported so far and the CPU clock
         static FILE *csv;
         static int init;

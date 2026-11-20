@@ -10,6 +10,7 @@
 //     --probe-gfx-abi   NVN object layouts against nvn.h's reserved sizes; needs no game files
 //     --probe-nvn, --probe-nvn-tex, --probe-window, --probe-shader, --probe-vkmem, --probe-vkexec    graphics probes
 //     --probe-astc      the compute ASTC decoder against astc_decode_ldr; needs no game files
+//     --probe-color     the colour profile's SDR and HDR10 passes against their formulas; needs no game files
 //     --probe-movie     host VP9 movie::Decoder on one RomFS movie; skips without game data
 //     --probe-codec F   (Switch 2 builds) the host nn::codec video decoder on the WebM file F (ns2_codec.c)
 //     --boot            run the game to the first NVN call
@@ -496,7 +497,7 @@ static int usage(const char *argv0) {
     fprintf(stderr, "usage: %s [--exefs DIR] [--romfs DIR] [--profile DIR] [--selftest | --probe-loader | "
                     "--probe-cfg | --probe-dpi | --probe-mods | --probe-kernel | --probe-ipc | --probe-services | --probe-fs | --probe-gfx-abi | "
                     "--probe-nvn | --probe-nvn-tex | --probe-window | --probe-shader | --probe-vkmem | "
-                    "--probe-vkexec | --probe-astc | --probe-movie | --probe-codec FILE | --probe-crash-call | --probe-crash-null | --probe-discord | "
+                    "--probe-vkexec | --probe-astc | --probe-color | --probe-movie | --probe-codec FILE | --probe-crash-call | --probe-crash-null | --probe-discord | "
                     "--prepare-shaders | --warm-shaders | --prepare-textures | --boot |--seconds S [--shot PNG]]\n", argv0);
     return 2;
 }
@@ -644,6 +645,7 @@ int main(int argc, char **argv) {
     if (!strcmp(mode, "--probe-vkmem")) return probe_vkmem();
     if (!strcmp(mode, "--probe-vkexec")) return probe_vkexec();
     if (!strcmp(mode, "--probe-astc")) return probe_astc();
+    if (!strcmp(mode, "--probe-color")) return probe_color();
     if (!strcmp(mode, "--probe-vkdevice")) return probe_vkdevice();
     if (!strcmp(mode, "--probe-movie")) return probe_movie();
 #ifdef GAME_NS2

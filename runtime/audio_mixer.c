@@ -40,7 +40,21 @@
 #define SPLITTER_UNUSED 0xffffffffu
 #define dm_guest_write_prepare(p, n) ((void)(p), (void)(n))   // guest memory is plain host memory on Windows
 
-typedef struct { float vol[24]; int32_t dest; uint8_t used; AudrenBiquadFloat biquads[2]; float state[2][2]; } SplitDest;
+typedef struct { float vol[24]; int32_t dest; uint8_t used; AudrenBiquadFloat biquads[2]; float state[2][2];
+                 float prev[24]; uint8_t primed; } SplitDest;   // prev: the volumes the last frame ended at (mix ramp)
+// A voice's ramp and depop state (Ryujinx.Audio's VolumeRamp, MixRamp and DepopPrepare / DepopForMixBuffers commands).
+// The DSP moves a voice's volume and each of its mix volumes from last frame's value to this frame's across the frame,
+// and a voice that stops playing leaves its last output, per mix buffer, as a value that decays into that buffer over
+// about a millisecond. Without them a volume change is a step at the frame's first sample and a note stopped mid-wave
+// drops to zero at once: a click at every note's end (the ocarina's notes). REKARINA_AUDIO_RAMP=0: the old mixing.
+#define VOICE_LAST 48
+typedef struct {
+    float prev_volume;            // the volume the last rendered frame ended at
+    uint8_t playing;              // rendered in the last frame
+    uint8_t nlast;
+    int16_t last_buf[VOICE_LAST]; // mix buffers this voice wrote last frame, with its last output sample in each
+    float last_val[VOICE_LAST];
+} VoiceRamp;
 typedef struct { int32_t ndest; int32_t *ids; } SplitInfo;
 typedef struct {
     Reverb3d *reverb; Reverb3dParam param; int pending;
@@ -67,6 +81,10 @@ typedef struct Mixer {
     float voice_scratch[6][MAX_FRAME], filter_scratch[MAX_FRAME], output_scratch[MAX_FRAME * OUT_MAX];
     double level_sum, level_peak; uint64_t level_count, level_frames; int first_sound_logged;
     int prefill;                                   // render blocks
+    int ramps;                                     // REKARINA_AUDIO_RAMP (default 1): ramps and depop (VoiceRamp)
+    VoiceRamp *ramp;                               // per voice
+    float *chan_prev; uint8_t *chan_primed;        // per channel resource (voice_count * 6): its mix volumes last frame
+    float *depop; float depop_decay;               // per mix buffer: what stopped voices left, decaying into it
 } Mixer;
 
 static _Atomic float device_volume = 1.0f;
@@ -380,6 +398,16 @@ void audio_mixer_open(AudioRenderer *r) {
         m->prefill = PREFILL_DEFAULT_MS / 5;
     }
     m->channels = output_channels();
+    const char *ramp = cfg_get("REKARINA_AUDIO_RAMP");   // a test switch: no row in the settings table, read as is
+    m->ramps = !ramp || !*ramp || atoi(ramp) != 0;
+    size_t nch = (size_t)(r->param.voice_count > 0 ? r->param.voice_count : 1) * 6;
+    m->ramp = calloc(nch / 6, sizeof *m->ramp);
+    m->chan_prev = calloc(nch * 24, sizeof(float));
+    m->chan_primed = calloc(nch, 1);
+    m->depop = calloc((size_t)m->nbuf, sizeof(float));
+    if (!m->ramp || !m->chan_prev || !m->chan_primed || !m->depop) rt_fatal("audio ramp state allocation");
+    m->depop_decay = m->rate == 48000 ? 0.962189f : 0.943695f;   // Ryujinx DepopForMixBuffersCommand (32 kHz otherwise)
+    rt_log("audio: volume ramps and depop %s (REKARINA_AUDIO_RAMP)", m->ramps ? "on" : "off");
     r->mixer = m;
     atomic_store(&m->playing, r->state == 0);
     output_open(m, r->param.sample_rate);
@@ -415,6 +443,10 @@ void audio_mixer_close(AudioRenderer *r) {
     free(m->sink_written);
     free(m->effect);
     free(m->effect_order);
+    free(m->ramp);
+    free(m->chan_prev);
+    free(m->chan_primed);
+    free(m->depop);
     free(m->buf);
     free(m->offset);
     free(m->split);
@@ -626,6 +658,27 @@ static void voice_render(AudioRenderer *r, ServerVoice *v, float out[6][MAX_FRAM
 
 /* ---------- mixing ---------- */
 static float *mixbuf(Mixer *m, int i) { return m->buf + (size_t)i * (size_t)m->frame; }
+// A voice's samples into a mix buffer with the mix volume going from v0 to v1 over the frame (Ryujinx MixRamp); the
+// buffer and the output's level at the frame's end go into the voice's depop list.
+static void accumulate_ramp(Mixer *m, VoiceRamp *vr, int buffer, const float *src, float v0, float v1, int frames) {
+    if ((v0 == 0 && v1 == 0) || buffer < 0 || buffer >= m->nbuf) return;
+    float *dst = mixbuf(m, buffer), vol = v0, dv = (v1 - v0) / (float)frames;
+    for (int k = 0; k < frames; k++, vol += dv) dst[k] += src[k] * vol;
+    if (vr->nlast < VOICE_LAST) {
+        vr->last_buf[vr->nlast] = (int16_t)buffer;
+        vr->last_val[vr->nlast++] = src[frames - 1] * v1;
+    }
+}
+// What stopped voices left in each mix buffer, decaying sample by sample (Ryujinx DepopForMixBuffers).
+static void depop_apply(Mixer *m) {
+    for (int b = 0; b < m->nbuf; b++) {
+        float d = m->depop[b];
+        if (d == 0) continue;
+        float *dst = mixbuf(m, b);
+        for (int k = 0; k < m->frame; k++) dst[k] += d *= m->depop_decay;
+        m->depop[b] = fabsf(d) < 1e-6f ? 0 : d;
+    }
+}
 static void accumulate(Mixer *m, int buffer, const float *src, float vol, int frames) {
     if (vol == 0 || buffer < 0 || buffer >= m->nbuf) return;
     float *d = mixbuf(m, buffer); for (int k = 0; k < frames; k++) d[k] += src[k] * vol;
@@ -831,11 +884,34 @@ void audio_mixer_render(AudioRenderer *r, double seconds) {
     if (at > m->nbuf) { rt_log("audio: mixes use %d buffers, renderer has %d", at, m->nbuf); rt_fatal("audio mix buffer layout"); }
 
     float (*vs)[MAX_FRAME]=m->voice_scratch,*filtered=m->filter_scratch;
+    if (m->ramps) {   // a voice that played last frame and does not now (stopped, paused, out of buffers): depop
+        for (int i = 0; i < r->param.voice_count; i++) {
+            ServerVoice *v = &r->voices[i];
+            VoiceRamp *vr = &m->ramp[i];
+            int now = v->in.in_use && v->state == SV_STARTED && v->in.sample_rate && v->valid[v->index];
+            if (vr->playing && !now) {
+                for (int k = 0; k < vr->nlast; k++)
+                    if (vr->last_buf[k] >= 0 && vr->last_buf[k] < m->nbuf) m->depop[vr->last_buf[k]] += vr->last_val[k];
+                vr->nlast = 0;
+                vr->playing = 0;
+            }
+        }
+        depop_apply(m);
+    }
     for (int i = 0; i < r->param.voice_count; i++) {
         ServerVoice *v = &r->voices[i];
         if (!v->in.in_use || v->state != SV_STARTED || !v->in.sample_rate || !v->valid[v->index]) continue;
         int cc = (int)v->in.channel_count; if (cc < 1 || cc > 6) { report_once(m, 2, "voice channel count unsupported", cc); continue; }
         voice_render(r, v, vs, frames);
+        VoiceRamp *vr = &m->ramp[i];
+        float vol0 = v->in.volume, vol1 = v->in.volume;   // the voice volume over this frame (VolumeRamp)
+        int was = vr->playing;   // a voice that starts (again) starts at its volumes: nothing to ramp from
+        if (m->ramps) {
+            if (was) vol0 = vr->prev_volume;
+            vr->prev_volume = vol1;
+            vr->nlast = 0;
+            vr->playing = 1;
+        }
         for (int f = 0; f < 2; f++) if (v->in.biquads[f].enable) {
             const AudrenBiquad *b = &v->in.biquads[f];
             const AudrenBiquadFloat *bf=&v->float_biquads[f];
@@ -854,22 +930,40 @@ void audio_mixer_render(AudioRenderer *r, double seconds) {
                 }
             }
         }
+        if (m->ramps) {   // the voice volume ramp on its samples; the mix volumes ramp in accumulate_ramp
+            float dv = (vol1 - vol0) / (float)frames;
+            for (int c = 0; c < cc; c++) {
+                float vol = vol0;
+                for (int k = 0; k < frames; k++, vol += dv) vs[c][k] *= vol;
+            }
+        }
         if (v->in.splitter_id != SPLITTER_UNUSED && v->in.splitter_id < (uint32_t)m->nsplit) {
             const SplitInfo *s = &m->split[v->in.splitter_id];
             for (int c = 0; c < cc; c++) for (int k = c; k < s->ndest; k += cc) {
                 SplitDest *d = &m->dest[s->ids[k]];
                 if (!d->used || !mix_valid(r, d->dest)) continue;
                 const float *source=splitter_filter(d,vs[c],filtered,frames);
-                for (int b = 0; b < r->mixes[d->dest].buffer_count && b < 24; b++) accumulate(m, m->offset[d->dest] + b, source, d->vol[b] * v->in.volume, frames);
+                for (int b = 0; b < r->mixes[d->dest].buffer_count && b < 24; b++) {
+                    if (!m->ramps) { accumulate(m, m->offset[d->dest] + b, source, d->vol[b] * v->in.volume, frames); continue; }
+                    accumulate_ramp(m, vr, m->offset[d->dest] + b, source, was && d->primed ? d->prev[b] : d->vol[b], d->vol[b], frames);
+                }
             }
         } else if (mix_valid(r, v->in.mix_id)) {
             for (int c = 0; c < cc; c++) {
                 int32_t id = v->in.channel_ids[c]; if (id < 0 || id >= r->param.voice_count * 6) continue;
                 const AudrenChannelIn *ch = &r->channels[id];
-                for (int b = 0; b < r->mixes[v->in.mix_id].buffer_count && b < 24; b++) accumulate(m, m->offset[v->in.mix_id] + b, vs[c], ch->mix[b] * v->in.volume, frames);
+                float *prev = m->chan_prev + (size_t)id * 24;
+                for (int b = 0; b < r->mixes[v->in.mix_id].buffer_count && b < 24; b++) {
+                    if (!m->ramps) { accumulate(m, m->offset[v->in.mix_id] + b, vs[c], ch->mix[b] * v->in.volume, frames); continue; }
+                    accumulate_ramp(m, vr, m->offset[v->in.mix_id] + b, vs[c], was && m->chan_primed[id] ? prev[b] : ch->mix[b], ch->mix[b], frames);
+                }
+                if (m->ramps) { memcpy(prev, ch->mix, sizeof ch->mix); m->chan_primed[id] = 1; }
             }
         }
     }
+    if (m->ramps)   // the splitter volumes every voice ramped from this frame's are where the next frame starts
+        for (int i = 0; i < m->ndest; i++)
+            if (m->dest[i].used) { memcpy(m->dest[i].prev, m->dest[i].vol, sizeof m->dest[i].prev); m->dest[i].primed = 1; }
     /* submixes: deepest first, so every mix is complete before it is folded into its destination */
     int order[256], n = 0, depth[256];
     for (int i = 1; i < mc && n < 256; i++) if (r->mixes[i].in_use) { depth[n] = mix_depth(r, i); order[n++] = i; }

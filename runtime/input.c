@@ -46,6 +46,19 @@ static unsigned pad_layout_seen;
 static volatile int32_t pad_layout_shown = -1;   // pad_layout for the menu (any thread), -1 without a gamepad
 static volatile int32_t pad_hd;      // ... is a Switch Pro Controller or Joy-Con that takes HD rumble packets; any thread
 static uint64_t hd_until;            // gamepad thread: when the last HD packet's duration runs out (ms), 0 none running
+// Gamepad thread: the rumble written to the open gamepad (pad_main): when (ms, 0 none yet), the two motors' values, and
+// the writes in the current second and the one before, for the log line of a gamepad that went away (scan_pads).
+static uint64_t rumble_at, rumble_sec;
+static uint16_t rumble_low, rumble_high;
+static uint32_t rumble_n, rumble_n_prev;
+static void rumble_wrote(uint64_t now, uint16_t low, uint16_t high) {
+    if (now / 1000 != rumble_sec) {
+        rumble_n_prev = now / 1000 == rumble_sec + 1 ? rumble_n : 0;
+        rumble_n = 0, rumble_sec = now / 1000;
+    }
+    rumble_n++;
+    rumble_at = now, rumble_low = low, rumble_high = high;
+}
 static SDL_JoystickID sensor_pad;    // the gamepad whose sensors the motion thread set up, 0 none
 static int sensor_ok;                // ... and it has both sensors, enabled
 static int motion_thread;            // 0 not started, 1 running, -1 off (REKARINA_MOTION=0, no SDL)
@@ -612,7 +625,14 @@ static void scan_pads(void) {
         plat_xchg32(&pad_layout_shown, -1);
         plat_xchg32(&pad_family, -1);
         for (int i = 0; i < 4; i++) plat_xchg32(&pad_labels[i], PAD_LABEL_NONE);
-        rt_log("input: gamepad disconnected");
+        uint64_t now = plat_now_ns() / 1000000u;
+        if (rumble_at && now - rumble_at < 2000 && now / 1000 <= rumble_sec + 1)
+            rt_log("input: gamepad disconnected (%llu ms after its last rumble write, motors %u and %u; %u writes in that "
+                   "second, %u in the one before)", (unsigned long long)(now - rumble_at), rumble_low, rumble_high,
+                   rumble_n, rumble_n_prev);
+        else
+            rt_log("input: gamepad disconnected");
+        rumble_at = 0, rumble_low = rumble_high = 0;
         if (n_others) {   // another one is still there: it is read from now on
             SDL_Gamepad *g = others[--n_others];
             pad_adopt(g);
@@ -687,6 +707,7 @@ static void pad_follow_press(void) {
 // g becomes the gamepad the game reads: its labels, the prompts' kind, rumble, HD rumble and sensors are taken from it.
 static void pad_adopt(SDL_Gamepad *g) {
     pad = g;
+    rumble_low = rumble_high = 0;   // nothing written to this one yet: its first value is a change (pad_main)
     plat_mutex_lock(&snap_lock);
     snprintf(pad_name_shown, sizeof pad_name_shown, "%s", SDL_GetGamepadName(pad) ? SDL_GetGamepadName(pad) : "");
     plat_mutex_unlock(&snap_lock);
@@ -1449,14 +1470,44 @@ static void pad_main(void *arg) {
         memcpy(hd, snap.hd, sizeof hd);
         snap.want_rumble = 0;
         plat_mutex_unlock(&snap_lock);
-        if (on && !rumble && hd_until && now >= hd_until) {   // the game stopped streaming: stop as a duration would
+        // Rumble goes out at most once per RUMBLE_GAP ms (REKARINA_RUMBLE_GAP_MS, default 30, 0 = every request), the newest
+        // request waiting for its turn. 30 ms is the gap SDL's own Switch driver keeps between its rumble writes (its notes:
+        // writing more often can turn the controller off over Bluetooth). SDL_SendGamepadEffect writes each HD packet at
+        // once, so the HD path needs this pacing; the two-motor path keeps it too, for drivers that write each change at
+        // once. The game sends a changed value at most every 10 ms and an unchanged one every 50 ms (ov_input.c
+        // rumble_update): a two-motor value equal to the last one written only renews SDL's duration, and SDL writes
+        // nothing to the pad for it, so it goes at once. A player's left Joy-Con of a pair dropped while a held note
+        // vibrated: the pair's left half plays the heavy motor alone (SDL's Switch driver), and rumble_wrote's counts go
+        // into the log line of a gamepad that went away.
+        static int r_wait, r_hd, r_gap = -1;
+        static InputVibration r_next[2];
+        static uint32_t r_ms;
+        static uint16_t r_low, r_high;
+        if (r_gap < 0) {
+            const char *g = cfg_get("REKARINA_RUMBLE_GAP_MS");
+            r_gap = g && *g ? atoi(g) : 30;
+            if (r_gap < 0 || r_gap > 200) r_gap = 30;
+        }
+        if (on && !rumble && !r_wait && hd_until && now >= hd_until) {   // the game stopped streaming: stop as a duration would
             static const InputVibration rest[2] = {{0, 160, 0, 320}, {0, 160, 0, 320}};
-            hd_send(rest, 0, now);
+            if (hd_send(rest, 0, now)) rumble_wrote(now, 0, 0);
         }
         if (on && rumble) {
-            if (!has_hd || !hd_send(hd, ms, now)) SDL_RumbleGamepad(pad, low, high, ms);
+            r_hd = has_hd && input_rumble_hd();
+            if (r_hd) memcpy(r_next, hd, sizeof r_next);
+            r_low = low, r_high = high, r_ms = ms, r_wait = 1;
+            if (!r_hd && low == rumble_low && high == rumble_high) {   // a renewal: SDL keeps the value, writes nothing
+                SDL_RumbleGamepad(pad, low, high, ms);
+                r_wait = 0;
+            }
             if (triggers) SDL_RumbleGamepadTriggers(pad, high, high, ms);   // unsupported pads return false: ignored
         }
+        if (on && r_wait && (!rumble_at || now - rumble_at >= (uint64_t)r_gap)) {
+            r_wait = 0;
+            if (!r_hd || !hd_send(r_next, r_ms, now)) SDL_RumbleGamepad(pad, r_low, r_high, r_ms);
+            rumble_wrote(now, r_low, r_high);
+        }
+        if (!on) r_wait = 0;
         float a[3], g[3];
         int have = on && __atomic_load_n(&motion_on, __ATOMIC_RELAXED) && sensors_ready() &&
                    SDL_GetGamepadSensorData(pad, SDL_SENSOR_ACCEL, a, 3) && SDL_GetGamepadSensorData(pad, SDL_SENSOR_GYRO, g, 3);

@@ -815,6 +815,7 @@ static int pm_on(void) {
 }
 
 static Tex *create_tex(const tex_t *t, const TexKey *k, int defer_init);
+static uint64_t n_made_all;   // create_tex: images made so far (the video memory history before a lost device)
 
 static void pm_main(void *arg) {
     (void)arg;
@@ -1444,6 +1445,7 @@ static Tex *create_tex(const tex_t *t, const TexKey *k, int defer_init) {
     }
     if (urgent) vk_drv_urgent(-1);
     if (cs_plan) cs_made = plat_now_ns();   // DEBUG-TEXLEAD
+    n_made_all++;
     vk_addr_label((uint64_t)img, "tex %#llx fmt %#x %ux%ux%u lv %u%s%s", (unsigned long long)(uintptr_t)t->mem, d->format, w, h, depth, levels, e->alloc ? " own" : " pool",
                   tex_mirrored(t) ? "" : " gpu");
     {   // DEBUG-SPIKE: a slow image creation
@@ -2296,9 +2298,20 @@ static uint32_t pool_slots;         // registered slots
 #define COLD_SHORT 600
 #define COLD_LONG 3600
 #define COLD_LOAD 30
+// Over the game's video memory budget (used > budget, REKARINA_TEX_OVER=1), what no draw named for this many presents
+// and scene rounds goes too: a second or so, so only what the picture of this moment does not use.
+#define COLD_OVER 90
 static uint64_t scene_frame;        // gfx_counters.frames when a submission last drew a scene
 static int room_short;              // sweep_pressure: the room for new textures is under its reserve
 static int cs_trim_due;   // sweep_pressure found video memory short: vk_texture_new_submit trims the unused compute pipelines
+static uint64_t n_over_sweeps;      // sweeps that found the driver's use over its budget (mode 3 of evict_cold)
+// REKARINA_TEX_OVER=1 (off by default until a run shows its cost): over the budget, evict_cold takes what no draw
+// named for COLD_OVER presents.
+static int over_budget_on(void) {
+    static int on = -1;
+    if (on < 0) on = rt_knob("TEX_OVER", "0") != 0;
+    return on;
+}
 
 // The game's format is ASTC, whatever the image holds (BC3 blocks, decoded texels, or ASTC itself where the card
 // samples it): the class the picture test showed no shader to read through the pool (evictable).
@@ -2629,12 +2642,13 @@ static uint64_t n_evict_all, n_evict_all_bytes;   // so far
 static uint64_t n_cold_back;                      // evicted textures a draw brought back so far
 static int evict_logs;
 
-// mode: 0 long cold, 1 short cold, 2 anything no draw named for COLD_LOAD presents (no scene is on screen).
+// mode: 0 long cold, 1 short cold, 2 anything no draw named for COLD_LOAD presents (no scene is on screen), 3 over the
+// budget: anything no draw named for COLD_OVER presents (over_budget_on).
 static uint64_t evict_until_ns;   // no eviction batch before then (REKARINA_EVICT_HOLD_MS, at the end of evict_cold)
 // Returns the bytes of the textures it evicted (0: none, or not yet: the wait above).
 static uint64_t evict_cold(uint64_t want, uint64_t used, uint64_t budget, int mode) {   // tex_lock held
     if (vk_sync_fence_done() < evict_wait || plat_now_ns() < evict_until_ns) return 0;
-    uint32_t min_age = mode ? COLD_SHORT : COLD_LONG;
+    uint32_t min_age = mode == 3 ? COLD_OVER : mode ? COLD_SHORT : COLD_LONG;
     Tex *v[EVICT_STEP];
     int nv = 0;
     uint64_t now = __atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED);
@@ -2677,7 +2691,7 @@ static uint64_t evict_cold(uint64_t want, uint64_t used, uint64_t budget, int mo
         rt_log("vk: video memory %.0f of %.0f MiB in use: %llu textures no draw used lately evicted so far (%.2f GiB), "
                "the longest unused first%s; one comes back when a draw uses it (%llu did, %u wait)", used / 1048576.0,
                budget / 1048576.0, (unsigned long long)n_evict_all, n_evict_all_bytes / 1073741824.0,
-               mode == 2 ? " (behind a loading screen)" : mode ? " (room is short)" : "",
+               mode == 2 ? " (behind a loading screen)" : mode == 3 ? " (over the budget)" : mode ? " (room is short)" : "",
                (unsigned long long)n_cold_back, n_cold);
     }
     return freed;
@@ -2806,6 +2820,54 @@ static void texture_census(uint64_t frame) {   // tex_lock held
     rt_log("%s", line);
 }
 
+// ---- video memory in the minute before a lost device
+// Two players' devices were lost on small cards while the game was over its video memory budget (2026-11-19); their
+// logs said so only in an occasional line. The pressure sweep notes, once a second, the budget, the use, the share of
+// the use no allocation fills (holes the allocator keeps) and what the eviction, the pressure drops and the image
+// cache did since the second before; vk_device_fault_report prints the last minute (vk_texture_vram_history_report).
+#define VH_N 64
+static struct { uint64_t ns; uint32_t used_mb, budget_mb, holes_mb, parked_mb, evicted, evicted_mb, dropped, made; } vh[VH_N];
+static volatile uint32_t vh_n;
+static uint64_t vh_last_ns, vh_ev0, vh_evb0, vh_dr0, vh_made0;
+
+static void vh_note(uint64_t used, uint64_t budget) {   // tex_lock held
+    uint64_t now = plat_now_ns();
+    if (now - vh_last_ns < 1000000000ull) return;
+    vh_last_ns = now;
+    uint64_t dr = n_pressure_drops + n_age_drops, holes = vk_mem_vma_free();
+    uint32_t i = vh_n % VH_N;
+    vh[i].ns = now, vh[i].used_mb = (uint32_t)(used >> 20), vh[i].budget_mb = (uint32_t)(budget >> 20);
+    vh[i].holes_mb = (uint32_t)(holes >> 20), vh[i].parked_mb = (uint32_t)(parked_bytes >> 20);
+    vh[i].evicted = (uint32_t)(n_evict_all - vh_ev0), vh[i].evicted_mb = (uint32_t)((n_evict_all_bytes - vh_evb0) >> 20);
+    vh[i].dropped = (uint32_t)(dr - vh_dr0), vh[i].made = (uint32_t)(n_made_all - vh_made0);
+    vh_ev0 = n_evict_all, vh_evb0 = n_evict_all_bytes, vh_dr0 = dr, vh_made0 = n_made_all;
+    __atomic_store_n(&vh_n, vh_n + 1, __ATOMIC_RELEASE);
+}
+
+// The last minute of vh_note's seconds, oldest first (any thread, at a lost device: racy reads, a report).
+void vk_texture_vram_history_report(void) {
+    uint32_t all = __atomic_load_n(&vh_n, __ATOMIC_ACQUIRE), n = all < 60 ? all : 60;
+    if (!n) {
+        rt_log("vk: video memory before the loss: no budget reading was taken");
+        return;
+    }
+    uint64_t now = plat_now_ns();
+    rt_log("vk: video memory in the last %u seconds before the loss (seconds before: in use / budget MiB, holes in the "
+           "allocator's blocks, image cache; textures made, evicted (MiB), released ones dropped):", n);
+    char line[1100];
+    int o = 0;
+    for (uint32_t k = 0; k < n; k++) {
+        const typeof(vh[0]) *s = &vh[(all - n + k) % VH_N];
+        o += snprintf(line + o, sizeof line - (size_t)o, " -%.0f %u/%u h%u c%u m%u e%u(%u) d%u;",
+                      (double)(now - s->ns) / 1e9, s->used_mb, s->budget_mb, s->holes_mb, s->parked_mb, s->made,
+                      s->evicted, s->evicted_mb, s->dropped);
+        if (o > 900 || k + 1 == n) {
+            rt_log("vk:%s", line);
+            o = 0;
+        }
+    }
+}
+
 static void sweep_pressure_(int no_scene);
 static void sweep_pressure(void) {   // tex_lock held
     iw_drain();   // DEBUG-IMGWATCH
@@ -2846,6 +2908,7 @@ static void sweep_pressure_(int no_scene) {   // tex_lock held
     uint64_t used, budget;
     int exact, dropped = 0;
     if (!vk_mem_vram(&used, &budget, &exact)) return;
+    vh_note(used, budget);
     park_pressure(used, budget);
     uint64_t freed = 0;
     if (vram_pressure && rel_head && used > budget / 100 * (uint64_t)vram_pressure) {
@@ -2899,7 +2962,11 @@ static void sweep_pressure_(int no_scene) {   // tex_lock held
         }
         ask = ask > freed ? ask - freed : 0;
         if (room + freed < reserve || ask) {
-            int mode = no_scene ? 2 : ask || room < reserve / 3 || used > budget ? 1 : 0;
+            int over = exact && used > budget && over_budget_on();
+            int mode = no_scene ? 2 : over ? 3 : ask || room < reserve / 3 || used > budget ? 1 : 0;
+            if (over && !n_over_sweeps++)
+                rt_log("vk: video memory over the budget (%.0f of %.0f MiB in use): textures no draw named for %d presents "
+                       "are evicted (REKARINA_TEX_OVER)", used / 1048576.0, budget / 1048576.0, COLD_OVER);
             uint64_t want = room + freed < reserve ? reserve - room - freed + (64ull << 20) : 0;
             uint64_t got = evict_cold(want > ask ? want : ask, used, budget, mode);
             if (ask && got) {   // what is still missing (unless the pool asked anew meanwhile); its next try says it anew

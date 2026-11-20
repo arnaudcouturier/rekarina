@@ -16,8 +16,9 @@
 //    The present is queued before the next frame's work (vk_backend.c), so the float target is read before the game
 //    draws into it again.
 // 3. vk_hdr_encode: on the present, the crop rectangle goes to PQ code values in an RGBA16F image (shaders/hdr_encode.comp)
-//    that FSR 1 or the blit scale into the swapchain. vk_hdr_ui_*: the in-game menu draws into an RGBA8 image and
-//    shaders/hdr_ui.frag blends it onto the swapchain at the HUD's white.
+//    that FSR 1 or the blit scale into the swapchain; the colour profile (vk_color.c) is graded there, before the
+//    encode. vk_hdr_ui_*: the in-game menu draws into an RGBA8 image and shaders/hdr_ui.frag blends it onto the
+//    swapchain at the HUD's white.
 // The tonemap's approach is RenoDX's TotK mod by souperman9 and Musa on ShortFuse's RenoDX (github.com/clshortfuse/renodx,
 // src/games/totk, MIT); the code is ours.
 #include "vk.h"
@@ -457,7 +458,7 @@ static int init(VkCtx *c) {
                               .addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, .maxLod = 0};
     if (!H.push || vkCreateSampler(c->device, &si, NULL, &H.sampler) != VK_SUCCESS ||
         !(H.dsl_enc = set_layout(c, enc, 2)) || !(H.dsl_ui = set_layout(c, &ui, 1)) ||
-        !(H.enc_layout = pipe_layout(c, &H.dsl_enc, VK_SHADER_STAGE_COMPUTE_BIT, 32)) ||
+        !(H.enc_layout = pipe_layout(c, &H.dsl_enc, VK_SHADER_STAGE_COMPUTE_BIT, 64)) ||
         !(H.ui_layout = pipe_layout(c, &H.dsl_ui, VK_SHADER_STAGE_FRAGMENT_BIT, 16))) {
         rt_log("hdr: the present passes could not be created; the picture goes out unconverted");
         return 0;
@@ -476,12 +477,13 @@ static int init(VkCtx *c) {
     return H.ok = 1;
 }
 
+// The colour profile (vk_color.c vk_color_hdr) is graded in the same pass, before the PQ encode (hdr_encode.comp).
 VkImage vk_hdr_encode(VkCommandBuffer cb, unsigned slot, VkImage src, VkFormat fmt, const int crop[4]) {
     VkCtx *c = vk_ctx();
     if (!H.tried) init(c);
     if (!H.ok || !img_ensure(c, &H.out, (uint32_t)crop[2], (uint32_t)crop[3], VK_FORMAT_R16G16B16A16_SFLOAT,
                              VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT))
-        return VK_NULL_HANDLE;
+        return vk_color_not_drawn_hdr(), VK_NULL_HANDLE;
     slot %= SLOTS;
     if (H.src_view[slot]) vkDestroyImageView(c->device, H.src_view[slot], NULL);
     VkImageViewCreateInfo vi = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, .image = src,
@@ -489,9 +491,11 @@ VkImage vk_hdr_encode(VkCommandBuffer cb, unsigned slot, VkImage src, VkFormat f
                                 .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
     if (vkCreateImageView(c->device, &vi, NULL, &H.src_view[slot]) != VK_SUCCESS) {
         H.src_view[slot] = VK_NULL_HANDLE;
-        return VK_NULL_HANDLE;
+        return vk_color_not_drawn_hdr(), VK_NULL_HANDLE;
     }
     Nits n = nits();
+    float adj[4] = {0, 1, 1, 1};
+    int grade = vk_color_hdr(adj, crop);
     // an sRGB format decodes itself through the view; 8-bit UNORM holds sRGB codes the shader decodes
     int decode = fmt == VK_FORMAT_R8G8B8A8_UNORM || fmt == VK_FORMAT_B8G8R8A8_UNORM;
     const VkPipelineStageFlags2 CS = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, ALL = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
@@ -508,8 +512,9 @@ VkImage vk_hdr_encode(VkCommandBuffer cb, unsigned slot, VkImage src, VkFormat f
          .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, .pImageInfo = &oi}};
     vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, H.enc);
     rec_push(H.push, cb, VK_PIPELINE_BIND_POINT_COMPUTE, H.enc_layout, 0, 2, w);
-    struct { int32_t offset[2], size[2]; float p[4]; } pc = {{crop[0], crop[1]}, {crop[2], crop[3]},
-                                                            {n.ui, n.peak, decode ? 1.0f : 0.0f, 0}};
+    struct { int32_t offset[2], size[2]; float p[4], adj[4], q[4]; } pc = {
+        {crop[0], crop[1]}, {crop[2], crop[3]}, {n.ui, n.peak, decode ? 1.0f : 0.0f, 0}, {adj[0], adj[1], adj[2], adj[3]},
+        {grade ? 1.0f : 0.0f, n.game / n.ui, 0, 0}};
     vkCmdPushConstants(cb, H.enc_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof pc, &pc);
     vkCmdDispatch(cb, ((uint32_t)crop[2] + 7) / 8, ((uint32_t)crop[3] + 7) / 8, 1);
     barrier(cb, src, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_GENERAL, CS, 0, ALL, 0);
