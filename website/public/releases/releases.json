@@ -153,6 +153,28 @@
      "sha256": "b2ef1e07d05727bde18a86c1193940617adc0be94128e4f9f9de2f327de1bdf2"
     }
    ]
+  },
+  {
+   "version": "1.2.7",
+   "date": "2026-11-20",
+   "notes": "## Rekarina 1.2.7: the setup works on older processors\n\nOn a PC whose processor has no AVX2 (older Intel and AMD CPUs), the setup stopped at \"Compiling the game\" with code 1, every time, after the whole compile had run. That's fixed (thanks AHMEDII). Open the launcher and update, or start the setup again: it carries on where it stopped and doesn't compile the game from scratch.\n\nNothing else changes in this one. The bigger update with the flicker work is coming.\n\nSomething broken? Esc, Advanced, Make a problem report, and post the zip in #bug-reports.\n",
+   "files": [
+    {
+     "name": "Rekarina.exe",
+     "size": 155350263,
+     "sha256": "d6ef6ecc74361b4e09b5b92af9711b2c35613ca9235194130aac55b7be408fa5"
+    },
+    {
+     "name": "Rekarina-Setup-1.2.7-windows.zip",
+     "size": 154916599,
+     "sha256": "22a8a9f43677e30db0af6f80bf9ef6c48474c8708e4dff802687cbc70991a408"
+    },
+    {
+     "name": "SHA256SUMS",
+     "size": 178,
+     "sha256": "7877f641173303f26f5309be5189d1d4697b9799661728d2453a06e9fc29696a"
+    }
+   ]
   }
  ]
 }

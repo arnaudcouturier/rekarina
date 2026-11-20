@@ -126,9 +126,11 @@ PGO_NAMES = ['-mllvm', '-static-func-full-module-prefix=false']
 PGO_INPUT = None   # the .profdata of --pgo FILE: every compile depends on it, so a new profile rebuilds them
 
 
-def set_lto():
-    """REKARINA_RT_LTO=1: ThinLTO across the runtime (the generated code stays out of it: its objects are not rebuilt)."""
-    if os.environ.get('REKARINA_RT_LTO') == '1':
+def set_lto(cpu):
+    """REKARINA_RT_LTO=1: ThinLTO across the runtime (the generated code stays out of it: its objects are not rebuilt).
+    Not in a --cpu v2 build: its runtime objects must be machine code for tools/check_isa.py to read (with ThinLTO they
+    are LLVM bitcode, llvm-objdump refused the first of them and every setup on a CPU without AVX2 stopped there)."""
+    if os.environ.get('REKARINA_RT_LTO') == '1' and cpu != 'v2':
         RT_FLAGS.append('-flto=thin')
         LINK_FLAGS.extend(['-flto=thin', '-O2'])
 
@@ -1095,7 +1097,7 @@ def main():
                     help='expected hashes (default tools/data/expected-<display version>.json)')
     args = ap.parse_args()
     set_cpu(args.cpu)
-    set_lto()
+    set_lto(args.cpu)
 
     gen = (args.gen or ROOT / 'generated' / args.version).resolve()
     out = (args.out or ROOT / 'build' / args.version).resolve()

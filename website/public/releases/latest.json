@@ -1,29 +1,29 @@
 {
- "tag_name": "v1.2.6",
- "name": "Rekarina 1.2.6",
+ "tag_name": "v1.2.7",
+ "name": "Rekarina 1.2.7",
  "html_url": "https://rekarina.dev/",
- "body": "## Rekarina 1.2.6: fixes from your reports\n\nThanks for all the reports overnight. Open the launcher and it offers the update.\n\n**Fixed**\n- On a PC with 16 GB of memory the whole system could freeze while the setup compiled the game. The setup now runs as many compile jobs as the free memory allows, keeps the heaviest parts apart, and runs at a lower priority, so the PC stays usable. On such a PC the compile takes longer than before, but it gets through (thanks MATEASKULLKID).\n- Controller vibration now defaults to 100 %, the game's own strength, instead of 130 % (thanks 아무개).\n- If your dump was moved, renamed or kept online-only by OneDrive, the game crashed at start. Now it says which file it can't open, and Play in the launcher asks where the file is now and points the game to it, without building again (thanks OLK, Flauschiges Frettchen).\n- If a downloaded Rekarina.exe got saved over the game's own, Play just reopened the launcher. The launcher now spots that and puts the game back (thanks SnooMacaroons3589).\n- If the game stops right at its start, the launcher comes back and shows why.\n- Mods that ship the game's resource size table, like model mods, no longer crash the game at start (thanks OmniiOMEGA).\n- The game no longer freezes when you enter the building beside the Market's gate: it ran out of room for its picture there (thanks 아무개).\n- On cards too slow for the movies' full quality, a movie now settles within its first second instead of playing slowly for about ten seconds with the sound running ahead, and the next start remembers it (thanks Alejandro Sanz II, Doulos).\n- A rare crash where the game stopped itself on a busy CPU should be gone. It may be the crash after the first boss: tell me if that still happens (thanks Nehalem).\n\n**Still open, I'm on it**\n- Crashes and growing video memory around the castle and on map changes on some PCs (thanks huchi001), a crash after loading a save on the ROG Ally X (thanks k4k4shi).\n- Flickering of distant shadows, tree crowns and bushes, and of lamp light at night and on water (thanks Arrant for the clips).\n- With a mod that replaces the game's Bootup pack the picture is a bit softer and the Xbox / PlayStation button pictures fall back to the Switch's.\n- Depth of field looks pixelated; bosses above 60 fps still need checking; memory on 16 GB PCs while playing; Linux and Steam Deck.\n\nSomething broken? Esc, Advanced, Make a problem report, and post the zip in #bug-reports.\n",
+ "body": "## Rekarina 1.2.7: the setup works on older processors\n\nOn a PC whose processor has no AVX2 (older Intel and AMD CPUs), the setup stopped at \"Compiling the game\" with code 1, every time, after the whole compile had run. That's fixed (thanks AHMEDII). Open the launcher and update, or start the setup again: it carries on where it stopped and doesn't compile the game from scratch.\n\nNothing else changes in this one. The bigger update with the flicker work is coming.\n\nSomething broken? Esc, Advanced, Make a problem report, and post the zip in #bug-reports.\n",
  "assets": [
   {
-   "name": "Rekarina-Setup-1.2.6-windows.zip",
-   "browser_download_url": "https://dl.rekarina.dev/releases/1.2.6/Rekarina-Setup-1.2.6-windows.zip",
-   "size": 154916485,
-   "digest": "sha256:6e0e339d4814ce05f0fd3984393d078ffa5233a7e95305a67aa1afa3594d21d4"
+   "name": "Rekarina-Setup-1.2.7-windows.zip",
+   "browser_download_url": "https://dl.rekarina.dev/releases/1.2.7/Rekarina-Setup-1.2.7-windows.zip",
+   "size": 154916599,
+   "digest": "sha256:22a8a9f43677e30db0af6f80bf9ef6c48474c8708e4dff802687cbc70991a408"
   },
   {
    "name": "Rekarina.exe",
-   "browser_download_url": "https://dl.rekarina.dev/releases/1.2.6/Rekarina.exe",
-   "size": 155350149,
-   "digest": "sha256:84a4cc2a528df9bd1565e8b4df3e645ee998e56aad5258be673eade0f270fb2a"
+   "browser_download_url": "https://dl.rekarina.dev/releases/1.2.7/Rekarina.exe",
+   "size": 155350263,
+   "digest": "sha256:d6ef6ecc74361b4e09b5b92af9711b2c35613ca9235194130aac55b7be408fa5"
   },
   {
    "name": "SHA256SUMS",
-   "browser_download_url": "https://dl.rekarina.dev/releases/1.2.6/SHA256SUMS",
+   "browser_download_url": "https://dl.rekarina.dev/releases/1.2.7/SHA256SUMS",
    "size": 178
   },
   {
    "name": "SHA256SUMS.sig",
-   "browser_download_url": "https://dl.rekarina.dev/releases/1.2.6/SHA256SUMS.sig",
+   "browser_download_url": "https://dl.rekarina.dev/releases/1.2.7/SHA256SUMS.sig",
    "size": 129
   }
  ]
