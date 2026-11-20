@@ -105,12 +105,27 @@ static int picture_size(unsigned *ow, unsigned *oh, int quiet) {
 // fell to its out-of-memory path and read through a null block when the pause menu's blur needed one at 5120x2160.
 // The heap and its parent grow by the shipped size times the picture's pixels over 2560x1440 (its targets are the
 // picture's size or a share of it), in whole MiB; resolution.c rewrites the table (res_heapdef_build) and memory.c adds
-// the amount to the application pool, so no other heap shrinks. 0 without the widescreen sets or for the game's size.
+// the amount to the application pool, so no other heap shrinks.
+//
+// The 16:9 picture needs more than the shipped size too. The console's dynamic resolution keeps its scene at 3/4 of
+// the picture at most (1920x1080) and lowers it where the GPU is busy; here the scene has the whole picture
+// (frame_rate.c scene_share), and square depth targets report padded storage (nvn_api_obj.c storage_size). Where the
+// game asks for many square shadow maps a frame, a new side each frame while the camera moves (the room of pots and
+// torches beside the Market's gate: 6 to 17 a frame, 386 to 1918 texels), the shipped heap ran out with the same null
+// read, as the hero walked in. SCENE_ROOM_KIB more holds them. REKARINA_TEX_HEAP_MIB = n (test) makes the heap n MiB.
+#define SCENE_ROOM_KIB (256.0 * 1024)
+uint64_t wide_heap_base_kib(void) { return (uint64_t)GAME_DTA_KIB; }
 uint64_t wide_heap_extra_kib(void) {
+    const char *e = cfg_env("REKARINA_TEX_HEAP_MIB");
+    if (e && *e) {
+        double want = atof(e) * 1024 - GAME_DTA_KIB;
+        return want > 0 ? (uint64_t)ceil(want / 1024) * 1024 : 0;
+    }
+    double grow = 0;
     unsigned ow, oh;
-    if (!wide_available() || !picture_size(&ow, &oh, 1)) return 0;
-    double grow = (double)ow * oh / ((double)GAME_W * GAME_H) - 1;
-    return grow > 0 ? (uint64_t)ceil(GAME_DTA_KIB * grow / 1024) * 1024 : 0;
+    if (wide_available() && picture_size(&ow, &oh, 1)) grow = (double)ow * oh / ((double)GAME_W * GAME_H) - 1;
+    double kib = (grow > 0 ? GAME_DTA_KIB * grow : 0) + SCENE_ROOM_KIB;
+    return (uint64_t)ceil(kib / 1024) * 1024;
 }
 
 void wide_init(void) {

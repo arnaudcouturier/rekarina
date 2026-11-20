@@ -429,6 +429,24 @@ NVN_API(nvnMemoryPoolInitialize) {
     }
     NVN_LOG("MemoryPool %p mem %p size %#llx flags %#x storage %p%s", (void *)o, (void *)o->mem,
             (unsigned long long)o->size, o->flags, (void *)o->game_mem, ok ? "" : " failed");
+    {   // DEBUG-POOLLOG: REKARINA_POOL_LOG=1: every memory pool of 4 MiB or more as it is made, and who made it
+        static int on = -1;
+        if (on < 0) on = cfg_env("REKARINA_POOL_LOG") != NULL;
+        if (on && o->size >= (4u << 20)) {
+            char d[160], ln[900];
+            int n = snprintf(ln, sizeof ln, "POOLLOG pool %p mem %p size %#llx flags %#x storage %p%s, called from %s;",
+                             (void *)o, (void *)o->mem, (unsigned long long)o->size, o->flags, (void *)o->game_mem,
+                             ok ? "" : " failed", ldr_describe(c->x[30], d, sizeof d));
+            uint64_t fp = c->x[29];   // the guest call chain (frame records), as the hang dump walks it
+            for (int k = 0; k < 8 && fp && !(fp & 7) && n < 800; k++) {
+                const uint64_t *fr = (const uint64_t *)(uintptr_t)fp;
+                n += snprintf(ln + n, sizeof ln - (size_t)n, " %s", ldr_describe(fr[1], d, sizeof d));
+                if (fr[0] <= fp || fr[0] - fp > (64u << 20)) break;
+                fp = fr[0];
+            }
+            rt_log("%s", ln);
+        }
+    }
     ret_x(c, ok);
 }
 // void nvnMemoryPoolFinalize(NVNmemoryPool *p)

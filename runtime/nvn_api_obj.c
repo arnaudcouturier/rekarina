@@ -247,7 +247,33 @@ NVN_API(nvnTextureBuilderGetStorageSize) {
     nvn_texlayout L;
     nvn_tex_layout(&TB(c)->d, &L);
     if (!L.bpb) rt_log("nvn: TextureBuilderGetStorageSize: unknown format %#x", TB(c)->d.format);
-    ret_x(c, storage_size(&TB(c)->d, L.size));
+    uint64_t size = storage_size(&TB(c)->d, L.size);
+    {   // DEBUG-TEXSIZE: REKARINA_TEXSIZE_LOG=1: each distinct description the game asks the storage of, with the answer
+        static int on = -1;
+        if (on < 0) on = cfg_env("REKARINA_TEXSIZE_LOG") != NULL;
+        if (on) {
+            static uint64_t seen[8192];
+            static PlatMutex sl = PLAT_MUTEX_INIT;
+            const nvn_texdesc *d = &TB(c)->d;
+            uint64_t k = ((uint64_t)d->width * 0x9E3779B1u) ^ ((uint64_t)d->height << 20) ^ ((uint64_t)d->depth << 40) ^
+                         ((uint64_t)d->format << 48) ^ ((uint64_t)d->flags << 8) ^ ((uint64_t)d->levels << 56) ^
+                         ((uint64_t)d->samples << 60) ^ (uint64_t)d->target;
+            k |= 1;
+            int fresh = 0;
+            plat_mutex_lock(&sl);
+            for (uint32_t i = (uint32_t)(k % 8192), n = 0; n < 8192; i = (i + 1) % 8192, n++) {
+                if (seen[i] == k) break;
+                if (!seen[i]) { seen[i] = k, fresh = 1; break; }
+            }
+            plat_mutex_unlock(&sl);
+            if (fresh)
+                rt_log("TEXSIZE frame %llu: target %u %ux%ux%u levels %u samples %u format %#x flags %#x: %llu bytes (exact %llu), "
+                       "align %llu", (unsigned long long)gfx_counters.frames, (unsigned)d->target, d->width, d->height, d->depth,
+                       (unsigned)d->levels, (unsigned)d->samples, (unsigned)d->format, (unsigned)d->flags,
+                       (unsigned long long)size, (unsigned long long)L.size, (unsigned long long)L.align);
+        }
+    }
+    ret_x(c, size);
 }
 // size_t nvnTextureBuilderGetStorageAlignment(const NVNtextureBuilder *b)
 NVN_API(nvnTextureBuilderGetStorageAlignment) {

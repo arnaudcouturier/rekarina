@@ -364,14 +364,24 @@ int report_last_run_failed(void) {
     return known;
 }
 
-void report_crash_notice(void) {
-    static volatile int32_t shown;
+static volatile int32_t box_shown;   // the one message box of a run's end (report_crash_notice, report_fatal_box)
+
+static int box_wanted(void) {
     const char *bg = cfg_get("REKARINA_BACKGROUND_WINDOW"), *nobox = cfg_get("REKARINA_NO_CRASH_BOX");
-    if (!rt_log_path() || (bg && atoi(bg)) || (nobox && atoi(nobox))) return;   // test runs: no box to wait on
-    if (plat_xchg32(&shown, 1)) return;
+    return rt_log_path() && !(bg && atoi(bg)) && !(nobox && atoi(nobox));   // test runs: no box to wait on
+}
+
+void report_crash_notice(void) {
+    if (!box_wanted() || plat_xchg32(&box_shown, 1)) return;
     char text[1024];
     snprintf(text, sizeof text, menu_text(UI_REPORT_CRASHED), rt_log_path());
     rt_log("report: the player is told the game stopped (a message box)");
+    plat_message_box(RT_PORT_NAME, text);
+}
+
+void report_fatal_box(const char *text) {
+    if (!box_wanted() || plat_xchg32(&box_shown, 1)) return;
+    rt_log("report: the player is told what stopped the game and what to do (a message box)");
     plat_message_box(RT_PORT_NAME, text);
 }
 

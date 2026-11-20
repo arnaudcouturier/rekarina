@@ -346,8 +346,30 @@ English and Russian with sample events.
 The same window is the launcher. It remembers the dump and install folders of the last run (`launcher.json` in the
 user's application data); when the install folder holds `Rekarina.exe` it opens on a home screen with **Play**, the
 Mods page ([mods.md](mods.md), "The launcher's side"), the Saves page (below), the settings file (`rekarina.ini`
-in the player's editor), the game's folder and the way back to the form for an update. A
-small exe starts it without a console: `installer/launcher/rekarina.c` (icon `installer/launcher/rekarina.rc`), which
+in the player's editor), the game's folder and the way back to the form for an update.
+
+**Play** first looks at what would keep the game from starting (`gui_oot.py` `game_problem`), and the home screen says
+it in place of its usual line:
+
+- The dump is not where `rekarina.ini`'s `romfs` line says (moved, renamed, a disk not there; `oot.dump_problem`):
+  Play asks for the `.nup` where it is now and runs the setup with it. Only the check step works: it checks the dump
+  and writes its path into `rekarina.ini` (`oot.set_ini_dump`, every other line kept); the other steps' keys do not
+  hold the path, so nothing is built again. Any setup run with another dump folder does the same. The game itself, when
+  it cannot open the dump, says so in a message box that names the file and this way out (`runtime/romfs.c`
+  `dump_missing`), not the crash box.
+- OneDrive keeps the dump online only (a cloud file whose data is not on the PC): Play asks before it starts the game,
+  and the text says how to keep the file on the device.
+- `Rekarina.exe` in the game folder is the downloaded one-file launcher (`oot.is_single_launcher`: its `RKSFX001`
+  trailer), saved over the game: Play then opened the launcher again. Play offers to put the game back: a setup run
+  whose package step copies the game from its build again, after `tools/package_oot.py` has renamed the download to
+  `Rekarina-download.exe`. The one-file launcher itself, started as `Rekarina.exe` in a folder that holds
+  `rekarina-install.json`, says so and opens the launcher on that folder.
+
+After Play the window hides and watches the game for a few seconds (`watch_game`): a game that ends in that time with
+an error brings it back, with the log's last FATAL line (or the exit code) on the home screen. A game that runs on, or
+ends without an error, ends the launcher.
+
+A small exe starts it without a console: `installer/launcher/rekarina.c` (icon `installer/launcher/rekarina.rc`), which
 looks for `python\pythonw.exe` beside itself (a release folder) and for `.venv` and `src` otherwise (a checkout, the exe
 lying beside them). The icon is drawn by `tools/make_rekarina_icon.py` and the window takes its colours from it.
 

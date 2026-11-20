@@ -429,6 +429,38 @@ def notes_text(body):
     return '\n'.join(lines).strip()
 
 
+GAME_WATCH_S = 8.0   # after Play: a game that ends within this many seconds with an error brings the window back
+
+
+def end_now():
+    """The launcher ends at once, without Tk's teardown (see start_game)."""
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.flush()
+        except (OSError, ValueError, AttributeError):
+            pass
+    os._exit(0)
+
+
+def stop_reason(dest, code, began):
+    """Why the game started at `began` (time.monotonic) ended with exit code `code`: the last FATAL line of its log,
+    when this run wrote the log, else the exit code (Windows' own codes in hex: 0xC0000135, a library not found)."""
+    log = Path(dest) / 'logs' / 'rekarina.log'
+    try:
+        if time.time() - log.stat().st_mtime <= time.monotonic() - began + 2:
+            with open(log, 'rb') as f:
+                f.seek(max(0, f.seek(0, os.SEEK_END) - 64 * 1024))
+                tail = f.read().decode('utf-8', errors='replace')
+            fatal = [line[line.index('FATAL'):].strip() for line in tail.splitlines() if 'FATAL' in line]
+            if fatal:
+                return fatal[-1][:400]
+    except OSError:
+        pass
+    if code < 0:   # Linux: the signal that ended it
+        return f'signal {-code}'
+    return f'exit code {code:#x}' if code > 255 else f'exit code {code}'
+
+
 def settings_path():
     """launcher.json: the folders of the last run, so the window opens on Play."""
     base = os.environ.get('APPDATA') if os.name == 'nt' else os.environ.get('XDG_CONFIG_HOME')
@@ -1128,7 +1160,12 @@ class RekarinaApp(App):
         state = self.form().installed_state() if ready else None
         if state and state.get('release') and state['release'] != self.layout.release:
             text = self.cat('ui.oot_built_by_older', dest=dest, built=state['release'], version=self.layout.release)
-        if ready and self.last_run_failed():   # the game stopped with an error last time: say what to send
+        problem = self.game_problem(Path(dest or '.')) if ready or self.forced_problem is not None else None
+        if problem:   # what Play does about it is in start_game
+            text = self.cat(problem[0], **problem[1])
+        elif self.start_failure:
+            text = self.cat('ui.oot_start_failed', reason=self.start_failure, log=str(Path(dest or '.') / 'logs' / 'rekarina.log'))
+        elif ready and self.last_run_failed():   # the game stopped with an error last time: say what to send
             text += '\n\n' + self.cat('ui.oot_report_after_crash')
         self.home_text.configure(text=text)
         self.home_play.state(['!disabled' if ready else 'disabled'])
@@ -1140,6 +1177,68 @@ class RekarinaApp(App):
             self.comp_label.configure(text=self.cat('ui.oot_components_missing',
                                                     names=', '.join(self.cat('comp.' + g) for g in lacking)))
         self.refresh_update()
+
+    # ---- what keeps Play from starting the game ---------------------------------------------------------------------
+    # Players of 1.2.5 pressed Play and got nothing: the dump had been moved or renamed after the setup (the game ended at
+    # its start), or Rekarina.exe in the game folder was the downloaded one-file launcher saved over the game (Play then
+    # opened the launcher again). The home screen says which, and Play puts it right: it asks where the dump is now, or
+    # puts the game back, through a setup run that rebuilds nothing (oot.Check writes the dump's path, the package step
+    # copies the game again). A game that still ends within GAME_WATCH_S of Play brings the window back with the reason.
+
+    start_failure = ''        # why the game ended right after Play (the log's FATAL line, or its exit code)
+    forced_problem = None     # the self test's stand-in for game_problem: a (text id, params) or ()
+
+    def game_problem(self, dest):
+        """(text id, params) of what keeps the game in dest from starting, None when nothing does: the game exe is the
+        downloaded launcher (oot.is_single_launcher), the dump is not where the settings file says, or OneDrive keeps
+        it online only (oot.dump_problem)."""
+        if self.forced_problem is not None:
+            return self.forced_problem or None
+        if oot.is_single_launcher(dest / oot.GAME_EXE):
+            return ('ui.oot_exe_is_launcher', {'dest': str(dest)})
+        found = oot.dump_problem(dest)
+        if found:
+            return ('ui.oot_dump_' + found[0], {'path': str(found[1])})
+        return None
+
+    def ask_dump(self, dest, old):
+        """The dump is not where the game reads it from: the player picks the .nup where it is now, and a setup run
+        checks it and writes its path into the settings file (oot.Check, set_ini_dump). Every step but the check is
+        skipped: their keys do not hold the dump's path."""
+        start = Path(old).parent
+        while not start.is_dir() and start.parent != start:
+            start = start.parent
+        picked = filedialog.askopenfilename(parent=self.root, title=self.cat('ui.oot_pick_dump'),
+                                            initialdir=str(start) if start.is_dir() else None,
+                                            filetypes=[(self.cat('ui.oot_dump_files'), '*.nup'), ('*', '*')])
+        if not picked:
+            return
+        self.extra['game'].set(os.path.normpath(picked))
+        self.vars['dest'].set(str(dest))
+        self.pending_title = ('ui.oot_dump_title', {})
+        self.start()
+
+    def repair_game(self, dest):
+        """The game exe is the downloaded launcher: a setup run copies the game from its build again (the package
+        step's record no longer matches the file), and package_oot.py moves the download aside first."""
+        self.vars['dest'].set(str(dest))
+        self.pending_title = ('ui.oot_repair_title', {})
+        self.start()
+
+    def watch_game(self, proc, dest, began):
+        """After Play, with the window hidden: a game that ends within GAME_WATCH_S with an error brings the window
+        back, and the home screen says why (the log's last FATAL line, else the exit code); else the launcher ends."""
+        code = proc.poll()
+        if code is None and time.monotonic() - began < GAME_WATCH_S:
+            self.root.after(200, lambda: self.watch_game(proc, dest, began))
+            return
+        if code:
+            self.start_failure = stop_reason(dest, code, began)
+            self.root.deiconify()
+            self.refresh_home()
+            self.show('home')
+            return
+        end_now()
 
     # ---- the shaders' background preparation (not started since 2026-11-19: shader_wanted) ----------------------------
     # 1.2.1 to 1.2.3: the setup's first run prepared the variants play met and the rest were prepared here, by
@@ -2632,26 +2731,36 @@ class RekarinaApp(App):
         dest = Path(self.model.dest or self.vars['dest'].get().strip())
         exe = dest / oot.GAME_EXE
         if exe.is_file():
+            problem = self.game_problem(dest)
+            if problem and problem[0] == 'ui.oot_exe_is_launcher':
+                if messagebox.askokcancel(self.cat('ui.oot_title'), self.cat('ui.oot_repair_ask', dest=str(dest)),
+                                          parent=self.root):
+                    self.repair_game(dest)
+                return
+            if problem and problem[0] == 'ui.oot_dump_missing':
+                self.ask_dump(dest, problem[1]['path'])
+                return
+            if problem and problem[0] == 'ui.oot_dump_online' and not messagebox.askokcancel(
+                    self.cat('ui.oot_title'), self.cat('ui.oot_dump_online_ask', path=problem[1]['path']), parent=self.root):
+                return
             save_settings(game=self.extra['game'].get().strip(), dest=str(dest))
             pending = self.shader_wanted() and not (self.shader_job is not None and self.shader_job.paused)
             self.shader_stop()   # nothing of the preparation runs while the game does
             flags = subprocess.DETACHED_PROCESS if os.name == 'nt' else 0
-            subprocess.Popen([str(exe)], cwd=str(dest), creationflags=flags, close_fds=True)
+            began = time.monotonic()
+            proc = subprocess.Popen([str(exe)], cwd=str(dest), creationflags=flags, close_fds=True)
+            self.start_failure = ''
+            # The window goes out of sight, not destroyed: the press came from a binding of the stage's canvas (the Play
+            # plate), and taking the window down from inside its own event makes Tcl free what it is still running and
+            # panic with a "Fatal Error" box.
+            self.root.withdraw()
             if pending:
-                # The preparation is not done: the window goes out of sight (not destroyed: the press came from a
-                # binding of the stage's canvas) and takes the job up again when the game has ended (shader_step).
+                # The preparation is not done: the window takes the job up again when the game has ended (shader_step).
                 self.shader_hidden = True
-                self.root.withdraw()
                 return
-            # The press came from a binding of the stage's canvas (the Play plate): taking the window down from inside
-            # its own event makes Tcl free what it is still running and panic with a "Fatal Error" box. The settings are
-            # saved and the game runs on its own, so the launcher just ends, without Tk's teardown.
-            for stream in (sys.stdout, sys.stderr):
-                try:
-                    stream.flush()
-                except (OSError, ValueError, AttributeError):
-                    pass
-            os._exit(0)
+            # The settings are saved and the game runs on its own: once it has run for GAME_WATCH_S the launcher just
+            # ends, without Tk's teardown (watch_game, end_now).
+            self.root.after(200, lambda: self.watch_game(proc, dest, began))
 
 
 # ---- self test ---------------------------------------------------------------------------------------------------
@@ -2703,7 +2812,8 @@ SAMPLE_NOTES = ('Rekarina 1.0.1\n\n- Shorter loading between areas.\n- The water
                 '- New button prompt set for PlayStation pads.\n- The setup downloads DLSS and FSR 3.1 by itself.\n\n'
                 'The update keeps your saves, settings and shader caches. After it the setup rebuilds the game from the '
                 'dump you already have; that takes a few minutes.')
-SCREENS = ('form', 'form-textures-help', 'form-space', 'home', 'home-update', 'home-shaders-running', 'home-shaders-waiting', 'home-shaders-done', 'mods', 'mods-empty', 'saves', 'saves-ask', 'saves-empty',
+SCREENS = ('form', 'form-textures-help', 'form-space', 'home', 'home-update', 'home-shaders-running', 'home-shaders-waiting', 'home-shaders-done',
+           'home-dump-missing', 'home-dump-online', 'home-exe-launcher', 'home-start-failed', 'mods', 'mods-empty', 'saves', 'saves-ask', 'saves-empty',
            'uninstall', 'uninstall-ask', 'update', 'run', 'components', 'ok', 'failed')
 
 
@@ -2826,6 +2936,19 @@ def selftest(layout, shots=None):
                 app.home_text.configure(text=app.cat('ui.oot_home_text', dest=app.vars['dest'].get()))
                 shot(f'oot-home-shaders-{name}-{lang}')
             app.forced_shaders = None
+            for name, problem in (('dump-missing', ('ui.oot_dump_missing', {'path': 'C:\\Users\\me\\OneDrive\\Documents\\game.nup'})),
+                                  ('dump-online', ('ui.oot_dump_online', {'path': 'C:\\Users\\me\\OneDrive\\Documents\\game.nup'})),
+                                  ('exe-launcher', ('ui.oot_exe_is_launcher', {'dest': app.vars['dest'].get()}))):
+                app.forced_problem = problem
+                app.refresh_home()
+                app.home_play.state(['!disabled'])
+                shot(f'oot-home-{name}-{lang}')
+            app.forced_problem, app.start_failure = None, ('FATAL: RomFS: the game container C:/Dumps/game.nup is missing or '
+                                                           'cannot be opened (OS error 2)')
+            app.refresh_home()
+            app.home_play.state(['!disabled'])
+            shot(f'oot-home-start-failed-{lang}')
+            app.start_failure = ''
             app.open_mods()
             shot(f'oot-mods-{lang}')
             app.forced_mods = []

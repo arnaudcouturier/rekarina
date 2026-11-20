@@ -27,6 +27,9 @@ int report_main(void);
 // At the end of a crash or a fatal error of a game run that writes logs/rekarina.log (a player's run, not a test run
 // with its own log file): a message box that says the game stopped and how to make a report. Once; Windows only.
 void report_crash_notice(void);
+// A fatal error the player can put right himself (romfs.c: the dump is not where rekarina.ini says): text in the
+// message box instead of the crash notice, which then shows nothing more. Shown for the same runs as the crash notice.
+void report_fatal_box(const char *text);
 
 // Frame generation that stopped the game while it was being set up (report.c, "frame generation that stopped the
 // game"). AMD's and NVIDIA's run in their own libraries; a crash there from the start of their set-up to their first

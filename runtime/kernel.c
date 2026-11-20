@@ -2097,6 +2097,42 @@ void kern_main_stack(uint64_t *base, uint64_t *size) {
 // them). For a game that stops without a crash (a wait nothing will end), where only the call chains name the place.
 static int hang_read(uint64_t a, uint64_t *v) { return a && !(a & 7) && plat_mem_read(a, v, 8); }
 
+// DEBUG-HANGRT: an intrusive list as OoT's render target cache keeps them (a sentinel at head; each node's link at
+// node + off holds {[0], [8]}, and the cache walks [8] from [head + 8] until it meets the head again): its length, or
+// where it loops back without meeting the head, and its first nodes with their busy byte (node + 0x13e).
+static void hang_walk(const char *what, uint64_t head, int32_t off) {
+    enum { SEEN = 4096 };
+    static uint64_t seen[SEEN];
+    char ln[1400];
+    uint64_t link = 0, v = 0;
+    int o = snprintf(ln, sizeof ln, "HANGDUMP   %s head %llx link offset %d:", what, (unsigned long long)head, off);
+    if (!hang_read(head + 8, &link)) {
+        rt_log("%s unreadable", ln);
+        return;
+    }
+    int n = 0;
+    for (; n < SEEN && link && link != head; n++) {
+        for (int j = 0; j < n; j++)
+            if (seen[j] == link) {
+                o += snprintf(ln + o, sizeof ln - (size_t)o, " ... LOOP: step %d is node %llx again (step %d), the head never met", n,
+                              (unsigned long long)(link - (uint64_t)(int64_t)off), j);
+                rt_log("%s", ln);
+                return;
+            }
+        seen[n] = link;
+        if (n < 12 && o < 1250) {
+            uint64_t node = link - (uint64_t)(int64_t)off, a = 0;
+            uint8_t busy = hang_read((node + 0x13e) & ~7ull, &v) ? (uint8_t)(v >> (((node + 0x13e) & 7) * 8)) : 0xff;
+            hang_read(link, &a);
+            o += snprintf(ln + o, sizeof ln - (size_t)o, " [%llx [0]%llx busy %u]", (unsigned long long)node,
+                          (unsigned long long)a, busy);
+        }
+        if (!hang_read(link + 8, &link)) break;
+    }
+    o += snprintf(ln + o, sizeof ln - (size_t)o, " ... %d nodes, %s", n, link == head ? "back at the head" : link ? "cut off" : "a null link");
+    rt_log("%s", ln);
+}
+
 static void hang_dump(void) {
     static const char *const wname[] = {"none", "lock", "condvar", "address", "sync"};
     char d[160];
@@ -2114,15 +2150,119 @@ static void hang_dump(void) {
             if (next <= fp || next - fp > (64u << 20)) break;
             fp = next;
         }
+        if (c && t->wkind == 0) {   // DEBUG-HANGREGS: a thread that waits on nothing runs: its registers
+            char ln[1200];
+            int o = snprintf(ln, sizeof ln, "HANGDUMP   regs:");
+            for (int r = 0; r < 31 && o < 1150; r++) o += snprintf(ln + o, sizeof ln - (size_t)o, " x%d=%llx", r, (unsigned long long)c->x[r]);
+            rt_log("%s sp=%llx", ln, (unsigned long long)c->sp);
+            if (t->hthr) {   // DEBUG-HANGRIP: where its host thread runs (hang_dump's own address for the map)
+                o = snprintf(ln, sizeof ln, "HANGDUMP   host rip (hang_dump at %llx):", (unsigned long long)(uintptr_t)&hang_dump);
+                for (int s = 0; s < 24 && o < 1150; s++) {
+                    uint64_t rip = 0, rsp = 0;
+                    if (plat_intr_stop(t->hthr, &rip, &rsp)) {
+                        plat_intr_resume(t->hthr, 0);
+                        o += snprintf(ln + o, sizeof ln - (size_t)o, " %llx", (unsigned long long)rip);
+                    }
+                    plat_sleep_ns(2000000ull);
+                }
+                rt_log("%s", ln);
+            }
+            const RtLoaded *m = ldr_module(0);
+            if (m && c->x[30] == m->base + 0x40308) {
+                // DEBUG-HANGRT: OoT's render target cache (main+0x3ed00) walking one bucket after the lock at +0x40304:
+                // the bucket's head = x1 + (byte)[[sp+0x28] + 0x15c] * 0x18, the link offset (int32)[head + 0x14], the node in
+                // x21, its next link at node + offset + 8; the walk ends at the head. The walk as it stands:
+                uint64_t v = 0, first = 0, node = c->x[21], head = 0;
+                int32_t off = 0;
+                uint32_t idx = 0;
+                if (hang_read(c->sp + 0x28, &first) && hang_read((first + 0x15c) & ~7ull, &v)) {
+                    idx = (uint8_t)(v >> (((first + 0x15c) & 7) * 8));   // the low byte of the request's hash
+                    head = c->x[1] + (uint64_t)idx * 0x18;
+                    if (hang_read((head + 0x14) & ~7ull, &v)) off = (int32_t)(v >> (((head + 0x14) & 7) * 8));
+                }
+                o = snprintf(ln, sizeof ln, "HANGDUMP   target cache %llx bucket %u head %llx link offset %d, from node %llx:",
+                             (unsigned long long)c->x[19], idx, (unsigned long long)head, off, (unsigned long long)node);
+                for (int k = 0; k < 24 && node && o < 1100; k++) {
+                    uint64_t prev = 0, nx = 0;
+                    hang_read(node + (uint64_t)(int64_t)off, &prev), hang_read(node + (uint64_t)(int64_t)off + 8, &nx);
+                    o += snprintf(ln + o, sizeof ln - (size_t)o, " [%llx p%llx n%llx]", (unsigned long long)node,
+                                  (unsigned long long)prev, (unsigned long long)nx);
+                    if (nx == head) break;
+                    node = nx ? nx - (uint64_t)(int64_t)off : 0;
+                }
+                rt_log("%s", ln);
+                if (head) hang_walk("that bucket", head, off);
+                uint64_t fo = 0;
+                if (hang_read((c->x[19] + 0x29e4) & ~7ull, &fo))
+                    hang_walk("free list", c->x[19] + 0x29d0, (int32_t)(fo >> (((c->x[19] + 0x29e4) & 7) * 8)));
+            }
+        }
     }
     unlock();
+}
+
+// DEBUG-RTHEAP: REKARINA_RTHEAP_LOG=1 (with REKARINA_HANG_DUMP): OoT's render target cache (the pointer at main+0x4e81b80,
+// made by main+0xc2a1c0) and the allocator its placement uses (cache + 0xf38): their words, logged each half second
+// they change.
+static void rtheap_log(void) {
+    static int on = -1;
+    static uint64_t last[40];
+    if (on < 0) on = cfg_env("REKARINA_RTHEAP_LOG") != NULL;
+    const RtLoaded *m = on ? ldr_module(0) : NULL;
+    uint64_t cache = 0, heap = 0, w[40] = {0};
+    if (!m || !hang_read(m->base + 0x4e81b80, &cache) || !cache) return;
+    heap = cache + 0xf38;   // the allocator the placement uses (x25 at main+0x3fbcc)
+    for (int i = 0; i < 28; i++) hang_read(heap + 8 * (uint64_t)i, &w[i]);
+    for (int i = 0; i < 12; i++) hang_read(cache + 0x2a28 + 8 * (uint64_t)i, &w[28 + i]);
+    {   // the frame stamp the cache gives a target it hands out (main+0x402a0: [[main+0x4c86db8]] + 0xc), in place of h0
+        uint64_t p = 0, q = 0, v = 0;
+        if (hang_read(m->base + 0x4c86db8, &p) && p && hang_read(p, &q) && q && hang_read((q + 0xc) & ~7ull, &v))
+            w[0] = (uint32_t)(v >> (((q + 0xc) & 7) * 8));
+    }
+    static uint64_t next_w;
+    if (!memcmp(w, last, sizeof w) || plat_now_ns() < next_w) return;
+    next_w = plat_now_ns() + 500000000ull;
+    memcpy(last, w, sizeof w);
+    char ln[1400];
+    int o = snprintf(ln, sizeof ln, "RTHEAP frame %llu cache %llx heap %llx:", (unsigned long long)gfx_counters.frames,
+                     (unsigned long long)cache, (unsigned long long)heap);
+    for (int i = 0; i < 40 && o < 1350; i++)
+        o += snprintf(ln + o, sizeof ln - (size_t)o, " %s%x=%llx", i < 28 ? "h" : "c", i < 28 ? i * 8 : 0x2a28 + (i - 28) * 8,
+                      (unsigned long long)w[i]);
+    rt_log("%s", ln);
+}
+
+// DEBUG-RINGLOG: REKARINA_RING_LOG=1 (with REKARINA_HANG_DUMP): OoT's record ring (svc.c Break: [[main+0x4c7e180]],
+// capacity +0x630, word +0x640), sampled every 50 ms: once a second the highest next record and the generations seen to
+// change (the consumer's swaps).
+static void ring_log(void) {
+    static int on = -1;
+    static uint32_t last_w, hi, gens;
+    static uint64_t next_ns;
+    if (on < 0) on = cfg_env("REKARINA_RING_LOG") != NULL;
+    const RtLoaded *m = on ? ldr_module(0) : NULL;
+    uint64_t p = 0, o = 0, cw = 0, ww = 0;
+    if (!m || !hang_read(m->base + 0x4c7e180, &p) || !p || !hang_read(p, &o) || !o || !hang_read(o + 0x630, &cw) ||
+        !hang_read(o + 0x640, &ww))
+        return;
+    uint32_t w = (uint32_t)ww, idx = w & 0xfffff;
+    if (idx > hi) hi = idx;
+    if ((w >> 28) != (last_w >> 28)) gens++;
+    last_w = w;
+    uint64_t now = plat_now_ns();
+    if (now < next_ns) return;
+    next_ns = now + 1000000000ull;
+    rt_log("RINGLOG frame %llu: ring %llx capacity %u: next record at most %u, generation changes %u; now next %u "
+           "generation %u", (unsigned long long)gfx_counters.frames, (unsigned long long)o, (uint32_t)cw, hi, gens, idx,
+           w >> 28);
+    hi = gens = 0;
 }
 
 static void hang_watch(void *arg) {
     double limit = *(double *)arg;
     uint64_t seen = ~0ull, since = plat_now_ns();
     for (;;) {
-        plat_sleep_ns(500000000ull);
+        for (int k = 0; k < 10; k++) plat_sleep_ns(50000000ull), rtheap_log(), ring_log();
         uint64_t f = __atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED), now = plat_now_ns();
         if (f != seen) { seen = f, since = now; continue; }
         if (f && (now - since) / 1e9 >= limit) {

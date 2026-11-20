@@ -19,8 +19,14 @@
 // by 0.6-1.1 of 255 levels on average (PSNR 43-50 dB, at most 34 levels in a few pixels), a cut made only where the movie
 // would otherwise run slow. REKARINA_MOVIE_UNET: auto (the default, as above), 1 the whole network always, 0 never the
 // U-Net in a movie.
+// The measurement took the first 180 frames of the first movie, ten seconds at the 17 fps of a GTX 1650 Super, and the
+// movie's sound ran on meanwhile (a player: every movie started slow for 8-9 s and stayed out of step with its sound).
+// So an early look decides at once where the first frames take more than twice the movie's frame time (EARLY_*:
+// about a second on that card), and the verdict is kept per GPU and driver in movie-network.txt beside rekarina.exe:
+// the next start leaves the U-Net out from the first movie frame on.
 // The passes are known by their programs' input ids (game 1.1.1); another version's are not touched.
 #include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -28,6 +34,7 @@
 #include "gfx.h"
 #include "host.h"
 #include "vk.h"
+#include "platform/platform.h"
 
 static const uint64_t UNET[] = {   // passes 1-11 (2 and 11, 4 and 9, 6 and 7 share a program)
     0x09f71b09f69e2bcfull, 0xd4fff465ffd5f5a2ull, 0x16a4de9c319833a5ull, 0x44fadb5bf93b3263ull,
@@ -38,6 +45,9 @@ static const uint64_t PASS12 = 0x6103f6383911dad2ull;
 #define FIT 0.9          // of its frame time, the GPU may take for a movie frame
 #define SETTLE 60        // frames of a movie not measured (its first pipelines, the decoder starting)
 #define MEASURE 120      // frames averaged
+#define EARLY_SETTLE 8   // the early look: frames not measured,
+#define EARLY 12         // frames averaged,
+#define EARLY_OVER 2.0   // and how far over the movie's frame time they must be to decide at once
 
 static uint64_t prog_id(const GfxShader *s) {   // the first 8 bytes of the input id, as the logs name programs
     const uint8_t *iid = gfx_shader_input_id(s);
@@ -48,10 +58,48 @@ static uint64_t prog_id(const GfxShader *s) {   // the first 8 bytes of the inpu
 
 static int mode = -1;        // 2 auto, 1 the whole network always, 0 never the U-Net
 static volatile int cut;     // auto: the U-Net is left out from now on
+
+// movie-network.txt beside rekarina.exe: a line "cut <vendor>:<device>:<driver>" for each GPU and driver on which the
+// movies did not fit with the whole network.
+static int verdict_path(char *out, size_t n) {
+    char exe[PLAT_PATH_MAX * 2];
+    int len = plat_exe_path(exe, sizeof exe);
+    char *sep = len > 0 && (size_t)len < sizeof exe ? plat_last_sep(exe) : NULL;
+    if (!sep) return 0;
+    *sep = 0;
+    return snprintf(out, n, "%s/movie-network.txt", exe) < (int)n;
+}
+static void gpu_key(char *out, size_t n) {
+    const VkPhysicalDeviceProperties *p = &vk_ctx()->props;
+    snprintf(out, n, "cut %04x:%04x:%08x", p->vendorID, p->deviceID, p->driverVersion);
+}
+static int verdict_read(void) {
+    char path[PLAT_PATH_MAX * 2 + 32], key[64], ln[128];
+    if (!vk_ctx() || !verdict_path(path, sizeof path)) return 0;
+    gpu_key(key, sizeof key);
+    FILE *f = fopen(path, "r");
+    int found = 0;
+    while (f && !found && fgets(ln, sizeof ln, f)) found = !strncmp(ln, key, strlen(key));
+    if (f) fclose(f);
+    return found;
+}
+static void verdict_write(void) {
+    char path[PLAT_PATH_MAX * 2 + 32], key[64];
+    if (!verdict_path(path, sizeof path)) return;
+    gpu_key(key, sizeof key);
+    FILE *f = fopen(path, "a");
+    if (f) fprintf(f, "%s\n", key), fclose(f);
+}
+
 static int read_mode(void) {
     if (mode < 0) {
         const char *e = cfg_get("REKARINA_MOVIE_UNET");
         mode = e && *e && strcmp(e, "auto") ? atoi(e) != 0 : 2;
+        if (mode == 2 && verdict_read()) {
+            __atomic_store_n(&cut, 1, __ATOMIC_RELAXED);
+            rt_log("vk: the movies' network runs without its U-Net on this GPU (movie-network.txt: an earlier start "
+                   "measured its movie frames over their time)");
+        }
     }
     return mode;
 }
@@ -72,23 +120,36 @@ void vk_movienet_frame(void) {
         live = 0;
         return;
     }
+    static uint64_t gpu_e;
     uint64_t gpu = perf_gpu_busy_total();
     if (!live) live = 1, frames = 0;
-    if (++frames == SETTLE) gpu0 = gpu;
-    if (frames < SETTLE + MEASURE) return;
-    double ms = (double)(gpu - gpu0) / 1e6 / MEASURE, fit = 1000.0 / MOVIE_FPS * FIT;
+    if (++frames == EARLY_SETTLE) gpu_e = gpu;
+    if (frames == SETTLE) gpu0 = gpu;
+    double fit = 1000.0 / MOVIE_FPS * FIT;
+    int test = 0;
     {   // DEBUG-MOVIEFIT: REKARINA_MOVIE_FIT_MS=<ms> stands in for a slower card's budget (a test of the cut on a fast one)
         const char *e = cfg_env("REKARINA_MOVIE_FIT_MS");
-        if (e && atof(e) > 0) fit = atof(e);
+        if (e && atof(e) > 0) fit = atof(e), test = 1;
     }
-    if (gpu == gpu0) {   // no timestamps on this device: nothing to decide from
-        frames = -1000000;
-        return;
+    double ms = 0;
+    int early = frames == EARLY_SETTLE + EARLY && gpu != gpu_e;
+    if (early) {
+        ms = (double)(gpu - gpu_e) / 1e6 / EARLY;
+        if (ms <= fit * EARLY_OVER) return;
+    } else {
+        if (frames < SETTLE + MEASURE) return;
+        ms = (double)(gpu - gpu0) / 1e6 / MEASURE;
+        if (gpu == gpu0) {   // no timestamps on this device: nothing to decide from
+            frames = -1000000;
+            return;
+        }
     }
     if (ms > fit) {
         __atomic_store_n(&cut, 1, __ATOMIC_RELAXED);
-        rt_log("vk: a movie frame took %.1f ms of GPU, over the %.1f ms a %.0f fps movie leaves it: the movies' network "
-               "runs without its U-Net from now on (REKARINA_MOVIE_UNET)", ms, fit, MOVIE_FPS);
+        if (!test) verdict_write();
+        rt_log("vk: a movie frame took %.1f ms of GPU (%s), over the %.1f ms a %.0f fps movie leaves it: the movies' "
+               "network runs without its U-Net from now on%s (REKARINA_MOVIE_UNET)", ms,
+               early ? "its first frames" : "measured over 120 frames", fit, MOVIE_FPS, test ? "" : ", here and at the next starts");
     } else if (told_fit++ < 3) {
         rt_log("vk: a movie frame took %.1f ms of GPU: the movies' network runs whole", ms);
     }

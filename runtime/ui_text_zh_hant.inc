@@ -527,6 +527,7 @@
     [UI_REPORT_LAST_RUN] = "上次執行因錯誤結束。",
     [UI_REPORT_LAST_RUN_HINT] = "回報方式：按 Esc，然後選 進階 > 產生問題報告。會產生一個用於附加的檔案。",
     [UI_REPORT_CRASHED] = "Rekarina 因錯誤停止。\n\n發生了什麼寫在記錄末尾：\n%s\n\n如需回報，請重新啟動遊戲並選擇 Esc > 進階 > 產生問題報告（或啟動器中的「問題報告」）：記錄、設定與系統資訊會放進一個 zip 供附加。不會傳送到任何地方。",
+    [UI_ROMFS_MISSING] = "Rekarina 無法開啟你的遊戲傾印檔：\n%s\n\n遊戲每次啟動都從這個檔案讀取資料。如果你移動或重新命名了它，或 OneDrive 只在線上保存它，請開啟 Rekarina Launcher 並按「遊玩」：它會詢問檔案現在的位置並告訴遊戲。把檔案放回這個位置也可以。",
     [UI_MENU_KBM_OFF] = "連接控制器時關閉鍵盤和滑鼠",
     [UI_MENU_KBM_OFF_DESC] = "連接控制器期間，遊戲不接收鍵盤和滑鼠的輸入（例如按鍵被壓住、滑鼠被碰到）。此選單、F11 和截圖鍵仍可使用。",
     [UI_MENU_SHOT_KEY] = "截圖鍵",

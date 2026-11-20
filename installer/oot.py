@@ -68,6 +68,119 @@ OPTIONAL_DLLS = ('nvngx_dlss.dll', 'amd_fidelityfx_vk.dll', 'amd_fidelityfx_load
 NEED_DEST = 14 << 30   # the exe, the shader and driver caches, the overlays
 NEED_TEMP = 9 << 30    # the generated C, the objects, the build's copy of the caches
 
+
+# ---- the dump the game reads, and the game exe itself
+# The game reads its data from the player's .nup at every start, from the path in rekarina.ini ([paths] romfs, written
+# by tools/package_oot.py with a new file). Two players of 1.2.5 moved or renamed the dump after the setup, or had it in
+# a Documents folder OneDrive keeps online only, and the game ended at its start (runtime/romfs.c dump_missing). The
+# launcher notices it (dump_problem) and asks where the file is now; the setup's check then writes the new path into
+# the file (set_ini_dump), without building anything again.
+ROMFS_LINE = re.compile(r'^(\s*)((?:rekarina_|totk_)?romfs)(\s*=\s*)(.*?)\s*$', re.IGNORECASE)
+FILE_ATTRIBUTE_OFFLINE = 0x1000
+FILE_ATTRIBUTE_RECALL_ON_OPEN = 0x40000
+FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS = 0x400000   # a cloud file (OneDrive "online only"): its data is not on this PC
+
+
+def game_ini(dest):
+    """The game folder's settings file: rekarina.ini, or totk.ini in a folder made before 1.0.0; None when neither."""
+    for name in (INI, OLD_INI):
+        if (Path(dest) / name).is_file():
+            return Path(dest) / name
+    return None
+
+
+def ini_dump(dest):
+    """The .nup the game in dest reads (its settings file's romfs line, the last one as the game takes it); None when
+    the file or the line is not there."""
+    path = game_ini(dest)
+    if path is None:
+        return None
+    try:
+        text = path.read_text(encoding='utf-8-sig', errors='replace')
+    except OSError:
+        return None
+    found = None
+    for line in text.splitlines():
+        m = ROMFS_LINE.match(line)
+        if m and m.group(4):
+            found = m.group(4)
+    return Path(found) if found else None
+
+
+def set_ini_dump(dest, nup):
+    """The settings file of dest names nup on its romfs line (the line written in place, every other byte kept; a file
+    without the line gets one at the top of its [paths] section, or a new section). True when the file changed; False
+    when it already named nup or there is no settings file (a new one is written with the path, package_oot.py)."""
+    path = game_ini(dest)
+    if path is None:
+        return False
+    data = path.read_bytes()
+    bom = b'\xef\xbb\xbf' if data.startswith(b'\xef\xbb\xbf') else b''
+    text = data[len(bom):].decode('utf-8', errors='surrogateescape')
+    eol = '\r\n' if '\r\n' in text else '\n'
+    lines = text.split(eol)
+    value = Path(nup).as_posix()
+    hits = [i for i, line in enumerate(lines) if ROMFS_LINE.match(line)]
+    if hits:
+        for i in hits:   # every romfs line: the game takes the last, and none may name the old place
+            m = ROMFS_LINE.match(lines[i])
+            lines[i] = f'{m.group(1)}{m.group(2)}{m.group(3)}{value}'
+    else:
+        at = next((i + 1 for i, line in enumerate(lines) if line.strip().lower() == '[paths]'), None)
+        if at is None:
+            lines[:0] = ['[paths]', f'romfs = {value}', '']
+        else:
+            lines.insert(at, f'romfs = {value}')
+    new = bom + eol.join(lines).encode('utf-8', errors='surrogateescape')
+    if new == data:
+        return False
+    tmp = path.with_name(path.name + '.tmp')
+    tmp.write_bytes(new)
+    os.replace(tmp, path)
+    return True
+
+
+def dump_problem(dest):
+    """Why the game in dest cannot read its dump, as (kind, path): 'missing' when no file is at the path its settings
+    file names (moved, renamed, a disk not there), 'online' when the file is a cloud file whose data is not on this PC
+    (OneDrive's "online only": the game's start would wait for the download, or fail when OneDrive is not running).
+    None when the file is there, or the folder names none."""
+    nup = ini_dump(dest)
+    if nup is None:
+        return None
+    try:
+        st = os.stat(nup)
+    except (OSError, ValueError):
+        return ('missing', nup)
+    if not os.path.isfile(nup):
+        return ('missing', nup)
+    attrs = getattr(st, 'st_file_attributes', 0)
+    if attrs & (FILE_ATTRIBUTE_OFFLINE | FILE_ATTRIBUTE_RECALL_ON_OPEN | FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS):
+        return ('online', nup)
+    return None
+
+
+SINGLE_TRAILER = b'RKSFX001'   # the end of the one-file Rekarina.exe (installer/launcher/rekarina_single.c read_trailer)
+SINGLE_TRAILER_SIZE = 56
+
+
+def is_single_launcher(path):
+    """True when path is the downloaded one-file Rekarina.exe (the setup and its launcher in one file), which has the
+    game's name: saved into the game folder, it takes the game's place, and Play then opens the launcher again."""
+    try:
+        with open(path, 'rb') as f:
+            size = f.seek(0, os.SEEK_END)
+            if size <= SINGLE_TRAILER_SIZE:
+                return False
+            f.seek(size - SINGLE_TRAILER_SIZE)
+            tail = f.read(SINGLE_TRAILER_SIZE)
+    except OSError:
+        return False
+    if not tail.startswith(SINGLE_TRAILER):
+        return False
+    offset, length = int.from_bytes(tail[8:16], 'little'), int.from_bytes(tail[16:24], 'little')
+    return offset + length + SINGLE_TRAILER_SIZE == size
+
 # The helpers below repeat installer/steps.py's (file_sha256, fingerprint, kill_tree, run_tool, free space): that module
 # imports the Switch 1 extraction tools and their libraries, which this setup does not need.
 NINJA_LINE = re.compile(r'^\[(\d+)/(\d+)\] ')
@@ -445,6 +558,14 @@ class Check(Step):
             raise InstallError('oot.other_version', path=info['nup'], version=expected['version'], files=', '.join(other))
         ctx.nup, ctx.exefs_hashes = Path(info['nup']), info['files']
         ctx.state['oot'] = {'nup': info['nup'], 'version': expected['version']}
+        # The game reads the dump from the path in its settings file: a dump chosen anew (moved, renamed, or the
+        # launcher's question after the game could not find it) goes in there now. The steps' keys do not hold the
+        # path, so nothing is built again for it.
+        try:
+            if set_ini_dump(ctx.dest, ctx.nup):
+                rep.log(f'{game_ini(ctx.dest).name}: the game now reads its data from {ctx.nup}')
+        except OSError as e:
+            raise InstallError('cleanup.ini_failed', ini_file=INI, detail=str(e)) from None
         rep.progress(self.id, 'space', force=True)
         ctx.dest.mkdir(parents=True, exist_ok=True)
         ctx.temp.mkdir(parents=True, exist_ok=True)

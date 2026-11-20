@@ -100,6 +100,11 @@ of them.
    .venv\Scripts\python tools\build_game.py --version <ver>
    ```
 
+   `build_game.py` sizes its compile jobs from the memory available when it starts, less 3.5 GiB for the rest of the
+   PC (`REKARINA_BUILD_MEM_GB=<n>` sets the budget; `--jobs N` the job count). The chunks that are one giant function
+   need up to about 3 GiB each at -O2 with a profile and run in a pool of their own, largest first; every compile runs
+   below normal priority. The first line of its output says the plan.
+
    `--cpu v2` targets x86-64-v2 (SSE4.2, no AVX2/FMA) for older CPUs; the default `v3` needs AVX2. The v2 build links
    `runtime/fma.c`, a correctly rounded software fma the FP lowering needs, and runs slower. Inline assembly,
    target attributes and intrinsics are not bound by `-march`, so a v2 build runs `tools/check_isa.py` over the runtime
@@ -295,6 +300,7 @@ change passes these, all run with `.venv`:
 | `tests\excl_mt.py` | the exclusive monitor helpers under contention and ABA, on several threads | no |
 | `tests\jumptables_check.py` | `recomp/jumptables.py` against a Unicorn oracle; must report 0 disagreements, on 1.4.3 too | yes |
 | `tests\build_content_test.py` | `tools/build_game.py`'s content stamps: an output whose source, header, flags or compiler changed is made again whatever the file times say; a build folder without the record makes its runtime objects again | no |
+| `tests\build_jobs_test.py` | `tools/build_game.py`'s compile job plan: the budget from the available memory, the giant chunks' estimates, and plans that stay within the budget for 8, 16 and 32 GB with 4, 6 and 12 threads | no |
 
 A `--cpu v2` build passes the same differential tests with `--cflags=-march=x86-64-v2`; they compile `runtime/fma.c`
 too, so they check the software fma the v2 build links rather than the C runtime's.

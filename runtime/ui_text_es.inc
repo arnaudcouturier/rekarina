@@ -542,6 +542,7 @@
     [UI_REPORT_LAST_RUN] = "La última partida terminó con un error.",
     [UI_REPORT_LAST_RUN_HINT] = "Para informar: Esc, luego Avanzado > Crear un informe del problema. Se crea un archivo para adjuntar.",
     [UI_REPORT_CRASHED] = "Rekarina se detuvo por un error.\n\nLo que pasó está escrito al final del registro:\n%s\n\nPara informar, vuelve a iniciar el juego y elige Esc > Avanzado > Crear un informe del problema (o Informe del problema en el lanzador): registros, ajustes y datos del sistema van en un zip para adjuntar. No se envía nada.",
+    [UI_ROMFS_MISSING] = "Rekarina no puede abrir tu dump del juego:\n%s\n\nEl juego lee sus datos de este archivo en cada inicio. Si lo moviste o le cambiaste el nombre, o si OneDrive lo guarda solo en línea, abre Rekarina Launcher y pulsa «Jugar»: te pregunta dónde está ahora el archivo y se lo indica al juego. También puedes devolver el archivo a este lugar.",
     [UI_MENU_KBM_OFF] = "Teclado y ratón desactivados con mando",
     [UI_MENU_KBM_OFF_DESC] = "Mientras haya un mando conectado, el juego no toma nada del teclado ni del ratón (una tecla apoyada, un ratón golpeado). Este menú, F11 y la tecla de captura siguen funcionando.",
     [UI_MENU_SHOT_KEY] = "Tecla de captura de pantalla",

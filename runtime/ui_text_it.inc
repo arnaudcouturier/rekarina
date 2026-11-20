@@ -543,6 +543,7 @@
     [UI_REPORT_LAST_RUN] = "L'ultimo avvio è terminato con un errore.",
     [UI_REPORT_LAST_RUN_HINT] = "Per segnalarlo: Esc, poi Avanzate > Crea un rapporto sul problema. Viene creato un file da allegare.",
     [UI_REPORT_CRASHED] = "Rekarina si è fermato per un errore.\n\nCiò che è successo è scritto alla fine del registro:\n%s\n\nPer segnalarlo, riavvia il gioco e scegli Esc > Avanzate > Crea un rapporto sul problema (o Rapporto sul problema nel launcher): registri, impostazioni e dati di sistema finiscono in un file zip da allegare. Non viene inviato nulla.",
+    [UI_ROMFS_MISSING] = "Rekarina non riesce ad aprire il dump del gioco:\n%s\n\nIl gioco legge i suoi dati da questo file a ogni avvio. Se lo hai spostato o rinominato, o se OneDrive lo tiene solo online, apri Rekarina Launcher e premi «Gioca»: chiede dove si trova ora il file e lo collega al gioco. Puoi anche rimettere il file in questo punto.",
     [UI_MENU_KBM_OFF] = "Tastiera e mouse disattivati con controller",
     [UI_MENU_KBM_OFF_DESC] = "Finché è collegato un controller, il gioco non prende nulla da tastiera e mouse (un tasto premuto per sbaglio, un mouse urtato). Questo menu, F11 e il tasto per lo screenshot funzionano comunque.",
     [UI_MENU_SHOT_KEY] = "Tasto screenshot",

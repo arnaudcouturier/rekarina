@@ -70,6 +70,32 @@ def copy(src, dst):
     shutil.copy2(src, dst)
 
 
+SINGLE_TRAILER, SINGLE_TRAILER_SIZE = b'RKSFX001', 56   # installer/launcher/rekarina_single.c, installer/oot.py
+SINGLE_ASIDE = 'Rekarina-download' + EXE
+
+
+def set_single_aside(exe):
+    """The downloaded one-file Rekarina.exe (the setup and its launcher in one file, with the game's name) where the
+    game goes: renamed to SINGLE_ASIDE before the game is copied, so the game never lands on a running copy of it and
+    the download is not lost. A player who saved the download into the game folder had the launcher in the game's
+    place: Play opened the launcher again (2026-11-20)."""
+    try:
+        with open(exe, 'rb') as f:
+            size = f.seek(0, os.SEEK_END)
+            f.seek(max(0, size - SINGLE_TRAILER_SIZE))
+            tail = f.read(SINGLE_TRAILER_SIZE)
+    except OSError:
+        return
+    if size <= SINGLE_TRAILER_SIZE or not tail.startswith(SINGLE_TRAILER) or \
+            int.from_bytes(tail[8:16], 'little') + int.from_bytes(tail[16:24], 'little') + SINGLE_TRAILER_SIZE != size:
+        return
+    aside = exe.with_name(SINGLE_ASIDE)
+    if aside.exists():
+        aside.unlink()
+    os.replace(exe, aside)   # a running exe can be renamed, not written over
+    print(f'package_oot: {exe.name} was the downloaded launcher, not the game: moved to {aside.name}')
+
+
 def copy_tree(src, dst):
     n = 0
     if Path(src).resolve() == Path(dst).resolve():   # in place already: the installer extracts the ExeFS into the folder
@@ -182,6 +208,7 @@ def main():
     # The translator the folder's shader pack was made under, before this package names its own: under the same one
     # the pack's entries stay valid and are kept (below)
     folder_id = next((f.read_bytes() for f in (out / 'rekarina_xlate.id', out / 'totk_xlate.id') if f.is_file()), None)
+    set_single_aside(out / ('Rekarina' + EXE))
     copy(build / ('rekarina' + EXE), out / ('Rekarina' + EXE))
     for d in DLLS:
         if (build / d).exists():

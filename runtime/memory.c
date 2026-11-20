@@ -428,7 +428,13 @@ static uint64_t rg_waits, rg_wait_ns, rg_opened;
 static struct { uint64_t rva, page, n, ns; } rg_who[48];   // DEBUG-GUARDWHO: the waits by instruction and page
 static int rg_nwho;
 
+// The slot of a watched page; -1 when there is none (insert: a free slot for it). Page 0 is never watched: page 0 marks
+// a free slot, so a lookup of it found the first free slot of its chain, and a guest read of a null pointer's field
+// (address 0x48 on the null page) was taken for an access to a watched page: result_fault "opened" the page, the access
+// ran again and faulted again, for good. The game hung with a thread spinning in its render target cache, the window
+// still answering (a player at the Market's pots room, 2026-11-20); now such a read is the crash it is.
 static int rw_slot(uint64_t page, int insert) {   // frz_lock held
+    if (!page) return -1;
     uint64_t h = (page * 0x9E3779B97F4A7C15ull) >> RW_SHIFT;
     for (int i = 0; i < RW_N; i++) {
         int k = (int)((h + (uint64_t)i) & (RW_N - 1));

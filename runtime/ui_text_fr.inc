@@ -547,6 +547,7 @@
     [UI_REPORT_LAST_RUN] = "Le dernier lancement s'est terminé par une erreur.",
     [UI_REPORT_LAST_RUN_HINT] = "Pour le signaler : Échap, puis Avancé > Créer un rapport de problème. Cela crée un fichier à joindre.",
     [UI_REPORT_CRASHED] = "Rekarina s'est arrêté sur une erreur.\n\nCe qui s'est passé est écrit à la fin du journal :\n%s\n\nPour le signaler, relancez le jeu et choisissez Échap > Avancé > Créer un rapport de problème (ou Rapport de problème dans le lanceur) : journaux, réglages et informations système vont dans un zip à joindre. Rien n'est envoyé.",
+    [UI_ROMFS_MISSING] = "Rekarina ne peut pas ouvrir votre dump du jeu :\n%s\n\nLe jeu lit ses données dans ce fichier à chaque démarrage. Si vous l'avez déplacé ou renommé, ou si OneDrive le garde en ligne uniquement, ouvrez Rekarina Launcher et appuyez sur « Jouer » : il demande où se trouve le fichier maintenant et y relie le jeu. Remettre le fichier à cet endroit fonctionne aussi.",
     [UI_MENU_KBM_OFF] = "Clavier et souris coupés avec une manette",
     [UI_MENU_KBM_OFF_DESC] = "Tant qu'une manette est branchée, le jeu ne prend rien du clavier ni de la souris (une touche appuyée par mégarde, une souris heurtée). Ce menu, F11 et la touche de capture fonctionnent toujours.",
     [UI_MENU_SHOT_KEY] = "Touche de capture d'écran",

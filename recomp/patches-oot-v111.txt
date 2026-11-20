@@ -270,3 +270,16 @@ set inputstep REKARINA_INPUT_STEP 1
 # fps it stayed 1 a frame and the repeat ran fps / 60 times too fast. With the set it is the frame's step (patch page
 # +8, the real-time step in 60 Hz frames) while that is under 1.
 site inputstep main 3b4eaf8 1e201820 1e201820 944d48d6   # fdiv s0, s1, s0 -> the same; bl page+0xe50
+
+set ringpost REKARINA_RING_POST 1
+
+# The game's post of a named text value (main+0xd24e50, about 30 callers) goes through a lock-free ring of 0x58-byte
+# records in the object at [[main+0x4c7e180]] (capacity +0x630, records +0x638, word +0x640: the next record in bits
+# 0-19, the records written in 20-27, a generation in 28-31). A writer takes a record (CAS on the word), stores its key
+# and copies its text, then counts the record written (CAS) and checks that the generation is still the one it took
+# the record in. Once a frame the consumer (main+0xb99980) reads the records up to the first empty one and swaps the
+# generation, which sets the next record back to 0. A writer still copying when the consumer swaps, or one that finds
+# the ring full, ends the game (b main+0x34fc280, an nn::diag abort): a crash after the first boss's death, the writer
+# a job on a worker (main+0x340a460). The console's timing keeps its writers out of the consumer's way; here a worker
+# can be held up past it. With the set that writer returns: its record is dropped (a full ring) or read a frame later.
+site ringpost main d2507c 149f5c81 d65f03c0   # b main+0x34fc280 (the abort) -> ret

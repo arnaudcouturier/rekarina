@@ -266,6 +266,7 @@ typedef enum {
     // the problem report (report.c): the menu's row, its result, the notice after a run that failed, the crash box
     UI_MENU_REPORT, UI_MENU_REPORT_DESC, UI_MENU_REPORT_DONE, UI_REPORT_LAST_RUN, UI_REPORT_LAST_RUN_HINT,
     UI_REPORT_CRASHED,        // "%s": the log's path
+    UI_ROMFS_MISSING,         // "%s": the dump's container that cannot be opened (romfs.c dump_missing)
     UI_MENU_KBM_OFF, UI_MENU_KBM_OFF_DESC, UI_MENU_MENU_GUIDE, UI_MENU_MENU_GUIDE_DESC, UI_MENU_SHOT_KEY, UI_MENU_SHOT_KEY_DESC, UI_MENU_SHOT_OVERLAY,
     UI_MENU_SHOT_OVERLAY_DESC,
     UI_MENU_LAST_ID = UI_MENU_SHOT_OVERLAY_DESC,

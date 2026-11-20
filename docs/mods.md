@@ -49,7 +49,9 @@ Two mods that edit the same game file do not combine: the higher one wins the wh
 (`.tkcl` files) go the same way.
 
 The port merges the resource size table on its own: at every start with mods on, it combines the tables the mods ship
-and raises the entries for files a mod made larger or added. A separate RESTBL mod is not needed.
+with the game's and the port's own (the port's button font is larger than the game's) and raises the entries for files
+a mod made larger or added. A separate RESTBL mod is not needed. (Before 1.2.6 a mod that shipped a table replaced the
+port's, and the game stopped at its start: the button font no longer fit its entry.)
 
 ## Code patches (ExeFS)
 

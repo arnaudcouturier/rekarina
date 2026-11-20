@@ -544,6 +544,7 @@
     [UI_REPORT_LAST_RUN] = "De vorige start eindigde met een fout.",
     [UI_REPORT_LAST_RUN_HINT] = "Melden: Esc, dan Geavanceerd > Probleemrapport maken. Dat geeft één bestand om mee te sturen.",
     [UI_REPORT_CRASHED] = "Rekarina is gestopt door een fout.\n\nWat er gebeurde staat aan het eind van het logboek:\n%s\n\nOm het te melden start je het spel opnieuw en kies je Esc > Geavanceerd > Probleemrapport maken (of Probleemrapport in de launcher): logboeken, instellingen en systeemgegevens gaan in één zip om mee te sturen. Er wordt niets verstuurd.",
+    [UI_ROMFS_MISSING] = "Rekarina kan je game-dump niet openen:\n%s\n\nDe game leest zijn gegevens bij elke start uit dit bestand. Als je het hebt verplaatst of hernoemd, of OneDrive het alleen online bewaart, open dan Rekarina Launcher en druk op \"Spelen\": die vraagt waar het bestand nu staat en verwijst de game ernaar. Het bestand terugzetten op deze plek werkt ook.",
     [UI_MENU_KBM_OFF] = "Toetsenbord en muis uit met controller",
     [UI_MENU_KBM_OFF_DESC] = "Zolang er een controller is aangesloten, neemt het spel niets van toetsenbord en muis (een ingedrukte toets, een aangestoten muis). Dit menu, F11 en de screenshottoets werken nog.",
     [UI_MENU_SHOT_KEY] = "Screenshottoets",

@@ -545,6 +545,7 @@
     [UI_REPORT_LAST_RUN] = "O último arranque terminou com um erro.",
     [UI_REPORT_LAST_RUN_HINT] = "Para o comunicar: Esc, depois Avançado > Criar um relatório do problema. É criado um ficheiro para anexar.",
     [UI_REPORT_CRASHED] = "O Rekarina parou com um erro.\n\nO que aconteceu está escrito no fim do registo:\n%s\n\nPara o comunicar, inicie o jogo outra vez e escolha Esc > Avançado > Criar um relatório do problema (ou Relatório do problema no launcher): registos, definições e dados do sistema vão para um zip para anexar. Nada é enviado.",
+    [UI_ROMFS_MISSING] = "O Rekarina não consegue abrir o dump do jogo:\n%s\n\nO jogo lê os seus dados deste ficheiro em cada arranque. Se o moveste ou mudaste o nome, ou se o OneDrive o mantém só online, abre o Rekarina Launcher e carrega em \"Jogar\": ele pergunta onde está agora o ficheiro e indica-o ao jogo. Também podes repor o ficheiro neste local.",
     [UI_MENU_KBM_OFF] = "Teclado e rato desligados com comando",
     [UI_MENU_KBM_OFF_DESC] = "Enquanto houver um comando ligado, o jogo não recebe nada do teclado nem do rato (uma tecla premida sem querer, um rato tocado). Este menu, F11 e a tecla de captura continuam a funcionar.",
     [UI_MENU_SHOT_KEY] = "Tecla de captura de ecrã",

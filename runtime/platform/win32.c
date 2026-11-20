@@ -1284,6 +1284,7 @@ int plat_view_close(PlatView *v, uint64_t keep) {
 }
 
 static __thread DWORD fs_last_error;
+int plat_last_os_error(void) { return (int)GetLastError(); }
 int plat_fs_os_error(void) { return (int)fs_last_error; }
 
 static int fs_err(DWORD e) {

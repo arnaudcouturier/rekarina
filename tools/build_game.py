@@ -44,9 +44,11 @@ can be older than the objects an earlier release's setup left in temp/. So obj/i
 and the exe were made from (sources, headers from Ninja's deps log, command, compiler version), and an output whose
 inputs changed is deleted before Ninja runs (the comment at INPUTS; tests/build_content_test.py).
 
-Compile jobs share a memory budget (MEM_BUDGET, default the smaller of 50 GiB and 80% of RAM) at JOB_MEM per job, so a
-big machine does not run out of memory on the largest chunks. Each phase reports its wall time and the peak memory
-of its processes (Windows job object accounting: committed private bytes).
+Compile jobs share a memory budget: the memory available at the start less MEM_RESERVE for the rest of the PC
+(REKARINA_BUILD_MEM_GB sets it), at most MEM_BUDGET. The chunks that are one giant function need gigabytes each and run
+in a pool of their own, largest first (chunk_memory, plan_jobs); the others take LIGHT_MEM. Every compile and the link
+run below normal priority. Each phase reports its wall time and the peak memory of its processes (Windows job object
+accounting: committed private bytes).
 
 --ninja PATH names the Ninja to run; without MSYS2 the bin/ninja.exe of the release folder (tools/make_release.py) is used.
 --toolchain DIR builds with an llvm-mingw tree (DIR/bin/clang.exe) instead of MSYS2 UCRT64 clang. Ninja still comes
@@ -218,10 +220,26 @@ DISPLAY_VERSIONS = {'v0': '1.0.0', 'v110': '1.1.0', 'v112': '1.1.2', 'v121': '1.
 OTHER_GAMES = {'oot': ('expected-oot-v1.1.1', 9111, ['-DGAME_NS2', '-DGAME_OOT'])}
 
 GiB = 1 << 30
-# Peak commit of one compile, 1.2.1 at -O1 (2026-10-20): 120-180 MiB per ~3 MiB chunk, 568 MiB for main_table.c
-# (295k-entry tables). 768 MiB leaves headroom for the largest file.
-JOB_MEM = 768 << 20
-MEM_BUDGET = 50 * GiB  # total for all compile jobs
+# Memory of the compile jobs. Peak commit of one compile (2026-11-20, OoT's release generated C with the release's clang
+# at -O2 and the profile, one compile at a time, measured with run_measured's job accounting): a chunk of many functions
+# 100-330 MiB (main_0177.c, 1,541 functions in 3.8 MB of C: 218 MiB in 5 s), main_table.c 480 MiB, a runtime file with
+# ThinLTO under 100 MiB; but a chunk that is one giant function (the lifter gives each function of a megabyte or so of C
+# a chunk of its own) far more: main_0270.c (one 1.0 MB function) 657 MiB, main_0240.c (1.3 MB) 1,940 MiB in 102 s,
+# main_0272.c (2.2 MB) 2,022 MiB, main_0282.c (3.9 MB) 2,801 MiB in 128 s. The old flat 768 MiB a job let twelve
+# compiles start on a 16 GB PC with 12 threads, and it froze there three times out of three: the giants ran together.
+# So each chunk's need is estimated from the manifest's chunk_info (bytes of C per function), the giants run in a pool
+# of their own (at most so many at once), and the budget is the memory AVAILABLE when the build starts, less MEM_RESERVE
+# for Windows, the desktop and the setup's window (compile_budget, plan_jobs).
+# The giant line sits at 0.9 MB of one function: below it the one-function chunks are cheap (0.27-0.9 MB: 81-434 MiB,
+# the most main_0258.c, 0.77 MB in 15 s), above it are all the heavy ones (from 1.2 MB, 1.9-2.8 GiB). A few above the line are cheap too
+# (main_0185.c, 1.6 MB of many small branches, 2 s): the pool only makes them wait their turn. A lower line (0.25 MB
+# was tried) puts over a hundred chunks into the giants' pool one at a time, and a 16 GB PC's build took twice as long.
+LIGHT_MEM = 640 << 20          # any compile but a giant one's, with headroom
+GIANT_FN_BYTES = 900_000       # a chunk whose functions average this much C or more is a giant one
+GIANT_MEM_BASE = 1792 << 20    # a giant chunk's estimate: this plus GIANT_MEM_PER_MB for each MB of its function, with
+GIANT_MEM_PER_MB = 358 << 20   # headroom (1.3 MB -> 2.2 GiB against 1.9 measured, 3.9 MB -> 3.1 GiB against 2.7)
+MEM_RESERVE = 3584 << 20       # kept free for the rest of the PC
+MEM_BUDGET = 50 * GiB          # at most, for all compile jobs together
 
 
 def below_root(p):
@@ -401,14 +419,17 @@ def port_version():
     return path.read_text(encoding='utf-8').strip() if path.is_file() else 'unknown'
 
 
-def ninja_file(gen, out, mods, pool_depth, skip=(), prebuilt=False, runtime_lib=None, make_lib=False, edges=None):
+def ninja_file(gen, out, mods, pool_depth, skip=(), prebuilt=False, runtime_lib=None, make_lib=False, edges=None,
+               giants=None, giant_depth=1):
     """build.ninja text, and the object lists per module. With prebuilt the generated objects already exist in
     out/obj and are link inputs without a compile edge. runtime_lib: a prebuilt library replaces the runtime objects
     except INSTALL_SIDE. make_lib: build only that library, from the runtime objects except INSTALL_SIDE. edges, a
     dict, receives {output: (its command without $in and $out, [its inputs])} for every compile and the link (the
-    content stamps below)."""
+    content stamps below). giants: {generated C file: estimated peak} of the giant chunks (chunk_memory), compiled in
+    a pool of giant_depth and listed first, largest first, so they start early and never run more at once."""
     if edges is None:
         edges = {}
+    giants = giants or {}
     inc = f'-I {cmd_path(RUNTIME)} -I {cmd_path(gen)}'
     vma = f'{cmd_path(DEPS / "include")} -I {cmd_path(DEPS / "include" / "vma")}' if DEPS else cmd_path(vma_include())
     imgui = cmd_path(RUNTIME / 'third_party' / 'imgui')
@@ -429,6 +450,9 @@ def ninja_file(gen, out, mods, pool_depth, skip=(), prebuilt=False, runtime_lib=
         '',
         'pool gen',
         f'  depth = {pool_depth}',
+        '',
+        'pool gen_giant',
+        f'  depth = {max(1, giant_depth)}',
         '',
         'rule cc_gen',
         '  command = $cc $genflags -MD -MF $out.d -c $in -o $out',
@@ -463,19 +487,24 @@ def ninja_file(gen, out, mods, pool_depth, skip=(), prebuilt=False, runtime_lib=
     hot_objs = {l.split()[0] for l in open(hot_list) if l.strip()} if hot_list else set()
     hot_flags = ' '.join('-O2' if f == '-O1' else f for f in GEN_FLAGS) + ' ' + inc
     gen_pgo = PGO_INPUT if PGO_INPUT and os.environ.get('REKARINA_PGO_RUNTIME_ONLY') != '1' else None
+    gen_lines = {}   # generated C file: its build lines
     for mod, files in mods.items():
         objs[mod] = []
         for f in files:
             o = out / 'obj' / mod / (f.stem + '.o')
             if not prebuilt:
-                lines.append(f'build {ninja_path(o)}: cc_gen {ninja_path(f)}{"" if os.environ.get("REKARINA_PGO_RUNTIME_ONLY") == "1" else pgo_dep}')
+                el = [f'build {ninja_path(o)}: cc_gen {ninja_path(f)}{"" if os.environ.get("REKARINA_PGO_RUNTIME_ONLY") == "1" else pgo_dep}']
                 hot = Path(o).name in hot_objs
                 if hot:   # REKARINA_HOT_OBJS: the chunks where the profile finds the game's time
-                    lines.append(f'  genflags = {hot_flags}')
-                lines.append('  pool = gen')
+                    el.append(f'  genflags = {hot_flags}')
+                el.append('  pool = gen_giant' if f in giants else '  pool = gen')
+                gen_lines[f] = el
                 edges[o] = (f'{cache}{cmd_arg(CLANG.as_posix())} {hot_flags if hot else " ".join(GEN_FLAGS) + " " + inc}',
                             [f] + ([gen_pgo] if gen_pgo else []))
             objs[mod].append(o)
+    # the giants first, largest first: Ninja starts edges of equal weight in the order of the file
+    for f in sorted(gen_lines, key=lambda f: -giants.get(f, 0)):
+        lines += gen_lines[f]
     rt = []
     sources = runtime_sources(skip)
     if make_lib:
@@ -836,6 +865,8 @@ class ExtendedLimits(ctypes.Structure):
 
 JOB_OBJECT_EXTENDED_LIMIT_INFORMATION = 9
 JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x2000
+JOB_OBJECT_LIMIT_PRIORITY_CLASS = 0x20
+BELOW_NORMAL_PRIORITY_CLASS = 0x4000
 CREATE_SUSPENDED = 0x4
 
 
@@ -844,7 +875,7 @@ def run_measured(cmd, env):
     Off Windows: the largest resident set of one child process, and 0 for all of them (no job accounting)."""
     if not WIN:
         t0 = time.monotonic()
-        code = subprocess.call(cmd, cwd=ROOT, env=env)
+        code = subprocess.call(cmd, cwd=ROOT, env=env, preexec_fn=lambda: os.nice(10))   # below normal, as on Windows
         peak = resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss * 1024   # KiB on Linux
         return code, time.monotonic() - t0, peak, 0
     k32 = ctypes.WinDLL('kernel32', use_last_error=True)
@@ -859,11 +890,14 @@ def run_measured(cmd, env):
 
     job = k32.CreateJobObjectW(None, None)
     info = ExtendedLimits()
-    info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE   # Ctrl+C stops every compile
+    # Ctrl+C stops every compile; every process of the job runs below normal priority, so the PC stays usable while
+    # the compiles take every core
+    info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | JOB_OBJECT_LIMIT_PRIORITY_CLASS
+    info.BasicLimitInformation.PriorityClass = BELOW_NORMAL_PRIORITY_CLASS
     k32.SetInformationJobObject(job, JOB_OBJECT_EXTENDED_LIMIT_INFORMATION, ctypes.byref(info), ctypes.sizeof(info))
     t0 = time.monotonic()
     # Suspended until it is in the job, so the compilers it starts are counted from the first one.
-    proc = subprocess.Popen(cmd, cwd=ROOT, env=env, creationflags=CREATE_SUSPENDED)
+    proc = subprocess.Popen(cmd, cwd=ROOT, env=env, creationflags=CREATE_SUSPENDED | BELOW_NORMAL_PRIORITY_CLASS)
     if not k32.AssignProcessToJobObject(job, int(proc._handle)):
         print(f'build_game: cannot track memory (error {ctypes.get_last_error()})', file=sys.stderr)
     ntdll.NtResumeProcess(int(proc._handle))
@@ -890,6 +924,75 @@ def total_ram():
     s.dwLength = ctypes.sizeof(s)
     ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(s))
     return s.total
+
+
+def memory_status():
+    """(total, available) physical memory in bytes."""
+    if not WIN:
+        info = {}
+        try:
+            for line in open('/proc/meminfo'):
+                k, v = line.split(':', 1)
+                info[k] = int(v.split()[0]) * 1024
+        except OSError:
+            pass
+        total = info.get('MemTotal') or total_ram()
+        return total, info.get('MemAvailable', total // 2)
+
+    class MemStatus(ctypes.Structure):
+        _fields_ = [('dwLength', wt.DWORD), ('dwMemoryLoad', wt.DWORD)] + \
+                   [(n, ctypes.c_ulonglong) for n in ('total', 'avail', 'tpf', 'apf', 'tv', 'av', 'aev')]
+    s = MemStatus()
+    s.dwLength = ctypes.sizeof(s)
+    ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(s))
+    return s.total, s.avail
+
+
+def compile_budget():
+    """(bytes the compile jobs may use together, how it was decided). REKARINA_BUILD_MEM_GB=<n> sets it (a test, or a
+    player who knows better); else the memory available now less MEM_RESERVE, at most MEM_BUDGET, at least 1 GiB."""
+    forced = os.environ.get('REKARINA_BUILD_MEM_GB', '').strip()
+    if forced:
+        try:
+            return max(GiB // 2, int(float(forced) * GiB)), f'REKARINA_BUILD_MEM_GB={forced}'
+        except ValueError:
+            pass
+    total, avail = memory_status()
+    budget = min(MEM_BUDGET, max(GiB, avail - MEM_RESERVE))
+    return budget, f'{avail / GiB:.1f} of {total / GiB:.1f} GiB available, {MEM_RESERVE / GiB:.1f} GiB kept for the PC'
+
+
+def chunk_memory(gen, mods):
+    """{generated C file: its compile's estimated peak memory} from each module's manifest chunk_info (the bytes and the
+    functions of each chunk): LIGHT_MEM, or for a giant function's chunk GIANT_MEM_BASE + GIANT_MEM_PER_MB per MB."""
+    est = {}
+    for mod, files in mods.items():
+        info = {}
+        try:
+            data = json.loads((gen / mod / 'manifest.json').read_text())
+            for c in data.get('chunk_info', []) if isinstance(data, dict) else []:
+                info[c.get('file')] = (int(c.get('bytes', 0)), max(1, int(c.get('functions', 1))))
+        except (OSError, ValueError, TypeError, AttributeError):
+            info = {}
+        for f in files:
+            size, funcs = info.get(f.name, (0, 1))   # not a chunk (<mod>_table.c, data tables: 480 MiB at most)
+            per_fn = size / funcs
+            est[f] = int(GIANT_MEM_BASE + GIANT_MEM_PER_MB * per_fn / 1e6) if per_fn >= GIANT_FN_BYTES else LIGHT_MEM
+    return est
+
+
+def plan_jobs(estimates, cpus, budget):
+    """(jobs, giants at once) for compiles of these estimated peaks within budget bytes: at most half the budget goes
+    to the giant chunks (at least one of them runs, whatever the budget), the rest to light compiles of LIGHT_MEM, so
+    giants * the largest giant + (jobs - giants) * LIGHT_MEM stays within the budget; jobs at most cpus."""
+    cpus = max(1, cpus)
+    giant = max((e for e in estimates if e > LIGHT_MEM), default=0)
+    if not giant:
+        return max(1, min(cpus, budget // LIGHT_MEM)), 0
+    giants = max(1, min(cpus, int(budget // 2 // giant)))
+    jobs = giants + max(0, int((budget - giants * giant) // LIGHT_MEM))
+    jobs = max(1, min(cpus, jobs))
+    return jobs, min(giants, jobs)
 
 
 def pe_sections(path):
@@ -1067,8 +1170,15 @@ def main():
     mods = {} if args.make_runtime_lib else {m: chunk_files(gen, m) for m in linked}
 
     cpus = os.cpu_count() or 1
-    budget = min(MEM_BUDGET, int(total_ram() * 0.8))
-    jobs = args.jobs or max(1, min(cpus, budget // JOB_MEM))
+    budget, why_budget = compile_budget()
+    estimates = chunk_memory(gen, mods)
+    giants = {f: e for f, e in estimates.items() if e > LIGHT_MEM}
+    jobs, giant_depth = plan_jobs(list(estimates.values()), cpus, budget)
+    if args.jobs:   # given: that many jobs; the giants still at most as the budget allows
+        jobs, giant_depth = args.jobs, max(1, min(args.jobs, giant_depth))
+    print(f'build_game: compile memory {budget / GiB:.1f} GiB ({why_budget}): {jobs} jobs, at most {giant_depth} of the '
+          f'{len(giants)} giant chunks at once (the largest about {max(giants.values(), default=0) / GiB:.1f} GiB)',
+          flush=True)
     missing = [n for n in names if n not in hashes]
     if missing:
         sys.exit(f'{expected}: no exefs_sha256 for {missing}')
@@ -1116,7 +1226,7 @@ def main():
                  f'INSTALL_SIDE source beside {runtime_lib.name}')
     edges = {}
     text, objs, exe = ninja_file(gen, out, mods, jobs, skip, pairs is not None, runtime_lib,
-                                 args.make_runtime_lib, edges)
+                                 args.make_runtime_lib, edges, giants, giant_depth)
     write_if_changed(out / 'build.ninja', text)
 
     env = dict(os.environ)

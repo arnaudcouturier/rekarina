@@ -9,9 +9,11 @@
 //
 // The log names each place the first time it runs, and every 20 s what some of them changed.
 #include <math.h>
+#include <stdio.h>
 #include <stdint.h>
 #include <string.h>
 
+#include "cfg.h"
 #include "host.h"
 #include "platform/platform.h"
 
@@ -104,9 +106,60 @@ static float carry_whole(uint64_t at, float amount) {
 // set daytime, main+0x3cdfbc after fadd s0, s0, s0: s0 = 2 * step game seconds, which the clock object (x19) cuts and
 // stores at +0x3c. Writes s0: its whole seconds, the fraction kept per clock. The log gives the seconds added per
 // second of wall time (120 at any frame rate is the game's own speed: 2 a 60 Hz frame) and what the cut would have.
-static struct { int seen; uint64_t next, last_ns; long long calls, game, cut, wall_ns; } day;
+// REKARINA_DAYTIME=HH:MM, a test knob: the clock is held at that time of day, so a run (a warp included) plays at night
+// without a save made at night. The clock (x19) keeps the time of day at +0x28 in seconds since midnight (0..86399;
+// further on, this update adds its step there and carries whole days into +0x2c), and the next update holds it again
+// after anything set it. That is enough where the time runs (the field). A town's time does not run: its load takes
+// 06:00, 20:00 or 00:00 from two game-data bools (main+0x345c450: 0x804aec99 clear -> 06:00; set, with 0x8592aa82 set
+// -> 20:00, clear -> 00:00; the times are the table at main+0x3c834e8). So the knob sets them too, each update, to the side of 06:00-18:00 the held time is on (a time from 18:00 on:
+// 20:00, before 06:00: 00:00), and a warp into a town at night arrives at night.
+static struct { int seen; uint64_t next, last_ns; long long calls, game, cut, wall_ns; int hold, flags_said; } day = {.hold = -2};
+
+// A game-data bool by its name's hash, written in place (the manager main+0x4c7e180 -> holder -> manager; its hash
+// table +0x20 of {hash, index} pairs, +0x2c slots, probed from hash % slots on; the values +0x18, 0x18 bytes each,
+// +0x10 of them, the bool at +0x16), as main+0x345c450 reads it. 1 written, 0 not there.
+static int game_bool_set(uint32_t hash, int value) {
+    uint64_t holder = 0, mgr = 0, keys = 0, vals = 0;
+    if (!plat_mem_read(MOD_MAIN_BASE + 0x4c7e180, &holder, 8) || !holder || !plat_mem_read(holder, &mgr, 8) || !mgr ||
+        !plat_mem_read(mgr + 0x20, &keys, 8) || !keys || !plat_mem_read(mgr + 0x18, &vals, 8) || !vals)
+        return 0;
+    uint32_t slots = 0, count = 0;
+    if (!plat_mem_read(mgr + 0x2c, &slots, 4) || !slots || !plat_mem_read(mgr + 0x10, &count, 4)) return 0;
+    uint32_t start = hash % slots, i = start;
+    do {
+        uint32_t kv[2];
+        if (!plat_mem_read(keys + (uint64_t)i * 8, kv, 8) || !kv[0]) return 0;
+        if (kv[0] == hash) {
+            uint64_t at = vals + (uint64_t)(kv[1] < count ? kv[1] : 0) * 0x18 + 0x16;
+            uint8_t v = (uint8_t)(value != 0);
+            if (!plat_mem_readable(at, 1)) return 0;
+            memcpy((void *)(uintptr_t)at, &v, 1);
+            return 1;
+        }
+        i = i + 1 >= slots ? 0 : i + 1;
+    } while (i != start);
+    return 0;
+}
+
 static void day_clock(Cpu *c) {
     first_run(&day.seen, "the day's clock keeps the fraction of its seconds (set daytime)");
+    if (day.hold == -2) {
+        const char *e = cfg_get("REKARINA_DAYTIME");
+        int h = -1, m = 0;
+        day.hold = e && sscanf(e, "%d:%d", &h, &m) >= 1 && h >= 0 && h < 24 && m >= 0 && m < 60 ? h * 3600 + m * 60 : -1;
+        if (day.hold >= 0) rt_log("oot fps: the day's clock is held at %02d:%02d (REKARINA_DAYTIME)", h, m);
+    }
+    if (day.hold >= 0) {
+        uint32_t t = (uint32_t)day.hold;
+        memcpy((void *)(uintptr_t)(c->x[19] + 0x28), &t, 4);
+        int night = day.hold >= 18 * 3600 || day.hold < 6 * 3600, evening = day.hold >= 18 * 3600;
+        int a = game_bool_set(0x804aec99u, night), b = game_bool_set(0x8592aa82u, evening);
+        if (day.flags_said != 1 + a + 2 * b) {
+            day.flags_said = 1 + a + 2 * b;
+            rt_log("oot fps: the towns' time of day: game-data bools %s (0x804aec99 %d: %s, 0x8592aa82 %d: %s)",
+                   a && b ? "set" : "not all found", night, a ? "written" : "not there", evening, b ? "written" : "not there");
+        }
+    }
     float amount = vget(c, 0), step = frame_step(), out = amount;
     if (short_frame(step)) out = carry_whole(c->x[19] + 0x3c, amount), vset(c, 0, out);
     uint64_t now = plat_now_ns(), last = __atomic_exchange_n(&day.last_ns, now, __ATOMIC_RELAXED);

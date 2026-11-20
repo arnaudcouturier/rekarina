@@ -545,6 +545,7 @@
     [UI_REPORT_LAST_RUN] = "Der letzte Start endete mit einem Fehler.",
     [UI_REPORT_LAST_RUN_HINT] = "Zum Melden: Esc, dann Erweitert > Problembericht erstellen. Es entsteht eine Datei zum Anhängen.",
     [UI_REPORT_CRASHED] = "Rekarina wurde mit einem Fehler beendet.\n\nWas passiert ist, steht am Ende des Protokolls:\n%s\n\nZum Melden starte das Spiel erneut und wähle Esc > Erweitert > Problembericht erstellen (oder Problembericht im Launcher): Protokolle, Einstellungen und Systemangaben kommen in eine ZIP-Datei. Nichts wird gesendet.",
+    [UI_ROMFS_MISSING] = "Rekarina kann deinen Spiel-Dump nicht öffnen:\n%s\n\nDas Spiel liest seine Daten bei jedem Start aus dieser Datei. Wenn du sie verschoben oder umbenannt hast oder OneDrive sie nur online hält, öffne den Rekarina Launcher und drücke „Spielen“: Er fragt, wo die Datei jetzt liegt, und verweist das Spiel darauf. Die Datei an diesen Ort zurückzulegen geht auch.",
     [UI_MENU_KBM_OFF] = "Tastatur und Maus aus mit Controller",
     [UI_MENU_KBM_OFF_DESC] = "Solange ein Controller verbunden ist, nimmt das Spiel nichts von Tastatur und Maus an (eine gedrückte Taste, eine angestoßene Maus). Dieses Menü, F11 und die Screenshot-Taste funktionieren weiter.",
     [UI_MENU_SHOT_KEY] = "Screenshot-Taste",

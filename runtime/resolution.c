@@ -180,11 +180,11 @@ static int bigger(void) {
 }
 
 // The generated C carries the output and scene patch sets for the builds that have them. Without them (OoT) the game draws
-// at its own sizes, and its heap grows for its widescreen picture instead (widescreen.c).
+// at its own sizes, and its heap grows for its full-size scene and its widescreen picture instead (widescreen.c).
 int res_adjustable(void) { return rt_patch_set("output") >= 0 && rt_patch_set("scene") >= 0; }
 
 uint64_t res_heap_extra_kib(void) {
-    if (!res_adjustable()) return wide_heap_extra_kib();   // OoT: its widescreen picture (widescreen.c)
+    if (!res_adjustable()) return wide_heap_extra_kib();   // OoT: its scene and widescreen picture (widescreen.c)
     if (!bigger()) return 0;
     double grow = fmax(0.0, (double)R.ow * R.oh / (BASE_W * BASE_H) - 1.0) +
                   fmax(0.0, (double)R.hw * R.hh / (SCENE_W * SCENE_H) - 1.0);

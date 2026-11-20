@@ -37,9 +37,43 @@
     <p class="sub rv">Every version, the newest first. The launcher offers a new version by itself; these files are for a fresh install or a look back. The same releases with their source code are in <a href="https://git.rekarina.dev/rekarina/rekarina/releases" rel="noopener">the repository</a>.</p>
     <div class="list">
         <!-- release:list -->
-        <article class="rel panel rv" id="v1.2.5">
-          <div class="head"><h2>Rekarina 1.2.5</h2><span class="meta">20 November 2026 &middot; the newest</span></div>
+        <article class="rel panel rv" id="v1.2.6">
+          <div class="head"><h2>Rekarina 1.2.6</h2><span class="meta">20 November 2026 &middot; the newest</span></div>
           <details class="notes" open>
+            <summary>Release notes</summary>
+            <h3>Rekarina 1.2.6: fixes from your reports</h3>
+            <p>Thanks for all the reports overnight. Open the launcher and it offers the update.</p>
+            <p><b>Fixed</b></p>
+            <ul>
+              <li>On a PC with 16 GB of memory the whole system could freeze while the setup compiled the game. The setup now runs as many compile jobs as the free memory allows, keeps the heaviest parts apart, and runs at a lower priority, so the PC stays usable. On such a PC the compile takes longer than before, but it gets through (thanks MATEASKULLKID).</li>
+              <li>Controller vibration now defaults to 100 %, the game's own strength, instead of 130 % (thanks 아무개).</li>
+              <li>If your dump was moved, renamed or kept online-only by OneDrive, the game crashed at start. Now it says which file it can't open, and Play in the launcher asks where the file is now and points the game to it, without building again (thanks OLK, Flauschiges Frettchen).</li>
+              <li>If a downloaded Rekarina.exe got saved over the game's own, Play just reopened the launcher. The launcher now spots that and puts the game back (thanks SnooMacaroons3589).</li>
+              <li>If the game stops right at its start, the launcher comes back and shows why.</li>
+              <li>Mods that ship the game's resource size table, like model mods, no longer crash the game at start (thanks OmniiOMEGA).</li>
+              <li>The game no longer freezes when you enter the building beside the Market's gate: it ran out of room for its picture there (thanks 아무개).</li>
+              <li>On cards too slow for the movies' full quality, a movie now settles within its first second instead of playing slowly for about ten seconds with the sound running ahead, and the next start remembers it (thanks Alejandro Sanz II, Doulos).</li>
+              <li>A rare crash where the game stopped itself on a busy CPU should be gone. It may be the crash after the first boss: tell me if that still happens (thanks Nehalem).</li>
+            </ul>
+            <p><b>Still open, I'm on it</b></p>
+            <ul>
+              <li>Crashes and growing video memory around the castle and on map changes on some PCs (thanks huchi001), a crash after loading a save on the ROG Ally X (thanks k4k4shi).</li>
+              <li>Flickering of distant shadows, tree crowns and bushes, and of lamp light at night and on water (thanks Arrant for the clips).</li>
+              <li>With a mod that replaces the game's Bootup pack the picture is a bit softer and the Xbox / PlayStation button pictures fall back to the Switch's.</li>
+              <li>Depth of field looks pixelated; bosses above 60 fps still need checking; memory on 16 GB PCs while playing; Linux and Steam Deck.</li>
+            </ul>
+            <p>Something broken? Esc, Advanced, Make a problem report, and post the zip in #bug-reports.</p>
+          </details>
+          <div class="files">
+          <a class="plate" href="https://dl.rekarina.dev/releases/1.2.6/Rekarina.exe">Rekarina.exe <small>155 MB</small></a>
+          <a class="plate" href="https://dl.rekarina.dev/releases/1.2.6/Rekarina-Setup-1.2.6-windows.zip">Setup as a .zip <small>155 MB</small></a>
+          <a class="plate" href="https://dl.rekarina.dev/releases/1.2.6/SHA256SUMS">SHA256SUMS</a>
+          </div>
+          <div class="sum"><b>SHA-256 of Rekarina.exe 1.2.6</b><code>84a4cc2a528df9bd1565e8b4df3e645ee998e56aad5258be673eade0f270fb2a</code></div>
+        </article>
+        <article class="rel panel rv" id="v1.2.5">
+          <div class="head"><h2>Rekarina 1.2.5</h2><span class="meta">20 November 2026</span></div>
+          <details class="notes">
             <summary>Release notes</summary>
             <h3>Rekarina 1.2.5: fixes from your reports</h3>
             <p>Thanks again for all the reports. Open the launcher and it offers the update.</p>

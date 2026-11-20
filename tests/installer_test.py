@@ -1482,5 +1482,70 @@ class DlssTest(unittest.TestCase):
         self.assertEqual(self.warnings(), [])
 
 
+class DumpPathTest(unittest.TestCase):
+    """installer/oot.py's view of the dump the game reads (its settings file's romfs line) and of the game exe: a dump
+    moved or renamed after the setup is found missing and its new place written into the file without touching any other
+    line; the downloaded one-file launcher in the game's place is told from the game, and tools/package_oot.py moves it
+    aside before it copies the game."""
+
+    INI_TEXT = ('# rekarina.ini: the settings of Rekarina.\r\n\r\n[paths]\r\n# The game: the .nup container.\r\n'
+                'romfs = D:/Dumps/old name.nup\r\n\r\n[display]\r\nfullscreen = 1\r\n')
+
+    def setUp(self):
+        from installer import oot
+        self.oot = oot
+        self.tmp = tempfile.TemporaryDirectory()
+        self.dest = Path(self.tmp.name) / 'game'
+        self.dest.mkdir()
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_missing_then_pointed_to_the_new_place(self):
+        ini_file = self.dest / 'rekarina.ini'
+        ini_file.write_bytes(b'\xef\xbb\xbf' + self.INI_TEXT.encode())
+        self.assertEqual(self.oot.ini_dump(self.dest), Path('D:/Dumps/old name.nup'))
+        new = Path(self.tmp.name) / 'dumps' / 'new name.nup'
+        new.parent.mkdir()
+        new.write_bytes(b'nup')
+        if not Path('D:/Dumps/old name.nup').exists():
+            self.assertEqual(self.oot.dump_problem(self.dest), ('missing', Path('D:/Dumps/old name.nup')))
+        self.assertTrue(self.oot.set_ini_dump(self.dest, new))
+        self.assertEqual(ini_file.read_bytes(), b'\xef\xbb\xbf' + self.INI_TEXT.replace('D:/Dumps/old name.nup',
+                                                                                       new.as_posix()).encode())
+        self.assertIsNone(self.oot.dump_problem(self.dest))
+        self.assertFalse(self.oot.set_ini_dump(self.dest, new))   # already there: the file is not written
+
+    def test_a_file_without_the_line_gets_it_in_paths(self):
+        (self.dest / 'rekarina.ini').write_text('[paths]\n\n[display]\nfullscreen = 1\n', encoding='utf-8')
+        self.assertIsNone(self.oot.dump_problem(self.dest))   # nothing named: nothing to say
+        self.assertTrue(self.oot.set_ini_dump(self.dest, Path('E:/x.nup')))
+        self.assertEqual((self.dest / 'rekarina.ini').read_text(encoding='utf-8'),
+                         '[paths]\nromfs = E:/x.nup\n\n[display]\nfullscreen = 1\n')
+        self.assertFalse(self.oot.set_ini_dump(Path(self.tmp.name) / 'nothing', Path('E:/x.nup')))   # no settings file
+
+    def test_the_one_file_launcher_is_not_the_game(self):
+        exe = self.dest / 'Rekarina.exe'
+        zip_bytes = b'PK' + bytes(100)
+        program = b'MZ' + bytes(300)
+        trailer = (b'RKSFX001' + len(program).to_bytes(8, 'little') + len(zip_bytes).to_bytes(8, 'little') +
+                   b'1.2.5'.ljust(32, b'\0'))
+        exe.write_bytes(program + zip_bytes + trailer)
+        self.assertTrue(self.oot.is_single_launcher(exe))
+        sys.path.insert(0, str(ROOT / 'tools'))
+        try:
+            import package_oot
+        finally:
+            sys.path.remove(str(ROOT / 'tools'))
+        with contextlib.redirect_stdout(io.StringIO()):
+            package_oot.set_single_aside(exe)
+        self.assertFalse(exe.exists())
+        self.assertTrue(self.oot.is_single_launcher(self.dest / package_oot.SINGLE_ASIDE))
+        exe.write_bytes(b'MZ' + bytes(400) + b'RKSFX001' + bytes(48))   # the marker without a zip that fits: the game
+        self.assertFalse(self.oot.is_single_launcher(exe))
+        package_oot.set_single_aside(exe)
+        self.assertTrue(exe.exists())
+
+
 if __name__ == '__main__':
     unittest.main()

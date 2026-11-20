@@ -225,6 +225,23 @@ static void svc_body(Cpu *c, uint32_t imm, uint64_t pc) {
         char at[160];
         rt_log("guest Break reason %#llx result %#x at %s", (unsigned long long)x[0], result,
                ldr_describe(pc, at, sizeof at));
+#ifdef GAME_OOT
+        {   // OoT's record ring (the object at [[main+0x4c7e180]], written by main+0xd24e50): a writer aborts when the
+            // ring is full (its next record, bits 0-19 of the word at +0x640, at the capacity at +0x630) or when the
+            // generation in bits 28-31 changed while it copied its text. The ring as it is now, for the report.
+            const RtLoaded *m = ldr_module(0);
+            uint64_t p = 0, o = 0;
+            uint32_t cap = 0, w = 0;
+            if (m && readable(m->base + 0x4c7e180, 8)) memcpy(&p, (const void *)(uintptr_t)(m->base + 0x4c7e180), 8);
+            if (p && readable(p, 8)) memcpy(&o, (const void *)(uintptr_t)p, 8);
+            if (o && readable(o + 0x630, 0x14)) {
+                memcpy(&cap, (const void *)(uintptr_t)(o + 0x630), 4);
+                memcpy(&w, (const void *)(uintptr_t)(o + 0x640), 4);
+                rt_log("guest Break: the record ring at %#llx: capacity %u, next record %u, records written %u, generation %u",
+                       (unsigned long long)o, cap, w & 0xfffff, (w >> 20) & 0xff, w >> 28);
+            }
+        }
+#endif
         if (x[0] & 0x80000000ull) {
             x[0] = R_OK;
             return;

@@ -1179,6 +1179,7 @@ int plat_view_close(PlatView *v, uint64_t keep) {
     return ok;
 }
 
+int plat_last_os_error(void) { return errno; }
 int plat_fs_os_error(void) { return errno; }
 
 static int fs_err(int e) {

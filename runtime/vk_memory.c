@@ -621,13 +621,22 @@ VmaAllocation vk_mem_phys_twin(VmaAllocation main) {
         if (!r->alloc_tw) {
             VmaAllocationInfo info;
             vmaGetAllocationInfo(c->vma, main, &info);
-            VkMemoryRequirements req = {.size = info.size, .alignment = 65536, .memoryTypeBits = 1u << info.memoryType};
+            VkDeviceSize tw_size = info.size;
+#ifdef GAME_OOT
+            // The game's texture heap grown for the full-size scene (widescreen.c wide_heap_extra_kib): the twin covers
+            // its shipped part, where every frame's targets lie. The growth holds targets only where a frame needs more
+            // than that (many square shadow maps); one there at an odd offset takes memory of its own (bind_pool_memory
+            // finds it past the twin's end), so under VRAM pressure the growth does not cost its size twice.
+            uint64_t grown = res_heap_extra_kib() << 10, shipped = wide_heap_base_kib() << 10;
+            if (grown && r->size == shipped + grown && tw_size >= shipped) tw_size = shipped;
+#endif
+            VkMemoryRequirements req = {.size = tw_size, .alignment = 65536, .memoryTypeBits = 1u << info.memoryType};
             VmaAllocationCreateInfo ai = {.flags = VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT,
                                           .memoryTypeBits = 1u << info.memoryType};
             if (vmaAllocateMemory(c->vma, &req, &ai, &r->alloc_tw, NULL) != VK_SUCCESS) r->alloc_tw = NULL;
             vk_vma_name(r->alloc_tw, "pool:twin");   // DEBUG-VMANAME
             rt_log("vk: physical pool %#llx: a twin block of %llu MiB for images at odd offsets%s", (unsigned long long)r->lo,
-                   (unsigned long long)(info.size >> 20), r->alloc_tw ? "" : " could not be allocated");
+                   (unsigned long long)(tw_size >> 20), r->alloc_tw ? "" : " could not be allocated");
         }
         tw = r->alloc_tw;
         break;

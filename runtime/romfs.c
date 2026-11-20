@@ -38,12 +38,14 @@
 #include "input_map.h"
 #include "mods.h"
 #include "prep.h"
+#include "report.h"
 #include "romfs_config.h"
 #include "romfs_path.h"
 #include "platform/platform.h"
 #include "restbl.h"
 #include "romfs_nup.h"
 #include "sha256.h"
+#include "ui_text.h"
 
 #include <zstd.h>
 
@@ -400,14 +402,24 @@ static void shipped_add(const char *file, int mod, int other) {
     shipped[nshipped++] = (Shipped){copy, mod, other};
 }
 
-// The game's table: the one System/Resource/ResourceSizeTable.*.rsizetable.zs of the RomFS.
+// The number of a ResourceSizeTable.Product.<n>... name, -1 without one.
+static long restbl_product(const char *rel) {
+    const char *p = strstr(rel, ".Product.");
+    if (!p || p[9] < '0' || p[9] > '9') return -1;
+    return strtol(p + 9, NULL, 10);
+}
+
+// The game's table: the System/Resource/ResourceSizeTable.*.rsizetable.zs of the RomFS, the newest when there are
+// several. A RomFS read from a .nup holds the base package's table beside the update's (OoT: Product.100 and
+// Product.111); the game reads its own version's, the update's.
 static void restbl_find(void) {
+    long best = -2;
     for (uint64_t i = lower("System/Resource/ResourceSizeTable."); i < file_count; i++) {
         const char *n = entry_name(entry(i));
         if (strncmp(n, "System/Resource/ResourceSizeTable.", 34)) break;
-        if (is_restbl(n) && strlen(n) < sizeof restbl_rel) {
+        if (is_restbl(n) && strlen(n) < sizeof restbl_rel && restbl_product(n) > best) {
             snprintf(restbl_rel, sizeof restbl_rel, "%s", n);
-            return;
+            best = restbl_product(n);
         }
     }
 }
@@ -634,6 +646,30 @@ static uint64_t content_size(PlatFile *f, uint64_t off, uint64_t size, const cha
     return c == ZSTD_CONTENTSIZE_ERROR ? size : c == ZSTD_CONTENTSIZE_UNKNOWN ? size * 4 : c;
 }
 
+// The first n bytes of RomFS file i as the game reads them: its range of the image, or with the RomFS read from a .nup,
+// the inflated bytes of a file the container stores as zstd (romfs_nup.c). 1 when all n were read.
+static int game_read(uint64_t i, Entry e, void *buf, uint64_t n) {
+    if (n > e.size) return 0;
+    if (nup_mode && nup_compressed(i)) {
+        nup_acquire(i);
+        const uint8_t *p = nup_inflated(image, i, e.offset, e.size);
+        if (p) memcpy(buf, p, (size_t)n);
+        nup_release(i);
+        return p != NULL;
+    }
+    return n <= UINT32_MAX && read_at(image, buf, (uint32_t)n, e.offset) == (int64_t)n;
+}
+
+// content_size of RomFS file i itself.
+static uint64_t game_content_size(uint64_t i, Entry e, const char *rel) {
+    if (!ends_with(rel, ".zs")) return e.size;
+    uint8_t head[18];
+    uint64_t n = e.size < sizeof head ? e.size : sizeof head;
+    if (!game_read(i, e, head, n)) return e.size;
+    unsigned long long c = ZSTD_getFrameContentSize(head, (size_t)n);
+    return c == ZSTD_CONTENTSIZE_ERROR ? e.size : c == ZSTD_CONTENTSIZE_UNKNOWN ? e.size * 4 : c;
+}
+
 // A table from its zstd bytes; NULL when they are not one.
 static Restbl *restbl_unpack(const void *z, size_t n) {
     unsigned long long raw = ZSTD_getFrameContentSize(z, n);
@@ -659,7 +695,7 @@ static void restbl_overlay(void) {
     Entry ge = entry(gi);
     void *gz = ge.size < (64u << 20) ? malloc((size_t)ge.size) : NULL;
     Restbl *base = NULL, *out = NULL;
-    if (gz && read_at(image, gz, (uint32_t)ge.size, ge.offset) == (int64_t)ge.size) {
+    if (gz && game_read(gi, ge, gz, ge.size)) {
         base = restbl_unpack(gz, (size_t)ge.size);
         out = restbl_unpack(gz, (size_t)ge.size);
     }
@@ -707,7 +743,7 @@ static void restbl_overlay(void) {
         if (o->index != ADDED) {
             if (!restbl_get(base, key, &entry_size)) continue;   // the game sizes it without the table (streamed)
             Entry e = entry(o->index);
-            uint64_t was = mc ? e.size : content_size(image, e.offset, e.size, o->name);
+            uint64_t was = mc ? e.size : game_content_size(o->index, e, o->name);
             want = restbl_grow(key, entry_size, was, now, mc);
         } else {
             want = restbl_estimate(key, mc ? now * 8 : now);   // a mesh codec file unpacks to several times its size
@@ -1519,8 +1555,12 @@ static void overlay_init(void) {
     overlay_contest();
     mods_overlay_log();
     heapdef_overlay();
-#ifndef GAME_NS2   // TotK's generated overlays: its resource table, HeapDef and camera pack; they read the image raw
+    // A mod's resource size table is merged with the game's and the port's (restbl_overlay), for both games: served
+    // as it came, a mod's table built from the game's own gave the port's larger button font (romfs-patches
+    // Font2/Scalable/External, 117 KB against the game's entry of 14.5 KB) too small a buffer, the font did not load,
+    // and the game stopped at its start on a null font (1.2.5, a model mod that ships the table).
     restbl_overlay();
+#ifndef GAME_NS2   // TotK's generated camera pack; it reads the image raw
     camera_overlay();
 #endif
     added_init();
@@ -1589,6 +1629,18 @@ static int ends_with_nup(const char *p) {
     return n > 4 && !strcasecmp(p + n - 4, ".nup");
 }
 
+// The dump's container cannot be opened: moved, renamed, or kept online only by OneDrive (two players of 1.2.5: the
+// game ended at its start, with this FATAL line in the log and the crash box that asks for a report). The box names
+// the file and what to do: the launcher asks where the file is now and points rekarina.ini to it (installer/gui_oot.py
+// start_game, installer/oot.py set_ini_dump). Then the game ends; the FATAL line stays for the log readers.
+static void dump_missing(const char *path, int os_error) {
+    static char text[4096];
+    snprintf(text, sizeof text, menu_text(UI_ROMFS_MISSING), path);
+    report_fatal_box(text);
+    rt_fatal("RomFS: the game container %s is missing or cannot be opened (OS error %d; rekarina.ini [paths] romfs, "
+             "REKARINA_ROMFS or --romfs names the .nup)", path, os_error);
+}
+
 // The RomFS from a .nup file (REKARINA_ROMFS / --romfs naming the container itself).
 static int init_nup(void) {
     const char *nup = rt_config()->romfs;
@@ -1602,7 +1654,7 @@ static int init_nup(void) {
     else strcpy(index_dir, ".");
     need(snprintf(image_file, sizeof image_file, "%s", nup) < (int)sizeof image_file, "image path");
     image = open_read(image_file);
-    if (!image) rt_fatal("RomFS: the game container %s is missing (REKARINA_ROMFS or --romfs names the .nup)", image_file);
+    if (!image) dump_missing(image_file, plat_last_os_error());
     index_bytes = nup_index(image, image_file, &index_size, &file_count, &strings_offset, &nup_extra);
     nup_mode = 1;
     overlay_init();

@@ -316,6 +316,32 @@ static void find_home(const wchar_t *appdata, const wchar_t *args, int quiet, wc
     *asked = 1;
 }
 
+/* This file is the game folder's Rekarina.exe: the folder holds rekarina-install.json, and this program has the game's
+   name. Saved there (a download into the game folder, or over the game), it took the game's place, and the launcher's
+   Play started this program again instead of the game (2026-11-20). The player is told, and the launcher opens on that
+   folder, where Play puts the game back (installer/gui_oot.py repair_game; the package step moves this file aside as
+   Rekarina-download.exe). 1 with the folder in `game`. */
+static int in_game_folder(wchar_t *game) {
+    wcscpy(game, g_self);
+    wchar_t *leaf = wcsrchr(game, L'\\');
+    if (!leaf || _wcsicmp(leaf + 1, L"Rekarina.exe")) return 0;
+    *leaf = 0;
+    wchar_t record[PATH_CHARS];
+    swprintf(record, PATH_CHARS, L"%ls\\rekarina-install.json", game);
+    if (!exists(record)) return 0;
+    static wchar_t text[PATH_CHARS + 1024];
+    swprintf(text, PATH_CHARS + 1024, russian()
+             ? L"Этот Rekarina.exe — скачанный файл: установщик и лаунчер в одном файле. Он лежит в папке игры\n%ls\n"
+               L"на месте Rekarina.exe самой игры.\n\nСейчас откроется лаунчер: «Играть» вернёт игру на место. "
+               L"Держите скачанный файл в другой папке, например в «Загрузках»."
+             : L"This Rekarina.exe is the download: the setup and the launcher in one file. It is in the game folder\n%ls\n"
+               L"in the place of the game's own Rekarina.exe.\n\nThe launcher opens now: Play puts the game back. "
+               L"Keep the download in another folder, such as Downloads.",
+             game);
+    MessageBoxW(NULL, text, L"Rekarina", MB_OK | MB_ICONWARNING);
+    return 1;
+}
+
 /* The arguments the launcher gets: this program's own (--choose, --home <folder>) taken out of a copy of args. */
 static void launcher_args(const wchar_t *args, wchar_t *out, size_t cap) {
     out[0] = 0;
@@ -378,11 +404,12 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, wchar_t *args, int show) {
                  L"Windows не смогла распаковать файлы Rekarina (tar.exe; нужна Windows 10 версии 1803 или новее).");
     }
     if (unpack_only) return 0;   /* a test, or a setup script: the folder alone */
-    wchar_t command[PATH_CHARS + 4096];
+    wchar_t command[PATH_CHARS + 4096], game[PATH_CHARS];
     /* the game folder the launcher offers after the choice: beside the setup, under the same folder */
     static wchar_t rest[4096];
     launcher_args(args, rest, 4096);
-    if (asked) swprintf(command, PATH_CHARS + 4096, L"\"%ls\" --dest \"%ls\\game\" %ls", launcher, home, rest);
+    if (in_game_folder(game)) swprintf(command, PATH_CHARS + 4096, L"\"%ls\" --dest \"%ls\" %ls", launcher, game, rest);
+    else if (asked) swprintf(command, PATH_CHARS + 4096, L"\"%ls\" --dest \"%ls\\game\" %ls", launcher, home, rest);
     else swprintf(command, PATH_CHARS + 4096, L"\"%ls\" %ls", launcher, rest);
     if (run(command, g_dir, 0, 0) < 0)
         fail(L"Rekarina's launcher did not start.", L"Лаунчер Rekarina не запустился.");

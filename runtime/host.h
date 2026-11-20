@@ -424,7 +424,8 @@ int frame_step_realtime(void);                             // the real-time step
 void wide_init(void);                                      // widescreen.c
 int wide_available(void);                                  // the generated C has the widescreen sets
 void wide_picture(unsigned *w, unsigned *h);               // the picture the game draws (its scene is never larger)
-uint64_t wide_heap_extra_kib(void);                        // the texture heap's growth for the widescreen picture
+uint64_t wide_heap_extra_kib(void);                        // the texture heap's growth (OoT: full scene, widescreen)
+uint64_t wide_heap_base_kib(void);                         // the texture heap's shipped size (OoT)
 double wide_scale_k(void);                                 // the picture's height over the game's 1440
 int res_adjustable(void);                                  // the generated C has the output and scene patch sets
 void res_fixed_present(void);                              // frame_rate.c: each present, the fixed scene scale

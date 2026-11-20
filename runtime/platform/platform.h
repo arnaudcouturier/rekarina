@@ -376,6 +376,7 @@ enum { PLAT_FS_MISSING = -1, PLAT_FS_FILE, PLAT_FS_DIR, PLAT_FS_LINK };   // pla
                                                                          // reparse point, never followed
 int plat_fs_kind(const char *path);
 int plat_fs_os_error(void);   // the OS error code (GetLastError, errno) of this thread's last failed plat_fs_* call
+int plat_last_os_error(void);   // GetLastError / errno now: right after a failed call of this thread, its reason
 int plat_fs_mkdir(const char *path);                      // PLAT_FS_EXISTS when something is there
 int plat_fs_rmdir(const char *path);                      // an empty directory (a read-only one too), or a link to one
 int plat_fs_unlink(const char *path);                     // a file or a link; a read-only one too
