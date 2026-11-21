@@ -97,7 +97,8 @@ static uint32_t fbits(float f) { uint32_t u; memcpy(&u, &f, 4); return u; }
 // Build a valid Vulkan 1.3 SPIR-V fragment shader matching OoT's translated ACES tonemap shape.
 // shape: 1 = scene*gain (scalar stores), 2 = (scene*gain)*local_exp with interleaved scalar stores & func vars,
 //        3 = fma(scene, gain, color), 4 = fma(scene*gain, local_exp, color), 5 = fallback vector store,
-//        6 = non-ACES shader.
+//        6 = translator FP16/NaN-sanitized output store (OpLoad site_var -> OpIsNan/FMax/FMin/Bitcast/Select -> OpStore),
+//        7 = non-ACES shader.
 static uint32_t *make_aces_spv(int shape, uint64_t *words_out) {
     SpvBuf b = {0};
     uint32_t hdr[5] = {SPV_MAGIC, 0x00010500u, 0, 200, 0};
@@ -128,9 +129,11 @@ static uint32_t *make_aces_spv(int shape, uint64_t *words_out) {
     // Types
     SPV_INS(&b, SPV_OP_TYPE_VOID, 2);
     SPV_INS(&b, SPV_OP_TYPE_FUNCTION, 3, 2);
+    SPV_INS(&b, SPV_OP_TYPE_BOOL, 5);
     SPV_INS(&b, SPV_OP_TYPE_FLOAT, 6, 32);
     SPV_INS(&b, SPV_OP_TYPE_VECTOR, 7, 6, 4);      // vec4
     SPV_INS(&b, SPV_OP_TYPE_INT, 8, 32, 1);        // i32
+    SPV_INS(&b, SPV_OP_TYPE_INT, 14, 32, 0);       // u32
     SPV_INS(&b, SPV_OP_TYPE_POINTER, 9, SPV_SC_INPUT, 7);
     SPV_INS(&b, SPV_OP_TYPE_POINTER, 10, SPV_SC_OUTPUT, 7);
     SPV_INS(&b, SPV_OP_TYPE_POINTER, 11, SPV_SC_OUTPUT, 6);
@@ -154,19 +157,22 @@ static uint32_t *make_aces_spv(int shape, uint64_t *words_out) {
     SPV_INS(&b, SPV_OP_CONSTANT, 8, 43, 3);
     SPV_INS(&b, SPV_OP_CONSTANT, 6, 50, fbits(0.0f));
     SPV_INS(&b, SPV_OP_CONSTANT, 6, 51, fbits(1.0f));
-    SPV_INS(&b, SPV_OP_CONSTANT, 6, 52, fbits(shape == 6 ? 1.5f : 2.51f));
+    SPV_INS(&b, SPV_OP_CONSTANT, 6, 52, fbits(shape == 7 ? 1.5f : 2.51f));
     SPV_INS(&b, SPV_OP_CONSTANT, 6, 53, fbits(0.03f));
     SPV_INS(&b, SPV_OP_CONSTANT, 6, 54, fbits(2.43f));
     SPV_INS(&b, SPV_OP_CONSTANT, 6, 55, fbits(0.59f));
     SPV_INS(&b, SPV_OP_CONSTANT, 6, 56, fbits(0.14f));
     SPV_INS(&b, SPV_OP_CONSTANT, 6, 57, fbits(0.25f));   // add_color
+    SPV_INS(&b, SPV_OP_CONSTANT, 14, 58, 0u);
+    SPV_INS(&b, SPV_OP_CONSTANT, 6, 59, fbits(65504.0f));
 
     // main()
     SPV_INS(&b, SPV_OP_FUNCTION, 2, 4, 0, 3);
     SPV_INS(&b, SPV_OP_LABEL, 60);
     uint32_t next = 70;
-    uint32_t fvar[3];
+    uint32_t fvar[3], cvar[3];
     for (int c = 0; c < 3; c++) { fvar[c] = next++; SPV_INS(&b, SPV_OP_VARIABLE, 13, fvar[c], SPV_SC_FUNCTION); }
+    for (int c = 0; c < 3; c++) { cvar[c] = next++; SPV_INS(&b, SPV_OP_VARIABLE, 13, cvar[c], SPV_SC_FUNCTION); }
     uint32_t in_v = next++;
     SPV_INS(&b, SPV_OP_LOAD, 7, in_v, 30);
     uint32_t local_exp = next++;
@@ -182,7 +188,7 @@ static uint32_t *make_aces_spv(int shape, uint64_t *words_out) {
         uint32_t sc = next++;
         SPV_INS(&b, SPV_OP_COMPOSITE_EXTRACT, 6, sc, in_v, (uint32_t)c);
         uint32_t x = sc;
-        if (shape == 1) {
+        if (shape == 1 || shape == 6) {
             x = next++;
             SPV_INS(&b, SPV_OP_FMUL, 6, x, sc, gain);
         } else if (shape == 2) {
@@ -212,13 +218,32 @@ static uint32_t *make_aces_spv(int shape, uint64_t *words_out) {
         SPV_INS(&b, SPV_OP_FDIV, 6, rcp, 51, den);
         SPV_INS(&b, SPV_OP_FMUL, 6, rat, num, rcp);
         SPV_INS(&b, SPV_OP_EXT_INST, 6, cl[c], 1, shape == 2 ? GLSL_NCLAMP : GLSL_FCLAMP, rat, 50, 51);
-        if (shape != 5) {
+        if (shape == 6) {
+            SPV_INS(&b, SPV_OP_STORE, cvar[c], cl[c]);
+        } else if (shape != 5) {
             uint32_t po = next++;
             SPV_INS(&b, SPV_OP_ACCESS_CHAIN, 11, po, 31, 40u + (uint32_t)c);
             SPV_INS(&b, SPV_OP_STORE, po, cl[c]);
         }
     }
-    if (shape == 5) {
+    if (shape == 6) {
+        // Translator FP16/NaN sanitizer: AccessChain -> Load cvar -> IsNan/FMax/FMin/Bitcast/Select/Bitcast -> Store
+        for (int c = 0; c < 3; c++) {
+            uint32_t po = next++, ld = next++, nan = next++, mx = next++, mn = next++, bu = next++, sel = next++, bf = next++;
+            SPV_INS(&b, SPV_OP_ACCESS_CHAIN, 11, po, 31, 40u + (uint32_t)c);
+            SPV_INS(&b, SPV_OP_LOAD, 6, ld, cvar[c]);
+            SPV_INS(&b, 156 /* OpIsNan */, 5, nan, ld);
+            SPV_INS(&b, SPV_OP_EXT_INST, 6, mx, 1, GLSL_FMAX, ld, 50);
+            SPV_INS(&b, SPV_OP_EXT_INST, 6, mn, 1, 37 /* FMin */, mx, 59);
+            SPV_INS(&b, 124 /* OpBitcast */, 14, bu, mn);
+            SPV_INS(&b, 169 /* OpSelect */, 14, sel, nan, 58, bu);
+            SPV_INS(&b, 124 /* OpBitcast */, 6, bf, sel);
+            SPV_INS(&b, SPV_OP_STORE, po, bf);
+        }
+        uint32_t pa = next++;
+        SPV_INS(&b, SPV_OP_ACCESS_CHAIN, 11, pa, 31, 43);
+        SPV_INS(&b, SPV_OP_STORE, pa, 51);
+    } else if (shape == 5) {
         uint32_t v = next++;
         SPV_INS(&b, SPV_OP_COMPOSITE_CONSTRUCT, 7, v, cl[0], cl[1], cl[2], 51);
         SPV_INS(&b, SPV_OP_STORE, 31, v);
@@ -241,17 +266,34 @@ static void write_spv(const char *path, const uint32_t *w, uint64_t n) {
 }
 
 int main(int argc, char **argv) {
+    // Optional external-file mode: hdr_splice_check --file <in.spv> <out.spv>
+    if (argc == 4 && !strcmp(argv[1], "--file")) {
+        FILE *f = fopen(argv[2], "rb");
+        if (!f) return 2;
+        fseek(f, 0, SEEK_END);
+        long sz = ftell(f);
+        fseek(f, 0, SEEK_SET);
+        uint32_t *buf = malloc((size_t)sz);
+        if (!buf || fread(buf, 1, (size_t)sz, f) != (size_t)sz) { fclose(f); free(buf); return 2; }
+        fclose(f);
+        uint64_t words = (uint64_t)sz / 4;
+        int r = tonemap_splice(&buf, &words);
+        if (r > 0) write_spv(argv[3], buf, words);
+        free(buf);
+        printf("%d\n", r);
+        return r < 0 ? 1 : 0;
+    }
     const char *out_dir = argc > 1 ? argv[1] : NULL;
-    // 1. Test tonemap_splice across all 5 ACES exposure shapes + non-ACES shader
-    for (int shape = 1; shape <= 6; shape++) {
+    // 1. Test tonemap_splice across all 6 ACES shapes (including NaN-sanitized output) + non-ACES shader
+    for (int shape = 1; shape <= 7; shape++) {
         uint64_t n = 0;
         uint32_t *spv = make_aces_spv(shape, &n);
         uint64_t orig_n = n;
         int r = tonemap_splice(&spv, &n);
-        if (shape <= 4) CHECK(r == 2 && n > orig_n, "exposure-traced ACES shape spliced");
+        if (shape <= 4 || shape == 6) CHECK(r == 2 && n > orig_n, "exposure-traced ACES shape spliced");
         else if (shape == 5) CHECK(r == 1 && n > orig_n, "fallback vector-store ACES shape spliced");
         else CHECK(r == 0 && n == orig_n, "non-ACES shader untouched");
-        if (out_dir && shape <= 5) {
+        if (out_dir && shape <= 6) {
             char p[256];
             snprintf(p, sizeof p, "%s/spliced_%d.spv", out_dir, shape);
             write_spv(p, spv, n);

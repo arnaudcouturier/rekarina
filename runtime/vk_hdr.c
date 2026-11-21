@@ -769,19 +769,46 @@ static int tonemap_splice(uint32_t **spirv, uint64_t *words) {
 
     if (!build_dominators(&h, main_start, main_end)) goto fail_0;
 
+    // Collect all ACES clamp sites in main(): clamp(ACES(x), 0, 1) and the Function variable each stores into (if any).
+    enum { MAX_ACES_SITES = 16 };
+    uint64_t site_pos[MAX_ACES_SITES] = {0};
+    uint32_t site_id[MAX_ACES_SITES] = {0}, site_x[MAX_ACES_SITES] = {0}, site_var[MAX_ACES_SITES] = {0};
+    int nsite = 0;
+    for (uint64_t i = main_start; i < main_end && nsite < MAX_ACES_SITES; i += w[i] >> 16) {
+        uint32_t op = w[i] & 0xffff, len = w[i] >> 16;
+        if (op != SPV_OP_EXT_INST || len != 8 || w[i + 3] != h.glsl || !is_clamp(w[i + 4])) continue;
+        uint32_t cid = w[i + 2], tx = 0;
+        if (!match_aces_clamp(&h, cid, &tx)) continue;
+        site_pos[nsite] = i, site_id[nsite] = cid, site_x[nsite] = tx, site_var[nsite] = 0;
+        for (uint64_t j = i + len; j < main_end; j += w[j] >> 16) {
+            if ((w[j] & 0xffff) == SPV_OP_STORE && (w[j] >> 16) >= 3 && w[j + 2] == cid &&
+                w[j + 1] < bound && h.cls[w[j + 1]] == 3) {
+                site_var[nsite] = w[j + 1];
+                break;
+            }
+        }
+        nsite++;
+    }
+    if (nsite < 3) goto fail_0;
+
     // Match the 3 ACES-clamped RGB stores into a single Output variable inside main().
-    // Mode 1: three scalar OpStores through OpAccessChain(out_var, 0/1/2).
+    // Mode 1: three scalar OpStores through OpAccessChain(out_var, 0/1/2), either storing a site directly or loading
+    //         a site's Function variable between the AccessChain and the OpStore (covers translator NaN sanitizers).
     // Mode 2: one vec4 OpStore of OpCompositeConstruct(r, g, b, a) into out_var.
     int store_mode = 0;
     uint32_t out_var = 0, x_in[3] = {0}, ptr_ch[3] = {0}, vec_alpha = 0;
-    uint64_t store_pos[3] = {0};
+    uint64_t store_pos[3] = {0}, chain_pos[3] = {0};
     int32_t store_blk[3] = {-1, -1, -1};
+    int chan_site[3] = {-1, -1, -1};
     int32_t cur_blk = -1;
     uint32_t cand_var[8] = {0};
-    uint64_t cand_pos[8][3] = {{0}};
-    uint32_t cand_x[8][3] = {{0}}, cand_ptr[8][3] = {{0}};
-    int32_t cand_blk[8][3] = {{-1}};
+    uint64_t cand_pos[8][3] = {{0}}, cand_chain[8][3] = {{0}};
+    uint32_t cand_ptr[8][3] = {{0}};
+    int cand_site[8][3];
+    int32_t cand_blk[8][3];
     int cand_mask[8] = {0}, ncand = 0;
+    memset(cand_site, -1, sizeof cand_site);
+    memset(cand_blk, -1, sizeof cand_blk);
 
     for (uint64_t i = main_start; i < main_end; i += w[i] >> 16) {
         uint32_t op = w[i] & 0xffff, len = w[i] >> 16;
@@ -793,14 +820,22 @@ static int tonemap_splice(uint32_t **spirv, uint64_t *words) {
         if (h.cls[dst] == 1 && h.def[val]) {
             const uint32_t *cc = w + h.def[val];
             if ((cc[0] & 0xffff) == SPV_OP_COMPOSITE_CONSTRUCT && (cc[0] >> 16) == 7) {
-                uint32_t tx[3];
-                if (match_aces_clamp(&h, cc[3], &tx[0]) && match_aces_clamp(&h, cc[4], &tx[1]) &&
-                    match_aces_clamp(&h, cc[5], &tx[2])) {
+                int sidx[3] = {-1, -1, -1};
+                for (int c = 0; c < 3; c++) {
+                    uint32_t u = unwrap_func_var(&h, cc[3 + c]);
+                    for (int s = 0; s < nsite; s++)
+                        if (site_id[s] == u) { sidx[c] = s; break; }
+                }
+                if (sidx[0] >= 0 && sidx[1] >= 0 && sidx[2] >= 0 &&
+                    sidx[0] != sidx[1] && sidx[1] != sidx[2] && sidx[0] != sidx[2]) {
                     store_mode = 2, out_var = dst;
-                    memcpy(x_in, tx, sizeof tx);
+                    for (int c = 0; c < 3; c++) {
+                        chan_site[c] = sidx[c];
+                        x_in[c] = site_x[sidx[c]];
+                        store_pos[c] = chain_pos[c] = i;
+                        store_blk[c] = cur_blk;
+                    }
                     vec_alpha = cc[6];
-                    store_pos[0] = store_pos[1] = store_pos[2] = i;
-                    store_blk[0] = store_blk[1] = store_blk[2] = cur_blk;
                     break;
                 }
             }
@@ -811,19 +846,33 @@ static int tonemap_splice(uint32_t **spirv, uint64_t *words) {
             if ((ac[0] & 0xffff) == SPV_OP_ACCESS_CHAIN && (ac[0] >> 16) == 5 &&
                 ac[3] < bound && h.cls[ac[3]] == 1 && ac[4] < bound && h.has_ival[ac[4]]) {
                 int32_t ch = h.ival[ac[4]];
-                uint32_t tx = 0;
-                if (ch >= 0 && ch < 3 && match_aces_clamp(&h, val, &tx)) {
-                    int idx = -1;
-                    for (int k = 0; k < ncand; k++) if (cand_var[k] == ac[3]) idx = k;
-                    if (idx < 0 && ncand < 8) {
-                        idx = ncand++;
-                        cand_var[idx] = ac[3];
-                        cand_mask[idx] = 0;
+                if (ch < 0 || ch >= 3) continue;
+                int matched = -1;
+                uint32_t uval = unwrap_func_var(&h, val);
+                for (int s = 0; s < nsite; s++)
+                    if (site_id[s] == uval) { matched = s; break; }
+                if (matched < 0) {
+                    // Translator FP16/NaN sanitizer loads site_var between AccessChain and OpStore.
+                    for (uint64_t j = h.def[dst]; j < i; j += w[j] >> 16) {
+                        if ((w[j] & 0xffff) == SPV_OP_LOAD && (w[j] >> 16) >= 4) {
+                            for (int s = 0; s < nsite; s++)
+                                if (site_var[s] && w[j + 3] == site_var[s]) matched = s;
+                        }
                     }
-                    if (idx >= 0) {
-                        cand_pos[idx][ch] = i, cand_x[idx][ch] = tx, cand_ptr[idx][ch] = dst;
-                        cand_blk[idx][ch] = cur_blk, cand_mask[idx] |= 1 << ch;
-                    }
+                }
+                if (matched < 0) continue;
+                int idx = -1;
+                for (int k = 0; k < ncand; k++) if (cand_var[k] == ac[3]) idx = k;
+                if (idx < 0 && ncand < 8) {
+                    idx = ncand++;
+                    cand_var[idx] = ac[3];
+                    cand_mask[idx] = 0;
+                }
+                if (idx >= 0) {
+                    if (cand_mask[idx] & (1 << ch)) { cand_mask[idx] = -1; continue; }   // channel stored twice
+                    if (cand_mask[idx] < 0) continue;
+                    cand_pos[idx][ch] = i, cand_chain[idx][ch] = h.def[dst], cand_ptr[idx][ch] = dst;
+                    cand_site[idx][ch] = matched, cand_blk[idx][ch] = cur_blk, cand_mask[idx] |= 1 << ch;
                 }
             }
         }
@@ -831,29 +880,48 @@ static int tonemap_splice(uint32_t **spirv, uint64_t *words) {
     if (!store_mode) {
         for (int k = 0; k < ncand; k++) {
             if (cand_mask[k] == 7 && cand_blk[k][0] >= 0 &&
-                cand_blk[k][0] == cand_blk[k][1] && cand_blk[k][1] == cand_blk[k][2]) {
+                cand_blk[k][0] == cand_blk[k][1] && cand_blk[k][1] == cand_blk[k][2] &&
+                cand_site[k][0] != cand_site[k][1] && cand_site[k][1] != cand_site[k][2] &&
+                cand_site[k][0] != cand_site[k][2]) {
                 store_mode = 1, out_var = cand_var[k];
-                memcpy(x_in, cand_x[k], sizeof x_in);
-                memcpy(ptr_ch, cand_ptr[k], sizeof ptr_ch);
-                memcpy(store_pos, cand_pos[k], sizeof store_pos);
-                memcpy(store_blk, cand_blk[k], sizeof store_blk);
+                for (int c = 0; c < 3; c++) {
+                    chan_site[c] = cand_site[k][c];
+                    x_in[c] = site_x[chan_site[c]];
+                    ptr_ch[c] = cand_ptr[k][c];
+                    store_pos[c] = cand_pos[k][c];
+                    chain_pos[c] = cand_chain[k][c];
+                    store_blk[c] = cand_blk[k][c];
+                }
                 break;
             }
         }
     }
     if (!store_mode) goto fail_0;
 
-    // Insertion point: at the last of the three channel stores so all three x_in[] and ptr_ch[] dominate it.
+    // Insertion point:
+    // - If all 3 ACES clamp sites & x_in[] dominate the earliest channel AccessChain (standard layout), insert the
+    //   nx_tonemap call right before that AccessChain and replace the 3 OpStore values in place (inline_replace = 1).
+    // - Otherwise (interleaved compute+store), defer the first 2 stores and emit the call + all 3 stores at max(store_pos).
+    int inline_replace = 0;
     uint64_t ins_pos = store_pos[0];
     if (store_pos[1] > ins_pos) ins_pos = store_pos[1];
     if (store_pos[2] > ins_pos) ins_pos = store_pos[2];
     int32_t ins_blk = store_blk[0];
+    if (store_mode == 1) {
+        uint64_t min_ch = chain_pos[0];
+        if (chain_pos[1] < min_ch) min_ch = chain_pos[1];
+        if (chain_pos[2] < min_ch) min_ch = chain_pos[2];
+        int all_before = 1;
+        for (int c = 0; c < 3; c++)
+            if (!dominates(&h, x_in[c], ins_blk, min_ch) || site_pos[chan_site[c]] >= min_ch) all_before = 0;
+        if (all_before) ins_pos = min_ch, inline_replace = 1;
+    }
     for (int c = 0; c < 3; c++)
         if (!dominates(&h, x_in[c], ins_blk, ins_pos)) goto fail_err;
-    if (store_mode == 1) {
+    if (store_mode == 1 && !inline_replace) {
         for (int c = 0; c < 3; c++)
             if (!dominates(&h, ptr_ch[c], ins_blk, ins_pos)) goto fail_err;
-    } else if (!dominates(&h, vec_alpha, ins_blk, ins_pos)) {
+    } else if (store_mode == 2 && !dominates(&h, vec_alpha, ins_blk, ins_pos)) {
         goto fail_err;
     }
 
@@ -1043,9 +1111,10 @@ static int tonemap_splice(uint32_t **spirv, uint64_t *words) {
 
     // 4. Copy host functions, patching main():
     //    - declare 7 local Function variables after main's entry OpLabel
-    //    - drop the first 2 scalar RGB output stores and emit the nx_tonemap call + 3 stores at ins_pos.
+    //    - emit the nx_tonemap call at ins_pos and store its RGB result into the 3 output channels.
     uint32_t var_x = next_id++, var_sc = next_id++, var_p[5];
     for (int k = 0; k < 5; k++) var_p[k] = next_id++;
+    uint32_t out_ch[3] = {0};
     int entry_patched = 0;
     for (uint64_t i = first_func; i < n;) {
         uint32_t op = w[i] & 0xffff, len = w[i] >> 16;
@@ -1058,7 +1127,8 @@ static int tonemap_splice(uint32_t **spirv, uint64_t *words) {
             i += len;
             continue;
         }
-        if (store_mode == 1 && (i == store_pos[0] || i == store_pos[1] || i == store_pos[2]) && i != ins_pos) {
+        if (store_mode == 1 && !inline_replace &&
+            (i == store_pos[0] || i == store_pos[1] || i == store_pos[2]) && i != ins_pos) {
             i += len;   // deferred to ins_pos
             continue;
         }
@@ -1094,12 +1164,13 @@ static int tonemap_splice(uint32_t **spirv, uint64_t *words) {
             uint32_t res = next_id++;
             SPV_INS(&out, SPV_OP_FUNCTION_CALL, m_vec3, res, m_nx, var_x, var_sc,
                     var_p[0], var_p[1], var_p[2], var_p[3], var_p[4]);
-            uint32_t out_ch[3];
             for (int c = 0; c < 3; c++) {
                 out_ch[c] = next_id++;
                 SPV_INS(&out, SPV_OP_COMPOSITE_EXTRACT, f32_ty, out_ch[c], res, (uint32_t)c);
             }
-            if (store_mode == 1) {
+            if (inline_replace) {
+                spv_emit(&out, w + i, len);   // emit the original AccessChain after the call
+            } else if (store_mode == 1) {
                 for (int c = 0; c < 3; c++) SPV_INS(&out, SPV_OP_STORE, ptr_ch[c], out_ch[c]);
             } else {
                 uint32_t out_v4 = next_id++;
@@ -1108,6 +1179,14 @@ static int tonemap_splice(uint32_t **spirv, uint64_t *words) {
             }
             i += len;
             continue;
+        }
+        if (inline_replace) {
+            int ch = i == store_pos[0] ? 0 : i == store_pos[1] ? 1 : i == store_pos[2] ? 2 : -1;
+            if (ch >= 0) {
+                SPV_INS(&out, SPV_OP_STORE, ptr_ch[ch], out_ch[ch]);
+                i += len;
+                continue;
+            }
         }
         spv_emit(&out, w + i, len);
         i += len;
