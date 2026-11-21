@@ -319,10 +319,12 @@ static int wait_event_(VkExec *ex, const p_wait_event *p) {
     int ev_ok = ev_wait(p->val, p->mode, p->value, si);
     vk_spike.ev += plat_now_ns() - t0;   // DEBUG-SPIKE
     if (!ev_ok) return 0;
-    {   // DEBUG-WAITLOG
+    {   // DEBUG-WAITLOG: REKARINA_WAITLOG=1 (nvn_api_core.c nvnEventSignal)
         double vk_listlog_ms(void);
-        uint64_t f = __atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED);
-        if (f >= 899 && f <= 902)
+        static int on = -1;
+        if (on < 0) on = rt_knob("WAITLOG", "0");
+        uint64_t f = on ? __atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED) : 0;
+        if (on && f >= 899 && f <= 902)
             rt_log("WAITLOG replay waited %.3f ms for event %p (value %u) in fence %llu at %.3f", (plat_now_ns() - t0) / 1e6,
                    (void *)p->val, p->value, (unsigned long long)ex->fence, vk_listlog_ms());
     }

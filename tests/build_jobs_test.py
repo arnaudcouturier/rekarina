@@ -184,11 +184,13 @@ class GateTest(unittest.TestCase):
     @unittest.skipUnless(sys.platform == 'win32', 'the gate holds compiles on Windows')
     def test_holds_real_processes(self):
         # A stand-in for Ninja starts four stand-in compiles at once ("-c a.c" in their command lines); with memory for
-        # one at a time the gate runs them one after another, with plenty all four together.
+        # one at a time the gate runs them one after another, with plenty all four together. Each notes when it ran
+        # (start and end), so the check is their overlap, not how fast Python starts on a busy PC.
         import time
         with tempfile.TemporaryDirectory() as tmp:
             log, driver = Path(tmp) / 'log.txt', Path(tmp) / 'driver.py'
-            child = ("import sys, time; open(sys.argv[3], 'a').write(f'{time.monotonic()}\\n'); time.sleep(0.4)")
+            child = ("import sys, time; t = time.monotonic(); time.sleep(1.0); "
+                     "open(sys.argv[3], 'a').write(f'{t} {time.monotonic()}\\n')")
             driver.write_text('import subprocess, sys\n'
                               f'ps = [subprocess.Popen([sys.executable, "-c", {child!r}, "-c", "a.c", {str(log)!r}]) '
                               'for _ in range(4)]\n'
@@ -200,14 +202,14 @@ class GateTest(unittest.TestCase):
                     bg.MemoryGate.free = lambda self, f=free: f
                     t0 = time.monotonic()
                     code, dt, _, _ = bg.run_measured([sys.executable, str(driver)], dict(os.environ), {'a.c': GiB})
-                    starts = sorted(float(x) for x in log.read_text().split())
-                    self.assertEqual((code, len(starts)), (0, 4))
-                    spread = starts[-1] - starts[0]
-                    if together:
-                        self.assertLess(spread, 0.35, starts)
-                    else:   # one at a time: each starts after the one before has ended
-                        self.assertGreater(spread, 3 * 0.35, starts)
-                    self.assertLess(time.monotonic() - t0, 30)
+                    runs = sorted(tuple(map(float, ln.split())) for ln in log.read_text().splitlines() if ln.strip())
+                    self.assertEqual((code, len(runs)), (0, 4))
+                    if together:   # all four ran at the same moment
+                        self.assertLess(max(r[0] for r in runs), min(r[1] for r in runs), runs)
+                    else:          # one at a time: each starts after the one before has ended
+                        for before, after in zip(runs, runs[1:]):
+                            self.assertGreaterEqual(after[0], before[1], runs)
+                    self.assertLess(time.monotonic() - t0, 40)
             finally:
                 bg.MemoryGate.free = saved
 

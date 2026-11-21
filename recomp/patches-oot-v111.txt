@@ -237,12 +237,13 @@ site songrec main 32926c4 bd401100 bd401100 947039fb            # -> the same; b
 set looppose REKARINA_LOOP_POSE 1
 
 # An animation that loops over one frame or less is one pose (people frozen under the ice are drawn from one). At 60
-# fps each step is 1 and the clock lands on the same phase; above 60 fps the phase moves by the step each frame and
-# wraps, so each frame drew another phase and the pose twitched. Two places make the time a skeleton is drawn at: the
-# animation clock's two advances (main+0x2afca0: step * speed, the entry in x20 with its start at +0x10 and end at
-# +0x14), where the host gives such a loop the step's whole frames, the fraction kept per entry; and the store of the
-# time (main+0x924aa0, x22: the time, its range at +4 and +8), where such a loop is drawn at its start. Longer loops are
-# left as they are.
+# and 30 fps each step is whole and the clock lands on the same phase; at any other step (above 60 fps, and between 30
+# and 60: 1.25 at 48 fps) the phase moves by the step's fraction each frame and wraps, so each frame drew another phase
+# and the pose twitched. Two places make the time a skeleton is drawn at: the animation clock's two advances
+# (main+0x2afca0: step * speed, the entry in x20 with its start at +0x10 and end at +0x14), where the host gives such a
+# loop the step's whole frames, the fraction kept per entry; and the store of the time (main+0x924aa0, x22: the time,
+# its range at +4 and +8), where such a loop is drawn at its start. Unlike the sets around it, this one acts on every
+# step with a fraction, not only under one frame (runtime/oot_fps.c loop_fraction). Longer loops are left as they are.
 site looppose main 2afe04 1e210902 952fc427   # fmul s2, s8, s1 -> bl page+0xea0
 site looppose main 2b01d0 1e200901 952fc330   # fmul s1, s8, s0 -> bl page+0xe90
 site looppose main 924e50 bd0002c0 9515f00c   # str s0, [x22] -> bl page+0xe80
@@ -378,13 +379,15 @@ site dofscale main 2603c8 a9067fff a9067fff 95310256   # stp xzr, xzr, [sp, #0x6
 
 set promptglyphs REKARINA_PROMPT_GLYPHS 0
 
-# Off by default (2026-11-20, before 1.2.8): with the pause screen opened and closed while the prompts changed in the
-# running game, the game's glyph drawing (main+0x1519424) faulted on a null glyph right after its rasteriser ran
-# out of room, on a character drawn with the size this set marks (and a build without that guard hung instead);
-# 1.2.7, without the set, neither hangs nor faults there. Off, texts laid out before a change keep the old set's
-# buttons until the game lays them out again, as in 1.2.7; the action hint's and the song screen's images still
-# change (runtime/romfs.c hint_apply writes texture bytes, not glyphs). REKARINA_PROMPT_GLYPHS=1 turns it on for a
-# test, both the size marks and the rebuild of large glyphs (REKARINA_PROMPT_SHEETS).
+# On by default through its settings row (runtime/cfg.c PROMPT_GLYPHS; the 0 here only serves a runtime without the
+# row), so turning it on asked no player for a new lift. It was off in 1.2.8: with the pause screen opened and closed
+# while the prompts changed in the running game, the game's glyph drawing (main+0x1519424) wrote a glyph's rows at
+# address 0. A size this set marks misses the font's glyph cache, and the game draws a missed glyph into the text's
+# own sheet through an address only the full build maps; the build through bit 7 that the set asks for maps nothing.
+# runtime/oot_fps.c sheet_ready now maps the text's sheets before such a build (notes, 2026-11-21). Off
+# (REKARINA_PROMPT_GLYPHS=0), texts laid out before a change keep the old set's buttons until the game lays them out
+# again, as in 1.2.7; the action hint's and the song screen's images still change (runtime/romfs.c hint_apply writes
+# texture bytes, not glyphs). REKARINA_PROMPT_SHEETS=0 leaves out the rebuild of large glyphs alone.
 # Texts laid out before the button prompts changed in the running game (runtime/romfs.c live_main swaps the button
 # font's table). A text keeps, per character, the glyph its shaping gave when it was laid out (or 0: drawn by
 # character, and the font's cache keeps the picture the character had when it was first drawn), and its quads are

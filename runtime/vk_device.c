@@ -254,6 +254,17 @@ void vk_nvidia_cache_beside_exe(void) {
     if (!plat_getenv("__GL_SHADER_DISK_CACHE_SKIP_CLEANUP", tmp, sizeof tmp)) plat_setenv("__GL_SHADER_DISK_CACHE_SKIP_CLEANUP", "1");
 }
 
+// The swap chain says full-screen exclusive is disallowed (gfx_window_win.c gfx_window_swapchain_next): Windows only,
+// REKARINA_VK_FSE=0 leaves the choice to the driver as before.
+static int g_inst_caps2;   // VK_KHR_get_surface_capabilities2 enabled on the instance
+static int fse_wanted(void) {
+#ifdef _WIN32
+    return rt_knob("VK_FSE", "1");
+#else
+    return 0;
+#endif
+}
+
 static int create_instance(void) {
     vk_dlssg_early();   // DLSS Frame Generation: Streamline before any Vulkan call of the process (its slInit asks so)
     mesa_cache_beside_exe();
@@ -269,9 +280,13 @@ static int create_instance(void) {
     if (validate || ((vk_dlssg_wanted() || addr_report_wanted()) && utils)) ext[n_ext++] = VK_EXT_DEBUG_UTILS_EXTENSION_NAME;
     if (vk_hdr_wanted() && instance_ext_present(VK_EXT_SWAPCHAIN_COLOR_SPACE_EXTENSION_NAME))   // HDR10 surface formats
         ext[n_ext++] = VK_EXT_SWAPCHAIN_COLOR_SPACE_EXTENSION_NAME;
-    // DEBUG-PRESENTTIMING: VK_KHR_present_id2, which present timing builds on, asks for surface capabilities 2
-    if (cfg_get("REKARINA_PRESENT_TIMING") && n_ext < 12 && instance_ext_present(VK_KHR_GET_SURFACE_CAPABILITIES_2_EXTENSION_NAME))
+    // Surface capabilities 2: VK_EXT_full_screen_exclusive needs it (Windows, create_device), and so does
+    // VK_KHR_present_id2, which DEBUG-PRESENTTIMING builds on
+    if ((fse_wanted() || cfg_get("REKARINA_PRESENT_TIMING")) && n_ext < 12 &&
+        instance_ext_present(VK_KHR_GET_SURFACE_CAPABILITIES_2_EXTENSION_NAME)) {
         ext[n_ext++] = VK_KHR_GET_SURFACE_CAPABILITIES_2_EXTENSION_NAME;
+        g_inst_caps2 = 1;
+    }
     vk_dlaa_instance_exts(ext, &n_ext, 12);
     VkApplicationInfo app = {.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO, .pApplicationName = RT_PORT_NAME,
                              .pEngineName = RT_PORT_NAME, .apiVersion = VK_API_VERSION_1_3};
@@ -481,9 +496,9 @@ static int create_device(void) {
     VkExtensionProperties *ep = calloc(ne ? ne : 1, sizeof *ep);
     vkEnumerateDeviceExtensionProperties(g_vk.phys, NULL, &ne, ep);
 #ifdef GAME_NS2
-    const char *ext[57];   // one more: VK_EXT_mesh_shader (and one for DEBUG-PIPESTATS, one for cooperative matrices)
+    const char *ext[58];   // one more: VK_EXT_mesh_shader (and one for DEBUG-PIPESTATS, one for cooperative matrices)
 #else
-    const char *ext[56];   // two for FSR 4's extensions, two for the placed map (VK_KHR_map_memory2, VK_EXT_map_memory_placed)
+    const char *ext[57];   // two for FSR 4's extensions, two for the placed map (VK_KHR_map_memory2, VK_EXT_map_memory_placed), one for full-screen exclusive
 #endif
     uint32_t n_ext = 0;
     for (size_t i = 0; i < sizeof k_required_ext / sizeof *k_required_ext; i++) ext[n_ext++] = k_required_ext[i];
@@ -561,6 +576,13 @@ static int create_device(void) {
     }
 #endif
     if (has_ext(ep, ne, VK_EXT_MEMORY_BUDGET_EXTENSION_NAME)) { g_vk.has_memory_budget = 1; ext[n_ext++] = VK_EXT_MEMORY_BUDGET_EXTENSION_NAME; }
+    // Full-screen exclusive disallowed on the swap chain (gfx_window_win.c gfx_window_swapchain_next): NVIDIA's and AMD's
+    // Windows drivers report the extension; it needs surface capabilities 2 on the instance.
+    if (g_inst_caps2 && fse_wanted() && has_ext(ep, ne, "VK_EXT_full_screen_exclusive") && n_ext < sizeof ext / sizeof *ext) {
+        g_vk.has_fse = 1;
+        ext[n_ext++] = "VK_EXT_full_screen_exclusive";
+        rt_log("vk: swap chains disallow full-screen exclusive (REKARINA_VK_FSE=0: the driver's choice)");
+    }
     // GPU timestamps on the CPU clock (vk_sync.c): the perf line splits GPU idle time into waiting for a submission or not.
     if (has_ext(ep, ne, VK_KHR_CALIBRATED_TIMESTAMPS_EXTENSION_NAME)) { g_vk.has_calibrated = 2; ext[n_ext++] = VK_KHR_CALIBRATED_TIMESTAMPS_EXTENSION_NAME; }
     else if (has_ext(ep, ne, VK_EXT_CALIBRATED_TIMESTAMPS_EXTENSION_NAME)) { g_vk.has_calibrated = 1; ext[n_ext++] = VK_EXT_CALIBRATED_TIMESTAMPS_EXTENSION_NAME; }
@@ -745,7 +767,22 @@ static int create_device(void) {
 #ifdef GAME_NS2
     int coop_features = c->cm.cooperativeMatrix && c->f12.shaderFloat16;   // read before the chain is freed
 #endif
+    int nu_feature = c->f12.shaderSampledImageArrayNonUniformIndexing;
     free(c);
+    {   // REKARINA_NONUNIFORM=0|1|all (gfx_shader.c patch_nonuniform): texture array accesses with a per-invocation index
+        // (1) or every computed index (all) decorated NonUniform. Vulkan leaves such an access undefined without the
+        // decoration, so 1 is the default on every GPU but NVIDIA's, whose hardware takes a descriptor per lane anyway:
+        // its modules stay as they were. =0 turns it off; it needs shaderSampledImageArrayNonUniformIndexing.
+        const char *e = cfg_get("REKARINA_NONUNIFORM");
+        int set = e && *e, nvidia = g_vk.props.vendorID == 0x10de;
+        int mode = set ? (!strcmp(e, "all") ? 2 : strcmp(e, "0") != 0) : !nvidia;
+        gfx_shader_nonuniform = nu_feature ? mode : 0;
+        rt_log("vk: texture array accesses decorated NonUniform: %s%s",
+               !mode ? "off" : !nu_feature ? "no, the device lacks the feature"
+               : mode == 2 ? "every computed index" : "those with a per-invocation index",
+               set ? " (REKARINA_NONUNIFORM)" : nvidia ? " (NVIDIA: not needed; REKARINA_NONUNIFORM=1 turns it on)"
+                                              : " (the default here; REKARINA_NONUNIFORM=0 turns it off)");
+    }
     if (r != VK_SUCCESS) { rt_log("vk: vkCreateDevice failed (%d)", (int)r); return 0; }
     vk_dlssg_device_ready(g_vk.device);
     vkGetDeviceQueue(g_vk.device, g_vk.gfx_family, 0, &g_vk.gfx_queue);

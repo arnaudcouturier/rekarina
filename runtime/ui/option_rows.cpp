@@ -529,8 +529,15 @@ static double slider_value(double f, double lo, double hi, double log_lo, bool l
     return log_lo * pow(hi / log_lo, (f - 0.02) / 0.98);
 }
 
-bool opt_slider(const char *key, UiTextId label, float lo, float hi, UiTextId desc, float step, const char *fmt,
+bool opt_slider(const char *key, UiTextId label, float lo, float hi, UiTextId desc, float step_f, const char *fmt,
                 const char *note, const char *fallback, bool log_scale) {
+    // The step as the decimal the row was written with: a float such as 0.02f is 0.0199999996, so a value on its grid
+    // (gamma 1.00 = 50 steps) divided to 50.0000011, past the allowance of the grid snap below, and left landed back
+    // on the value it started from: the gamma and walk speed sliders never moved left (right did); a step just above
+    // its decimal (0.05f) stuck the same way to the right, the mouse sensitivity from 3.40 up.
+    char step_text[32];
+    snprintf(step_text, sizeof step_text, "%.6g", (double)step_f);
+    const double step = strtod(step_text, NULL);
     const double log_lo = lo > 0 ? lo : step * 2;
     const char *set = cfg_get(key);
     const char *src = fallback && !(set && *set) ? fallback : key;   // unset: show the value in effect, the fallback's

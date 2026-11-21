@@ -5,7 +5,10 @@
      dpiAwareness PerMonitorV2 (dpiAware true/pm on Windows 10 before 1607): window, monitor and cursor sizes are physical
      pixels and the swapchain matches the screen. A DPI-unaware process gets them divided by the display scale and its
      image stretched back up by Windows, so 4K at 150% presented a 2560x1440 image, blurred. gfx_window.c follows a
-     change of the window's DPI (WM_GETDPISCALEDSIZE, WM_DPICHANGED). -->
+     change of the window's DPI (WM_GETDPISCALEDSIZE, WM_DPICHANGED).
+     consoleAllocationPolicy detached (Windows 11 24H2 and later; older systems ignore it): the exe opened from Explorer
+     gets no console window, while one started from a console (cmd, PowerShell, a script) still writes its log there;
+     on older systems runtime/main.c main lets the console go instead. -->
 <assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
   <trustInfo xmlns="urn:schemas-microsoft-com:asm.v3">
     <security>
@@ -19,6 +22,7 @@
       <activeCodePage xmlns="http://schemas.microsoft.com/SMI/2019/WindowsSettings">UTF-8</activeCodePage>
       <dpiAware xmlns="http://schemas.microsoft.com/SMI/2005/WindowsSettings">true/pm</dpiAware>
       <dpiAwareness xmlns="http://schemas.microsoft.com/SMI/2016/WindowsSettings">PerMonitorV2, PerMonitor</dpiAwareness>
+      <consoleAllocationPolicy xmlns="http://schemas.microsoft.com/SMI/2024/WindowsSettings">detached</consoleAllocationPolicy>
     </windowsSettings>
   </application>
 </assembly>

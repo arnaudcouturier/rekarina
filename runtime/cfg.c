@@ -57,7 +57,7 @@ static const char *const known[] = {
     "MV_SURVEY",
     "ONE_PER_CORE", "OPERATION_MODE", "OUTPUT_RES", "PAD_LAYOUT", "PASS_CRUMBS", "PATCH_OUTPUT", "PATCH_SCENE", "PCSS", "PCSS_K", "PERF_OVERLAY", "VRAM_NOTICE", "PERF_SLOW_MS", "PIPELINE_CACHE", "PIPELINE_CACHE_LOAD", "WARM_APP_CACHE", "WARM_FRESH_CACHE", "WARM_STOP", "ENTRY_LIBRARIES", "ENTRY_TEXTURES", "SHADER_CACHE_FLUSH", "PIPELINE_CACHE_RESET_MB", "WARM_RECORD_STATE", "PIPE_SAVE_SAME", "PIPE_MEMO", "PIPE_PREBUILD", "PIPE_SKIP", "PIPE_SYNC", "PIPE_WAIT",
     "PREWARM_XLATE", "PREPARE_DRIVER", "PREPARE_TEXTURES_CHECK", "PREPARE_TEXTURES_LEVELS", "PREP_SCREEN", "PREP_SHOT", "PREP_SHOT_AT", "PROBE_MOVIE", "PROBE_MOVIE_SHOT", "PROFILE", "PROFILE_CHAINS", "PROFILE_DIR", "PROFILE_FRAMES",
-    "PROFILE_MAIN", "PROFILE_RENDER", "PROMPTS", "PUSH_SKIP", "PUSH_STAGE", "RDOC", "RDOC_DIR", "RDOC_DLL", "REALTIME", "REC_END", "REEXEC",
+    "PROFILE_MAIN", "PROFILE_RENDER", "PROMPTS", "PROMPT_GLYPHS", "PUSH_SKIP", "PUSH_STAGE", "RDOC", "RDOC_DIR", "RDOC_DLL", "REALTIME", "REC_END", "REEXEC",
     "RENDER_SCALE", "REPLAY_ASYNC",
     "REPLAY_CHECK", "RESOLVE_CHECK", "RESTART_WAIT", "ROMFS", "ROMFS_INDEX", "ROMFS_MMAP", "ROMFS_MODS", "ROMFS_PATCHES",
     "REPLAY_THREADS", "ROMFS_PROOF_DIR", "ROMFS_VERIFY", "RSTICK_DEADZONE", "RUMBLE", "RUMBLE_CURVE", "RUMBLE_GAP_MS", "RUMBLE_STRENGTH", "RUMBLE_TRIGGERS", "SECTIONS", "SHADER_CACHE",
@@ -92,7 +92,7 @@ static const struct { const char *key, *section; } sections[] = {
     {"MENU_LANG", "language"}, {"LANG", "language"}, {"VOICE_LANG", "language"}, {"FAST_TEXT", "language"}, {"OPERATION_MODE", "language"},
     {"VOLUME", "audio"}, {"AUDIO_CHANNELS", "audio"}, {"BG_MUTE", "audio"},
     {"MOTION", "input"}, {"RUMBLE_STRENGTH", "input"}, {"RUMBLE_CURVE", "input"}, {"RUMBLE_TRIGGERS", "input"},
-    {"PAD_LAYOUT", "input"}, {"PROMPTS", "input"}, {"STICK_DEADZONE", "input"}, {"LSTICK_DEADZONE", "input"}, {"RSTICK_DEADZONE", "input"},
+    {"PAD_LAYOUT", "input"}, {"PROMPTS", "input"}, {"PROMPT_GLYPHS", "input"}, {"STICK_DEADZONE", "input"}, {"LSTICK_DEADZONE", "input"}, {"RSTICK_DEADZONE", "input"},
     {"STICK_SENS", "input"},
     {"MENU_CURSOR", "input"}, {"PAD_FOLLOW", "input"}, {"PAD_DRIVER", "input"}, {"KBM_OFF", "input"}, {"MENU_GUIDE", "input"}, {"SCREENSHOT_KEY", "input"}, {"SCREENSHOT_OVERLAY", "input"}, {"CURSOR_HIDE", "input"}, {"MOUSE_MODE", "input"}, {"MOUSE_SENS", "input"}, {"MOUSE_SENS_Y", "input"},
     {"MOUSE_INVERT_Y", "input"}, {"MOUSE_RAW", "input"}, {"WALK_KEY", "input"}, {"WALK_SCALE", "input"}, {"STICK_DASH", "input"}, {"DASH_KEY", "input"}, {"INPUT_RECORD", "input"},
@@ -178,6 +178,11 @@ static const CfgMeta metas[] = {
     {"PROMPTS", "auto", "auto|nintendo|xbox|pc|playstation|rekarina", LIVE},
 #else
     {"PROMPTS", "nintendo", "nintendo|xbox|pc|playstation|rekarina", LIVE},
+#endif
+#ifdef GAME_OOT   // patch set promptglyphs (runtime/oot_fps.c prompt_glyphs): a text laid out before a live prompt change
+    // takes the new buttons; this row is its default (runtime/patches.c), so the patch file's own default (0) stays
+    // and an update needs no new lift
+    {"PROMPT_GLYPHS", "1", "0|1", RESTART},
 #endif
     {"STICK_DEADZONE", "8", "0..50", LIVE}, {"STICK_SENS", "1", "0.1..3", RESTART},
     {"LSTICK_DEADZONE", "", "0..50", LIVE}, {"RSTICK_DEADZONE", "", "0..50", LIVE},

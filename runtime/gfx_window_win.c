@@ -49,6 +49,17 @@ int gfx_window_vk_presentable(VkInstance inst, VkPhysicalDevice pd, uint32_t fam
     return vkGetPhysicalDeviceWin32PresentationSupportKHR(pd, family) != VK_FALSE;
 }
 
+// Full-screen exclusive disallowed (VK_EXT_full_screen_exclusive, enabled by vk_device.c). Our fullscreen is a borderless
+// window over the monitor, and the default lets a driver take the display for the window: NVIDIA's own Vulkan present
+// (FIFO and immediate; mailbox goes through a DXGI swap chain) and AMD's do. Taking it switches the display (the screen
+// flashes when the present mode changes in the menu), leaves Windows' colour handling behind (with HDR or automatic
+// colour management on, the SDR picture shows oversaturated) and changes Alt+Tab. REKARINA_VK_FSE=0: the driver's default.
+const void *gfx_window_swapchain_next(int has_fse) {
+    static const VkSurfaceFullScreenExclusiveInfoEXT fse = {.sType = VK_STRUCTURE_TYPE_SURFACE_FULL_SCREEN_EXCLUSIVE_INFO_EXT,
+                                                            .fullScreenExclusive = VK_FULL_SCREEN_EXCLUSIVE_DISALLOWED_EXT};
+    return has_fse ? &fse : NULL;
+}
+
 // ---- window thread
 #define WND_STYLE WS_OVERLAPPEDWINDOW
 #define WM_APP_SETTINGS (WM_APP + 1)

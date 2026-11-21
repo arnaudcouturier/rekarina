@@ -42,7 +42,8 @@ typedef struct VkCtx {
         has_map_placed,                     // VK_EXT_map_memory_placed with memoryMapPlaced and memoryUnmapReserve (Linux: driver-backed guest memory)
         has_atomic_float,                   // VK_EXT_shader_atomic_float with shaderBufferFloat32AtomicAdd
         has_present_timing,                 // DEBUG-PRESENTTIMING: VK_EXT_present_timing + VK_KHR_present_id2 (REKARINA_PRESENT_TIMING=1)
-        fsr4_ready;                         // VK_KHR_cooperative_matrix + VK_EXT_shader_float8 on: FSR 4 can run (vk_ffx.cpp)
+        fsr4_ready,                         // VK_KHR_cooperative_matrix + VK_EXT_shader_float8 on: FSR 4 can run (vk_ffx.cpp)
+        has_fse;                            // VK_EXT_full_screen_exclusive: swap chains say full-screen exclusive is disallowed
 #ifdef GAME_NS2
     int has_mesh_shader;                    // VK_EXT_mesh_shader with task and mesh shaders (NVN2 mesh draws)
     int has_vrs;                            // VK_KHR_fragment_shading_rate, the rate set per draw (vk_exec_draw.c mesh_shading_rate)
@@ -216,6 +217,9 @@ int vk_present_captured(const uint8_t **px, int *w, int *h, VkFormat *fmt);
 // extensions a surface needs (their count, at most max), and whether a queue family of pd can present to it.
 int gfx_window_vk_extensions(const char **out, int max);
 int gfx_window_vk_presentable(VkInstance inst, VkPhysicalDevice pd, uint32_t family);
+// The swap chain's pNext from the window system: with Win32 and VK_EXT_full_screen_exclusive (has_fse), full-screen
+// exclusive disallowed (gfx_window_win.c); NULL otherwise.
+const void *gfx_window_swapchain_next(int has_fse);
 void gfx_window_resize(int client_w, int client_h);   // programmatic resize; returns after the swapchain is rebuilt
 void gfx_vsync_bind_counter(volatile int32_t *counter);  // host-side stand-in for a bound event: incremented per tick
 unsigned gfx_window_focus_messages(void);          // OE_MSG_FOCUS_STATE_CHANGED pushes made by the window thread
@@ -398,6 +402,7 @@ void vk_mem_census(uint64_t frame);               // at each present: pool censu
 // VRAM in use and its budget, summed over the DEVICE_LOCAL heaps. exact 1: VK_EXT_memory_budget (the whole process),
 // 0: this allocator's own allocations against the heap sizes. 0 when unknown.
 int vk_mem_vram(uint64_t *used, uint64_t *budget, int *exact);
+void vk_mem_heaps_log(const char *why);   // every heap's usage / budget / size and the imported guest memory
 void vk_mem_footprint_log(const char *when);   // one "mem: footprint" line: the driver's count against VMA's
 void vk_vma_name(VmaAllocation a, const char *fmt, ...);   // DEBUG-VMANAME: a name in VMA's map under REKARINA_VMA_DUMP
 // VRAM headroom (vk_headroom.c): the VMA callbacks that see new device memory, and the thread that allocates the next

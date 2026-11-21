@@ -4201,3 +4201,195 @@ those. The same 3,000 shaders on 8 translators (9700X, 16 threads):
 translators were busy and where a translation's time went (translator, waiting for one, cache files, same program).
 Without the flushes all translators are busy on every disk; sixteen translators on sixteen threads were slower than
 eight (17.2 s).
+
+## 2026-11-21: present modes other than mailbox took the display (full-screen exclusive)
+
+A player with an RTX 4080 and an HDR monitor reported that choosing FIFO or immediate in the menu flashed the screen,
+showed oversaturated colours (also with Windows' HDR off) and changed how Alt+Tab behaved, while mailbox was fine; his
+log has 190-620 ms frames at each switch. Our fullscreen is a borderless window over the monitor, and the swap chain
+left full-screen exclusive to the driver: NVIDIA presents mailbox through a DXGI swap chain (composed by Windows, its
+colour handling applied) and FIFO / immediate through its own path, which may take a window that covers the monitor
+for itself; AMD's Windows driver does the same (DXVK disallows it on windowed swap chains for this reason). Now the
+plain swap chain carries `VkSurfaceFullScreenExclusiveInfoEXT` with `VK_FULL_SCREEN_EXCLUSIVE_DISALLOWED_EXT` where
+the device has `VK_EXT_full_screen_exclusive` (it needs `VK_KHR_get_surface_capabilities2` on the instance); a swap
+chain refused with it is made again without it, and `REKARINA_VK_FSE=0` gives the driver its choice back. The frame
+generation swap chains (FSR, DLSS-G) are left as they were.
+
+On the RTX 5070 here (2560x1440 at 320 Hz, HDR off) no process ever owned the display exclusively, with or without
+the change (D3DKMTCheckExclusiveOwnership sampled every 50 ms, the shell's notification state 2 "busy", never 3,
+through live switches between all three modes and focus switches), so the change shows nothing here; its effect is
+for the reporter's machine to confirm. Mailbox frame rate at the Market, four 60 s windows in A/B/B/A order: 94.3 /
+95.4 / 95.4 / 95.8 fps (with / without / without / with), 1 % low 61.5 / 59.7 / 60.6 / 62.5: no cost.
+
+## 2026-11-21: DLSS frame generation asked for on a GPU that is not NVIDIA's
+
+A rekarina.ini with `framegen = dlss` on a machine whose chosen GPU is not NVIDIA's (a player who moved from an RTX card
+to a Radeon, a laptop running on its integrated GPU, another GPU picked by `gpu_index`) started no game at all:
+`vk_dlssg_early` loads NVIDIA Streamline before the first Vulkan call (its `slInit` asks for that, so the device is not
+known yet), and Streamline's `vkCreateDevice` refuses any device without NVIDIA's optical flow extension ("Required
+device extension VK_NV_optical_flow unsupported", -7). `create_device` gave up with "vkCreateDevice failed". Our test
+runs set `REKARINA_FRAMEGEN=off` in the environment, which wins over the ini, so they never showed it; the setup's
+preparation modes hit it on the integrated Radeon (L, hold14a).
+
+Now `vk_dlssg_create_device` makes the device again through the loader when Streamline refuses it (the instance and
+the physical device are the loader's: the interposer only passes them on), marks Streamline as unused and says so in
+the log; `vk_dlssg_device_ready` then hands frame generation to AMD FSR (`vk_fg_take_over`, whose queues are made for
+DLSS frame generation too). The menu's row says why DLSS frame generation is off.
+
+Proof on the integrated Radeon here with a game folder whose rekarina.ini says `framegen = dlss`, `dlaa = 1`,
+`taa = dlss`, `gpu_index = 1` and no such keys in the environment: 1.2.8's runtime ends with "no usable Vulkan device"
+after Streamline's two refusals; with the change the device is made, AMD FSR frame generation takes over ("fg: AMD FSR
+frame generation in place of DLSS Frame Generation ...") and the game plays on into the field. The same folder on the
+RTX 5070 (`REKARINA_GPU_INDEX=0`) still runs DLSS frame generation on the swapchain.
+
+## 2026-11-21: texture array accesses marked NonUniform
+
+The translator indexes arrays of textures and samplers (the texture pool's, `patch_pool_arrays`) with an index it
+computes from a handle, and no module carries a NonUniform decoration: `tools/xlate/Program.cs` leaves Ryujinx's
+`QueryHostSupportsShaderNonUniformIndexing` at false, so its `MarkNonUniform` never fires. In a sample of 431 cached
+modules, 30 index such arrays with a computed index; traced back, several of those indices come from per-pixel inputs
+through storage-buffer loads (a light list read at an address made from the pixel's position). Vulkan leaves such an
+access undefined without the decoration. NVIDIA's hardware takes a descriptor per lane either way; AMD keeps a descriptor
+in scalar registers and, told nothing, may use the first active lane's element for the whole wave: another texture or
+shadow map for part of the wave, changing from frame to frame. Longshot indexes the game's per-light shadow arrays
+NonUniform for this (its 7315957c).
+
+`gfx_shader.c` `patch_nonuniform` decorates them at load, after the pool arrays are moved: a forward taint pass over
+the function bodies (Input variables, atomics' results and subgroup elections; through any arithmetic, loads at
+tainted addresses, function variables stored from tainted values, calls) marks each access chain into an image or
+sampler array whose index is tainted, the load of the element and the sampled image made from it; the module gets the
+`SPV_EXT_descriptor_indexing` extension (the modules are SPIR-V 1.3 and 1.4) and the `ShaderNonUniform` and
+`SampledImageArrayNonUniformIndexing` capabilities. No ids are added and the shader cache is untouched: nothing is
+translated again; a driver builds the pipelines of the changed modules once. It is on by default on every GPU but
+NVIDIA's (the spec requires the decoration; it cost nothing here), only where the device has
+`shaderSampledImageArrayNonUniformIndexing`; NVIDIA's modules stay as they were. `REKARINA_NONUNIFORM=0` turns it off,
+`=1` turns it on on NVIDIA, `all` decorates every computed index. Off, the pass returns at its first line. The log says
+which mode the device got ("vk: texture array accesses decorated NonUniform: ..."). Whether it is what the flicker
+reports from Radeons of the newer compiler (RDNA 3 / 4) need, 1.2.9 is the test.
+
+Checks: a standalone build of the pass over six cached modules (the instructions kept in order, only capabilities,
+the extension and decorations added, every section in its place, every decorated id a result in a function body);
+the RTX 5070 with `=all` (forest at noon: the modules accepted, no pipeline failure, no draw skipped, the picture the
+same as without); the integrated Radeon (RDNA 2) with `=1`, forest at noon, standing, uncapped, A B B A: 342 / 345 /
+344 / 346 frames in the same 60 s window (without / with / with / without), no device loss: no cost.
+
+## 2026-11-21: no console window from Explorer, and the WAITLOG lines
+
+Rekarina.exe is a console program, so Windows gave it a console window when it was opened from Explorer or a shortcut:
+the log scrolled beside the game (a player's screenshot showed it), and every line written there cost the writing
+thread a console redraw. The launcher never had one (it starts the game with DETACHED_PROCESS). Now the manifest asks
+for no console (`consoleAllocationPolicy` detached, Windows 11 24H2 and later; older systems ignore the element), and
+on older systems `runtime/main.c` main lets go of a console that only this process is attached to
+(`plat_console_release`: GetConsoleProcessList = 1, then FreeConsole), after the moment it was on the screen. A console
+shared with the shell that started the game (cmd, PowerShell, a script) stays, and a script's redirected stderr is
+untouched. REKARINA_CONSOLE=1 keeps the console; the log is in `logs\rekarina.log` either way. Checked with two test
+programs of the same rule opened through explorer.exe on Windows 11: with the game's manifest no console existed at the
+start; without it the console (one process) was let go; from a shell both kept it (three processes on it).
+
+The same screenshot showed "WAITLOG EventSignal ..." lines: a debugging probe from before 1.0.0
+(`nvn_api_core.c` nvnEventSignal: the first 40 event signals and those of frames 899-902; `vk_exec_xfer.c`: the
+replay's event waits in frames 899-902) wrote them into every log, 48 lines in a player's 1.2.7 log. They are behind
+REKARINA_WAITLOG=1 now.
+
+## 2026-11-21: settings sliders that moved one way only
+
+A player's gamma slider (colour settings) would not step left with the keyboard or a pad; right worked. `opt_slider`
+(`runtime/ui/option_rows.cpp`) snaps a step to its grid with `floor` / `ceil` of the value over the step and a 1e-6
+allowance, and the step came in as a float: 0.02f is 0.0199999996, so gamma 1.00 divided to 50.0000011, `ceil` went
+one grid point up, and left landed back on the value it started from. The same arithmetic over every grid value of
+every slider with a fractional step: gamma left stuck at 16 of 20 values (from 0.90, the default included), walk speed
+left at 45 of 69 (from 0.45), and the mouse sensitivity, whose 0.05f is just above 0.05, stuck RIGHT at 132 of 200
+(from 3.40). The step is now the decimal it was written as (`%.6g` of the float); the same check finds no stuck value.
+
+## 2026-11-21: the live prompt glyphs' fault (a sheet the build through bit 7 never maps)
+
+With set `promptglyphs` on, the pause screen opened and closed while the prompts changed over and over (W's owner-hang
+set-up) faulted once in the game's glyph drawing: a `memset` of a glyph's row at address 0x36, called from
+`main+0x1519424`, right after one of FreeType's band-split longjmps. The longjmp is FreeType's normal answer to a
+glyph larger than its cell pool (the clean runs had four of them each). The stack says what happened:
+
+- The fault was in the build through bit 7 (`main+0x1516120`, return `main+0x15163b4`) of a size-90 text whose size
+  this pass had just marked. A marked size, or a glyph id this pass gave, is a key the font's glyph cache has no
+  picture for: the plot (`main+0x154ca60`) renders it through FreeType and hands the text's callback
+  (`main+0x15192a0`) a glyph that is not in the cache's texture (+0xc != 1), and the per-glyph build
+  (`main+0x1515eb0`) draws such a glyph into the text's sheet in use: the CPU rasteriser (`main+0x1519300`) writes
+  its rows through the sheet's mapped address at sheet+0xf0.
+- Only the full build maps that address (`main+0x150f4d0`: nvnMemoryPoolMap of the sheet's pool plus its offset) and
+  its end clears it again (`main+0x150f520`). The build through bit 7 maps nothing, so its rows went to address 0
+  plus their place in the sheet. It happens only when the sheet still has room: otherwise the shelf packer
+  (`main+0x150f540`) refuses the glyph and it is skipped, which is why the fault was rare.
+- The game itself never misses the cache in that build: the full build that laid the text out put its glyphs in the
+  cache first.
+
+Now (`runtime/oot_fps.c` sheet_ready, sheet_stamp_draw): before a build through bit 7 of a text whose records this
+pass changed since the last change (asked by the pass, or by the game for such a text), every set-up sheet of the
+text's ring gets the mapped address the full build would give it (nvnMemoryPoolMap's answer for the pool the sheet's
+holder at +0xe0 names, its first word, plus the sheet's offset; only for a pool with CPU access), and the texture cache
+is told the sheets were written, before the build and again at the text's next draw once the ring moved on. A text
+with a set-up sheet that cannot be mapped is not built by the pass. The summary lines count the prepared builds
+("builds with their sheets mapped"), the ones that drew into such a sheet, and the texts met without a ring or with
+none set up.
+
+Checked with W's repro of the fault (the owner's settings and save, fullscreen, the home forest, the pause screen
+opened and closed every 2.5 s while the prompts change live, focus taken and given back): with REKARINA_SHEETLOG=1 the
+pause screen's size-90 L and R icons hold a ring of two sheets, of which sheet 1 is set up later (128x43, room for
+another glyph). Whether a forced build faults depends on the ring's phase: one that moves onto the unset sheet 0 is
+skipped, one that moves onto sheet 1 rasterises the missed glyph there, which in the faulting run went to address 0.
+With the sheets mapped, two runs (hg4, hg5) each logged "sheet 1 mapped at 0x1afe98600 for a build through bit 7 (the
+holder's own address 0x1afe98600)" and twice "its build drew into sheet 1, mapped for it", with no fault (62-64 prompt
+changes, 68 pause screens and 4 FreeType band splits a run). A first version read the pool at the holder itself,
+found no pool there and left those texts unbuilt: the log's "no CPU view" lines said so.
+
+## 2026-11-21: the frozen figures under the ice at 48 fps (set `looppose` on every fractional step)
+
+A player (RTX 3080 Ti, base mode, 1440p) saw the frozen figures in the ice of the domain flicker and seem to move at
+some camera angles. His two clips (1.2.7 and 1.2.8) run at 47-48 fps by the overlay; frame by frame, the figure under the
+ice at the hero's feet takes another pose and size from one captured frame to the next, the same pose coming back every
+few frames. Those figures are drawn from a one-frame animation loop, which set `looppose` holds on one pose by stepping
+it in whole frames and drawing it at the loop's start, but only while the frame step was under one 60 Hz frame (above
+60 fps). At 48 fps the step is 1.25: the phase moved a quarter frame each frame and wrapped, the twitch the set was made
+for above 60. "At certain camera angles" are the views that ran under 60 fps on his card. The set now acts on any step
+with a fraction (`runtime/oot_fps.c` loop_fraction); whole steps (60 and 30 fps) keep the game's own values. Another
+port's fix of the same twitch (above 60 fps only) leaves it under 60 as well.
+In a run at a 48 fps cap in the domain, 1.2.8's counters read "loops of one frame: 0 steps made whole, 0 poses drawn
+at their start" every 20 s; with the change, 5,760-9,910 steps made whole and 1,600-3,372 poses drawn at their start
+(about three and a half such loops a frame). His own 1.2.7 log from the domain, settled at 45-52 fps, reads 0 and 1
+there, and counts only in the moments his frame ran over 60 fps.
+
+## 2026-11-21: float sums of the compare-and-swap path marked as sums
+
+Radeons of RDNA 1 and 2 have no float atomic add on buffers, so the translator makes every float atomic add a
+compare-and-swap loop. `gfx_shader.c` `mark_fadd_ssbos` marks the storage buffers shaders add floats into
+(`GFX_SSBO_FADD`), and the mirror's write-back adds the GPU's change to what the CPU left there instead of copying the
+mirror's word over it (`vk_memory.c` `shadow_merge`, `wb_merge.comp`). For the loop it looked for a swap whose value is
+the bit cast of an `OpFAdd`, and none of the translator's loops has that shape: Ryujinx keeps registers in function
+variables, so the sum is stored into one and loaded back, bit cast, put through the select that flushes a denormal sum
+to 0, and bit cast again (`OpBitcast(OpSelect(|x| < min, 0, OpBitcast(OpLoad(%reg))))`, with `OpStore %reg
+OpFAdd(...)` earlier). On a discrete Radeon (memory mode mirror), those sums went back as plain values.
+
+The rule now carries "made from an `OpFAdd`" through stores into and loads from a variable, bit casts, copies and
+selects, in three passes (a loop's store can come after its load in the module's order). On three 1/256 samples of the
+shader cache it takes all 18 float swaps as sums and none of the 37 swaps of byte and halfword stores (their value is
+an `OpBitFieldInsert`). In the game with the loops forced (`REKARINA_FLOAT_ATOMICS=0`, the RTX 5070 and the integrated
+Radeon): "N float sums by compare-and-swap, N storage buffer bindings marked as sums, 0 through raw pointers" for six
+shaders, where 1.2.8 marked none; the picture in the forest and the field the same as 1.2.8's. NVIDIA's native adds take
+the same rule as before; the loops do not exist there.
+
+The white forest with black blotches reported from an RX 6600 (1.2.8, the loop path) did not show here in five
+setups of 1.2.8 with the loops: the RTX 5070 (mirror) at the exit, the bridge and the forest's middle, the integrated
+Radeon in both memory modes, the RTX 5070 with the reporter's `astc_bc = 0`; child save, noon.
+
+## 2026-11-21: the keyboard keys' labels in the game's text
+
+In the item list (LB) the keyboard prompts' Back key read "SHIFT" in letters a few pixels high and uneven. The game's
+text fonts have no shift symbol, so `pc_labels_fit` replaced it with the word, and a label of three letters or more was
+drawn at 0.26 of the key's height and at most 74 % of a square key's width: SHIFT came out width-limited at about 0.17
+of the key (7 px at 1440p, 5 px at 1080p), where FreeType's rasterising makes letters uneven. The owner picked one of
+three mock-ups: Shift is now a solid up arrow (a head half as wide as the arrow is tall over a stem a quarter as wide,
+0.56 of the key), and a word (CTRL, TAB, ALT ...) is drawn at 0.40 of the key's height and 84 % of its width on a key
+as wide as the button's advance allows (580 of 640 font units, not a 560 square). One- and two-letter keys and the
+mouse are as before; the Up key keeps the font's own thin arrow, so it does not look like Shift. `tools/button_icons.py`
+is an input of the setup's prompts step: an update draws the button pictures again (about a minute) and nothing else.
+Checked in the game: the setup's own prompts tool drew the button pictures with the change, and the item list opened
+under the keyboard prompts at 1440p and 1080p shows Back with the arrow key in place of the tiny SHIFT, the key as
+large as the other keys; Sort (the mouse) and Select (A D) are the same pictures as before.

@@ -172,7 +172,24 @@ VkResult vk_dlssg_enumerate(VkInstance inst, uint32_t *n, VkPhysicalDevice *pd) 
 
 VkResult vk_dlssg_create_device(VkInstance inst, VkPhysicalDevice pd, const VkDeviceCreateInfo *ci, VkDevice *out) {
     PFN_vkCreateDevice f = S.loaded > 0 ? (PFN_vkCreateDevice)S.gipa()(inst, "vkCreateDevice") : NULL;
-    return f ? f(pd, ci, NULL, out) : vkCreateDevice(pd, ci, NULL, out);
+    VkResult r = f ? f(pd, ci, NULL, out) : vkCreateDevice(pd, ci, NULL, out);
+    if (r != VK_SUCCESS && f) {
+        // Streamline refused the device: it asks for NVIDIA's optical flow extension, which a Radeon or Intel GPU lacks
+        // ("Required device extension VK_NV_optical_flow unsupported", -7), and rekarina.ini still says framegen =
+        // dlss after a move from an RTX card, on a laptop running on its integrated GPU, or with another GPU chosen.
+        // Streamline has to be loaded before the first Vulkan call, so the device was not known then. The game made no
+        // device and ended with "no Vulkan device"; now the device is made again through the loader (the instance and
+        // the physical device are the loader's: the interposer only passed them on), and AMD FSR frame generation takes
+        // DLSS's place (vk_dlssg_device_ready).
+        VkPhysicalDeviceProperties p;
+        vkGetPhysicalDeviceProperties(pd, &p);
+        rt_log("dlssg: NVIDIA Streamline refused a device on %s (%d): DLSS Frame Generation off, the device is made "
+               "without Streamline", p.deviceName, (int)r);
+        S.loaded = -1;
+        S.why = "NVIDIA Streamline refused this GPU: DLSS Frame Generation needs an RTX 40 or 50 card";
+        r = vkCreateDevice(pd, ci, NULL, out);
+    }
+    return r;
 }
 
 // REKARINA_DLSSG_UNAVAILABLE=1 (a test knob): DLSS Frame Generation counts as missing on this card, as on an RTX 20 or

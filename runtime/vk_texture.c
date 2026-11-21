@@ -428,8 +428,30 @@ static VkImageAspectFlags aspect_of(const TexVkFormat *f) {
 // A depth / stencil image that needs more bytes than its NVN storage (guest_size) is not bound: AMD's RDNA2 driver
 // (26.10.1) puts the depth compression metadata after the depth data, and above 1080p that tail lies over the next
 // texture of the game's heap; each depth write then scrambled it (garbage band at the top, pink glow, blocks in the
-// grass, a blue checkered scene in the menu). Colour images keep their place: the RX 9070 also sizes some of them
-// above their storage, and nothing there showed that the GPU writes the excess.
+// grass, a blue checkered scene in the menu). A colour image sized above its storage (the RX 9070 does it to some, the
+// RDNA 2 integrated GPU to small ones: 262,144 bytes for a 131,072-byte target) kept its place until 1.2.9, as nothing
+// had shown the GPU writing the excess. But the excess lies over the game's next texture either way: whatever the
+// driver keeps there is overwritten when that texture is written, and the other way round. RDNA 3 and 4 players had
+// a material's colours go wrong and the GPU stop inside a small pass right after a full-screen clear, seconds after a
+// map arrival; whether this overlap is behind that is not shown yet (no such card here), but the overlap itself is
+// wrong, and on AMD's Windows driver nearly every image already takes memory of its own (its 64 KiB alignment). So
+// there such a colour image takes memory of its own too: REKARINA_COLOR_TAIL_BIND=1 binds it as before, =0 refuses
+// it on every driver. The integrated Radeon: about 54 images in 1,600 frames, the same picture, the same video memory.
+static int color_tail_refused(const Tex *e, uint64_t size, uint64_t guest_size) {
+    static int on = -1;
+    static volatile int32_t count;
+    if (on < 0) {
+        const char *v = cfg_get("REKARINA_COLOR_TAIL_BIND");
+        on = v && *v ? atoi(v) == 0 : vk_caps.amd_prop;
+    }
+    if (!on) return 0;
+    int32_t m = plat_inc32(&count);
+    if (!(m & (m - 1)))   // the first, then at each power of two
+        rt_log("vk: a colour image the driver sizes above its storage (%ux%u format %#x: %llu bytes for %llu) takes memory "
+               "of its own, not the pool's (REKARINA_COLOR_TAIL_BIND); %d so far", e->t.d.width, e->t.d.height,
+               (unsigned)e->t.d.format, (unsigned long long)size, (unsigned long long)guest_size, (int)m);
+    return 1;
+}
 static int format_compressed(VkFormat f) {   // vkCmdClearColorImage takes no block-compressed format
     return (f >= VK_FORMAT_BC1_RGB_UNORM_BLOCK && f <= VK_FORMAT_ASTC_12x12_SRGB_BLOCK) ||
            (f >= VK_FORMAT_ASTC_4x4_SFLOAT_BLOCK && f <= VK_FORMAT_ASTC_12x12_SFLOAT_BLOCK);
@@ -595,6 +617,7 @@ static int bind_pool_memory(VkCtx *c, Tex *e, VkImage img, uint64_t guest_size) 
     static uint64_t why_n;
 #define ALIAS_WHY(k) do { bind_why = k, why[k]++, why_b[k] += req.size; if (!(++why_n & 1023)) rt_log("ALIASWHY bound %llu (%llu MiB), depth too large %llu (%llu MiB), unresolved %llu, misaligned %llu (%llu MiB), memory type %llu; this one: size %llu guest %llu align %llu", (unsigned long long)why[0], (unsigned long long)(why_b[0] >> 20), (unsigned long long)why[1], (unsigned long long)(why_b[1] >> 20), (unsigned long long)why[2], (unsigned long long)why[3], (unsigned long long)(why_b[3] >> 20), (unsigned long long)why[4], (unsigned long long)req.size, (unsigned long long)guest_size, (unsigned long long)req.alignment); } while (0)
     if ((e->f.depth || e->f.stencil) && req.size > guest_size) { ALIAS_WHY(1); return 0; }
+    if (req.size > guest_size && color_tail_refused(e, req.size, guest_size)) { ALIAS_WHY(1); return 0; }
     {   // DEBUG-DEPTHALIAS: REKARINA_DEPTH_ALIAS=0: a depth image never aliases pool memory (memory of its own)
         static int da = -1;
         if (da < 0) da = rt_knob("DEPTH_ALIAS", "1");

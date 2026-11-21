@@ -249,6 +249,8 @@ int gfx_window_vk_extensions(const char **out, int max) {
     return k;
 }
 
+const void *gfx_window_swapchain_next(int has_fse) { (void)has_fse; return NULL; }
+
 int gfx_window_vk_presentable(VkInstance inst, VkPhysicalDevice pd, uint32_t family) {
     return video_up() && SDL_Vulkan_GetPresentationSupport(inst, pd, family);
 }

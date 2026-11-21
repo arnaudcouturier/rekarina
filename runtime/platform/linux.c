@@ -1662,6 +1662,8 @@ int plat_machine_name(char *out, size_t cap) {
     return ok && *out;
 }
 
+int plat_console_release(void) { return 0; }   // a terminal is never made for the game here
+
 int plat_stderr_path(char *out, size_t cap) {
     struct stat st;
     if (fstat(2, &st) || !S_ISREG(st.st_mode)) return 0;

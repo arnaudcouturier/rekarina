@@ -72,6 +72,9 @@ void gfx_shader_set_host(int float64, uint32_t sbuf_align, const uint32_t subgro
 // The subgroup size task and mesh shaders run at when it is not the fragment stage's (vk_caps.c pins them to 32 on a
 // device with other subgroups); 0: the fragment stage's. Set before gfx_shader_set_host.
 extern uint32_t gfx_shader_mesh_subgroup;
+// Texture array accesses decorated NonUniform at load (gfx_shader.c patch_nonuniform): 0 none, 1 those whose index
+// depends on a per-invocation value, 2 every computed index. vk_device.c sets it (REKARINA_NONUNIFORM).
+extern int gfx_shader_nonuniform;
 const uint8_t *gfx_shader_key(const GfxShader *s);          // the 32-byte cache key (stable while the translator is)
 const uint8_t *gfx_shader_input_id(const GfxShader *s);     // the 32-byte input id (stable across translators)
 // By input id from memory or disk; xlate 1 also translates it from its stored inputs. NULL if absent.

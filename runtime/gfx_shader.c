@@ -955,39 +955,98 @@ out:
 
 // Storage buffers the shader adds into with float atomics get GFX_SSBO_FADD: an OpAtomicFAddEXT whose pointer leads
 // (through access chains and copies) to the variable decorated with the buffer's binding. Their mirror ranges go back
-// to guest memory as additions (vk_memory.c, write-back merge).
+// to guest memory as additions (vk_memory.c, write-back merge). Without VK_EXT_shader_atomic_float
+// (gfx_shader_float_atomics 0: Radeons of RDNA 1 and 2) the translator makes the same add a compare-and-swap loop: an
+// OpAtomicCompareExchange whose value is made from an OpFAdd. That counts as well. Unmarked (1.2.8 and before: the rule
+// looked for a bit cast of the OpFAdd itself and found none of the translator's loops), such a sum went back as a
+// plain value over the CPU's reset of it wherever a mirror holds it, where the native add's sums are merged.
 static void mark_fadd_ssbos(GfxShader *s) {
     const uint32_t *w = s->spirv;
     uint64_t n = s->words;
     if (n < 5 || !s->nres[GFX_RES_SSBO]) return;
     uint32_t bound = w[3] < (1u << 20) ? w[3] : (1u << 20), nptr = 0, cptr = 64;
     uint32_t *from = calloc(bound, sizeof *from), *bind = calloc(bound, sizeof *bind), *ptr = malloc(cptr * sizeof *ptr);
-    if (!from || !bind || !ptr) goto out;
-    for (uint64_t i = 5; i < n;) {
-        uint32_t op = w[i] & 0xffff, len = w[i] >> 16;
-        if (!len || i + len > n) break;
-        const uint32_t *a = w + i + 1;
-        if (op == OP_DECORATE && len >= 4 && a[1] == 33 /* Binding */ && a[0] < bound) bind[a[0]] = a[2] + 1;
-        else if ((op == 65 || op == 66 || op == 67 || op == 83) && len >= 4 && a[1] < bound) from[a[1]] = a[2];
-        else if (op == 6035 /* OpAtomicFAddEXT */ && len >= 4 && a[2] < bound) {
-            if (nptr == cptr) {
-                uint32_t *q = realloc(ptr, (cptr *= 2) * sizeof *ptr);
-                if (!q) goto out;
-                ptr = q;
+    uint8_t *fsum = calloc(bound, 1);   // 1: a value made from an OpFAdd's result, or a pointer a sum was stored through
+    if (!from || !bind || !ptr || !fsum) goto out;
+    // A sum: an OpFAdd's result and what the translator's float-add loop makes of it before the swap. Its registers are
+    // function variables, so the sum is stored into one and loaded back; then bit casts (and copies), and the select
+    // that flushes a denormal sum to 0 (InstEmitAluHelper.FlushDenormal): OpBitcast(OpSelect(|x| < min, 0,
+    // OpBitcast(OpLoad(%reg)))) with an OpStore %reg OpFAdd(...) before it. A store may come after its load in the
+    // module's order (a loop), so three passes; the third collects the atomics.
+    for (int pass = 0; pass < 3; pass++)
+        for (uint64_t i = 5; i < n;) {
+            uint32_t op = w[i] & 0xffff, len = w[i] >> 16;
+            if (!len || i + len > n) break;
+            const uint32_t *a = w + i + 1;
+            if (pass == 0) {
+                if (op == OP_DECORATE && len >= 4 && a[1] == 33 /* Binding */ && a[0] < bound) bind[a[0]] = a[2] + 1;
+                if ((op == 65 || op == 66 || op == 67 || op == 83) && len >= 4 && a[1] < bound) from[a[1]] = a[2];
             }
-            ptr[nptr++] = a[2];
+            if (op == 129 /* OpFAdd */ && len >= 5 && a[1] < bound) fsum[a[1]] = 1;
+            else if ((op == 124 /* OpBitcast */ || op == 83 /* OpCopyObject */ || op == 61 /* OpLoad */) && len >= 4 &&
+                     a[1] < bound && a[2] < bound && fsum[a[2]])
+                fsum[a[1]] = 1;
+            else if (op == 169 /* OpSelect */ && len >= 6 && a[1] < bound &&
+                     ((a[3] < bound && fsum[a[3]]) || (a[4] < bound && fsum[a[4]])))
+                fsum[a[1]] = 1;
+            else if (op == 62 /* OpStore */ && len >= 3 && a[0] < bound && a[1] < bound && fsum[a[1]])
+                fsum[a[0]] = 1;
+            int cas = op == 230 /* OpAtomicCompareExchange */ && len >= 9 && a[6] < bound && fsum[a[6]];
+            if (pass == 2 && ((op == 6035 /* OpAtomicFAddEXT */ && len >= 4 && a[2] < bound) || (cas && a[2] < bound))) {
+                if (nptr == cptr) {
+                    uint32_t *q = realloc(ptr, (cptr *= 2) * sizeof *ptr);
+                    if (!q) goto out;
+                    ptr = q;
+                }
+                ptr[nptr++] = a[2];
+            }
+            i += len;
         }
-        i += len;
+    {   // DEBUG-CASLOG: REKARINA_CASLOG=1: every compare-and-swap of a shader with the opcodes that make its value (up to
+        // three levels), to learn the translator's float-add loop
+        static int caslog = -1;
+        if (caslog < 0) caslog = cfg_get("REKARINA_CASLOG") != NULL;
+        if (caslog) {
+            uint32_t *def = calloc(bound, sizeof *def);   // result id -> word offset of its instruction
+            for (uint64_t i = 5; def && i < n;) {
+                uint32_t op = w[i] & 0xffff, len = w[i] >> 16;
+                if (!len || i + len > n) break;
+                if (len >= 3 && op != OP_DECORATE && w[i + 2] < bound && op != 54 /* OpFunction */) def[w[i + 2]] = (uint32_t)i;
+                if (op == 230 && len >= 9) {
+                    char line[256];
+                    int o = snprintf(line, sizeof line, "CASLOG shader %02x%02x%02x%02x: cas value %u", s->iid[0], s->iid[1], s->iid[2], s->iid[3], w[i + 7]);
+                    uint32_t v = w[i + 7];
+                    for (int lv = 0; lv < 4 && v < bound && def[v] && o < 200; lv++) {
+                        uint32_t d = def[v], dop = w[d] & 0xffff, dlen = w[d] >> 16;
+                        o += snprintf(line + o, sizeof line - (size_t)o, " <- op %u", dop);
+                        v = dlen >= 4 ? w[d + 3] : 0;
+                    }
+                    rt_log("%s", line);
+                }
+                i += len;
+            }
+            free(def);
+        }
     }
+    int marked = 0, unbound = 0;
     for (uint32_t k = 0; k < nptr; k++) {
         uint32_t v = ptr[k];
         for (int step = 0; step < 64 && from[v] && from[v] < bound; step++) v = from[v];
-        if (!bind[v]) continue;
+        if (!bind[v]) {
+            unbound++;
+            continue;
+        }
         for (int j = 0; j < s->nres[GFX_RES_SSBO]; j++)
-            if (s->res[GFX_RES_SSBO][j].binding == bind[v] - 1) s->res[GFX_RES_SSBO][j].flags |= GFX_SSBO_FADD;
+            if (s->res[GFX_RES_SSBO][j].binding == bind[v] - 1) s->res[GFX_RES_SSBO][j].flags |= GFX_SSBO_FADD, marked++;
+    }
+    if (nptr && !gfx_shader_float_atomics) {   // the compare-and-swap path: which shaders' sums are marked (a few a run)
+        static volatile int32_t said;
+        if (__atomic_add_fetch(&said, 1, __ATOMIC_RELAXED) <= 24)
+            rt_log("gfx_shader: %02x%02x%02x%02x: %u float sums by compare-and-swap, %d storage buffer bindings marked as "
+                   "sums, %d through raw pointers", s->iid[0], s->iid[1], s->iid[2], s->iid[3], nptr, marked, unbound);
     }
 out:
-    free(from), free(bind), free(ptr);
+    free(from), free(bind), free(ptr), free(fsum);
 }
 
 // Every gradient sample (OpImageSampleExplicitLod with Grad) whose two gradients are each built from two components gets
@@ -1202,6 +1261,172 @@ out:
     return ok;
 }
 
+// ---- non-uniform descriptor indexing (gfx_shader_nonuniform, REKARINA_NONUNIFORM)
+// The translator indexes arrays of textures and samplers (the texture pool's, patch_pool_arrays, and bound-slot
+// arrays) with an index it computes from a handle, and never decorates such an access NonUniform: tools/xlate/Program.cs
+// leaves Ryujinx's QueryHostSupportsShaderNonUniformIndexing at false. Where the handle is read from per-pixel data (an
+// entry of a light list at an address made from the pixel's position: the clustered lights' shadow maps, the water's
+// light handles), the lanes of one wave index different elements. NVIDIA's hardware takes a descriptor per lane either
+// way; AMD keeps a descriptor in scalar registers, and its compiler, told the index is the same for the whole wave,
+// takes the first active lane's element for all of them: another light's shadow map or texture for part of the wave,
+// changing as the waves fall differently from frame to frame (Longshot 7315957c indexes OoT's per-light shadow arrays
+// NonUniform for this). Mode 1 decorates every access chain into such an array whose index depends on a per-invocation
+// value: an Input variable, an atomic's result or a subgroup election, through any arithmetic, a load at an address made
+// from one, a function variable stored from one, a call's argument or result; with it the element's load and the
+// sampled image made from that, and the module gets the extension and the capabilities. Mode 2 decorates every access
+// with a computed index. The module's ids and everything else stay as they were.
+int gfx_shader_nonuniform;   // gfx.h: 0 off, 1 per-invocation indices, 2 every computed index (vk_device.c)
+
+enum { NU_TAINT = 1, NU_TYPE = 2, NU_ARRVAR = 4, NU_CONST = 8, NU_LOCAL = 16, NU_MARK = 32, NU_RET = 64 };
+
+static void patch_nonuniform(GfxShader *s) {
+    int mode = gfx_shader_nonuniform;
+    uint32_t *w = s->spirv;
+    uint64_t n = s->words;
+    if (!mode || n < 5 || w[3] >= (1u << 22)) return;
+    uint32_t bound = w[3];
+    uint8_t *f = calloc(bound, 1);
+    uint32_t *base = calloc(bound, sizeof *base), *pfirst = calloc(bound, sizeof *pfirst), *pcount = calloc(bound, sizeof *pcount);
+    uint32_t *params = NULL, nparams = 0;
+    uint8_t *imgtype = calloc(bound, 1), *arrtype = calloc(bound, 1), *ptrarr = calloc(bound, 1);
+    if (!f || !base || !pfirst || !pcount || !imgtype || !arrtype || !ptrarr) goto out;
+    params = malloc(sizeof *params * 4096);
+    if (!params) goto out;
+    int have_cap_nu = 0, have_cap_arr = 0, have_ext = 0;
+    uint64_t first_fn = 0;
+    uint32_t cur_fn = 0;
+    // Declarations: types, the image arrays and their variables, constants, Input variables, parameters per function.
+    for (uint64_t i = 5; i < n;) {
+        uint32_t op = w[i] & 0xffff, len = w[i] >> 16;
+        if (!len || i + len > n) goto out;
+        const uint32_t *a = w + i + 1;
+        if (op == 17 && len == 2 && a[0] == 5301) have_cap_nu = 1;
+        if (op == 17 && len == 2 && a[0] == 5307) have_cap_arr = 1;
+        if (op == 10 && len >= 2 && !strncmp((const char *)a, "SPV_EXT_descriptor_indexing", (len - 1) * 4)) have_ext = 1;
+        if (((op >= 19 && op <= 39) || op == 4456 || op == 5358) && len >= 2 && a[0] < bound) {   // OpType*, cooperative matrices
+            f[a[0]] |= NU_TYPE;
+            // an image that is sampled (Sampled 1), a sampler, a sampled image
+            if ((op == 25 && len >= 9 && a[6] == 1) || op == 26 || op == 27) imgtype[a[0]] = 1;
+            if ((op == 28 || op == 29) && len >= 3 && a[1] < bound && imgtype[a[1]]) arrtype[a[0]] = 1;
+            if (op == 32 && len >= 4 && a[2] < bound && arrtype[a[2]]) ptrarr[a[0]] = 1;
+        }
+        if (op >= 41 && op <= 52 && len >= 3 && a[1] < bound) f[a[1]] |= NU_CONST;   // constants, spec constants
+        if (op == OP_VARIABLE && len >= 4 && a[1] < bound) {
+            if (a[0] < bound && ptrarr[a[0]]) f[a[1]] |= NU_ARRVAR;
+            if (a[2] == SC_INPUT) f[a[1]] |= NU_TAINT;
+            if (a[2] == 7 /* Function */ || a[2] == 6 /* Private */ || a[2] == SC_OUTPUT) f[a[1]] |= NU_LOCAL;
+        }
+        if (op == 54 && len >= 5) {
+            cur_fn = a[1] < bound ? a[1] : 0;
+            if (!first_fn) first_fn = i;
+            if (cur_fn) pfirst[cur_fn] = nparams;
+        }
+        if (op == 55 && len >= 3 && cur_fn && a[1] < bound && nparams < 4096) params[nparams++] = a[1], pcount[cur_fn]++;
+        if ((op == 65 || op == 66) && len >= 4 && a[1] < bound && a[2] < bound)   // the variable an access chain is into
+            base[a[1]] = base[a[2]] ? base[a[2]] : a[2];
+        i += len;
+    }
+    if (!first_fn) goto out;
+    // Taint: forward over the function bodies until nothing changes (loops carry values back).
+    for (int pass = 0, changed = 1; changed && pass < 32; pass++) {
+        changed = 0;
+        for (uint64_t i = first_fn; i < n;) {
+            uint32_t op = w[i] & 0xffff, len = w[i] >> 16;
+            const uint32_t *a = w + i + 1;
+            if (op == 54) cur_fn = a[1] < bound ? a[1] : 0;
+            if (op == 62 && len >= 3 && a[0] < bound && a[1] < bound && (f[a[1]] & NU_TAINT)) {   // OpStore
+                uint32_t v = base[a[0]] ? base[a[0]] : a[0];
+                if ((f[v] & (NU_LOCAL | NU_TAINT)) == NU_LOCAL) f[v] |= NU_TAINT, changed = 1;
+            }
+            if (op == 254 && len >= 2 && cur_fn && a[0] < bound && (f[a[0]] & NU_TAINT) && !(f[cur_fn] & NU_RET))
+                f[cur_fn] |= NU_RET, changed = 1;
+            if (len >= 3 && a[0] < bound && (f[a[0]] & NU_TYPE) && a[1] < bound && !(f[a[1]] & NU_TAINT)) {
+                uint32_t res = a[1], from = 2, to = len - 1;   // operand words a[from..to)
+                int t = 0;
+                switch (op) {
+                case 81: to = 3; break;                 // OpCompositeExtract: the composite, then literals
+                case 82: case 79: to = 4; break;        // OpCompositeInsert, OpVectorShuffle: two ids, then literals
+                case 12: from = 4; break;               // OpExtInst: set and instruction number are not values
+                case OP_VARIABLE: to = from; break;     // a function variable: its contents taint it, by stores
+                case 61: to = 3; break;                 // OpLoad: the pointer (then memory operands)
+                case 57:                                // OpFunctionCall: the callee's result, or any argument
+                    t = a[2] < bound && (f[a[2]] & NU_RET);
+                    from = 3;
+                    break;
+                case 333: t = 1; break;                 // OpGroupNonUniformElect
+                default:
+                    if ((op >= 227 && op <= 242) || op == 6035) t = 1;   // atomics: each lane gets its own old value
+                }
+                for (uint32_t k = from; !t && k < to; k++) t = a[k] < bound && (f[a[k]] & NU_TAINT);
+                if (t) {
+                    f[res] |= NU_TAINT, changed = 1;
+                    if (op == 57 && a[2] < bound)   // the callee's parameters, all of them (conservative)
+                        for (uint32_t k = 0; k < pcount[a[2]]; k++)
+                            if (!(f[params[pfirst[a[2]] + k]] & NU_TAINT)) f[params[pfirst[a[2]] + k]] |= NU_TAINT;
+                }
+            }
+            i += len;
+        }
+    }
+    // The accesses, then what is made from them.
+    uint32_t nchain = 0, nmark = 0;
+    for (uint64_t i = first_fn; i < n;) {
+        uint32_t op = w[i] & 0xffff, len = w[i] >> 16;
+        const uint32_t *a = w + i + 1;
+        if ((op == 65 || op == 66) && len >= 5 && a[1] < bound && a[2] < bound && (f[a[2]] & NU_ARRVAR) && a[3] < bound &&
+            !(f[a[3]] & NU_CONST) && (mode == 2 || (f[a[3]] & NU_TAINT)))
+            f[a[1]] |= NU_MARK, nchain++;
+        i += len;
+    }
+    if (!nchain) goto out;
+    for (int pass = 0; pass < 2; pass++)
+        for (uint64_t i = first_fn; i < n;) {
+            uint32_t op = w[i] & 0xffff, len = w[i] >> 16;
+            const uint32_t *a = w + i + 1;
+            if (len >= 4 && a[1] < bound && !(f[a[1]] & NU_MARK) &&
+                (((op == 61 || op == 100 || op == 83) && a[2] < bound && (f[a[2]] & NU_MARK)) ||   // load, OpImage, copy
+                 (op == 86 && len >= 5 && ((a[2] < bound && (f[a[2]] & NU_MARK)) || (a[3] < bound && (f[a[3]] & NU_MARK))))))
+                f[a[1]] |= NU_MARK;
+            i += len;
+        }
+    for (uint32_t id = 1; id < bound; id++) nmark += (f[id] & NU_MARK) != 0;
+    int need_ext = w[1] < 0x10500 && !have_ext;
+    uint64_t extra = (uint64_t)(!have_cap_nu + !have_cap_arr) * 2 + (need_ext ? 8 : 0) + (uint64_t)nmark * 3;
+    uint32_t *o = malloc((n + extra) * sizeof *o);
+    if (!o) goto out;
+    uint64_t k = 0;
+    for (int j = 0; j < 5; j++) o[k++] = w[j];
+    if (!have_cap_nu) o[k++] = 2u << 16 | 17, o[k++] = 5301;   // ShaderNonUniform
+    if (!have_cap_arr) o[k++] = 2u << 16 | 17, o[k++] = 5307;  // SampledImageArrayNonUniformIndexing
+    int ext_done = !need_ext, dec_done = 0;
+    for (uint64_t i = 5; i < n;) {
+        uint32_t op = w[i] & 0xffff, len = w[i] >> 16;
+        if (!ext_done && op != 17) {
+            static const char name[28] = "SPV_EXT_descriptor_indexing";
+            o[k++] = 8u << 16 | 10;
+            memcpy(o + k, name, 28);
+            k += 7, ext_done = 1;
+        }
+        if (!dec_done && !(op == 17 || op == 10 || op == 11 || op == 14 || op == 15 || op == 16 || op == 331 ||
+                           (op >= 2 && op <= 8) || op == 330 || op == 317)) {
+            for (uint32_t id = 1; id < bound; id++)
+                if (f[id] & NU_MARK) o[k++] = 3u << 16 | OP_DECORATE, o[k++] = id, o[k++] = 5300;   // NonUniform
+            dec_done = 1;
+        }
+        for (uint32_t j = 0; j < len; j++) o[k++] = w[i + j];
+        i += len;
+    }
+    if (!dec_done) { free(o); goto out; }
+    free(s->spirv);
+    s->spirv = o, s->words = k;
+    static volatile int32_t n_logged;
+    if (plat_inc32(&n_logged) <= 6)
+        rt_log("gfx_shader: %u texture array accesses with a %s index decorated NonUniform (%u ids; REKARINA_NONUNIFORM)",
+               nchain, mode == 2 ? "computed" : "per-invocation", nmark);
+out:
+    free(f), free(base), free(pfirst), free(pcount), free(params), free(imgtype), free(arrtype), free(ptrarr);
+}
+
 static void reflect(GfxShader *s) {
     static const char *const kinds[GFX_RES_KINDS] = {"cbufs", "sbufs", "textures", "images"};
     const char *js = s->reflection;
@@ -1247,6 +1472,7 @@ static void reflect(GfxShader *s) {
         json_objects(js, "textures", add_res, s, GFX_RES_TEX);
         no_pool = 0;
     }
+    patch_nonuniform(s);
     {   // DEBUG-NODISCARD: REKARINA_NO_DISCARD=<hash>[,...]: those fragment shaders (SPIR-V FNV-1a, as the dump names them) never discard
         const char *e = cfg_env("REKARINA_NO_DISCARD");
         uint64_t h = 0xcbf29ce484222325ull;

@@ -206,6 +206,23 @@ static void cache_load(VkCtx *c) {
             size = 0;
         }
     }
+    // AMD's driver keeps a pipeline cache of at most about 850 MiB: the file of 1.2.4 to 1.2.7, which the setup's build
+    // of every prepared stage library filled to that size on AMD, took nothing new, and every start built the entry
+    // step's pipelines again (6,500 of them, four minutes on an RX 6800). No library goes into the file any more
+    // (lb_warm_prepared); a file that large starts empty once, so that it holds the entry step's pipelines from then on.
+    // pipeline-cache.reset beside it says it was done. REKARINA_PIPELINE_CACHE_RESET_MB sets the size (0: never).
+    if (size && c->props.vendorID == 0x1002) {
+        const char *rm = cfg_get("REKARINA_PIPELINE_CACHE_RESET_MB");
+        uint64_t limit = (uint64_t)(rm && *rm ? atoi(rm) : 768) << 20;
+        char mark[sizeof P.cache_path + 16];
+        snprintf(mark, sizeof mark, "%.*s.reset", (int)(strlen(P.cache_path) - 4), P.cache_path);   // pipeline-cache.reset
+        if (limit && size >= limit && !plat_file_exists(mark)) {
+            rt_log("vk_pipeline: %s holds %.1f MiB, the AMD driver's limit: started empty once (%s)", P.cache_path,
+                   size / 1048576.0, mark);
+            size = 0;
+            plat_file_write(mark, "1\n", 2);
+        }
+    }
     VkPipelineCacheCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO, .initialDataSize = size,
                                     .pInitialData = size ? data : NULL};
     P.cache_bytes = size;

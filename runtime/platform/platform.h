@@ -447,6 +447,10 @@ int plat_machine_name(char *out, size_t cap);            // the firmware's produ
 int plat_is_wine(void);                                   // 1 when the Windows build runs under Wine; 0 elsewhere
 // The file the process's stderr (the log) goes to, as a UTF-8 path; 0 when stderr is not a file (a console, a pipe).
 int plat_stderr_path(char *out, size_t cap);
+// Lets go of a console that this process alone is attached to: the one Windows makes for a console program opened from
+// Explorer or a shortcut, which showed the log beside the game's window. A console shared with the shell that started
+// the game (cmd, PowerShell, a script) stays. 1 when it let one go; 0 elsewhere.
+int plat_console_release(void);
 
 // ---- desktop: the in-game menu's "Copy system info" and "Open log folder"
 int plat_clipboard_set(const char *utf8);                 // replaces the clipboard's text; 1 on success

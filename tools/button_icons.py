@@ -428,6 +428,7 @@ PC_HUD_TEXTURES = {'Nt_KeyTexA_00': 0xE040, 'Nt_KeyTexB_00': 0xE041, 'Nt_KeyTexX
                    'Nt_KeyTexL_00': 0xE044, 'Nt_KeyTexZL_00': 0xE046, 'Nt_KeyTexLSt_00': 0xE052,
                    'Nt_KeyTexLSt_01': 0xE05E}
 PC_MOUSE = ('mouse_l', 'mouse_r', 'mouse_m')
+PC_SHIFT_KEYS = ('lshift', 'rshift')   # drawn as an arrow, not as the word SHIFT
 
 
 def pc_binds(ini_text=None):
@@ -497,13 +498,29 @@ def pc_icons(g, adv, binds=PC_BINDS):
             polygon(ReverseContourPen(pen), [(bx0, by0), (bx1, by0), (bx1, by1), (bx1 - t, by1), (bx1 - t, by0 + t),
                                              (bx0 + t, by0 + t), (bx0 + t, by1), (bx0, by1)])
             return
+        if key in PC_SHIFT_KEYS:   # the game's text fonts have no shift symbol: a solid up arrow, cut out
+            shift_arrow(pen, (x0 + x1) / 2, (y0 + y1) / 2, h * 0.56)
+            return
         label = PC_LABELS.get(key, key.upper())
-        cap = h * (0.52 if len(label) == 1 else 0.36 if len(label) == 2 else 0.26)
-        g.hole(pen, label, (x0 + x1) / 2, (y0 + y1) / 2, cap, w * 0.74, 'H')
+        # a word (CTRL, TAB, ALT ...) as tall as the key's width lets it be, up to 0.40 of its height: at 0.26 and 74 %
+        # of a square key's width SHIFT was a few pixels high and uneven in the game's text (the item list's guide)
+        word = len(label) >= 3
+        cap = h * (0.52 if len(label) == 1 else 0.36 if len(label) == 2 else 0.40)
+        g.hole(pen, label, (x0 + x1) / 2, (y0 + y1) / 2, cap, w * (0.84 if word else 0.74), 'H')
+
+    def shift_arrow(pen, cx, cy, s):
+        """Shift's arrow, s tall: a head half as wide as the arrow is tall over a stem a quarter of that, as a hole."""
+        hw, sw, hh = s * 0.50, s * 0.24, s * 0.52   # head half width, stem half width, head height
+        top, base, bot = cy + s / 2, cy + s / 2 - hh, cy - s / 2
+        pts = [(cx, top), (cx - hw, base), (cx - sw, base), (cx - sw, bot), (cx + sw, bot), (cx + sw, base), (cx + hw, base)]
+        polygon(ReverseContourPen(pen), counter_clockwise(pts))
 
     def one(key, advance):
         def draw(pen):
             side = min(advance - 80, Y1 - Y0)
+            if key not in PC_MOUSE and key not in PC_SHIFT_KEYS and len(PC_LABELS.get(key, key.upper())) >= 3:
+                key_cap(pen, 30, Y0, advance - 30, Y1, key)   # a word's key as wide as the advance allows
+                return
             key_cap(pen, (advance - side) / 2, Y0, (advance + side) / 2, Y1, key)
         return advance, draw
 

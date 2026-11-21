@@ -363,6 +363,37 @@ def tool_steady(ctx, step, script, args, parse=None, env=None, tries=3, within=N
     return code, log
 
 
+# The last line of a tool that stopped on data of the dump it could not unpack (the zstd library's own words, the NUP
+# reader's), and tools/nup_damage.py's report of one damaged file.
+DUMP_DAMAGE = re.compile(r'ZstdError|Data corruption|corrupted|NupError|size mismatch for|short read for', re.I)
+DAMAGED_LINE = re.compile(r'^damaged: (.+)$')
+
+
+def dump_damage(ctx, step, log, scope):
+    """After a tool that reads the dump failed on data it could not unpack (DUMP_DAMAGE in its last line): which files
+    of the .nup are damaged (tools/nup_damage.py, scope '--shaders' or '--all'), named with where they lie in it, as
+    InstallError check.input_damaged: the .nup has to be copied or dumped again. A step cannot leave such a file out,
+    since the game reads the same files while it runs. Returns when the check finds nothing (the caller then raises
+    its own error). Why: a player's shader step ended in "ZstdError: ... Data corruption detected" and a traceback that
+    named no file (1.2.8)."""
+    tool = ctx.layout.tools / 'nup_damage.py'
+    if not DUMP_DAMAGE.search(last_line(log)) or not tool.is_file():
+        return
+    ctx.reporter.progress(step, 'diagnose', force=True)
+    found = []
+
+    def parse(line):
+        m = DAMAGED_LINE.match(line)
+        if m:
+            found.append(m.group(1))
+
+    code, check_log = run_tool(ctx, step, tool, [ctx.nup, scope], parse)
+    if code == 3 and found:
+        more = f'; {len(found) - 3} more in {check_log}' if len(found) > 3 else ''
+        raise InstallError('check.input_damaged', input='.nup', path=str(ctx.nup), detail='; '.join(found[:3]) + more)
+    ctx.reporter.log(f'nup_damage.py found no damaged file (exit code {code}); its log is {check_log}')
+
+
 
 def cpu_level():
     """The level the game is compiled for on this machine (tools/build_game.py --cpu): 'v3', the default, needs AVX2
@@ -885,6 +916,7 @@ class Prompts(Step):
             code, log = tool_steady(ctx, self.id, layout.tools / 'make_oot_prompts.py', ['--out', build, '--nup', ctx.nup],
                                     env=pure)
             if code:
+                dump_damage(ctx, self.id, log, '--all')
                 raise InstallError('oot.prompts_failed', code=code, log=str(log))
             for folder, style in STYLES:
                 out = build / f'shared-fonts-{folder}'
@@ -1046,6 +1078,8 @@ class Prepare(Step):
                                     within=300)
         except Unstable as e:
             raise e.error() from None
+        if code:
+            dump_damage(ctx, self.id, log, '--shaders')
         if code or not (build / 'shader-prepared.bin').is_file():
             raise InstallError('oot.shaders_failed', code=code, log=str(log))
         # One shader-cache.pack instead of four files per shader (about 250,000 after the preparation): the game reads

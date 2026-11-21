@@ -1694,6 +1694,12 @@ int plat_stderr_path(char *out, size_t cap) {
     return WideCharToMultiByte(CP_UTF8, 0, p, -1, out, (int)cap, NULL, NULL) != 0;
 }
 
+int plat_console_release(void) {
+    DWORD ids[2];
+    if (!GetConsoleWindow() || GetConsoleProcessList(ids, 2) != 1) return 0;
+    return FreeConsole() != 0;
+}
+
 // ---- desktop
 
 int plat_clipboard_set(const char *utf8) {

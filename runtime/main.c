@@ -539,6 +539,16 @@ static void portable_paths(RtConfig *c) {
 
 int main(int argc, char **argv) {
     mem_init();   // first: claim the guest address space before anything else can land there; reads totk.ini
+    // Rekarina.exe opened from Explorer or a shortcut: the console Windows made for it showed the log in a second window
+    // (and every line written to it costs the writing thread a console redraw). The launcher starts the game without one
+    // (DETACHED_PROCESS), and on Windows 11 24H2 and later the manifest asks for none (rekarina.manifest,
+    // consoleAllocationPolicy); on older systems it is let go here, after a moment on the screen. A console shared with
+    // the shell that started the game stays. REKARINA_CONSOLE=1 keeps it; the log is in logs/rekarina.log either way.
+    {
+        const char *keep = cfg_get("REKARINA_CONSOLE");
+        if (!(keep && *keep && strcmp(keep, "0")) && plat_console_release())
+            rt_log("console: the console Windows made for this process was let go");
+    }
     extern void vk_nvidia_cache_beside_exe(void);
     {   // The driver reads its cache settings once, when it loads. The texture walk (the entry step's child, tex_prepare.c)
         // asks for no NVIDIA disk cache: it has a few encoders. (NVIDIA's Linux driver honours it; the Windows one gives
@@ -550,6 +560,14 @@ int main(int argc, char **argv) {
         for (int i = 1; i < argc; i++)
             if (!strcmp(argv[i], "--scan-textures") || !strcmp(argv[i], "--warm-libraries"))
                 plat_setenv("REKARINA_NO_CRASH_BOX", "1");
+        // The preparation's modes draw no frame, so they load no frame generation: with framegen = dlss in
+        // rekarina.ini, Streamline asks every device for VK_NV_optical_flow, and on a Radeon vkCreateDevice failed, so the
+        // setup's translation and the texture walk stopped with "no Vulkan device" (2026-11-21, the integrated Radeon).
+        static const char *const tool_modes[] = {"--prepare-shaders", "--warm-shaders", "--warm-libraries",
+                                                 "--scan-textures", "--prepare-textures"};
+        for (int i = 1; i < argc; i++)
+            for (size_t k = 0; k < sizeof tool_modes / sizeof *tool_modes; k++)
+                if (!strcmp(argv[i], tool_modes[k])) plat_setenv("REKARINA_FRAMEGEN", "off");
     }
     vk_nvidia_cache_beside_exe();   // before anything can load the graphics driver
     // The build that wrote the log, at its top: an attached log from another install or version shows at a glance.

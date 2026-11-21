@@ -556,11 +556,19 @@ static int create_swapchain(void) {
         // DEBUG-PRESENTTIMING: the plain swap chain asks for present timing; without it when the driver refuses
         int want_pt = c->has_present_timing;
         if (want_pt) ci.flags |= VK_SWAPCHAIN_CREATE_PRESENT_TIMING_BIT_EXT | VK_SWAPCHAIN_CREATE_PRESENT_ID_2_BIT_KHR;
+        // a window, not the display: full-screen exclusive disallowed where the driver has the choice
+        // (gfx_window_win.c gfx_window_swapchain_next)
+        ci.pNext = gfx_window_swapchain_next(c->has_fse);
         r = vkCreateSwapchainKHR(c->device, &ci, NULL, &g_sc);
         if (r != VK_SUCCESS && want_pt) {
             rt_log("gfx: swap chain with present timing refused (%d): without it", (int)r);
             ci.flags &= ~(VkSwapchainCreateFlagsKHR)(VK_SWAPCHAIN_CREATE_PRESENT_TIMING_BIT_EXT | VK_SWAPCHAIN_CREATE_PRESENT_ID_2_BIT_KHR);
             want_pt = 0;
+            r = vkCreateSwapchainKHR(c->device, &ci, NULL, &g_sc);
+        }
+        if (r != VK_SUCCESS && ci.pNext) {
+            rt_log("gfx: swap chain with full-screen exclusive disallowed refused (%d): without that", (int)r);
+            ci.pNext = NULL;
             r = vkCreateSwapchainKHR(c->device, &ci, NULL, &g_sc);
         }
         if (r == VK_SUCCESS && want_pt) pt_setup(c->device, g_sc);

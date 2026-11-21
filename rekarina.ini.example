@@ -324,6 +324,9 @@
 # (E, Shift, Space, left click, Q, R, right click, F, Tab, M, 1 to 4, W A S D, Ctrl, C) and the mouse for the right
 # stick, whatever pad_layout (docs/controls.md, "PC button prompts").
 # prompts = nintendo
+# Texts already on screen when the prompts change while the game runs (the action hint's key, the pause screen's guide
+# and tabs) take the new buttons at once: 1. 0: they keep the old ones until the game lays them out again. Read at start.
+# prompt_glyphs = 1
 # Gamepad stick dead zone in percent of full deflection (0 to 50). Raise it for a stick that drifts: inside the circle
 # the stick reads centred, and the rest of its travel is scaled to start there.
 # stick_deadzone = 8

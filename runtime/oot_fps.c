@@ -352,6 +352,11 @@ static struct { int seen[2]; uint64_t next; long long steps, poses; } loops;
 
 static int loop_is_pose(float start, float end) { return end > start && end - start <= 1.0f; }
 
+// A step that is not a whole number of 60 Hz frames: such a loop lands on another phase each frame above 60 fps (a step
+// under 1) and between 30 and 60 fps alike (1.25 at 48 fps: the frozen figures under the ice changed pose at the views
+// that ran under 60 fps, 2026-11-21). Whole steps (60 and 30 fps) keep the game's own values.
+static int loop_fraction(float step) { return step > 0.0f && fabsf(step - roundf(step)) > 1e-3f; }
+
 static float loop_whole(uint64_t entry, float step) {
     uint32_t h = (uint32_t)((entry * 0x9E3779B97F4A7C15ull) >> 40) % LOOP_SLOTS, k = 0;
     plat_mutex_lock(&loop_lock);
@@ -365,11 +370,11 @@ static float loop_whole(uint64_t entry, float step) {
 }
 
 // The animation clock's step times speed (s8 the step; the entry in x20: start +0x10, end +0x14): with the step's whole
-// frames for a loop of one frame or less while the frame is short.
+// frames for a loop of one frame or less while the step has a fraction.
 static float loop_product(Cpu *c, float speed) {
     float step = vget(c, 8);
     uint64_t entry = c->x[20];
-    if (short_frame(frame_step()) && step > 0.0f && loop_is_pose(gf(entry + 0x10), gf(entry + 0x14))) {
+    if (loop_fraction(frame_step()) && step > 0.0f && loop_is_pose(gf(entry + 0x10), gf(entry + 0x14))) {
         step = loop_whole(entry, step);
         count(&loops.steps, 1);
     }
@@ -386,12 +391,12 @@ static void loop_step1(Cpu *c) {
     vset(c, 1, loop_product(c, vget(c, 0)));
 }
 // main+0x924e50 in place of str s0, [x22] (s0 the time a skeleton is drawn at, its range at x22 + 4 and + 8): performs
-// the store, of the range's start for a loop of one frame or less while the frame is short.
+// the store, of the range's start for a loop of one frame or less while the step has a fraction.
 static void loop_pose(Cpu *c) {
     first_run(&loops.seen[1], "a loop of one frame is drawn at its start (set looppose)");
     uint64_t at = c->x[22];
     uint32_t time = (uint32_t)c->v[0];
-    if (short_frame(frame_step()) && loop_is_pose(gf(at + 4), gf(at + 8))) time = g32(at + 4), count(&loops.poses, 1);
+    if (loop_fraction(frame_step()) && loop_is_pose(gf(at + 4), gf(at + 8))) time = g32(at + 4), count(&loops.poses, 1);
     memcpy((void *)(uintptr_t)at, &time, 4);
     if (log_due(&loops.next))
         rt_log("oot fps: loops of one frame: %lld steps made whole, %lld poses drawn at their start in 20 s",
@@ -521,7 +526,140 @@ enum { SHEET_PENDING = 16 };
 static struct { uint64_t text, hash; uint32_t draws, builds, idx, watch; } sheet_pend[SHEET_PENDING];   // idx: the target sheet
 static int sheet_npend;   // under glyph_lock; read without it as a hint
 
-static void glyph_pending_draw(uint64_t text) {
+// A glyph the font's cache has no picture for (a glyph id this pass gave, or a size it marked: both are new cache keys)
+// is drawn by the build into the text's sheet in use (main+0x1515eb0 -> main+0x1519300): the CPU rasterises its rows
+// through the sheet's mapped address at sheet+0xf0. Only the full build sets that address (main+0x150f4d0:
+// nvnMemoryPoolMap of the sheet's pool + its offset) and its end clears it again (main+0x150f520); the build through
+// bit 7 (main+0x1516120) never maps a sheet, so a miss there wrote the glyph's rows at address 0 + their place in the
+// sheet whenever the sheet still had room (2026-11-20: the fault at main+0x1519424, a size-90 text built through
+// bit 7 right after its size was marked; with no room the glyph is skipped, which is why it was rare). The game never
+// misses in that build: the full build that laid the text out put its glyphs in the cache. So before a build through
+// bit 7 of a text whose records this pass changed (asked by this pass or by the game), every set-up sheet of its ring
+// gets the mapped address the full build would give it, and the texture cache is told the sheets were written, once
+// before the build and once at the text's next draw (the build's CPU writes are not seen otherwise). A text whose
+// sheet cannot be mapped is not built by this pass. The texts changed since the last change are kept by address.
+enum { GLYPH_MARKED = 1024, SHEET_STAMPS = 32 };
+static uint64_t glyph_marked[GLYPH_MARKED];   // under glyph_lock
+// sheet_prepared: builds prepared since the change; sheet_drawn: of those, builds that drew a glyph into a sheet mapped
+// for them (each would have written at address 0 before)
+static uint32_t glyph_nmarked, sheet_unmappable, sheet_prepared, sheet_drawn;
+static uint32_t sheet_noring, sheet_unset;   // builds of texts without a ring / with no sheet set up (nothing to map)
+static struct { uint64_t text, h[4]; uint32_t idx, draws; } sheet_stamp[SHEET_STAMPS];   // under glyph_lock; h: sheets' texels
+static uint64_t sheet_hash(uint64_t cpu, uint64_t n);
+static int sheet_nstamp;   // under glyph_lock; read without it as a hint
+void vk_guest_written(uint64_t addr, uint64_t size);
+
+// glyph_lock held: is text in the table (add: put it there)?
+static int glyph_marked_at(uint64_t text, int add) {
+    if (add && glyph_nmarked >= GLYPH_MARKED / 4 * 3) memset(glyph_marked, 0, sizeof glyph_marked), glyph_nmarked = 0;
+    for (uint32_t h = (uint32_t)((text >> 4) * 0x9E3779B1u) & (GLYPH_MARKED - 1);; h = (h + 1) & (GLYPH_MARKED - 1)) {
+        if (glyph_marked[h] == text) return 1;
+        if (!glyph_marked[h]) {
+            if (add) glyph_marked[h] = text, glyph_nmarked++;
+            return 0;
+        }
+    }
+}
+
+// The CPU address of a sheet's texels as the full build maps it (0: not set up, or its pool has no CPU view), and their
+// size.
+static uint64_t sheet_cpu(uint64_t s, uint64_t *size) {
+    if (!*(const uint8_t *)(uintptr_t)(s + 8)) return 0;
+    // +0xe0 holds the game's pool holder, whose first word is the NVNmemoryPool the sheet begin maps
+    // (main+0x150f4f0 -> main+0x129e240: ldr x0, [x0]; nvnMemoryPoolMap)
+    uint64_t holder = g64(s + 0xe0), pool = holder && !(holder & 7) && holder < RT_ADDRESS_LIMIT ? g64(holder) : 0;
+    if (!pool || (pool & 7) || pool >= RT_ADDRESS_LIMIT) return 0;
+    // the runtime's pool object (runtime/nvn_obj.h pool_t: magic 'POOL', flags, mem); nvnMemoryPoolMap gives mem, or
+    // nothing for a pool without CPU access (flag 1)
+    if (g32(pool) != 0x4c4f4f50u || (g32(pool + 4) & 1)) return 0;
+    uint64_t mem = g64(pool + 8);
+    uint32_t w = g32(s + 0x140), h = g32(s + 0x144);
+    if (!mem || !w || !h || (uint64_t)w * h > (16u << 20)) return 0;
+    *size = (uint64_t)w * h;
+    return mem + g64(s + 0xe8);
+}
+
+// Before a build through bit 7 of text: maps every set-up sheet of its ring that is not mapped and tells the texture
+// cache they are written. 1: the build is safe (no ring: a miss is skipped there, main+0x1516048; or every set-up
+// sheet mapped), 0: a set-up sheet cannot be mapped.
+static int sheet_ready(uint64_t text) {
+    uint64_t sheets = g64(text + 0x68);
+    uint32_t n = g32(text + 0xa4);
+    if (!sheets) {
+        __atomic_add_fetch(&sheet_noring, 1, __ATOMIC_RELAXED);
+        return 1;
+    }
+    if ((sheets & 7) || sheets >= RT_ADDRESS_LIMIT || !n || n > 16) return 0;
+    int any = 0;
+    for (uint32_t k = 0; k < n; k++) {
+        uint64_t s = sheets + 0x158ull * k, size = 0, cpu;
+        if (!*(const uint8_t *)(uintptr_t)(s + 8)) continue;   // not set up: the build through bit 7 skips the text
+        if (!(cpu = sheet_cpu(s, &size))) {
+            plat_mutex_lock(&glyph_lock);
+            int say = sheet_unmappable++ < 8;
+            plat_mutex_unlock(&glyph_lock);
+            if (say)
+                rt_log("prompt glyphs: text %#llx: sheet %u of its ring has no CPU view; the text is not built again",
+                       (unsigned long long)text, k);
+            return 0;
+        }
+        if (g64(s + 0xf0) != cpu) {
+            static uint32_t said;
+            if (__atomic_fetch_add(&said, 1, __ATOMIC_RELAXED) < 8)
+                rt_log("prompt glyphs: text %#llx: sheet %u mapped at %#llx for a build through bit 7 (%llu texels; the "
+                       "holder's own address %#llx)", (unsigned long long)text, k, (unsigned long long)cpu,
+                       (unsigned long long)size, (unsigned long long)(g64(g64(s + 0xe0) + 8) + g64(s + 0xe8)));
+            memcpy((void *)(uintptr_t)(s + 0xf0), &cpu, 8);
+        }
+        vk_guest_written(cpu, size);
+        any = 1;
+    }
+    if (!any) {
+        __atomic_add_fetch(&sheet_unset, 1, __ATOMIC_RELAXED);
+        return 1;
+    }
+    plat_mutex_lock(&glyph_lock);
+    sheet_prepared++;
+    int k = 0;
+    while (k < sheet_nstamp && sheet_stamp[k].text != text) k++;
+    if (k < SHEET_STAMPS) {
+        sheet_stamp[k].text = text, sheet_stamp[k].idx = g32(text + 0xa0), sheet_stamp[k].draws = 0;
+        for (uint32_t j = 0; j < 4; j++) {
+            uint64_t cpu = 0, size = 0;
+            sheet_stamp[k].h[j] = j < n && (cpu = sheet_cpu(sheets + 0x158ull * j, &size)) ? sheet_hash(cpu, size) : 0;
+        }
+        if (k == sheet_nstamp) __atomic_store_n(&sheet_nstamp, sheet_nstamp + 1, __ATOMIC_RELAXED);
+    }
+    plat_mutex_unlock(&glyph_lock);
+    return 1;
+}
+
+// At a text's draw after a build through bit 7 that sheet_ready prepared: once the ring moved on (the build ran), the
+// texture cache is told the sheet it took was written.
+static void sheet_stamp_draw(uint64_t text) {
+    plat_mutex_lock(&glyph_lock);
+    for (int i = 0; i < sheet_nstamp; i++) {
+        if (sheet_stamp[i].text != text) continue;
+        uint32_t idx = g32(text + 0xa0), n = g32(text + 0xa4);
+        uint64_t sheets = g64(text + 0x68), cpu = 0, size = 0;
+        if (idx != sheet_stamp[i].idx && sheets && !(sheets & 7) && sheets < RT_ADDRESS_LIMIT && n && n <= 16 && idx < n &&
+            (cpu = sheet_cpu(sheets + 0x158ull * idx, &size))) {
+            vk_guest_written(cpu, size);
+            if (idx < 4 && sheet_hash(cpu, size) != sheet_stamp[i].h[idx] && sheet_drawn++ < 8)
+                rt_log("prompt glyphs: text %#llx: its build drew into sheet %u, mapped for it (%llu texels)",
+                       (unsigned long long)text, idx, (unsigned long long)size);
+        }
+        if (idx != sheet_stamp[i].idx || ++sheet_stamp[i].draws > 64) {
+            sheet_stamp[i] = sheet_stamp[--sheet_nstamp];
+            __atomic_store_n(&sheet_nstamp, sheet_nstamp, __ATOMIC_RELAXED);
+        }
+        break;
+    }
+    plat_mutex_unlock(&glyph_lock);
+}
+
+// 1 when it asked for a build through bit 7 (the text's sheets prepared for it).
+static int glyph_pending_draw(uint64_t text) {
     plat_mutex_lock(&glyph_lock);
     for (int i = 0; i < glyph_npend; i++) {
         if (glyph_pend[i].text != text) continue;
@@ -538,13 +676,17 @@ static void glyph_pending_draw(uint64_t text) {
             break;
         }
         uint32_t f = g32(text + 0x180);
-        if (!(f & 0x80) && ++glyph_pend[i].draws % 4 == 0) {
-            f |= 0x80;
+        int ask = !(f & 0x80) && ++glyph_pend[i].draws % 4 == 0;
+        plat_mutex_unlock(&glyph_lock);
+        if (ask && sheet_ready(text)) {   // sheet_ready takes glyph_lock itself
+            f = g32(text + 0x180) | 0x80;
             memcpy((void *)(uintptr_t)(text + 0x180), &f, 4);
+            return 1;
         }
-        break;
+        return 0;
     }
     plat_mutex_unlock(&glyph_lock);
+    return 0;
 }
 
 // 1 when text is to be looked at for change gen (its first draw since), 0 when it was.
@@ -554,14 +696,19 @@ static int glyph_text_first(uint64_t text, uint32_t gen) {
     if (gen != glyph_gen) {
         if (glyph_gen)
             rt_log("prompt glyphs: %u texts drawn since the last change, %u of them held another set's buttons (%u "
-                   "characters swapped)", glyph_looked, glyph_fixed_texts, glyph_fixed);
+                   "characters swapped; %u builds with their sheets mapped, %u drew into them; %u without a ring, %u "
+                   "with none set up)", glyph_looked, glyph_fixed_texts, glyph_fixed, sheet_prepared, sheet_drawn,
+                   sheet_noring, sheet_unset);
         memset(glyph_texts, 0, sizeof glyph_texts);
         glyph_gen = gen, glyph_used = glyph_looked = glyph_fixed_texts = glyph_fixed = glyph_said = 0, glyph_since = now;
-        glyph_npend = 0, sheet_npend = 0;
+        glyph_npend = 0, sheet_npend = 0, sheet_prepared = sheet_drawn = sheet_noring = sheet_unset = 0;
+        memset(glyph_marked, 0, sizeof glyph_marked), glyph_nmarked = 0;
     }
     if (glyph_said < 2 && now - glyph_since > (glyph_said ? 60000000000ull : 5000000000ull)) {
         rt_log("prompt glyphs: in the %d s after the change %u texts were drawn, %u of them held another set's buttons "
-               "(%u characters swapped)", glyph_said ? 60 : 5, glyph_looked, glyph_fixed_texts, glyph_fixed);
+               "(%u characters swapped; %u builds with their sheets mapped, %u drew into them; %u without a ring, %u "
+               "with none set up)", glyph_said ? 60 : 5, glyph_looked, glyph_fixed_texts, glyph_fixed, sheet_prepared,
+               sheet_drawn, sheet_noring, sheet_unset);
         glyph_said++;
     }
     if (glyph_used >= GLYPH_TEXTS / 4 * 3) memset(glyph_texts, 0, sizeof glyph_texts), glyph_used = 0;
@@ -680,26 +827,24 @@ static void sheet_pending_draw(uint64_t text) {
     plat_mutex_unlock(&glyph_lock);
 }
 
-static void prompt_glyphs(Cpu *c) {
-    uint32_t gen = romfs_text_generation();
-    uint64_t text = c->x[0];
-    if (!gen || !text || (text & 7) || text >= RT_ADDRESS_LIMIT) return;
-    if (__atomic_load_n(&glyph_npend, __ATOMIC_RELAXED)) glyph_pending_draw(text);
+// The pass over one text at its draw; 1 when it asked for a build through bit 7 (the text's sheets prepared for it).
+static int prompt_glyphs_pass(uint64_t text, uint32_t gen) {
+    if (__atomic_load_n(&glyph_npend, __ATOMIC_RELAXED) && glyph_pending_draw(text)) return 1;
     if (__atomic_load_n(&sheet_npend, __ATOMIC_RELAXED)) sheet_pending_draw(text);
     // once per text after a change, and again whenever its quads are about to be built anew (bit 7: the game laid it
     // out again, which takes its records back to the shaping's glyphs and sizes)
-    if (!glyph_text_first(text, gen) && !(g32(text + 0x180) & 0x80)) return;
+    if (!glyph_text_first(text, gen) && !(g32(text + 0x180) & 0x80)) return 0;
     uint64_t pages = 0;
     uint32_t n = 0;
     uint8_t compact = 0;
     if (!plat_mem_read(text + 0xac, &n, 4) || !n || n > (1u << 20) || !plat_mem_read(text + 0x30, &pages, 8) ||
         !pages || (pages & 7) || !plat_mem_read(text + 0xd5, &compact, 1))
-        return;
+        return 0;
     uint32_t size = compact ? 0x48 : 0xa0, code_at = compact ? 0 : 8, glyph_at = compact ? 0x3c : 0x94;
     int fixed = 0, passive = 0;   // records changed: built now / when the game builds the text
     uint64_t drec = 0;   // the draw record of the first glyph swapped
     uint8_t *rec = malloc((size_t)size * (n < 1024 ? n : 1024));
-    if (!rec) return;
+    if (!rec) return 0;
     for (uint32_t p = 0; p * 1024 < n; p++) {
         uint64_t page = 0;
         uint32_t k = n - p * 1024 < 1024 ? n - p * 1024 : 1024;
@@ -777,13 +922,14 @@ static void prompt_glyphs(Cpu *c) {
         }
     }
     free(rec);
-    if (passive) {
+    if (fixed || passive) {
         plat_mutex_lock(&glyph_lock);
+        glyph_marked_at(text, 1);   // a build through bit 7 of it now misses the glyph cache: sheet_ready first
         glyph_fixed += passive;
         if (!fixed) glyph_fixed_texts++;
         plat_mutex_unlock(&glyph_lock);
     }
-    if (!fixed) return;
+    if (!fixed || !sheet_ready(text)) return 0;
     uint32_t f = g32(text + 0x180) | 0x80;   // the quads are built again from the records, in this draw
     plat_mutex_lock(&glyph_lock);
     glyph_fixed_texts++, glyph_fixed += fixed;
@@ -797,6 +943,21 @@ static void prompt_glyphs(Cpu *c) {
     }
     plat_mutex_unlock(&glyph_lock);
     memcpy((void *)(uintptr_t)(text + 0x180), &f, 4);
+    return 1;
+}
+
+static void prompt_glyphs(Cpu *c) {
+    uint32_t gen = romfs_text_generation();
+    uint64_t text = c->x[0];
+    if (!gen || !text || (text & 7) || text >= RT_ADDRESS_LIMIT) return;
+    if (__atomic_load_n(&sheet_nstamp, __ATOMIC_RELAXED)) sheet_stamp_draw(text);   // the build of an earlier draw
+    if (prompt_glyphs_pass(text, gen)) return;
+    // the game asks for a build through bit 7 of a text this pass changed (it laid the text out again): its sheets too
+    if (!(g32(text + 0x180) & 0x80) || !__atomic_load_n(&glyph_nmarked, __ATOMIC_RELAXED)) return;
+    plat_mutex_lock(&glyph_lock);
+    int marked = glyph_marked_at(text, 0);
+    plat_mutex_unlock(&glyph_lock);
+    if (marked) sheet_ready(text);
 }
 
 __attribute__((constructor)) static void oot_fps_register(void) {

@@ -770,11 +770,14 @@ static void cpu_ev_note(volatile uint32_t *val) {
 NVN_API(nvnEventSignal) {
     const ev_t *e = arg_p(c, 0);
     uint32_t v = (uint32_t)arg_x(c, 2);
-    {   // DEBUG-WAITLOG
+    {   // DEBUG-WAITLOG: REKARINA_WAITLOG=1 logs the first 40 signals and those of frames 899-902 (off: it wrote these
+        // lines into every player's log and console up to 1.2.8)
         static volatile int32_t n;
+        static int on = -1;
         double vk_listlog_ms(void);
-        uint64_t f = __atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED);
-        if (plat_inc32(&n) <= 40 || (f >= 899 && f <= 902))
+        if (on < 0) on = rt_knob("WAITLOG", "0");
+        uint64_t f = on ? __atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED) : 0;
+        if (on && (plat_inc32(&n) <= 40 || (f >= 899 && f <= 902)))
             rt_log("WAITLOG EventSignal event %p mode %llu value %u lr %#llx frame %llu thread %p at %.3f", (const void *)e,
                    (unsigned long long)arg_x(c, 1), v, (unsigned long long)c->x[30], (unsigned long long)f, (void *)(uintptr_t)c->tpidrro,
                    vk_listlog_ms());
