@@ -7,7 +7,9 @@
 
 // 4: frame generation that is off keeps its resources (nx2sl_frame), so the game turns it off in every frame without
 // a camera. A library of version 3 is still taken: the game then keeps generation on through such frames, as it did.
-#define NX2SL_VERSION 4
+// 5: Windows Streamline DLSS Super Resolution (nx2sl_sr_available, nx2sl_sr_evaluate_mode) and 4-arg nx2sl_init(dir, log, sr, fg)
+// so DLSS SR and live DLSS Frame Generation share one Streamline interposer session.
+#define NX2SL_VERSION 5
 #define NX2SL_VERSION_OLDEST 3
 
 typedef struct {
@@ -39,8 +41,24 @@ extern "C" {
 #define NX2SL_API
 #endif
 typedef int (*PFN_nx2sl_version)(void);
-// slInit with DLSS-G, Reflex and PCL for Vulkan; dir: the folder of sl.interposer.dll and the plugins (the game's)
-typedef int (*PFN_nx2sl_init)(const wchar_t *dir, Nx2SlLog log);
+typedef enum {
+    NX2SL_SR_DLAA,
+    NX2SL_SR_QUALITY,
+    NX2SL_SR_BALANCED,
+    NX2SL_SR_PERFORMANCE,
+    NX2SL_SR_ULTRA_PERFORMANCE
+} Nx2SlSrMode;
+// slInit for Vulkan with optional DLSS Super Resolution (sr) and DLSS-G/Reflex/PCL (fg); dir: the folder of sl.interposer.dll and the plugins
+typedef int (*PFN_nx2sl_init)(const wchar_t *dir, Nx2SlLog log, int sr, int fg);
+typedef int (*Nx2SlInitV4)(const wchar_t *dir, Nx2SlLog log);
+typedef int (*PFN_nx2sl_sr_available)(void);
+typedef int (*PFN_nx2sl_sr_evaluate_mode)(VkCommandBuffer cb, const Nx2SlImage *color, const Nx2SlImage *depth,
+                                          const Nx2SlImage *mv, const Nx2SlImage *out, const Nx2SlCamera *cam,
+                                          uint32_t frame, int preset, int depth_inverted, Nx2SlSrMode mode);
+NX2SL_API int nx2sl_sr_available(void);
+NX2SL_API int nx2sl_sr_evaluate_mode(VkCommandBuffer cb, const Nx2SlImage *color, const Nx2SlImage *depth,
+                                     const Nx2SlImage *mv, const Nx2SlImage *out, const Nx2SlCamera *cam,
+                                     uint32_t frame, int preset, int depth_inverted, Nx2SlSrMode mode);
 // The interposer's proc address functions: vkCreateInstance and vkCreateDevice through them add what DLSS-G needs
 // (extensions, features, queues) and tell Streamline the device; the swapchain functions through them are its hooks.
 typedef PFN_vkGetInstanceProcAddr (*PFN_nx2sl_instance_proc)(void);

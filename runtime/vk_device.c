@@ -277,7 +277,7 @@ static int create_instance(void) {
         validate = 0;
     }
     int utils = instance_ext_present(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
-    if (validate || ((vk_dlssg_wanted() || addr_report_wanted()) && utils)) ext[n_ext++] = VK_EXT_DEBUG_UTILS_EXTENSION_NAME;
+    if (validate || ((vk_dlssg_interposed() || addr_report_wanted()) && utils)) ext[n_ext++] = VK_EXT_DEBUG_UTILS_EXTENSION_NAME;
     if (vk_hdr_wanted() && instance_ext_present(VK_EXT_SWAPCHAIN_COLOR_SPACE_EXTENSION_NAME))   // HDR10 surface formats
         ext[n_ext++] = VK_EXT_SWAPCHAIN_COLOR_SPACE_EXTENSION_NAME;
     // Surface capabilities 2: VK_EXT_full_screen_exclusive needs it (Windows, create_device), and so does
@@ -551,11 +551,11 @@ static int create_device(void) {
     vk_dlaa_device_exts(ep, ne, ext, &n_ext, 40);   // NGX's; the eight slots after it stay for the eight below
     // FSR 3.1 (vk_ffx.cpp): its Vulkan back end looks vkGetBufferMemoryRequirements2KHR up by that name, which resolves
     // only with the extension enabled (the core function has no suffix); without it the back end called address 0
-    if ((vk_dlaa_fsr3() || vk_fg_wanted() || vk_dlssg_wanted()) && has_ext(ep, ne, VK_KHR_GET_MEMORY_REQUIREMENTS_2_EXTENSION_NAME))
+    if ((vk_dlaa_fsr3() || vk_fg_wanted() || vk_dlssg_interposed()) && has_ext(ep, ne, VK_KHR_GET_MEMORY_REQUIREMENTS_2_EXTENSION_NAME))
         ext[n_ext++] = VK_KHR_GET_MEMORY_REQUIREMENTS_2_EXTENSION_NAME;
     // DLSS Frame Generation (vk_dlssg.c): Streamline's plugins look functions of extensions core in Vulkan 1.3 up by
     // their suffixed names too, which resolve only with the extension itself enabled
-    if (vk_dlssg_wanted()) {
+    if (vk_dlssg_interposed()) {
         static const char *const promoted[] = {VK_KHR_TIMELINE_SEMAPHORE_EXTENSION_NAME, VK_KHR_SYNCHRONIZATION_2_EXTENSION_NAME,
                                                VK_KHR_DYNAMIC_RENDERING_EXTENSION_NAME, VK_KHR_CREATE_RENDERPASS_2_EXTENSION_NAME,
                                                VK_KHR_BIND_MEMORY_2_EXTENSION_NAME, VK_KHR_DEDICATED_ALLOCATION_EXTENSION_NAME,

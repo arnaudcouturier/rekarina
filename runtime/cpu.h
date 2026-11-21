@@ -33,6 +33,8 @@ typedef void (*GuestFn)(Cpu *);
 
 // ---- runtime services (runtime/*.c)
 void rt_dispatch(Cpu *c);                 // call function at c->pc
+uint16_t rt_load_save_root(uint64_t addr);
+uint32_t rt_load_save_index(uint32_t index);
 
 // The dispatch table of runtime/dispatch.c (one cache line), read by rt_dispatch_call below.
 typedef struct __attribute__((aligned(64))) {

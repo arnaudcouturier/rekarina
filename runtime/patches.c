@@ -18,6 +18,9 @@
 
 #include "host.h"
 
+#if __has_include("layout.h")
+#include "layout.h"
+#endif
 #if __has_include("patches.h")
 #include "patches.h"
 #endif
@@ -82,3 +85,6 @@ void *rt_patch_page(void) {
     return NULL;
 #endif
 }
+
+#include "scene_projection_impl.h"
+#include "tracked_model_cpu_impl.h"

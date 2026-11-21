@@ -20,6 +20,7 @@
 #include "cfg.h"
 #include "gfx.h"
 #include "host.h"
+#include "motion_vectors.h"
 #include "nvn_api.h"
 #include "ftrace.h"
 #include "nvn_hmap.h"
@@ -417,7 +418,7 @@ void nvn_pins_stats(uint64_t *live, uint64_t *freed) {
 // deferred: 0 unknown, 1 none, 2 some; pins: texture pins its ops name, counted in their refs (pin_refs); ho: the size of
 // the recording buffer the copy is (REKARINA_CMD_HANDOVER), which goes back to the buffer pool with it; 0 for a copy of
 // its own
-typedef struct { uint64_t magic, bytes, made_at, used_at, deferred, pins, ho, pad; } copy_prefix;
+typedef struct { uint64_t magic, bytes, made_at, used_at, deferred, pins, ho, host_only; } copy_prefix;
 _Static_assert(sizeof(copy_prefix) % 8 == 0, "records stay 8-byte aligned");
 typedef struct { uintptr_t lo, hi; uint8_t *copy; } cmd_copy;
 typedef struct { cmd_copy *v; uint32_t n, cap; } copy_bucket;
@@ -482,20 +483,25 @@ uint64_t nvn_handle_bytes(uint64_t handle) {
 // at EndRecording, cleared under copy_lock before the copy goes), so with the synchronous replay a call reads it
 // directly (REKARINA_CMD_CALL_FAST, on by default; 0: the locked lookup always). A handle whose prefix is not live goes
 // the locked way, which stops the game as before. The asynchronous replay keeps the lock: it frees copies by used_at.
-static uint64_t copy_touch(uint64_t handle, uint64_t now, const char *what) {
+static uint64_t copy_touch(uint64_t handle, uint64_t now, const char *what, uint64_t *host_only) {
     static int fast = -1;
     if (fast < 0) fast = rt_knob("CMD_CALL_FAST", "1") != 0;
     if (fast && handle && !gfx_replay_async()) {
         copy_prefix *q = (copy_prefix *)(uintptr_t)handle - 1;
         if (__atomic_load_n(&q->magic, __ATOMIC_ACQUIRE) == COPY_MAGIC) {
             __atomic_store_n(&q->used_at, now, __ATOMIC_RELAXED);
+            if (host_only) *host_only = q->host_only;
             return q->bytes;
         }
     }
     plat_mutex_lock_shared(&copy_lock);
     copy_prefix *pf = copy_find(handle);
     uint64_t bytes = 0;
-    if (pf) __atomic_store_n(&pf->used_at, now, __ATOMIC_RELAXED), bytes = pf->bytes;
+    if (pf) {
+        __atomic_store_n(&pf->used_at, now, __ATOMIC_RELAXED);
+        bytes = pf->bytes;
+        if (host_only) *host_only = pf->host_only;
+    }
     plat_mutex_unlock_shared(&copy_lock);
     if (!pf) rt_fatal("nvn: %s: command handle %#llx is not a live recording (released or never recorded)", what,
                       (unsigned long long)handle);
@@ -507,8 +513,8 @@ static uint64_t copy_touch(uint64_t handle, uint64_t now, const char *what) {
 // game's main thread about 1 ms a frame in reallocations and small copies (1.4.3, field).
 // The records of a finished recording [p, p + n) checked (a corrupt one stops here, not in the replay) and the texture
 // pins their payloads name counted; returns how many.
-static uint64_t scan_recording(const uint8_t *p, size_t n) {
-    uint64_t pins_named = 0;
+static uint64_t scan_recording(const uint8_t *p, size_t n, uint64_t *host_only_out) {
+    uint64_t pins_named = 0, host_only = 0;
     for (size_t at = 0;;) {
         op_hdr h;
         memcpy(&h, p + at, sizeof h);
@@ -519,12 +525,20 @@ static uint64_t scan_recording(const uint8_t *p, size_t n) {
         int k = op_pins(h.op, p + at + 8, pinned);
         for (int i = 0; i < k; i++) pin_ref(pinned[i], 1, 0);
         pins_named += (uint64_t)k;
+        if (h.op == OP_MODEL_SCOPE) {
+            const p_model_scope *scope = (const void *)(p + at + sizeof h);
+            if (h.size != sizeof h + sizeof *scope || n - at - h.size < sizeof h ||
+                scope->bytes > n - at - h.size - sizeof h || (scope->bytes & 7))
+                rt_fatal("nvn: invalid model ownership range at %p", (const void *)(p + at));
+            host_only += h.size;
+        }
         at += h.size;
         if (h.op == OP_END) {
             if (at != n) rt_fatal("nvn: recording at %p ends at %zu of %zu bytes", (const void *)p, at, n);
             break;
         }
     }
+    if (host_only_out) *host_only_out = host_only;
     return pins_named;
 }
 
@@ -532,8 +546,9 @@ static uint8_t *flatten_recording(const uint8_t *p, size_t n) {
     uint8_t *out = realloc_wait(NULL, sizeof(copy_prefix) + n, "command copy");
     if (!out) rt_fatal("nvn: command copy allocation");
     memcpy(out + sizeof(copy_prefix), p, n);
-    uint64_t pins_named = scan_recording(out + sizeof(copy_prefix), n);
-    *(copy_prefix *)out = (copy_prefix){.magic = COPY_MAGIC, .bytes = n, .pins = pins_named};
+    uint64_t host_only = 0;
+    uint64_t pins_named = scan_recording(out + sizeof(copy_prefix), n, &host_only);
+    *(copy_prefix *)out = (copy_prefix){.magic = COPY_MAGIC, .bytes = n, .pins = pins_named, .host_only = host_only};
     return out + sizeof(copy_prefix);
 }
 
@@ -729,9 +744,10 @@ NVN_API(nvnCommandBufferEndRecording) {
     size_t n = (size_t)(o->cur - o->seg) - front;
     if (front && n >= HO_MIN) {   // the buffer itself becomes the copy; the next record takes one from the pool
         copy = o->seg + front;
-        uint64_t pins = scan_recording(copy, n);
+        uint64_t host_only = 0;
+        uint64_t pins = scan_recording(copy, n, &host_only);
         *(copy_prefix *)o->seg = (copy_prefix){.magic = COPY_MAGIC, .bytes = n, .pins = pins,
-                                               .ho = (uint64_t)(o->end - o->seg)};
+                                               .ho = (uint64_t)(o->end - o->seg), .host_only = host_only};
         o->seg = o->cur = o->end = NULL;
     } else
         copy = flatten_recording(o->seg + front, n);
@@ -749,16 +765,21 @@ NVN_API(nvnCommandBufferIsRecording) { ret_x(c, cmd_of(c)->recording != 0); }
 // so a handle may be gone by the time the caller is submitted. Deferred binds stay deferred. A copy is OP_BEGIN, its
 // records and OP_END (flatten_recording checked them), so the records go over as one block; usage grows by the same
 // bytes as record by record.
-static void inline_recording(cmd_t *o, uint64_t handle, const char *what) {
+static void inline_recording(cmd_t *o, uint64_t handle, const char *what, const TrackedModelSample *sample) {
     if (!handle) rt_fatal("nvn: %s with a null handle", what);
-    uint64_t bytes = copy_touch(handle, __atomic_load_n(&nsubmits, __ATOMIC_RELAXED), what);
+    uint64_t host_only = 0;
+    uint64_t bytes = copy_touch(handle, __atomic_load_n(&nsubmits, __ATOMIC_RELAXED), what, &host_only);
     if (bytes <= 16) return;
     size_t body = (size_t)bytes - 16;
+    if (sample && sample->identity) {
+        *REC(o, OP_MODEL_SCOPE, p_model_scope) = (p_model_scope){*sample, body};
+        hw_fix(o, 0);
+    }
     cmd_reserve(o, body);
     memcpy(o->cur, (const uint8_t *)(uintptr_t)handle + 8, body);
     o->cur += body;
     o->cmd_used += body;
-    o->hw_used += body;
+    o->hw_used += body - host_only;
     o->last_rec = 0;
 }
 // void nvnCommandBuffer{Call,Copy}Commands(NVNcommandBuffer *cmd, int n, const NVNcommandHandle *handles)
@@ -766,13 +787,26 @@ NVN_API(nvnCommandBufferCallCommands) {
     cmd_t *o = cmd_of(c);
     int n = (int)arg_x(c, 1);
     const uint64_t *h = arg_p(c, 2);
-    for (int i = 0; i < n; i++) inline_recording(o, h[i], "CallCommands");
+    TrackedModelSample sample = {0};
+#ifdef GAME_OOT
+    if (n == 1 && vk_dlaa_record_model_motion() && !vk_dlaa_reverse_only() && rt_patch_enabled(rt_patch_set("tracked_models"))) {
+        unsigned entry = 0;
+        switch (c->x[30]) {
+        case UINT64_C(0x7000067618): entry = 27; break;
+        case UINT64_C(0x700006d978): entry = 23; break;
+        case UINT64_C(0x700006b7d8): entry = 27; break;
+        case UINT64_C(0x70000590c8): entry = 22; break;
+        }
+        if (entry) sample = tracked_model_work_sample(c->x[entry]);
+    }
+#endif
+    for (int i = 0; i < n; i++) inline_recording(o, h[i], "CallCommands", &sample);
 }
 NVN_API(nvnCommandBufferCopyCommands) {
     cmd_t *o = cmd_of(c);
     int n = (int)arg_x(c, 1);
     const uint64_t *h = arg_p(c, 2);
-    for (int i = 0; i < n; i++) inline_recording(o, h[i], "CopyCommands");
+    for (int i = 0; i < n; i++) inline_recording(o, h[i], "CopyCommands", NULL);
 }
 
 // ---------- CommandBuffer: commands with CPU-visible results (performed by the back end in GPU order)
@@ -1013,6 +1047,47 @@ NVN_API(nvnCommandBufferBindVertexBuffer) {
     NVNbufferRange r = {arg_x(c, 2), arg_x(c, 3)};
     bind_vertex_buffers(cmd_of(c), (int)arg_x(c, 1), 1, &r);
 }
+int scene_projection_extent(const void *texture, const uint8_t raw_view[16], uint32_t *w, uint32_t *h) {
+    const tex_t *t = texture;
+    view_t view;
+    memcpy(&view, raw_view, sizeof view);
+    unsigned level = view.set_levels ? view.base_level : 0;
+    if (!t || level >= t->d.levels || level >= 32 || !t->d.width || !t->d.height) return 0;
+    unsigned tw = t->d.width >> level, th = t->d.height >> level;
+    *w = tw ? tw : 1;
+    *h = th ? th : 1;
+    return 1;
+}
+
+int scene_projection_describe(p_scene_projection *out, const SceneProjection *sample, const void *color,
+                              const void *depth, const uint8_t cv[16], const uint8_t dv[16]) {
+    const tex_t *ct = color, *dt = depth;
+    *out = (p_scene_projection){.sample = *sample};
+    if (!ct || !dt || !ct->serial || !dt->serial) return 0;
+    out->color_serial = ct->serial;
+    out->depth_serial = dt->serial;
+    memcpy(&out->cv, cv, sizeof out->cv);
+    memcpy(&out->dv, dv, sizeof out->dv);
+    return 1;
+}
+
+int scene_projection_record(void *command, const SceneProjection *sample, const void *color,
+                            const void *depth, const uint8_t cv[16], const uint8_t dv[16]) {
+    cmd_t *o = command;
+    p_scene_projection p;
+    if (!o || o->magic != CMD_MAGIC || !o->recording || !scene_projection_describe(&p, sample, color, depth, cv, dv)) return 0;
+    *REC(o, OP_SCENE_PROJECTION, p_scene_projection) = p;
+    return 1;
+}
+
+static void record_buffer(cmd_t *o, uint32_t op, int stage, int index, uint64_t address, uint64_t size) {
+    const p_bind_buf b = {stage, index, address, size};
+    p_projection_bind projection = {.bind = b};
+    if (op == OP_BIND_UBO && !stage && !index && address && size == SCENE_CAMERA_BYTES &&
+        scene_projection_enabled() && scene_projection_binding(address, &projection.scene)) *REC(o, op, p_projection_bind) = projection;
+    else *REC(o, op, p_bind_buf) = b;
+}
+
 // Uniform and storage buffers: one record per binding (CB_SIZE/ADDRESS 4 words + CB_BIND 1 on hardware).
 static void bind_buffers(const Cpu *c, uint32_t op) {   // (cmd, stage, first, n, const NVNbufferRange *ranges)
     cmd_t *o = cmd_of(c);
@@ -1020,13 +1095,13 @@ static void bind_buffers(const Cpu *c, uint32_t op) {   // (cmd, stage, first, n
     const NVNbufferRange *rg = arg_p(c, 4);
     st = nvn_stage_slot(st);
     for (int i = 0; i < n; i++) {
-        *REC(o, op, p_bind_buf) = (p_bind_buf){st, first + i, rg[i].address, rg[i].size};
+        record_buffer(o, op, st, first + i, rg[i].address, rg[i].size);
         hw_fix(o, 20);
     }
 }
 static void bind_buffer(const Cpu *c, uint32_t op) {    // (cmd, stage, index, NVNbufferAddress address, size_t size)
     cmd_t *o = cmd_of(c);
-    *REC(o, op, p_bind_buf) = (p_bind_buf){nvn_stage_slot((int)arg_x(c, 1)), (int)arg_x(c, 2), arg_x(c, 3), arg_x(c, 4)};
+    record_buffer(o, op, nvn_stage_slot((int)arg_x(c, 1)), (int)arg_x(c, 2), arg_x(c, 3), arg_x(c, 4));
     hw_fix(o, 20);
 }
 NVN_API(nvnCommandBufferBindUniformBuffer) { bind_buffer(c, OP_BIND_UBO); }
@@ -1355,7 +1430,7 @@ static int resolve_deferred(const uint8_t *p, int depth) {   // returns the numb
 
 void nvn_submit_prepare(const uint64_t *handles, int n) {
     uint64_t now = __atomic_add_fetch(&nsubmits, 1, __ATOMIC_RELAXED);
-    for (int i = 0; i < n; i++) copy_touch(handles[i], now, "QueueSubmitCommands");
+    for (int i = 0; i < n; i++) copy_touch(handles[i], now, "QueueSubmitCommands", NULL);
     for (int i = 0; i < n; i++) resolve_deferred((const uint8_t *)(uintptr_t)handles[i], 0);
 }
 
@@ -1413,6 +1488,7 @@ const char *nvn_op_name(uint32_t op) {
 #ifdef GAME_NS2
         "PUSH_CONST", "DRAW_MESH", "DRAW_MESH_IND", "FENCE_SYNC", "COPY_IMAGE_STRIDE",
 #endif
+        "SCENE_PROJECTION", "MODEL_SCOPE",
     };
     _Static_assert(sizeof names / sizeof *names == OP_COUNT_, "one name per op");
     return op < OP_COUNT_ ? names[op] : "?";

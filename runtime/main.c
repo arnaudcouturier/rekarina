@@ -1,6 +1,6 @@
 // rekarina.exe entry: reserves the guest address space, parses the command line and runs one mode.
 //
-//   rekarina.exe [--exefs DIR] [--romfs DIR] [--profile DIR] <mode>
+//   rekarina.exe [--exefs DIR] [--romfs DIR] [--profile DIR] [--load-save SLOT] <mode>
 //     --selftest        layout, dispatch table and host-function registry; needs no game files
 //     --probe-mods      the mods folder scan, order and switches (mods.c); needs no game files
 //     --probe-loader    load and relocate the modules, check them against the measured 1.2.1 values
@@ -29,10 +29,13 @@
 
 #include "report.h"
 #include "cfg.h"
+#include "fs.h"
 #include "host.h"
 #include "platform/platform.h"
 #include "sha256.h"
 #include "update_note.h"
+
+void rt_load_save_start(int slot);
 
 #define MAX_MODULES 16
 
@@ -497,7 +500,7 @@ static int probe_crash(int null) {
 }
 
 static int usage(const char *argv0) {
-    fprintf(stderr, "usage: %s [--exefs DIR] [--romfs DIR] [--profile DIR] [--selftest | --probe-loader | "
+    fprintf(stderr, "usage: %s [--exefs DIR] [--romfs DIR] [--profile DIR] [--load-save SLOT] [--selftest | --probe-loader | "
                     "--probe-cfg | --probe-dpi | --probe-mods | --probe-kernel | --probe-ipc | --probe-services | --probe-fs | --probe-gfx-abi | "
                     "--probe-nvn | --probe-nvn-tex | --probe-window | --probe-shader | --probe-vkmem | "
                     "--probe-vkexec | --probe-astc | --probe-color | --probe-movie | --probe-codec FILE | --probe-crash-call | --probe-crash-null | --probe-discord | "
@@ -597,12 +600,23 @@ int main(int argc, char **argv) {
         return 2;
     }
     const char *mode = NULL, *codec_file = NULL;
+    int load_slot = -1, load_latest = 0;
     for (int i = 1; i < argc; i++) {
         const char **path = !strcmp(argv[i], "--exefs") ? &cfg.exefs : !strcmp(argv[i], "--romfs") ? &cfg.romfs
                           : !strcmp(argv[i], "--profile") ? &cfg.profile : NULL;
         if (path) {
             if (++i == argc) return usage(argv[0]);
             *path = argv[i];
+        } else if (!strcmp(argv[i], "--load-save")) {
+            if (++i == argc || load_slot >= 0 || load_latest) return usage(argv[0]);
+            const char *s = argv[i];
+            if (!strcmp(s, "latest")) {
+                load_latest = 1;
+            } else {
+                size_t n = strlen(s);
+                if (n < 1 || n > 2 || strspn(s, "0123456789") != n) return usage(argv[0]);
+                load_slot = atoi(s);
+            }
         } else if (!strcmp(argv[i], "--seconds")) {
             char *end;
             if (++i == argc) return usage(argv[0]);
@@ -624,6 +638,23 @@ int main(int argc, char **argv) {
     }
     if (cfg.shot && !cfg.seconds) return usage(argv[0]);
     if (cfg.seconds && mode) return usage(argv[0]);
+    if (load_slot >= 0 || load_latest) {
+        if (mode) return usage(argv[0]);
+#ifndef GAME_OOT
+        fprintf(stderr, "--load-save requires OoT 1.1.1\n");
+        return 2;
+#else
+        if (load_latest && (load_slot = fs_host_latest_progress()) < 0) {
+            fprintf(stderr, "--load-save latest: no nonempty progress.sav in the selected profile\n");
+            return 2;
+        }
+        if (!load_latest && !fs_host_has_progress(load_slot)) {
+            fprintf(stderr, "--load-save: slot_%02d has no progress.sav in the selected profile\n", load_slot);
+            return 2;
+        }
+        rt_load_save_start(load_slot);
+#endif
+    }
     // the texture walk (the entry step's child, prep.c prep_child) and the launcher's libraries build write their own
     // logs beside the game's: the walk's stderr goes nowhere
     log_open(!mode ? RT_FILE_STEM

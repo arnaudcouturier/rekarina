@@ -55,6 +55,9 @@ static int nfw;
 
 static _Thread_local uint64_t par_fence;   // this thread records a chunk of the submission with this value (par_run)
 uint64_t vk_exec_recording_fence(void) { return x_here ? X.fence : par_fence; }
+static uint64_t x_stream_pos;
+static _Thread_local uint64_t tl_stream_pos;
+uint64_t vk_exec_stream_pos(void) { return tl_stream_pos; }
 
 // ---- Draw stretches on worker threads: the types (the comment and the code are at par_try)
 #define PAR_CHUNKS 12                    // chunks of one stretch, and chunk threads, at most
@@ -81,6 +84,7 @@ typedef struct {
     uint32_t crumb;                      // DEBUG-PARCRUMB: stretch serial * 16 + chunk; 0: no crumbs
     uint64_t asof;                       // vk_texture_asof_mark when the stretch was handed out: its lookups' limit
     uint32_t updn, useq;                 // inline uniform updates noted and snapshot drops by them at the handout
+    uint64_t pos0;                       // deterministic stream draw counter at chunk start (vk_exec_stream_pos)
 } ParJob;
 static struct {
     int threads;                         // -1: not read; 0: off
@@ -1239,7 +1243,7 @@ int vk_exec_op_quiet(uint32_t op) {
     case OP_SET_TEX_POOL: case OP_SET_SAMP_POOL: case OP_DRAW: case OP_DRAW_IDX: case OP_DRAW_IDX_IND:
     case OP_BIND_PROGRAM: case OP_BIND_STATE: case OP_BIND_VATTR: case OP_BIND_VSTREAM: case OP_BIND_VBUF:
     case OP_BIND_UBO: case OP_BIND_SSBO: case OP_BIND_TEX: case OP_BIND_SAMP: case OP_BIND_IMG: case OP_SET_RT:
-    case OP_RENDER_ENABLE: case OP_RENDER_COND:
+    case OP_RENDER_ENABLE: case OP_RENDER_COND: case OP_MODEL_SCOPE:
 #ifdef GAME_NS2
     case OP_DRAW_MESH: case OP_DRAW_MESH_IND: case OP_PUSH_CONST: case OP_COPY_IMAGE_STRIDE:
 #endif
@@ -1253,11 +1257,27 @@ static void held_check(VkExec *ex);
 static void ac_graphics_waits(VkExec *ex, uint64_t cp);
 static int nheld, resuming, x_holdable;
 
+static void bind_ubo_op(VkExec *ex, const op_hdr *h) {
+    const void *a = nvn_op_payload(h);
+    const p_bind_buf *b = a;
+    if (!b->stage && !b->index) {
+        const p_projection_bind *p = h->size >= sizeof *h + sizeof(p_projection_bind) ? a : NULL;
+        ex->scene_projection = p ? p->scene : (p_scene_projection){0};
+    }
+    vk_exec_op_draw(ex, OP_BIND_UBO, a);
+}
+
 // A state op (fixed-function state, the descriptor pools in use): written into ex. 0: h is not one.
 static int state_op(VkExec *ex, const op_hdr *h) {
     const void *a = nvn_op_payload(h);
     switch (h->op) {
-    case OP_BEGIN: break;
+    case OP_BEGIN: ex->work_scope = NULL; break;
+    case OP_MODEL_SCOPE:
+        if (!ex->work_scope) {
+            ex->work_scope = a;
+            ex->work_scope_end = (uintptr_t)nvn_op_next(h) + ex->work_scope->bytes;
+        }
+        break;
     case OP_VIEWPORTS: {
         const p_viewports *v = a;
         for (int i = 0; i < v->n && v->first + i < 16; i++)
@@ -1426,9 +1446,11 @@ static void par_run(ParJob *j) {
             if ((uintptr_t)h < lim) break;
             _mm_pause();
         }
+        if (ex->work_scope && (uintptr_t)h >= ex->work_scope_end) ex->work_scope = NULL;
         const void *a = nvn_op_payload(h);
         uint32_t op = h->op;
         if (par_is_draw(op)) {
+            tl_stream_pos = j->pos0 + di + 1;
             vk_exec_oq_worker_slot(j->slot[di++]);
             vk_exec_op_draw(ex, op, a);
         } else if (op == OP_RENDER_COND || op == OP_RENDER_ENABLE) {
@@ -1440,6 +1462,8 @@ static void par_run(ParJob *j) {
 #endif
         } else if (op == OP_RESET_COUNTER || op == OP_REPORT_COUNTER) {
             vk_exec_oq_worker_close(ex);
+        } else if (op == OP_BIND_UBO) {
+            bind_ubo_op(ex, h);
         } else if (!state_op(ex, h)) {
             vk_exec_op_draw(ex, op, a);   // a bind op
         }
@@ -1695,7 +1719,7 @@ static const op_hdr *par_try(VkExec *ex, const op_hdr *h) {
         j = &PAR.job[ji];                                                                                                   \
         j->st = *ex, j->from = (first_op), j->to = NULL, j->cb = cbs[k];                                                    \
         j->crumb = crumb0 ? crumb0 | (uint32_t)(k & 15) : 0;                                                                \
-        j->asof = asof_mark, j->updn = upd_mark, j->useq = useq_mark;                                                       \
+        j->asof = asof_mark, j->updn = upd_mark, j->useq = useq_mark, j->pos0 = x_stream_pos;                                \
         j->slot = PAR.slots + PAR.nslots, j->cond = PAR.conds + PAR.nconds;                                                 \
         memcpy(j->ca, PAR.ca, sizeof j->ca), j->da = PAR.da, j->sa = PAR.sa, j->ri = PAR.ri;                                \
         j->ri.pColorAttachments = j->ca;                                                                                    \
@@ -1710,8 +1734,10 @@ static const op_hdr *par_try(VkExec *ex, const op_hdr *h) {
     uint32_t upd_mark = vk_exec_draw_upd_count(ex->fence), useq_mark = vk_usnap_update_serial();   // no update inside a stretch
     PAR_JOB_OUT(h);
     for (const op_hdr *o = h; o != e; o = nvn_op_next(o)) {
+        if (ex->work_scope && (uintptr_t)o >= ex->work_scope_end) ex->work_scope = NULL;
         uint32_t op = o->op;
         if (par_is_draw(op)) {
+            x_stream_pos++;
             vk_exec_frame.draws_seen++;
             PAR.slots[PAR.nslots++] = ex->render_disabled ? -1 : vk_exec_oq_scan_draw();
             in_chunk++;
@@ -1729,6 +1755,8 @@ static const op_hdr *par_try(VkExec *ex, const op_hdr *h) {
         // state and binds into the queue state, the counters' and conditions' bookkeeping in order
         if (op == OP_RESET_COUNTER || op == OP_REPORT_COUNTER || op == OP_RENDER_COND || op == OP_RENDER_ENABLE)
             vk_exec_op_xfer(ex, op, nvn_op_payload(o));
+        else if (op == OP_BIND_UBO)
+            bind_ubo_op(ex, o);
         else if (!state_op(ex, o))
             vk_exec_op_draw(ex, op, nvn_op_payload(o));
         if (op == OP_RENDER_COND || op == OP_RENDER_ENABLE) {
@@ -1802,6 +1830,7 @@ static const op_hdr *exec_op_(VkExec *ex, const op_hdr *h, int depth, int holdab
     {
         if (h->size < sizeof *h || (h->size & 7) || h->op >= OP_COUNT_)
             rt_fatal("vk: corrupt command record at %p: op %u size %u", (const void *)h, h->op, h->size);
+        if (ex->work_scope && (uintptr_t)h >= ex->work_scope_end) ex->work_scope = NULL;
         const void *a = nvn_op_payload(h);
         vk_exec_cur_op = h;
         if (PAR.active && par_join_op(h->op)) par_why = 1 + (int)h->op, vk_exec_par_join();
@@ -1811,8 +1840,8 @@ static const op_hdr *exec_op_(VkExec *ex, const op_hdr *h, int depth, int holdab
         }
         if (h->op != OP_JUMP && !vk_exec_op_quiet(h->op)) vk_exec_op_window++;
         switch (h->op) {
-        case OP_END: *stop = 1; return h;
-        case OP_BEGIN: break;
+        case OP_END: ex->work_scope = NULL; *stop = 1; return h;
+        case OP_BEGIN: ex->work_scope = NULL; break;
         case OP_JUMP: return (const op_hdr *)(uintptr_t)((const p_jump *)a)->target;
         case OP_CALL:
             if (depth >= CALL_DEPTH) rt_fatal("vk: command buffer calls nested deeper than %d", CALL_DEPTH);
@@ -1823,17 +1852,24 @@ static const op_hdr *exec_op_(VkExec *ex, const op_hdr *h, int depth, int holdab
         case OP_CLEAR_DS: clear_ds(ex, a); break;
         case OP_VIEWPORTS: case OP_SCISSOR: case OP_DEPTH_RANGE: case OP_STENCIL: case OP_POLY_OFFSET: case OP_BLEND_COLOR:
         case OP_DEPTH_CLAMP: case OP_RASTER_DISCARD: case OP_PRIM_RESTART: case OP_COPY_STRIDE: case OP_SET_TEX_POOL:
-        case OP_SET_SAMP_POOL:
+        case OP_SET_SAMP_POOL: case OP_MODEL_SCOPE:
             state_op(ex, h);
+            break;
+        case OP_SCENE_PROJECTION:
+            vk_dlaa_scene_projection(a);
+            break;
+        case OP_BIND_UBO:
+            bind_ubo_op(ex, h);
             break;
         case OP_BARRIER:
             game_barrier(ex, ((const p_barrier *)a)->bits);
             break;
         case OP_DRAW: case OP_DRAW_IDX: case OP_DISPATCH: case OP_UPDATE_UB: case OP_DRAW_IDX_IND: case OP_DISPATCH_IND:
-            if (h->op == OP_DRAW || h->op == OP_DRAW_IDX || h->op == OP_DRAW_IDX_IND) vk_exec_frame.draws_seen++, split_draws++;
+            if (h->op == OP_DRAW || h->op == OP_DRAW_IDX || h->op == OP_DRAW_IDX_IND)
+                tl_stream_pos = ++x_stream_pos, vk_exec_frame.draws_seen++, split_draws++;
             if (h->op == OP_DISPATCH || h->op == OP_DISPATCH_IND) vk_exec_frame.dispatches++, split_draws++;
         case OP_BIND_PROGRAM: case OP_BIND_STATE: case OP_BIND_VATTR: case OP_BIND_VSTREAM: case OP_BIND_VBUF:
-        case OP_BIND_UBO: case OP_BIND_SSBO: case OP_BIND_TEX: case OP_BIND_SAMP: case OP_BIND_IMG:
+        case OP_BIND_SSBO: case OP_BIND_TEX: case OP_BIND_SAMP: case OP_BIND_IMG:
             vk_exec_op_draw(ex, h->op, a);
             break;
         case OP_COPY_B2B: case OP_COPY_B2T: case OP_COPY_T2B: case OP_COPY_T2T: case OP_CLEAR_TEX:

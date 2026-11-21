@@ -624,9 +624,17 @@ void vk_usnap_drop_update(uint64_t addr, uint64_t n) {
 uint64_t vk_usnap_gen(void) { return U.gen; }
 
 // the host copy where there is one (DLSS), else the device copy
-static uint8_t *host_copy(void) { return U.arena->cpu ? U.arena->cpu : U.arena->map; }
+static uint8_t *arena_host_copy(const Arena *a) { return a->cpu ? a->cpu : a->map; }
+static uint8_t *host_copy(void) { return arena_host_copy(U.arena); }
+static const Arena *read_arena(void) {
+    extern _Thread_local int vk_par_worker;
+    return vk_par_worker ? PV.arena : U.arena;
+}
 
-const uint8_t *vk_usnap_map(void) { return U.arena ? host_copy() : NULL; }
+const uint8_t *vk_usnap_map(void) {
+    const Arena *a = read_arena();
+    return a ? arena_host_copy(a) : NULL;
+}
 
 // A deferred wait for the CPU's signal is met (vk_exec_xfer.c vk_exec_wait_resolve): the arena of the commands after the
 // wait, taken before the signal, takes the CPU's bytes again before the part that reads it goes to the GPU.
@@ -656,7 +664,9 @@ int vk_usnap_poke(uint64_t addr, const void *p, uint64_t n) {
 
 const uint8_t *vk_usnap_bytes(uint64_t addr, uint64_t n) {
     VkDescriptorBufferInfo bi;
-    return vk_usnap_find(addr, n, 1, &bi) ? host_copy() + bi.offset : NULL;
+    if (!vk_usnap_find(addr, n, 1, &bi)) return NULL;
+    const Arena *a = read_arena();
+    return a ? arena_host_copy(a) + bi.offset : NULL;
 }
 
 // The arenas back on the free list (vk_exec_draw_shutdown: the device is idle, every completion ran).

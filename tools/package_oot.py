@@ -40,7 +40,7 @@ EXE = '.exe' if WIN else ''
 DLLS = ('SDL3.dll', 'libopus-0.dll', 'libiconv-2.dll', 'nvngx_dlss.dll', 'amd_fidelityfx_vk.dll', 'totk_dlssg.dll',
         'rekarina_dlssg.dll',
         'amd_fidelityfx_loader_vk.dll', 'amd_fidelityfx_upscaler_vk.dll', 'amd_fidelityfx_framegeneration_vk.dll',
-        'sl.interposer.dll', 'sl.common.dll', 'sl.dlss_g.dll', 'sl.reflex.dll', 'sl.pcl.dll', 'nvngx_dlssg.dll', 'NvLowLatencyVk.dll')
+        'sl.interposer.dll', 'sl.common.dll', 'sl.dlss.dll', 'sl.dlss_g.dll', 'sl.reflex.dll', 'sl.pcl.dll', 'nvngx_dlssg.dll', 'NvLowLatencyVk.dll')
 SEED_KEYS = ROOT / 'tools' / 'data' / 'pipeline-keys-oot.bin.gz'   # tools/make_seed_keys.py writes it
 SEED_MESH_KEYS = ROOT / 'tools' / 'data' / 'pipeline-keys-mesh-oot.bin.gz'   # and the mesh pipelines' (vk_pipeline.c mk_open)
 SEED_COMPUTE = ROOT / 'tools' / 'data' / 'compute-used-oot.bin.gz'   # and the compute shaders dispatched (vk_pipeline.c cu_load)

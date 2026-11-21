@@ -12,9 +12,10 @@ to try again.
     fsr      any                       amd_fidelityfx_loader_vk.dll, amd_fidelityfx_upscaler_vk.dll and
                                        amd_fidelityfx_framegeneration_vk.dll (FSR SDK 2.4: FSR Upscaling 4.1 on the
                                        Radeon cards that run it, FSR 3.1 on every other card, and frame generation)
-    dlss     NVIDIA RTX 20 or newer    nvngx_dlss.dll (DLSS Super Resolution, DLAA)
-    dlssg    NVIDIA RTX 40 or newer    nvngx_dlssg.dll, the Streamline libraries and NvLowLatencyVk.dll (DLSS Frame
-                                       Generation and Reflex); needs the dlss group
+    dlss     NVIDIA RTX 20 or newer    nvngx_dlss.dll, sl.interposer.dll, sl.common.dll and sl.dlss.dll
+                                       (DLSS Super Resolution / DLAA through NVIDIA Streamline)
+    dlssg    NVIDIA RTX 40 or newer    nvngx_dlssg.dll, sl.dlss_g.dll, sl.pcl.dll, sl.reflex.dll and
+                                       NvLowLatencyVk.dll (DLSS Frame Generation and Reflex); needs the dlss group
 
     python -m installer.components [--dest DIR] [--fetch] [--gpu "NAME;VRAM_GB"]
         prints the detected card, its groups, its preset and, with --dest, the files that folder lacks; --fetch
@@ -82,8 +83,8 @@ SL_ZIP_SIZE = 276016170
 SL_ZIP_SHA256 = '32041e51db0cab709a271b72a352281b690c2abbd669a827809401a5dd23956b'   # the digest GitHub lists for it
 
 
-def streamline(name, size, sha256):
-    return File(name, 'dlssg', 'streamline', SL_ZIP, size, sha256, f'bin/x64/{name}', SL_ZIP_SIZE, SL_ZIP_SHA256)
+def streamline(name, size, sha256, group='dlssg'):
+    return File(name, group, 'streamline', SL_ZIP, size, sha256, f'bin/x64/{name}', SL_ZIP_SIZE, SL_ZIP_SHA256)
 
 
 # The versions the game was developed and tested with. The Streamline files are the production (signed) ones of the
@@ -99,10 +100,11 @@ FILES = (
          36806928, 'd002dabff8c5e71eaa715fc99438cd4dc81230262a7897b16bc402efec3498b4'),
     File('nvngx_dlss.dll', 'dlss', 'dlss', DLSS_RAW.format('310.9.1', 'nvngx_dlss.dll'), 58956912,
          '3975567b8943c53acce397f2b72380092f84f162d00b0d2c7d08a1025c563983'),
+    streamline('sl.interposer.dll', 652928, 'b1d7395aebd7b9722841d64dcf7433680020b6a8e421f851c16d5ba0c2182edf', 'dlss'),
+    streamline('sl.common.dll', 843904, '38eea3b4209afc455636ea372b5933d65fcc13becec6c84d101dcfc4d8648f75', 'dlss'),
+    streamline('sl.dlss.dll', 422016, '18871eea87c90345da97d8109faa81ea7d5840e8d99b51b55b0e46cfa177f84e', 'dlss'),
     File('nvngx_dlssg.dll', 'dlssg', 'dlssg', DLSS_RAW.format('310.9.16', 'nvngx_dlssg.dll'), 7506544,
          '8d59d49b36410dd6b62fef2503a5871d347415bd85d943fa0848563a95dd50c7'),
-    streamline('sl.interposer.dll', 652928, 'b1d7395aebd7b9722841d64dcf7433680020b6a8e421f851c16d5ba0c2182edf'),
-    streamline('sl.common.dll', 843904, '38eea3b4209afc455636ea372b5933d65fcc13becec6c84d101dcfc4d8648f75'),
     streamline('sl.dlss_g.dll', 637056, '3ed9538df724993bea8a050195a6a78b9c8c8a566d5b05ade477aab3c390e90f'),
     streamline('sl.pcl.dll', 360064, '5698c38e722318681f215c9fe68e45b9bedd51378acc699d8eee26e961e57770'),
     streamline('sl.reflex.dll', 388736, '443577e869352436ff7ec8f4d9c90418d3e95368436ce219261e0f4f07a38122'),

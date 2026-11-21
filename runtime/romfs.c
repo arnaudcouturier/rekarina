@@ -2039,6 +2039,59 @@ static void fs_stat(uint64_t t0, uint64_t bytes, int inflated) {
     plat_mutex_unlock(&lock);
 }
 
+// Direct save loading (--load-save, OoT 1.1.1): skips the intro and title menus once on boot,
+// then restores the title graph root once world time starts so returning to the title still works.
+static int direct_save = -1;
+static unsigned direct_graphs;
+static uint64_t title_root;
+
+void rt_load_save_start(int slot) { __atomic_store_n(&direct_save, slot, __ATOMIC_RELAXED); }
+
+uint16_t rt_load_save_root(uint64_t addr) {
+    uint16_t root = LD16(addr);
+    if (root != 42 || addr != __atomic_load_n(&title_root, __ATOMIC_ACQUIRE) || frame_step_world_us() < 0) return root;
+    ST16(addr, 35);
+    __atomic_store_n(&title_root, 0, __ATOMIC_RELEASE);
+    return 35;
+}
+
+uint32_t rt_load_save_index(uint32_t index) {
+    if (__atomic_load_n(&direct_graphs, __ATOMIC_ACQUIRE) != 3) return index;
+    int slot = __atomic_exchange_n(&direct_save, -1, __ATOMIC_RELAXED);
+    if (slot < 0) return index;
+    rt_log("load-save: requesting slot_%02d", slot);
+    return (uint32_t)slot;
+}
+
+static void direct_boot_graph(const char *name, int overlay, uint64_t size, uint64_t off, uint8_t *data, uint64_t n) {
+    if (!strcmp(name, "Sequence/NormalTitle.module.ainb")) {
+        if (off != 0 || n != size || (__atomic_load_n(&direct_graphs, __ATOMIC_ACQUIRE) & 2)) return;
+        if (overlay || size != 23468 || memcmp(data, "AIB ", 4) || data[0x88] != 35 || data[0x89] != 0)
+            rt_fatal("--load-save: unexpected startup graph %s", name);
+        __atomic_store_n(&title_root, (uintptr_t)(data + 0x88), __ATOMIC_RELEASE);
+        data[0x88] = 42;
+        __atomic_fetch_or(&direct_graphs, 2, __ATOMIC_RELEASE);
+    } else if (!strcmp(name, "Sequence/BeforeTitle.110.module.ainb")) {
+        // Keep resident event initialization, but omit the startup event request and its wait.
+        const uint64_t pos = 0xc3c;
+        if (pos < off || pos - off >= n) return;
+        if (overlay || size != 12578 || data[pos - off] != 11)
+            rt_fatal("--load-save: unexpected startup graph %s", name);
+        data[pos - off] = 9;
+        __atomic_fetch_or(&direct_graphs, 1, __ATOMIC_RELEASE);
+    }
+}
+
+static void direct_boot_apply(uint64_t h, uint64_t fsize, uint64_t off, void *buffer, uint64_t n) {
+    if (__atomic_load_n(&direct_save, __ATOMIC_RELAXED) < 0) return;
+    uint64_t j = h - ROMFS_HANDLE_BASE;
+    plat_mutex_lock_shared(&lock);
+    uint64_t i = handles[j] - 1;
+    int ov = handle_ovl[j] != 0;
+    if (i < file_count) direct_boot_graph(entry_name(entry(i)), ov, fsize, off, buffer, n);
+    plat_mutex_unlock_shared(&lock);
+}
+
 uint32_t romfs_read(uint64_t *out, uint64_t h, int64_t offset, void *buffer, uint64_t size) {
     PlatFile *f;
     uint64_t base, fsize;
@@ -2051,6 +2104,7 @@ uint32_t romfs_read(uint64_t *out, uint64_t h, int64_t offset, void *buffer, uin
         if (nup_compressed(row)) {
             mem_thaw((uintptr_t)buffer, n);
             memcpy(buffer, nup_inflated(image, row, base, fsize) + offset, (size_t)n);
+            direct_boot_apply(h, fsize, (uint64_t)offset, buffer, n);
             *out = n;
             fs_stat(fs_t0, n, 1);
             return 0;
@@ -2066,6 +2120,7 @@ uint32_t romfs_read(uint64_t *out, uint64_t h, int64_t offset, void *buffer, uin
         if (r <= 0) rt_fatal("RomFS read failure at %#llx", (unsigned long long)(base + offset + done));
         done += (uint64_t)r;
     }
+    direct_boot_apply(h, fsize, (uint64_t)offset, buffer, done);
     *out = done;
     fs_stat(fs_t0, done, 0);
     return 0;

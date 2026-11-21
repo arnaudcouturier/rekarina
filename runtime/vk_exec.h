@@ -97,6 +97,10 @@ typedef struct VkExec {
     NVNbufferRange vbuf[16];             // OP_BIND_VBUF
     p_bind_buf ubo[6][18], ssbo[6][16];  // OP_BIND_UBO / OP_BIND_SSBO per stage and index
     uint64_t tex[6][128], samp[6][128], img[6][32];   // OP_BIND_TEX / OP_BIND_SAMP / OP_BIND_IMG handles per stage
+    p_scene_projection scene_projection; // scene projection bound with stage 0 slot 0 (OP_BIND_UBO tail)
+    TrackedModelSample tracked_model;    // active tracked model sample for the current draw
+    const p_model_scope *work_scope;     // active OP_MODEL_SCOPE record, NULL outside one
+    uintptr_t work_scope_end;            // byte address where work_scope expires
 
     // ---- vk_exec_xfer.c slots (render enable, conditional rendering): left empty by vk_exec.c
     int render_disabled;                 // OP_RENDER_ENABLE false or a failed OP_RENDER_COND: clears and draws skip
@@ -162,6 +166,8 @@ extern int vk_par_walk;   // the replay thread walks a stretch: binds are stored
 extern PlatMutex vk_par_lock;
 void vk_exec_par_restart(VkExec *ex);
 void vk_exec_par_join(void);   // every chunk handed out is recorded (vk_sync_split calls it)
+// vk_exec.c: deterministic command-stream draw position across the replay thread and parallel chunk workers.
+uint64_t vk_exec_stream_pos(void);
 // vk_exec_draw.c: what the draws of a stretch read is made on the replay thread before the chunks are handed out (the
 // stand-ins, the limits, the global memory table and write log of the submission).
 void vk_exec_draw_par_prepare(VkExec *ex);

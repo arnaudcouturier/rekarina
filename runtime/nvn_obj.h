@@ -10,6 +10,8 @@
 #include <stdint.h>
 #include <string.h>
 #include "nvn.h"
+#include "scene_projection.h"
+#include "tracked_model.h"
 
 #define MAGIC(a, b, c, d) ((uint32_t)(a) | (uint32_t)(b) << 8 | (uint32_t)(c) << 16 | (uint32_t)(d) << 24)
 #define FITS(T, H) _Static_assert(sizeof(T) <= sizeof(H), #T " exceeds the reserved size of " #H)
@@ -145,6 +147,7 @@ enum {
 #ifdef GAME_NS2
     OP_PUSH_CONST, OP_DRAW_MESH, OP_DRAW_MESH_IND, OP_FENCE_SYNC, OP_COPY_IMAGE_STRIDE,   // NVN2 (nvn_api_ns2.c)
 #endif
+    OP_SCENE_PROJECTION, OP_MODEL_SCOPE,
     OP_COUNT_
 };
 // Payload (immediately follows op_hdr)
@@ -163,6 +166,22 @@ typedef struct { int32_t first, n; uint32_t st[16]; } p_bind_vattr;
 typedef struct { int32_t first, n; vs_st st[16]; } p_bind_vstream;
 typedef struct { int32_t first, n; NVNbufferRange r[16]; } p_bind_vbuf;
 typedef struct { int32_t stage, index; uint64_t addr, size; } p_bind_buf;  // UBO / SSBO
+// Native CPU scene projection captured for a frame (OP_SCENE_PROJECTION) and optionally appended as a tail to
+// OP_BIND_UBO when binding stage 0 slot 0 (p_projection_bind).
+struct p_scene_projection {
+    SceneProjection sample;
+    uint64_t color_serial, depth_serial;
+    view_t cv, dv;
+};
+typedef struct {
+    p_bind_buf bind;
+    p_scene_projection scene;
+} p_projection_bind;
+// Tracked model scope emitted around a CallCommands block of a model work entry (OP_MODEL_SCOPE).
+typedef struct {
+    TrackedModelSample model;
+    uint64_t bytes;
+} p_model_scope;
 // src: NVN 55 *Deferred binds keep the game's handle array pointer (read at submit into h, see hle_nvn.c resolve_deferred); 0 = immediate
 typedef struct { int32_t stage, first, n, pad_; uint64_t src; uint64_t h[32]; } p_bind_handles; // Separate texture / sampler handles
 typedef struct { int32_t face, value_mask, mask, ref, which; } p_stencil;  // which: 0 value mask 1 write mask 2 reference value

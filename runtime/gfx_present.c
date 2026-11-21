@@ -444,12 +444,12 @@ static void flip_locked(void) {
                                  .presentStageQueries = VK_PRESENT_STAGE_IMAGE_FIRST_PIXEL_VISIBLE_BIT_EXT};
     VkPresentTimingsInfoEXT tis = {.sType = VK_STRUCTURE_TYPE_PRESENT_TIMINGS_INFO_EXT, .pNext = &pid, .swapchainCount = 1,
                                    .pTimingInfos = &ti};
-    int timed = pt_on && pt_id && !vk_dlssg_active() && !vk_fg_swapchain();
+    int timed = pt_on && pt_id && !vk_dlssg_swapchain_ready() && !vk_fg_swapchain();
     if (timed) pi.pNext = &tis;
     FT(FT_NOTE, 1, 0, 0);
     vk_queue_lock();
     vk_drv_urgent(1);
-    VkResult r = vk_dlssg_active() ? vk_dlssg_present(vk_ctx()->gfx_queue, &pi)
+    VkResult r = vk_dlssg_interposed() ? vk_dlssg_present(vk_ctx()->gfx_queue, &pi)
                : vk_fg_swapchain() ? vk_fg_present(&pi) : vkQueuePresentKHR(vk_ctx()->gfx_queue, &pi);
     vk_drv_urgent(-1);
     vk_queue_unlock();
@@ -551,7 +551,7 @@ static int create_swapchain(void) {
             g_sc = VK_NULL_HANDLE;
         }
     }
-    if (r != VK_SUCCESS && vk_dlssg_active()) r = vk_dlssg_create_swapchain(c->device, &ci, &g_sc);   // Streamline's hook
+    if (r != VK_SUCCESS && vk_dlssg_swapchain_ready()) r = vk_dlssg_create_swapchain(c->device, &ci, &g_sc);   // Streamline's hook
     else if (r != VK_SUCCESS) {
         // DEBUG-PRESENTTIMING: the plain swap chain asks for present timing; without it when the driver refuses
         int want_pt = c->has_present_timing;
@@ -585,7 +585,7 @@ static int create_swapchain(void) {
         if (g_sc_view[i]) vkDestroyImageView(c->device, g_sc_view[i], NULL);
         g_sc_view[i] = VK_NULL_HANDLE;
     }
-    if (old && vk_dlssg_active()) vk_dlssg_destroy_swapchain(c->device, old);
+    if (old && vk_dlssg_swapchain_ready()) vk_dlssg_destroy_swapchain(c->device, old);
     else if (old) vkDestroySwapchainKHR(c->device, old, NULL);
     g_sc_fmt = sf.format;
     g_sc_hdr = hdr;
@@ -604,7 +604,7 @@ static int create_swapchain(void) {
         g_sc_n = n < MAX_IMAGES ? n : MAX_IMAGES;
         memset(g_sc_img, 0, sizeof g_sc_img);
         vk_fg_get_images(g_sc, &g_sc_n, g_sc_img);
-    } else if (vk_dlssg_active()) {   // Streamline's swapchain too: the count first, then only that many images
+    } else if (vk_dlssg_swapchain_ready()) {   // Streamline's swapchain too: the count first, then only that many images
         uint32_t n = 0;
         vk_dlssg_get_images(c->device, g_sc, &n, NULL);
         g_sc_n = n < MAX_IMAGES ? n : MAX_IMAGES;
@@ -1306,13 +1306,13 @@ static void present_image(VkImage src, VkImageLayout layout, VkFormat fmt, int w
         goto out;
     }
     uint32_t idx = 0;
-    VkResult r = vk_dlssg_active() ? vk_dlssg_acquire(c->device, g_sc, 1000000000ull, g_acquire[slot], &idx)
+    VkResult r = vk_dlssg_swapchain_ready() ? vk_dlssg_acquire(c->device, g_sc, 1000000000ull, g_acquire[slot], &idx)
                : vk_fg_swapchain() ? vk_fg_acquire(g_sc, 1000000000ull, g_acquire[slot], &idx)
                                 : vkAcquireNextImageKHR(c->device, g_sc, 1000000000ull, g_acquire[slot], VK_NULL_HANDLE, &idx);
     if (r == VK_ERROR_OUT_OF_DATE_KHR) {
         plat_xchg32(&g_dirty, 1);
         if (!create_swapchain()) goto out;
-        r = vk_dlssg_active() ? vk_dlssg_acquire(c->device, g_sc, 1000000000ull, g_acquire[slot], &idx)
+        r = vk_dlssg_swapchain_ready() ? vk_dlssg_acquire(c->device, g_sc, 1000000000ull, g_acquire[slot], &idx)
           : vk_fg_swapchain() ? vk_fg_acquire(g_sc, 1000000000ull, g_acquire[slot], &idx)
                            : vkAcquireNextImageKHR(c->device, g_sc, 1000000000ull, g_acquire[slot], VK_NULL_HANDLE, &idx);
     }
@@ -1584,7 +1584,7 @@ void gfx_window_release_vk(void) {
         }
         if (g_pool) vkDestroyCommandPool(c->device, g_pool, NULL);
         if (vk_fg_swapchain()) vk_fg_release();   // AMD's contexts and swapchain (also one being made again)
-        else if (g_sc && vk_dlssg_active()) vk_dlssg_destroy_swapchain(c->device, g_sc);
+        else if (g_sc && vk_dlssg_swapchain_ready()) vk_dlssg_destroy_swapchain(c->device, g_sc);
         else if (g_sc) vkDestroySwapchainKHR(c->device, g_sc, NULL);
         if (g_surface) vkDestroySurfaceKHR(c->instance, g_surface, NULL);
         g_sc = VK_NULL_HANDLE; g_surface = VK_NULL_HANDLE; g_pool = VK_NULL_HANDLE; g_sc_n = 0;
@@ -1647,13 +1647,13 @@ void gfx_present_prep_frame(void) {
     if (vkWaitForFences(c->device, 1, &g_fence[slot], VK_TRUE, 5000000000ull) != VK_SUCCESS) goto out;
     uint32_t idx = 0;
     // as present_image: a frame generation swapchain (set at its start from the settings) hands out its own images
-    VkResult r = vk_dlssg_active() ? vk_dlssg_acquire(c->device, g_sc, 1000000000ull, g_acquire[slot], &idx)
+    VkResult r = vk_dlssg_swapchain_ready() ? vk_dlssg_acquire(c->device, g_sc, 1000000000ull, g_acquire[slot], &idx)
                : vk_fg_swapchain() ? vk_fg_acquire(g_sc, 1000000000ull, g_acquire[slot], &idx)
                                 : vkAcquireNextImageKHR(c->device, g_sc, 1000000000ull, g_acquire[slot], VK_NULL_HANDLE, &idx);
     if (r == VK_ERROR_OUT_OF_DATE_KHR) {
         plat_xchg32(&g_dirty, 1);
         if (!create_swapchain()) goto out;
-        r = vk_dlssg_active() ? vk_dlssg_acquire(c->device, g_sc, 1000000000ull, g_acquire[slot], &idx)
+        r = vk_dlssg_swapchain_ready() ? vk_dlssg_acquire(c->device, g_sc, 1000000000ull, g_acquire[slot], &idx)
           : vk_fg_swapchain() ? vk_fg_acquire(g_sc, 1000000000ull, g_acquire[slot], &idx)
                            : vkAcquireNextImageKHR(c->device, g_sc, 1000000000ull, g_acquire[slot], VK_NULL_HANDLE, &idx);
     }

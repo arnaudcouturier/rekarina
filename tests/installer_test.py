@@ -1048,11 +1048,13 @@ class OotComponentsShimTest(unittest.TestCase):
     def test_the_shim_is_in_the_key_and_the_record_of_a_card_that_runs_it(self):
         rtx40 = self.components.Gpu('NVIDIA GeForce RTX 4070 SUPER', 'nvidia', 12 << 30)
         rtx30 = self.components.Gpu('NVIDIA GeForce RTX 3080', 'nvidia', 10 << 30)
+        gtx16 = self.components.Gpu('NVIDIA GeForce GTX 1660', 'nvidia', 6 << 30)
         step = self.oot.Components()
-        without = {g.name: step.key(self.ctx(g)) for g in (rtx40, rtx30)}
+        without = {g.name: step.key(self.ctx(g)) for g in (rtx40, rtx30, gtx16)}
         self.shim.write_bytes(b'our library')
-        self.assertNotEqual(step.key(self.ctx(rtx40)), without[rtx40.name])   # a release that carries it: once more
-        self.assertEqual(step.key(self.ctx(rtx30)), without[rtx30.name])      # a card without it: nothing to do
+        self.assertNotEqual(step.key(self.ctx(rtx40)), without[rtx40.name])   # RTX 40+: Streamline SR + DLSS-G
+        self.assertNotEqual(step.key(self.ctx(rtx30)), without[rtx30.name])   # RTX 20/30: Streamline SR
+        self.assertEqual(step.key(self.ctx(gtx16)), without[gtx16.name])      # non-RTX card: nothing to do
         (self.dest / 'nvngx_dlssg.dll').write_bytes(b'NVIDIA')
         installed = {'installed': [], 'present': ['nvngx_dlssg.dll'], 'kept': [], 'failed': {}}
         with mock.patch.object(self.components, 'install', return_value=installed):

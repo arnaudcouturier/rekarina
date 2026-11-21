@@ -1,5 +1,7 @@
 // DLAA (vk_dlaa.c): NVIDIA DLSS at the scene's own size, behind REKARINA_DLAA (rekarina.ini dlaa = 1).
 #pragma once
+#include "motion_vectors.h"
+#include "scene_projection.h"
 #include "vk.h"
 #include "vk_ffx.h"
 
@@ -16,10 +18,13 @@ int vk_dlaa_fsr1(void);     // the upscaler behind dlaa is FSR 1, spatial (REKAR
 int vk_dlaa_fg_inputs(VkFfxImage *depth, VkFfxImage *mv, float *jx, float *jy, int *reset);
 // ... their views, and this frame's camera for DLSS Frame Generation (vk_dlssg.c): matrices for row vectors (v * M, the
 // rows stored in order), as Streamline takes them; 0 without a camera that frame.
+#define VK_DLAA_FAR_INFINITE 1e8f
 typedef struct {
     float view_to_clip[16], clip_to_view[16], clip_to_prev_clip[16], prev_clip_to_clip[16];
     float pos[3], up[3], right[3], fwd[3];
     float fov_y, aspect;
+    float znear, zfar;
+    int inverted, infinite;
 } VkDlaaCamera;
 int vk_dlaa_fg_views(VkImageView *depth, VkImageView *mv);
 // The picture without the HUD at the size of the game's picture, in *fmt: RGBA8 UNORM bytes like it (sRGB-encoded), or
@@ -35,6 +40,11 @@ void vk_dlaa_device_exts(const VkExtensionProperties *have, uint32_t nhave, cons
 void vk_dlaa_init(void);
 // 1 when dlaa is on and NGX came up with DLSS (after vk_dlaa_init): a DLSS mode's smaller scene is scaled up by DLSS.
 int vk_dlaa_available(void);
+int vk_dlaa_active(void);
+int vk_dlaa_fg_only(void);
+int vk_dlaa_pose_depth(uint64_t frame, uint32_t w, uint32_t h, VkDescriptorImageInfo *out, float history[4]);
+const SceneProjection *vk_dlaa_previous_projection(uint64_t frame);
+void vk_dlaa_scene_projection(const p_scene_projection *p);
 void vk_dlaa_warm(void);          // boot: the first DLSS feature, before the guest starts
 int vk_dlaa_sharpens(void);        // DLSS's picture is sharpened at the present on every frame (vk_fsr.c)
 // vk_exec.c vk_exec_pass_begin, once the pass's targets are resolved and before its barrier: arms the frame on the
@@ -64,8 +74,9 @@ void vk_mvprev_draw(VkExec *ex);   // vk_mvprev.c: notes the scene draw's object
 // their vertex shader's last-frame variant; vk_dlaa.c mv_pass records them over the camera motion into ex->cb (and
 // leaves every binding of the replay to be set again; draws whose camera block is not cam are left out).
 // vk_dlaa_prev_camera: last frame's camera block and this frame's jitter, 0 when there is no history.
+int vk_fg_pose_prepare(VkExec *ex, uint64_t cam, VkImage depth, uint32_t w, uint32_t h, uint64_t token);
 int vk_mvobj_execute(VkExec *ex, uint64_t cam, VkImageView mv, VkImageView depth, VkFormat depth_fmt, uint32_t w,
-                     uint32_t h);
+                     uint32_t h, uint64_t token);
 int vk_dlaa_prev_camera(VkDescriptorBufferInfo *out, float jitter[2]);
 // vk_mvcheck.c (REKARINA_MV_CHECK, test): mv_pass hands it the motion image after the camera pass and, after the object
 // pass, the motion image again and the scene light target it ran on; it measures how well the vectors fit the picture.

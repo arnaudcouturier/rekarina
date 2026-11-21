@@ -67,6 +67,7 @@ extern const char rt_port_version[];
 void cheats_frame(uint64_t frame);   // cheats.c
 bool tab_cheats(float scale);        // ui/cheats_tab.cpp; true: restart into the rebuild
 const char *vk_dlssg_off_why(void);  // vk_dlssg.c: why DLSS Frame Generation asked at start is not running
+int vk_dlssg_swapchain_ready(void);  // vk_dlssg.c: Streamline owns the swapchain (DLSS-G toggles live)
 const char *vk_fg_off_why(void);     // vk_fg.cpp: the same for AMD FSR frame generation
 int vk_dlssg_offered(const char **why);   // vk_dlssg.c: DLSS Frame Generation can run here
 int vk_fg_offered(const char **why);      // vk_fg.cpp: AMD FSR frame generation can run here
@@ -1186,6 +1187,7 @@ static void tab_screen(float scale) {
         else if (!strcmp(fg_now, "dlss") && vk_fg_instead() && vk_fg_active()) note = menu_text(UI_MENU_FRAMEGEN_INSTEAD);
         else if (!dlss_ok) note = why_dlss;
         else if (!fsr_ok) note = why_fsr;
+        else if (vk_dlssg_swapchain_ready() && strcmp(fg_now, "fsr3")) note = "DLSS switches live";
         if (opt_choice_list("REKARINA_FRAMEGEN", UI_MENU_FRAMEGEN, values, names, n, UI_MENU_FRAMEGEN_DESC, -1, note)) {
             fg_guard_clear();   // one that stopped a start while being set up is tried again at the next (report.c)
             if (strcmp(cfg_value("REKARINA_FRAMEGEN"), "off") && !cfg_bool("REKARINA_DLAA")) {

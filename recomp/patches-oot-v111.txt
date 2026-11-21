@@ -397,3 +397,22 @@ set promptglyphs REKARINA_PROMPT_GLYPHS 0
 # (or, drawn by character, a size the cache has no picture for), once per text after each change and at each new build
 # of its quads, and asks this draw to build the text's quads again.
 site promptglyphs main e4e100 f9407409 f9407409 95014b0c   # ldr x9, [x0, #0xe8] -> the same; bl page+0xd30
+
+set scene_projection REKARINA_PATCH_SCENE_PROJECTION 1
+
+# Native scene projection jitter for temporal reconstruction (runtime/scene_projection_impl.h). The game writes the
+# main scene camera's clip-space projection matrix in main+0x33a474 (build) and completes its camera pass in
+# main+0x25ed88. Patching these two call sites lets the CPU apply the active Halton sub-pixel jitter before the game's
+# culling and matrix consumers read the projection, recording the exact unjittered and jittered projections alongside
+# the command stream.
+site scene_projection main 33a474 94000113 952d9a33   # bl main+0x33a8c0 -> bl page+0xd40 (scene_projection_build)
+site scene_projection main 25ed80 aa1703e1 aa1503e1   # mov x1, x23 -> mov x1, x21
+site scene_projection main 25ed88 97ffd0e6 953107f2   # bl main+0x253120 -> bl page+0xd50 (scene_projection_complete)
+
+set tracked_models REKARINA_PATCH_TRACKED_MODELS 1
+
+# Tracked model pose hooks (runtime/tracked_model_cpu_impl.h). Records FMDL model lifecycle and skeleton buffer rings
+# so the per-object skinned motion pass can pair each draw with its exact previous-frame joint palette.
+site tracked_models main 4f7a30 94000b54 9526a4cc     # bl page+0xd60 (model_destroy_hook)
+site tracked_models main 4fc9ac 940005bd 952690f1     # bl page+0xd70 (model_construct_hook)
+site tracked_models main 4fcb78 97fffd82 95269082     # bl page+0xd80 (model_buffers_hook)

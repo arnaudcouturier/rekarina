@@ -19,7 +19,9 @@
 
 #include <sl.h>
 #include <sl_consts.h>
+#include <sl_dlss.h>
 #include <sl_dlss_g.h>
+#include <sl_helpers.h>
 #include <sl_pcl.h>
 #include <sl_reflex.h>
 
@@ -40,12 +42,17 @@ static_assert(sizeof(sl::BaseStructure) == 32 && offsetof(sl::DLSSGOptions, mode
               "sl::DLSSGOptions differs from the SDK's layout");
 static_assert(offsetof(sl::DLSSGState, numFramesActuallyPresented) == 48, "sl::DLSSGState differs from the SDK's layout");
 static_assert(offsetof(sl::ReflexOptions, mode) == 32, "sl::ReflexOptions differs from the SDK's layout");
+static_assert(offsetof(sl::DLSSOptions, mode) == 32, "sl::DLSSOptions differs from the SDK's layout");
 
 namespace {
 
 HMODULE g_mod;
 Nx2SlLog g_log;
 PFun_slInit *p_init;
+PFun_slEvaluateFeature *p_evaluate;
+PFun_slDLSSSetOptions *p_sr_options;
+bool g_initialized, g_sr_available, g_sr_resources;
+unsigned g_sr_errors;
 PFun_slShutdown *p_shutdown;
 PFun_slIsFeatureLoaded *p_loaded;
 PFun_slSetTagForFrame *p_tag;
@@ -105,12 +112,12 @@ sl::Resource resource(const Nx2SlImage *i) {
 
 extern "C" NX2SL_API int nx2sl_version(void) { return NX2SL_VERSION; }
 
-extern "C" NX2SL_API int nx2sl_init(const wchar_t *dir, Nx2SlLog log) {
+extern "C" NX2SL_API int nx2sl_init(const wchar_t *dir, Nx2SlLog log, int sr, int fg) {
     g_log = log;
     wchar_t path[MAX_PATH];
     swprintf(path, MAX_PATH, L"%ls\\sl.interposer.dll", dir);
     g_mod = LoadLibraryW(path);
-    if (!g_mod) return say("dlssg: sl.interposer.dll not found next to the game: DLSS Frame Generation off"), 0;
+    if (!g_mod) return say("dlssg: sl.interposer.dll not found next to the game: Streamline off"), 0;
     p_init = proc<PFun_slInit>("slInit");
     p_shutdown = proc<PFun_slShutdown>("slShutdown");
     p_loaded = proc<PFun_slIsFeatureLoaded>("slIsFeatureLoaded");
@@ -118,11 +125,19 @@ extern "C" NX2SL_API int nx2sl_init(const wchar_t *dir, Nx2SlLog log) {
     p_constants = proc<PFun_slSetConstants>("slSetConstants");
     p_token = proc<PFun_slGetNewFrameToken>("slGetNewFrameToken");
     p_feature = proc<PFun_slGetFeatureFunction>("slGetFeatureFunction");
+    p_evaluate = proc<PFun_slEvaluateFeature>("slEvaluateFeature");
     p_gipa = reinterpret_cast<PFN_vkGetInstanceProcAddr>(GetProcAddress(g_mod, "vkGetInstanceProcAddr"));
     p_gdpa = reinterpret_cast<PFN_vkGetDeviceProcAddr>(GetProcAddress(g_mod, "vkGetDeviceProcAddr"));
     if (!p_init || !p_tag || !p_constants || !p_token || !p_feature || !p_gipa || !p_gdpa)
         return say("dlssg: sl.interposer.dll lacks its entry points"), 0;
-    static const sl::Feature features[] = {sl::kFeatureDLSS_G, sl::kFeatureReflex, sl::kFeaturePCL};
+    sl::Feature features[4];
+    uint32_t count = 0;
+    if (fg) {
+        features[count++] = sl::kFeatureDLSS_G;
+        features[count++] = sl::kFeatureReflex;
+        features[count++] = sl::kFeaturePCL;
+    }
+    if (sr) features[count++] = sl::kFeatureDLSS;
     const wchar_t *paths[] = {dir};
     sl::Preferences p{};
     p.showConsole = false;
@@ -136,13 +151,14 @@ extern "C" NX2SL_API int nx2sl_init(const wchar_t *dir, Nx2SlLog log) {
     p.flags = sl::PreferenceFlags::eDisableCLStateTracking | sl::PreferenceFlags::eUseManualHooking |
               sl::PreferenceFlags::eUseFrameBasedResourceTagging;
     p.featuresToLoad = features;
-    p.numFeaturesToLoad = 3;
+    p.numFeaturesToLoad = count;
     p.applicationId = 231313132;   // the id NVIDIA's samples use for builds without an issued one (as vk_dlaa.c's NGX)
     p.engine = sl::EngineType::eCustom;
     p.renderAPI = sl::RenderAPI::eVulkan;
     sl::Result r = p_init(p, sl::kSDKVersion);
-    if (r != sl::Result::eOk) return say("dlssg: slInit failed (%d): DLSS Frame Generation off", (int)r), 0;
-    say("dlssg: Streamline up");
+    if (r != sl::Result::eOk) return say("dlssg: slInit failed (%d): Streamline off", (int)r), 0;
+    g_initialized = true;
+    say("dlssg: Streamline up (sr=%d fg=%d)", sr != 0, fg != 0);
     return 1;
 }
 
@@ -167,7 +183,7 @@ extern "C" NX2SL_API int nx2sl_available(void) {
 // Streamline sets Reflex's mode on the swapchain it was told of last (VK_NV_low_latency2) and drops it while there is
 // none, so it is set again after each swapchain.
 extern "C" NX2SL_API void nx2sl_reflex(int mode) {
-    if (g_available != 1 || !p_reflex) return;
+    if (!p_reflex) return;
     sl::ReflexOptions o{};
     o.mode = mode == 2 ? sl::ReflexMode::eLowLatencyWithBoost : mode ? sl::ReflexMode::eLowLatency : sl::ReflexMode::eOff;
     sl::Result r = p_reflex(o);
@@ -179,7 +195,7 @@ extern "C" NX2SL_API void nx2sl_reflex(int mode) {
 // told apart, so the simulation markers sit at the frame's start and the render submission runs until the frame's
 // submissions went out (nx2sl_submit_end).
 extern "C" NX2SL_API void nx2sl_sleep(uint32_t frame, int hold) {
-    if (g_available != 1) return;
+    if (!p_marker) return;
     sl::FrameToken *t = token(frame);
     if (hold && t && p_sleep) p_sleep(*t);
     if ((t = token(frame))) {
@@ -190,7 +206,7 @@ extern "C" NX2SL_API void nx2sl_sleep(uint32_t frame, int hold) {
 }
 
 extern "C" NX2SL_API void nx2sl_submit_end(uint32_t frame) {
-    sl::FrameToken *t = g_available == 1 ? token(frame) : nullptr;
+    sl::FrameToken *t = p_marker ? token(frame) : nullptr;
     if (t) p_marker(sl::PCLMarker::eRenderSubmitEnd, *t);
 }
 
@@ -247,16 +263,17 @@ extern "C" NX2SL_API int nx2sl_frame(VkCommandBuffer cb, const Nx2SlImage *depth
             say("dlssg: frame generation %s (%d), output %ux%u", enable ? "on" : "off (resources kept)", (int)r, out_w,
                 out_h);
         }
+        if (r != sl::Result::eOk) return 0;
         g_mode = enable != 0;
     }
     return 1;
 }
 
 extern "C" NX2SL_API void nx2sl_present_marker(int after, uint32_t frame) {
-    sl::FrameToken *t = g_available == 1 ? token(frame) : nullptr;
+    sl::FrameToken *t = p_marker ? token(frame) : nullptr;
     if (!t) return;
     p_marker(after ? sl::PCLMarker::ePresentEnd : sl::PCLMarker::ePresentStart, *t);
-    if (!after) return;
+    if (!after || g_available != 1) return;
     g_presented++;
     // Asked after each present, numFramesActuallyPresented is what that present showed: 2 with a generated frame.
     sl::DLSSGState s{};
@@ -270,5 +287,114 @@ extern "C" NX2SL_API void nx2sl_present_marker(int after, uint32_t frame) {
 extern "C" NX2SL_API uint64_t nx2sl_shown(void) { return g_shown; }
 
 extern "C" NX2SL_API void nx2sl_shutdown(void) {
-    if (p_shutdown && g_available >= 0) p_shutdown();
+    if (p_shutdown && g_initialized) p_shutdown();
+    g_initialized = g_sr_available = g_sr_resources = false;
+    g_available = -1;
+}
+
+extern "C" NX2SL_API int nx2sl_sr_available(void) {
+    bool loaded = false;
+    void *fn = nullptr;
+    g_sr_available = g_initialized && p_loaded && p_evaluate &&
+        p_loaded(sl::kFeatureDLSS, loaded) == sl::Result::eOk && loaded &&
+        p_feature(sl::kFeatureDLSS, "slDLSSSetOptions", fn) == sl::Result::eOk && fn;
+    p_sr_options = reinterpret_cast<PFun_slDLSSSetOptions *>(fn);
+    return g_sr_available;
+}
+
+static bool sr_mode(Nx2SlSrMode mode, sl::DLSSMode &out) {
+    switch (mode) {
+    case NX2SL_SR_DLAA: out = sl::DLSSMode::eDLAA; return true;
+    case NX2SL_SR_QUALITY: out = sl::DLSSMode::eMaxQuality; return true;
+    case NX2SL_SR_BALANCED: out = sl::DLSSMode::eBalanced; return true;
+    case NX2SL_SR_PERFORMANCE: out = sl::DLSSMode::eMaxPerformance; return true;
+    case NX2SL_SR_ULTRA_PERFORMANCE: out = sl::DLSSMode::eUltraPerformance; return true;
+    default: return false;
+    }
+}
+
+extern "C" NX2SL_API int nx2sl_sr_evaluate_mode(VkCommandBuffer cb, const Nx2SlImage *color, const Nx2SlImage *depth,
+                                                const Nx2SlImage *mv, const Nx2SlImage *out, const Nx2SlCamera *cam,
+                                                uint32_t frame, int preset, int depth_inverted, Nx2SlSrMode mode) {
+    if (!g_initialized || !g_sr_available) return 0;
+    const Nx2SlImage *images[] = {color, depth, mv, out};
+    sl::DLSSMode selected{};
+    bool valid = cb && cam && color && out && sr_mode(mode, selected) &&
+        (preset == 0 || (preset >= 5 && preset < (int)sl::DLSSPreset::eCount));
+    for (const Nx2SlImage *i : images) {
+        valid = valid && i && i->image && i->view && i->width && i->height &&
+                i->layout == VK_IMAGE_LAYOUT_GENERAL &&
+                (i == out || (i->width == color->width && i->height == color->height));
+    }
+    valid = valid && (mode != NX2SL_SR_DLAA || (out->width == color->width && out->height == color->height));
+    valid = valid && out->width >= color->width && out->height >= color->height;
+    if (!valid || out->format != VK_FORMAT_R16G16B16A16_SFLOAT || color->image == out->image) {
+        say("dlss-sr: invalid SR contract: mode=%d input=%ux%u output=%ux%u preset=%d",
+            (int)mode, color ? color->width : 0, color ? color->height : 0,
+            out ? out->width : 0, out ? out->height : 0, preset);
+        return 0;
+    }
+    sl::FrameToken *t = nullptr;
+    sl::Result r = p_token(t, &frame);
+    if (r != sl::Result::eOk || !t) {
+        if (g_sr_errors++ < 16) say("dlss-sr: frame token failed (%d)", (int)r);
+        return 0;
+    }
+    sl::ViewportHandle vp(1);
+    sl::Constants c{};
+    matrix(c.cameraViewToClip, cam->view_to_clip);
+    matrix(c.clipToCameraView, cam->clip_to_view);
+    matrix(c.clipToPrevClip, cam->clip_to_prev_clip);
+    matrix(c.prevClipToClip, cam->prev_clip_to_clip);
+    c.jitterOffset = sl::float2(cam->jitter[0], cam->jitter[1]);
+    c.mvecScale = sl::float2(cam->mv_scale[0], cam->mv_scale[1]);
+    c.cameraPinholeOffset = sl::float2(0, 0);
+    c.cameraPos = sl::float3(cam->pos[0], cam->pos[1], cam->pos[2]);
+    c.cameraUp = sl::float3(cam->up[0], cam->up[1], cam->up[2]);
+    c.cameraRight = sl::float3(cam->right[0], cam->right[1], cam->right[2]);
+    c.cameraFwd = sl::float3(cam->fwd[0], cam->fwd[1], cam->fwd[2]);
+    c.cameraNear = cam->znear;
+    c.cameraFar = cam->zfar;
+    c.cameraFOV = cam->fov_y;
+    c.cameraAspectRatio = cam->aspect;
+    c.depthInverted = depth_inverted ? sl::Boolean::eTrue : sl::Boolean::eFalse;
+    c.cameraMotionIncluded = sl::Boolean::eTrue;
+    c.motionVectors3D = sl::Boolean::eFalse;
+    c.motionVectorsJittered = sl::Boolean::eFalse;
+    c.reset = (cam->reset || !g_sr_resources) ? sl::Boolean::eTrue : sl::Boolean::eFalse;
+    r = p_constants(c, *t, vp);
+    const char *stage = "constants";
+    if (r == sl::Result::eOk) {
+        sl::DLSSOptions o{};
+        o.mode = selected;
+        o.outputWidth = out->width;
+        o.outputHeight = out->height;
+        o.colorBuffersHDR = sl::Boolean::eTrue;
+        o.useAutoExposure = sl::Boolean::eTrue;
+        o.dlaaPreset = static_cast<sl::DLSSPreset>(preset);
+        o.qualityPreset = o.balancedPreset = o.performancePreset = o.ultraPerformancePreset = o.dlaaPreset;
+        g_sr_resources = true;
+        r = p_sr_options(vp, o);
+        stage = "options";
+    }
+    sl::Resource rc = resource(color), rd = resource(depth), rm = resource(mv), ro = resource(out);
+    sl::Extent extent{0, 0, color->width, color->height};
+    sl::Extent output_extent{0, 0, out->width, out->height};
+    sl::ResourceTag tags[] = {
+        sl::ResourceTag(&rc, sl::kBufferTypeScalingInputColor, sl::ResourceLifecycle::eValidUntilEvaluate, &extent),
+        sl::ResourceTag(&ro, sl::kBufferTypeScalingOutputColor, sl::ResourceLifecycle::eValidUntilEvaluate, &output_extent),
+        sl::ResourceTag(&rd, sl::kBufferTypeDepth, sl::ResourceLifecycle::eValidUntilEvaluate, &extent),
+        sl::ResourceTag(&rm, sl::kBufferTypeMotionVectors, sl::ResourceLifecycle::eValidUntilEvaluate, &extent)};
+    if (r == sl::Result::eOk) {
+        r = p_tag(*t, vp, tags, 4, reinterpret_cast<sl::CommandBuffer *>(cb));
+        stage = "tags";
+    }
+    if (r == sl::Result::eOk) {
+        const sl::BaseStructure *inputs[] = {&vp};
+        r = p_evaluate(sl::kFeatureDLSS, *t, inputs, 1, reinterpret_cast<sl::CommandBuffer *>(cb));
+        stage = "evaluate";
+    }
+    if (r != sl::Result::eOk && g_sr_errors++ < 16)
+        say("dlss-sr: %s failed: %s (%d)", stage, sl::getResultAsStr(r), (int)r);
+    return r == sl::Result::eOk;
 }

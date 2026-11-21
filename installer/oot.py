@@ -69,7 +69,7 @@ STYLES = (('switch', 'switch'), ('xbox', 'xbox'), ('xbox-label', 'xbox-label')) 
 # take the place of the downloaded ones.
 OPTIONAL_DLLS = ('nvngx_dlss.dll', 'amd_fidelityfx_vk.dll', 'amd_fidelityfx_loader_vk.dll', 'amd_fidelityfx_upscaler_vk.dll',
                  'amd_fidelityfx_framegeneration_vk.dll', SHIM, 'totk_dlssg.dll', 'sl.interposer.dll', 'sl.common.dll',
-                 'sl.dlss_g.dll', 'sl.reflex.dll', 'sl.pcl.dll', 'nvngx_dlssg.dll', 'NvLowLatencyVk.dll')
+                 'sl.dlss.dll', 'sl.dlss_g.dll', 'sl.reflex.dll', 'sl.pcl.dll', 'nvngx_dlssg.dll', 'NvLowLatencyVk.dll')
 NEED_DEST = 14 << 30   # the exe, the shader and driver caches, the overlays
 NEED_TEMP = 9 << 30    # the generated C, the objects, the build's copy of the caches
 
@@ -846,7 +846,7 @@ class Components(Step):
         # (our DLSS Frame Generation library, when the release carries it and the card runs DLSS Frame Generation:
         # releases 1.2.0 to 1.2.3 carried none, and a folder they set up gets it at its next update)
         gpu, shim = host_gpu(ctx), ctx.layout.shim
-        ours = [(SHIM, shim)] if shim.is_file() and 'dlssg' in components.groups_for(gpu) else []
+        ours = [(SHIM, shim)] if shim.is_file() and 'dlss' in components.groups_for(gpu) else []
         return fingerprint('oot-components-1', components.pins_digest(), components.gpu_key(gpu), *ours)
 
     def current(self, ctx, record):
@@ -860,7 +860,7 @@ class Components(Step):
         failed, files, ours = {}, [], []
         try:
             shim = ctx.layout.shim   # ours, bundled: frame generation loads Streamline through it
-            if shim.is_file() and 'dlssg' in components.groups_for(gpu):
+            if shim.is_file() and 'dlss' in components.groups_for(gpu):
                 shutil.copy2(shim, ctx.dest / SHIM)
                 ours = [SHIM]   # in the record's files: the step runs again when it is gone (current)
             result = components.install(ctx.dest, gpu, ctx.temp / 'components', log=rep.log,

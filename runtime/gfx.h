@@ -137,6 +137,10 @@ int gfx_shader_guess_refine(const GfxShader *s, int stage, const GfxShaderAnswer
 uint32_t gfx_shader_inputs(const GfxShader *s, GfxShaderIo io[32]);    // Input Locations (VS attributes, FS varyings) as a mask
 uint32_t gfx_shader_outputs(const GfxShader *s, GfxShaderIo io[32]);
 uint32_t gfx_shader_mvprev_banks(const GfxShader *s);   // a last-frame variant: the banks (bit n: cn) its position reads   // Output Locations (VS varyings, FS colour targets)
+// VS: the matrix palette its skinning reads (gfx_shader.c reflect_palette). 0: none. Else the bytes of one bone
+// matrix (48 or 64), *slot the uniform bank c[slot] it is read from (or storage index when *storage is 1), *joints
+// the integer input Locations, and *raw_joints the raw-bit float input Locations that index the palette.
+int gfx_shader_palette(const GfxShader *s, int *slot, int *storage, uint32_t *joints, uint32_t *raw_joints);
 void gfx_shader_local_size(const GfxShader *s, uint32_t local[3]);     // CS: the LocalSize execution mode; 1, 1, 1 otherwise
 // The texture pool as one descriptor set (NVN2, vk_texpool.c): a shader that takes texture and sampler handles from memory
 // (a table in a storage buffer, as OoT's baked lightmaps) indexes the whole pool by the handle's texture id (bits 0-19)

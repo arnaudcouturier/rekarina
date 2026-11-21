@@ -534,12 +534,18 @@ static void twins_release(VkCtx *c);
 #ifdef GAME_NS2
 static void gmem_shutdown(VkCtx *c);
 #endif
+#ifdef GAME_OOT
+static void skin_shutdown(void);
+#endif
 void vk_exec_draw_shutdown(void) {
     if (!Z.ready) return;
     VkCtx *c = vk_ctx();
     twins_release(c);
 #ifdef GAME_NS2
     gmem_shutdown(c);
+#endif
+#ifdef GAME_OOT
+    skin_shutdown();
 #endif
     for (int i = 0; i < DV_COUNT; i++) {
         if (Z.img[i].sview != Z.img[i].view) vkDestroyImageView(c->device, Z.img[i].sview, NULL);
@@ -1330,7 +1336,7 @@ static void answers_for(VkExec *ex, int st, const uint8_t *ctl, uint32_t mask, G
 // *present: the program has this stage. Returns NULL when it has not or the translation failed. pending (graphics
 // stages, vk_pipeline_async_on): a shader not translated yet is queued and NULL returned with *pending = 1. await: a
 // shader queued earlier is waited for (gfx_shader_await) instead.
-static int sf_mvprev;   // shader_for asks for the vertex shader's last-frame variant (per-object motion)
+static _Thread_local int sf_mvprev;   // shader_for asks for the vertex shader's last-frame variant (per-object motion)
 static int sf_msc;      // shader_for asks for the mesh stage as a compute kernel (mesh_emulate)
 
 static const GfxShader *shader_for(VkExec *ex, int st, int *present, int *pending, int await) {
@@ -1592,8 +1598,8 @@ static void limits_init(void) {
 
 // Per-object motion (section at the end): while it records a draw again, these replace the uniform bindings of the
 // vertex stage's slots 18-20 (last frame's camera, bones and place) and the fragment stage's slot 3 (its parameters).
-static int mo_ovr_on;
-static VkDescriptorBufferInfo mo_ovr[2][32];   // [vertex, fragment][slot]; buffer 0: not replaced
+static _Thread_local int mo_ovr_on;
+static _Thread_local VkDescriptorBufferInfo mo_ovr[2][32];   // [vertex, fragment][slot]; buffer 0: not replaced
 
 static VkDescriptorBufferInfo ubo_info(VkExec *ex, int st, int slot) {
     if (mo_ovr_on && (st == NVN_STAGE_VS || st == NVN_STAGE_FS) && slot >= 0 && slot < 32 && mo_ovr[st][slot].buffer)
@@ -3554,7 +3560,7 @@ static void bind_pipeline(VkExec *ex, VkPipelineBindPoint bp, VkPipeline p) {
     if (!k) B.st_valid = 0;
 }
 
-static VkViewport draw_viewport(VkExec *ex) {
+static VkViewport base_viewport(const VkExec *ex) {
     float x = 0, y = 0, w = (float)ex->pass_w, h = (float)ex->pass_h;
     if (ex->has_vp) {
         float k = ex->pass_scale > 1 ? (float)ex->pass_scale : 1.0f;
@@ -3562,7 +3568,11 @@ static VkViewport draw_viewport(VkExec *ex) {
     }
     if (w < 1) w = 1;
     if (h < 1) h = 1;
-    VkViewport v = {x, y + h, w, -h, ex->depth_range[0], ex->depth_range[1]};   // the y flip: negative height
+    return (VkViewport){x, y + h, w, -h, ex->depth_range[0], ex->depth_range[1]};   // the y flip: negative height
+}
+
+static VkViewport draw_viewport(VkExec *ex) {
+    VkViewport v = base_viewport(ex);
     vk_dlaa_viewport(ex, &v);   // the scene's draws move by the DLAA jitter
     return v;
 }
@@ -4066,10 +4076,19 @@ static int prepare_draw(VkExec *ex, int prim, int32_t count, int restart) {
 // building, or whose last-frame blocks are not in the snapshot, keeps the camera's motion. REKARINA_DLAA_OBJMV=0 turns it
 // off (vk_mvprev.c).
 #include "vk_mvobj_fs.h"
+#include "model_motion_spv.h"
+#include "scene_motion_projection.h"
 static const char MO_FS_RES[] = "{\"key\":\"mvobj\",\"stage\":\"ps\",\"notes\":[],\"cbufs\":[{\"binding\":1,\"slot\":3}],"
                                 "\"sbufs\":[],\"textures\":[],\"images\":[]}";
+#ifdef GAME_OOT
+static const char MODEL_FS_RES[] = "{\"key\":\"model-motion\",\"stage\":\"ps\",\"cbufs\":[{\"binding\":1,\"slot\":3}],"
+                                   "\"textures\":[{\"binding\":2,\"type\":3}],\"sbufs\":[],\"images\":[]}";
+#endif
 static struct {
     const GfxShader *fs[16];     // per input Location
+#ifdef GAME_OOT
+    const GfxShader *guarded_fs[16];
+#endif
     int failed;
     uint64_t cand, still, draws, nodata, building, ran, dropped;
     uint64_t ns_check, ns_rec, n_rec, ns_emit, ns_still;
@@ -4099,7 +4118,9 @@ typedef struct {
     VkIndexType it;
     uint32_t count, instances, base_instance;
     int32_t base_vertex;
-    uint64_t cam;                // the draw's camera block (c4), this frame's
+    uint64_t projection_token;
+    uint64_t cam;                // the draw's camera block, this frame's
+    int skin;                    // vk_skin_motion.inc: 1 paired draw, 2 checked against last frame's depth, -1 refused
 } MoDraw;
 typedef struct { VkBuffer b[17]; VkDeviceSize o[17], sz[17], str[17]; } MoVb;
 static struct {
@@ -4115,7 +4136,7 @@ static struct {
     uint64_t vgen;
     float sup_in[3];             // the support buffer last filled for the list and its inputs
     VkDescriptorBufferInfo sup;
-    float par_in[4];             // the fragment shader's parameters last written and their inputs
+    float par_in[8];             // the fragment shader's parameters last written and their inputs
     VkDescriptorBufferInfo par;
     VkDescriptorSetLayout aset_layout[2];   // the last allocated set per set number, with its descriptors
     VkDescriptorSet aset[2];
@@ -4152,14 +4173,23 @@ static void mo_drop(void) {
     MQ.n = MQ.nst = MQ.nvb = 0, MQ.ndesc = 0, MQ.frame = 0;
 }
 
+#ifndef GAME_OOT
 static uint64_t mo_gen = 1;   // the list's snapshot (mo_prev_cached), bumped by mo_begin
+#endif
 static struct { uint32_t mask, chg, n; } MF[16];   // this list's draws per position banks and changed banks
 static char fm_last[400];                          // the last executed list's, formatted (vk_mvobj_frame_masks)
 
+#ifdef GAME_OOT
+static void skin_begin(uint64_t frame);
+#endif
 // Starts this frame's list (the old one, never executed, is dropped).
 static void mo_begin(VkExec *ex, uint64_t frame) {
     mo_drop();
+#ifdef GAME_OOT
+    skin_begin(frame);
+#else
     mo_gen++;
+#endif
     memset(MF, 0, sizeof MF);
     MQ.frame = frame, MQ.fence = ex->fence, MQ.depth_fmt = ex->depth.format;
     memset(MQ.vin, 0, sizeof MQ.vin);
@@ -4179,6 +4209,24 @@ static const GfxShader *mo_fs(int loc) {
     return MO.fs[loc];
 }
 
+#ifdef GAME_OOT
+static const GfxShader *mo_guarded_fs(int loc) {
+    if (loc < 0 || loc >= 16) return NULL;
+    if (MO.guarded_fs[loc]) return MO.guarded_fs[loc];
+    uint32_t words[sizeof model_motion_spv / sizeof(uint32_t)];
+    memcpy(words, model_motion_spv, sizeof words);
+    for (size_t i = 5; i < sizeof words / sizeof *words; i += words[i] >> 16) {
+        // OpDecorate Location 15 uniquely identifies the previous clip position in model_motion.frag.
+        if (words[i] == ((4u << 16) | 71u) && words[i + 2] == 30 && words[i + 3] == 15) {
+            words[i + 3] = (uint32_t)loc;
+            MO.guarded_fs[loc] = gfx_shader_own(words, sizeof words / sizeof *words, MODEL_FS_RES);
+            break;
+        }
+    }
+    return MO.guarded_fs[loc];
+}
+#endif
+
 // The write of binding b from its packed descriptors.
 static VkWriteDescriptorSet mo_write(const VkPipeBinding *b, const VkDescSlot *d) {
     VkWriteDescriptorSet w = {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstBinding = b->binding,
@@ -4196,7 +4244,7 @@ static VkWriteDescriptorSet mo_write(const VkPipeBinding *b, const VkDescSlot *d
 // mo_ovr), the support buffer and sampled textures. An allocated set is written here (or the last one reused when it
 // would hold the same); a pushed set is pushed by mo_emit. 0 for a pipeline with storage buffers, images or texel
 // buffers (not drawn again).
-static int mo_desc(VkExec *ex, const VkPipeInfo *info, MoDraw *q) {
+static int mo_desc(VkExec *ex, const VkPipeInfo *info, MoDraw *q, const VkDescriptorImageInfo *pose_depth) {
     if (info->n_bindings > MAX_BINDINGS) return 0;
     uint32_t total = 0;
     for (uint32_t i = 0; i < info->n_bindings; i++) total += info->bindings[i].count ? info->bindings[i].count : 1;
@@ -4227,6 +4275,9 @@ static int mo_desc(VkExec *ex, const VkPipeInfo *info, MoDraw *q) {
             for (uint32_t k = 0; k < cnt; k++) o[k].buffer = ubo_info(ex, st, r->slot + (int)k);
         } else if (b->kind == GFX_RES_SSBO && !(r->flags & 1)) {   // read only: instance data of foliage and such
             for (uint32_t k = 0; k < cnt; k++) o[k].buffer = ssbo_info(ex, st, r, 0);
+        } else if (pose_depth && st == NVN_STAGE_FS && b->type == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER) {
+            if (cnt != 1) return 0;
+            o->image = *pose_depth;
         } else if (b->kind == GFX_RES_TEX && b->type != VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER) {
             vk_texture_lock();
             for (uint32_t k = 0; k < cnt; k++) {
@@ -4252,7 +4303,7 @@ static int mo_desc(VkExec *ex, const VkPipeInfo *info, MoDraw *q) {
                 q->set[s] = MQ.aset[s];
                 MO.e_setreuse++;
             } else {
-                static VkWriteDescriptorSet w[MAX_BINDINGS];
+                static _Thread_local VkWriteDescriptorSet w[MAX_BINDINGS];
                 VkDescriptorSet set = alloc_set(ex, sl);
                 for (uint32_t i = i0, k = k0; i < i1; k += info->bindings[i].count ? info->bindings[i].count : 1, i++)
                     w[i - i0] = mo_write(&info->bindings[i], d + k), w[i - i0].dstSet = set;
@@ -4354,6 +4405,238 @@ static void mo_emit(VkCommandBuffer cb) {
         vkCmdDrawIndexed(cb, q->count, q->instances, 0, q->base_vertex, q->base_instance);
         MO.e_draws++;
     }
+}
+
+#ifdef GAME_OOT
+#define POSE_BYTES (128u * 1024u)
+#include "vk_skin_motion.inc"
+
+static PlatMutex mo_lock = PLAT_MUTEX_INIT;
+
+static int mvobj_pick(VkExec *ex, const p_draw_idx *d, const GfxShader **vs_out, uint32_t *banks_out,
+                      SkinPick *skin_out, uint64_t t0) {
+    const VkExecTarget *z = &ex->depth;
+    if (!z->image || z->width < DLAA_SCENE_MIN_W || z->format != VK_FORMAT_D32_SFLOAT || B.st.samples > 1 ||
+        B.st.raster_discard)
+        return 0;
+    if (!B.st.ds.dt) return 0;
+    if (!B.st.ds.dw && !(B.st.ds.df == NVN_DEPTH_FUNC_EQUAL && ex->color[0].image &&
+                         (vk_pipeline_target_wmask(&B.st, 0) & 7)))
+        return 0;
+    VkViewport v = base_viewport(ex);
+    if (ex->ubo[0][0].size != SCENE_CAMERA_BYTES || d->instances > 1 || d->base_instance || B.st.color.blend_en ||
+        B.st.ds.st || ex->pass_layers != 1 || z->level || z->base_layer || z->layers != 1 ||
+        v.x != 0.0f || v.y != (float)z->height || v.width != (float)z->width || v.height != -(float)z->height)
+        return 0;
+    if (!skin_pick(ex, ex->work_scope && !vk_dlaa_reverse_only() ? &ex->work_scope->model : NULL, skin_out))
+        return 0;
+    const GfxShaderRes *ur;
+    int nu = gfx_shader_resources(B.st.vs, GFX_RES_UBO, &ur), reads = 0;
+    for (int i = 0; i < nu; i++) reads |= ur[i].slot >= 3 && ur[i].slot <= 16 && ur[i].slot != 4;
+    if (!reads) return skin_pick_left(skin_out, SKIN_BANKS_OTHER);
+    __atomic_add_fetch(&MO.cand, 1, __ATOMIC_RELAXED);
+    if (t0) {
+        __atomic_add_fetch(&MO.ns_part[0], kern_now_ns() - t0, __ATOMIC_RELAXED);
+        __atomic_add_fetch(&MO.n_part[0], 1, __ATOMIC_RELAXED);
+    }
+    if (!__atomic_load_n(&LIM.ubo_max, __ATOMIC_ACQUIRE)) limits_init();
+    static _Thread_local struct { const GfxShader *of, *vs; uint32_t banks; } vmemo[1024];
+    uint32_t vi = (uint32_t)((uintptr_t)B.st.vs * 0x9E3779B97F4A7C15ull >> 54);
+    if (vmemo[vi].of != B.st.vs) {
+        int has, pending = 0;
+        sf_mvprev = 1;
+        const GfxShader *vs_v = shader_for(ex, NVN_STAGE_VS, &has, &pending, 0);
+        sf_mvprev = 0;
+        if (!vs_v || pending) {
+            __atomic_add_fetch(&MO.building, 1, __ATOMIC_RELAXED);
+            return skin_pick_left(skin_out, SKIN_NOT_READY);
+        }
+        GfxShaderIo io[32];
+        uint32_t extra = gfx_shader_outputs(vs_v, io) & ~gfx_shader_outputs(B.st.vs, io);
+        uint32_t banks = extra ? gfx_shader_mvprev_banks(vs_v) & 0x1fff8u : 0;
+        vmemo[vi].of = B.st.vs, vmemo[vi].vs = vs_v, vmemo[vi].banks = banks;
+    }
+    const GfxShader *vs = vmemo[vi].vs;
+    uint32_t banks = vmemo[vi].banks;
+    if (!banks || !(banks & ~(1u << 4))) {
+        __atomic_add_fetch(&MO.no_out, 1, __ATOMIC_RELAXED);
+        return skin_pick_left(skin_out, SKIN_BANKS_OTHER);
+    }
+    if (!(banks & (1u << 4))) {
+        __atomic_add_fetch(&MO.no_out, 1, __ATOMIC_RELAXED);
+        return skin_pick_left(skin_out, SKIN_BANKS_OTHER);
+    }
+    if (!(banks & (1u << 5 | 1u << 6 | 1u << 7))) {
+        __atomic_add_fetch(&MO.no_out, 1, __ATOMIC_RELAXED);
+        return skin_pick_left(skin_out, SKIN_BANKS_OTHER);
+    }
+    *vs_out = vs, *banks_out = banks;
+    return 1;
+}
+
+static void mvobj_draw_(VkExec *ex, const p_draw_idx *d, VkBuffer ib, VkDeviceSize ib_off, uint64_t t0,
+                        const GfxShader *vs, uint32_t banks, const SkinPick *skin) {
+    const VkExecTarget *z = &ex->depth;
+    uint64_t tp = t0 ? kern_now_ns() : 0;
+    uint64_t frame = __atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED);
+    if (MQ.frame != frame || MQ.fence != ex->fence || MQ.depth_fmt != z->format) mo_begin(ex, frame);
+    mo_mask_note(banks, B.st.vs);
+    SkinDraw skin_draw;
+    SkinEntry skin_entry;
+    uint64_t skin_listed = 0;
+    VkDescriptorImageInfo pose_depth = {0};
+    int pose_visibility_guard = 0;
+    float history[4] = {0};
+    if (!skin_try(ex, d, frame, vs, banks, skin, &skin_draw, &skin_entry, &skin_listed, &pose_visibility_guard)) return;
+    if (pose_visibility_guard && !vk_dlaa_pose_depth(frame, z->width, z->height, &pose_depth, history))
+        pose_visibility_guard = 0;
+    VkViewport v = draw_viewport(ex);
+    float jit[2] = {v.x, v.y - (float)z->height};
+    const uint64_t token = ex->scene_projection.sample.token;
+    if (token) memcpy(jit, ex->scene_projection.sample.jitter, sizeof jit);
+    if (t0) MO.ns_part[1] += kern_now_ns() - tp, MO.n_part[1]++, tp = kern_now_ns();
+    GfxShaderIo io[32];
+    uint32_t extra = gfx_shader_outputs(vs, io) & ~gfx_shader_outputs(B.st.vs, io);
+    const GfxShaderRes *r;
+    if (gfx_shader_resources(vs, GFX_RES_IMG, &r)) {
+        MO.storage++;
+        skin_left(SKIN_STORAGE);
+        return;
+    }
+    int loc = 31 - __builtin_clz(extra);
+    const GfxShader *fs = pose_visibility_guard ? mo_guarded_fs(loc) : mo_fs(loc);
+    if (!fs) {
+        MO.no_fs++;
+        skin_left(SKIN_NOT_READY);
+        return;
+    }
+    VkPipeState ms = B.st;
+    ms.vs = vs, ms.fs = fs, ms.feedback = 0;
+    memset(ms.color_fmt, 0, sizeof ms.color_fmt);
+    ms.color_fmt[0] = NVN_FORMAT_RG16F;
+    ms.color.blend_en = 0, ms.color.logic_op = 0;
+    ms.chmask.mask = 0x3;
+    ms.ms.a2c = 0;
+    ms.ds.dt = 1, ms.ds.dw = 0, ms.ds.df = NVN_DEPTH_FUNC_EQUAL, ms.ds.st = 0;
+    static struct { VkPipeState st; VkPipeline p; const VkPipeInfo *info; int used; } pmemo[64];
+    static int plast = -1;
+    uint32_t pi;
+    if (plast >= 0 && pmemo[plast].used && !memcmp(&pmemo[plast].st, &ms, sizeof ms)) {
+        pi = (uint32_t)plast;
+    } else {
+        uint64_t ph = 0xcbf29ce484222325ull;
+        for (size_t i = 0; i < sizeof ms; i += 8) {
+            uint64_t w8;
+            memcpy(&w8, (const uint8_t *)&ms + i, sizeof ms - i < 8 ? sizeof ms - i : 8);
+            ph = (ph ^ w8) * 0x100000001b3ull;
+        }
+        pi = (uint32_t)(ph >> 58);
+    }
+    const VkPipeInfo *info = NULL;
+    VkPipeline pipe;
+    int pending = 0;
+    if (pmemo[pi].used && !memcmp(&pmemo[pi].st, &ms, sizeof ms)) {
+        info = pmemo[pi].info;
+        pipe = __atomic_load_n(&info->pipeline, __ATOMIC_ACQUIRE);
+        if (!pipe) {
+            skin_left(SKIN_NOT_READY);
+            return;
+        }
+    } else {
+        pipe = vk_pipeline_graphics_async(&ms, &info, &pending, 0);
+        if (pending || !pipe || !info) {
+            MO.building += pending != 0;
+            skin_left(SKIN_NOT_READY);
+            return;
+        }
+        pmemo[pi].st = ms, pmemo[pi].p = pipe, pmemo[pi].info = info, pmemo[pi].used = 1;
+    }
+    plast = (int)pi;
+    uint64_t t1 = kern_now_ns();
+    if (t0) MO.ns_part[2] += t1 - tp, MO.n_part[2]++;
+    if (t0) MO.ns_check -= t1 - t0;
+    MQ.d = mo_grow(MQ.d, &MQ.cap, MQ.n + 1, sizeof *MQ.d);
+    MoDraw *q = &MQ.d[MQ.n];
+    float par_in[8] = {(float)z->width, (float)z->height, jit[0], jit[1], history[0], history[1], history[2], history[3]};
+    if (!MQ.par.buffer || memcmp(par_in, MQ.par_in, sizeof par_in)) {
+        VkBuffer pbuf;
+        VkDeviceSize poff;
+        memcpy(scratch(ex, sizeof par_in, &pbuf, &poff), par_in, sizeof par_in);
+        MQ.par = (VkDescriptorBufferInfo){pbuf, poff, sizeof par_in};
+        memcpy(MQ.par_in, par_in, sizeof par_in);
+    }
+    memset(mo_ovr, 0, sizeof mo_ovr);
+    for (int i = 0; i < SKIN_BANKS; i++)
+        if (skin_draw.block[i] >= 0) mo_ovr[NVN_STAGE_VS][18 + i] = SK.f[SK.cur].b[skin_draw.block[i]].was;
+    mo_ovr[NVN_STAGE_FS][3] = MQ.par;
+    mo_ovr_on = 1;
+    int bound = mo_desc(ex, info, q, pose_visibility_guard ? &pose_depth : NULL);
+    mo_ovr_on = 0;
+    if (!bound) {
+        MO.storage++;
+        skin_left(SKIN_STORAGE);
+        return;
+    }
+    q->pipe = pipe, q->info = info;
+    if (!MQ.nst || memcmp(&MQ.st[MQ.nst - 1], &ms, sizeof ms)) {
+        MQ.st = mo_grow(MQ.st, &MQ.cst, MQ.nst + 1, sizeof *MQ.st);
+        MQ.st[MQ.nst++] = ms;
+    }
+    q->st = (uint32_t)MQ.nst - 1;
+    q->v = draw_viewport(ex), q->sc = vk_exec_scissor(ex);
+    q->bias[0] = ex->poly_offset.units, q->bias[1] = ex->poly_offset.clamp, q->bias[2] = ex->poly_offset.factor;
+    q->vb = mo_vertex_buffers(ex);
+    q->ib = ib, q->ib_off = ib_off;
+    q->it = d->itype == NVN_INDEX_TYPE_UNSIGNED_SHORT ? VK_INDEX_TYPE_UINT16 : VK_INDEX_TYPE_UINT32;
+    q->count = (uint32_t)d->count, q->instances = d->instances > 0 ? (uint32_t)d->instances : 1;
+    q->base_vertex = d->base_vertex, q->base_instance = (uint32_t)d->base_instance;
+    q->cam = ex->ubo[NVN_STAGE_VS][0].addr;
+    q->projection_token = token;
+    q->skin = 1 + pose_visibility_guard;
+    skin_commit(&skin_draw, &skin_entry, skin_listed, MQ.n);
+    MQ.n++;
+    MO.draws++;
+    if (t0) MO.ns_rec += kern_now_ns() - t1, MO.n_rec++;
+}
+
+static void mvobj_draw(VkExec *ex, const p_draw_idx *d, VkBuffer ib, VkDeviceSize ib_off) {
+    if (!vk_dlaa_model_motion() || MO.failed || !B.st_valid) return;
+    if (gfx_shader_pool_mask(B.st.vs)) return;
+    if (!(vk_dlaa_available() || vk_dlaa_fg_only()) || !skin_enabled()) return;
+    static int timed = -1;
+    if (timed < 0) timed = rt_knob("MVOBJ_TIMES", "0");
+    uint64_t t0 = timed ? kern_now_ns() : 0;
+    const GfxShader *vs;
+    uint32_t banks;
+    SkinPick skin = {0};
+    TrackedModelSample prior = ex->tracked_model;
+    int listed = mvobj_pick(ex, d, &vs, &banks, &skin, t0);
+    if (listed) {
+        plat_mutex_lock(&mo_lock);
+        mvobj_draw_(ex, d, ib, ib_off, t0, vs, banks, &skin);
+        if (t0) __atomic_add_fetch(&MO.ns_check, kern_now_ns() - t0, __ATOMIC_RELAXED);
+        plat_mutex_unlock(&mo_lock);
+    } else if (t0) {
+        __atomic_add_fetch(&MO.ns_check, kern_now_ns() - t0, __ATOMIC_RELAXED);
+    }
+    ex->tracked_model = prior;
+}
+
+int vk_fg_pose_prepare(VkExec *ex, uint64_t cam, VkImage depth, uint32_t w, uint32_t h, uint64_t token) {
+    if (!skin_enabled()) return 0;
+    uint64_t frame = __atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED);
+    skin_resolve(ex, frame, cam, depth, w, h, token);
+    if (frame % 120 == 0) {
+        char status[1200];
+        skin_status(status, sizeof status);
+        rt_log("model motion: %s", status);
+    }
+    return MQ.n != 0;
+}
+#else
+int vk_fg_pose_prepare(VkExec *ex, uint64_t cam, VkImage depth, uint32_t w, uint32_t h, uint64_t token) {
+    (void)ex; (void)cam; (void)depth; (void)w; (void)h; (void)token;
+    return 0;
 }
 
 static void mvobj_draw_(VkExec *ex, const p_draw_idx *d, VkBuffer ib, VkDeviceSize ib_off, uint64_t t0);
@@ -4681,7 +4964,7 @@ static void mvobj_draw_(VkExec *ex, const p_draw_idx *d, VkBuffer ib, VkDeviceSi
         mo_ovr[NVN_STAGE_VS][bk + 15] = bk == 4 ? cam : have >> bk & 1 ? prevb[bk] : ubo_info(ex, NVN_STAGE_VS, bk);
     mo_ovr[NVN_STAGE_FS][3] = MQ.par;
     mo_ovr_on = 1;
-    int bound = mo_desc(ex, info, q);
+    int bound = mo_desc(ex, info, q, NULL);
     mo_ovr_on = 0;
     if (!bound) {
         MO.storage++;
@@ -4710,9 +4993,10 @@ static void mvobj_draw_(VkExec *ex, const p_draw_idx *d, VkBuffer ib, VkDeviceSi
         }
     if (t0) MO.ns_rec += kern_now_ns() - t1, MO.n_rec++;
 }
+#endif
 
 int vk_mvobj_execute(VkExec *ex, uint64_t cam, VkImageView mv, VkImageView depth, VkFormat depth_fmt, uint32_t w,
-                     uint32_t h) {
+                     uint32_t h, uint64_t token) {
     static uint64_t frames;
     if (++frames % 60 == 0)
         rt_log("vk_exec: per-object motion: %.2f ms a frame checking, %.2f ms listing (%.1f us a draw), %.2f ms recording",
@@ -4780,9 +5064,18 @@ int vk_mvobj_execute(VkExec *ex, uint64_t cam, VkImageView mv, VkImageView depth
     // only draws with the scene camera block (vk_dlaa.c mv_pass's): last frame's camera they get is that block's, and
     // a draw of another view would move by the difference between the two views
     int kept = 0;
+#ifdef GAME_OOT
+    for (int i = 0; i < MQ.n; i++)
+        if (MQ.d[i].cam == cam && MQ.d[i].projection_token == token && MQ.d[i].skin > 0 && SK.resolved) {
+            skin_recorded(MQ.d[i].skin == 2);
+            MQ.d[kept++] = MQ.d[i];
+        }
+#else
+    (void)token;
     for (int i = 0; i < MQ.n; i++)
         if (MQ.d[i].cam == cam) MQ.d[kept++] = MQ.d[i];
         else MO.other_cam++;
+#endif
     MQ.n = kept;
     if (!MQ.n) {
         mo_drop();
