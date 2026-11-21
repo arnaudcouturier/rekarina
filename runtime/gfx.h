@@ -101,8 +101,8 @@ const uint32_t *gfx_shader_spirv(const GfxShader *s, uint64_t *words);
 // A shader of the runtime's own (SPIR-V and a .res.json text as the translator writes them), outside the cache and
 // never freed; its key is the sha256 of both. NULL when the SPIR-V is malformed.
 const GfxShader *gfx_shader_own(const uint32_t *spirv, uint64_t words, const char *res_json);
-// vk_hdr.c: with REKARINA_HDR=1, replaces a fragment shader's SPIR-V (malloc'd, *words long) by the HDR tonemap when it is
-// the game's tonemap; gfx_shader.c calls it for every fragment shader entering the cache.
+// vk_hdr.c: when the HDR path is armed, splices (OoT) or replaces (TotK) the game's tonemap fragment shader SPIR-V
+// (malloc'd, *words long) and removes output clamps in its FSR pass; gfx_shader.c calls it as fragment shaders load.
 void vk_hdr_shader_swap(uint32_t **spirv, uint64_t *words);
 uint64_t gfx_shader_failures(void);                         // failed translations; feeds GfxStats.shader_failures
 // Reflection: parsed once per shader from the translator's .res.json and the SPIR-V before it enters the cache.

@@ -31,10 +31,6 @@
 #include "vk_dlssg.h"
 #include "vk_fg.h"
 #include "vk_ffx.h"
-
-// Native HDR output is not in this port: the scene always goes through the game's own tonemap.
-static int vk_hdr_native(void) { return 0; }
-static int vk_hdr_native_picture(VkFormat f) { (void)f; return 0; }
 #include "vk_rec.h"
 #include "dlaa_mv_spv.h"
 
@@ -1948,7 +1944,7 @@ evaluated:
 int vk_dlaa_hudless_wanted;
 static void hudless(VkCommandBuffer cb, VkImage src, uint32_t w, uint32_t h) {
     const VkCtx *c = vk_ctx();
-    int hdr = vk_hdr_wanted() && !vk_hdr_native();
+    int hdr = vk_hdr_active() && !vk_hdr_native();
     if (vk_hdr_native()) return;
     VkFormat fmt = hdr ? VK_FORMAT_R16G16B16A16_SFLOAT : VK_FORMAT_R8G8B8A8_UNORM;
     if (D.hl && (D.hl_w != w || D.hl_h != h || D.hl_fmt != fmt)) {

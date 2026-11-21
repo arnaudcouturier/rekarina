@@ -73,6 +73,10 @@ int vk_dlssg_offered(const char **why);   // vk_dlssg.c: DLSS Frame Generation c
 int vk_fg_offered(const char **why);      // vk_fg.cpp: AMD FSR frame generation can run here
 int vk_fg_instead(void);                  // vk_fg.cpp: AMD's runs in place of DLSS's
 int vk_fg_active(void);
+int vk_hdr_wanted(void);                  // vk_hdr.c: HDR requested / active / native / restart state
+int vk_hdr_active(void);
+int vk_hdr_native(void);
+int vk_hdr_needs_restart(void);
 }
 
 // Roboto Medium (Apache-2.0, ui/fonts/LICENSE-Roboto.txt) with Latin and Cyrillic glyphs.
@@ -1219,12 +1223,57 @@ static void tab_screen(float scale) {
     opt_toggle("REKARINA_FXAA", UI_MENU_FXAA, UI_MENU_FXAA_DESC);
 #endif
     opt_group(UI_MENU_HDR_GROUP);
+#ifdef GAME_OOT
+    {
+        static const UiTextId hdr_modes[] = {UI_MENU_OFF, UI_MENU_HDR_RENODX, UI_MENU_HDR_NATIVE};
+        const char *note = vk_hdr_needs_restart() ? menu_text(UI_MENU_AFTER_RESTART)
+                         : (vk_hdr_wanted() && !vk_hdr_active()) ? menu_text(UI_MENU_HDR_NO_DISPLAY)
+                         : vk_hdr_native() ? menu_text(UI_MENU_HDR_NATIVE_ON) : nullptr;
+        opt_choice("REKARINA_HDR", UI_MENU_HDR, hdr_modes, 3, UI_MENU_HDR_DESC, note);
+        const char *hdr = cfg_value("REKARINA_HDR");
+        if (strcmp(hdr, "0")) {
+            opt_slider("REKARINA_HDR_PEAK_NITS", UI_MENU_HDR_PEAK, 400, 10000, UI_MENU_HDR_PEAK_DESC, 50, "%.0f", nullptr, nullptr, true);
+            opt_slider("REKARINA_HDR_GAME_NITS", UI_MENU_HDR_GAME, 48, 500, UI_MENU_HDR_GAME_DESC, 5, "%.0f", nullptr, nullptr, true);
+            opt_slider("REKARINA_HDR_UI_NITS", UI_MENU_HDR_UI, 48, 500, UI_MENU_HDR_UI_DESC, 5, "%.0f", nullptr, nullptr, true);
+        }
+        if (!strcmp(hdr, "1")) {
+            static const UiTextId gamma_modes[] = {UI_MENU_HDR_GAMMA_OFF, UI_MENU_HDR_GAMMA_22, UI_MENU_HDR_GAMMA_24};
+            opt_choice("REKARINA_HDR_GAMMA", UI_MENU_HDR_GAMMA, gamma_modes, 3, UI_MENU_HDR_GAMMA_DESC);
+            static const UiTextId tm_modes[] = {UI_MENU_HDR_TM_PSYCHO, UI_MENU_HDR_TM_RENODRT, UI_MENU_HDR_TM_VANILLA};
+            opt_choice("REKARINA_HDR_TONEMAP", UI_MENU_HDR_TONEMAP, tm_modes, 3, UI_MENU_HDR_TONEMAP_DESC);
+            const char *tm = cfg_value("REKARINA_HDR_TONEMAP");
+            if (strcmp(tm, "vanilla")) {
+                int is_drt = !strcmp(tm, "renodrt");
+                if (!is_drt) {
+                    static const UiTextId mg_modes[] = {UI_MENU_HDR_MIDGRAY_VANILLA, UI_MENU_HDR_MIDGRAY_RENDER};
+                    opt_choice("REKARINA_HDR_MIDGRAY", UI_MENU_HDR_MIDGRAY, mg_modes, 2, UI_MENU_HDR_MIDGRAY_DESC);
+                    opt_toggle("REKARINA_HDR_MATCH_SLOPE", UI_MENU_HDR_MATCH_SLOPE, UI_MENU_HDR_MATCH_SLOPE_DESC);
+                    opt_slider("REKARINA_HDR_TONE_SLOPE", UI_MENU_HDR_TONE_SLOPE, 0, 100, UI_MENU_HDR_TONE_SLOPE_DESC, 5, "%.0f");
+                    opt_slider("REKARINA_HDR_HUE_CLIP", UI_MENU_HDR_HUE_CLIP, 0, 100, UI_MENU_HDR_HUE_CLIP_DESC, 5, "%.0f %%");
+                }
+                opt_slider("REKARINA_HDR_EXPOSURE", UI_MENU_HDR_EXPOSURE, 0, 200, UI_MENU_HDR_EXPOSURE_DESC, 5, "%.0f %%");
+                opt_slider("REKARINA_HDR_HIGHLIGHTS", UI_MENU_HDR_HIGHLIGHTS, 0, 100, UI_MENU_HDR_HIGHLIGHTS_DESC, 5, "%.0f");
+                opt_slider("REKARINA_HDR_SHADOWS", UI_MENU_HDR_SHADOWS, 0, 100, UI_MENU_HDR_SHADOWS_DESC, 5, "%.0f");
+                opt_slider("REKARINA_HDR_CONTRAST", UI_MENU_HDR_CONTRAST, 0, 100, UI_MENU_HDR_CONTRAST_DESC, 5, "%.0f");
+                opt_slider("REKARINA_HDR_SATURATION", UI_MENU_HDR_SATURATION, 0, 100, UI_MENU_HDR_SATURATION_DESC, 5, "%.0f");
+                if (is_drt) {
+                    opt_slider("REKARINA_HDR_HIGHLIGHT_SAT", UI_MENU_HDR_HIGHLIGHT_SAT, 0, 100, UI_MENU_HDR_HIGHLIGHT_SAT_DESC, 5, "%.0f");
+                    opt_slider("REKARINA_HDR_BLOWOUT", UI_MENU_HDR_BLOWOUT, 0, 100, UI_MENU_HDR_BLOWOUT_DESC, 5, "%.0f %%");
+                    opt_slider("REKARINA_HDR_FLARE", UI_MENU_HDR_FLARE, 0, 100, UI_MENU_HDR_FLARE_DESC, 5, "%.0f");
+                    opt_slider("REKARINA_HDR_HUE", UI_MENU_HDR_HUE, 0, 100, UI_MENU_HDR_HUE_DESC, 5, "%.0f %%");
+                    opt_slider("REKARINA_HDR_GRADE", UI_MENU_HDR_GRADE, 0, 100, UI_MENU_HDR_GRADE_DESC, 5, "%.0f %%");
+                }
+            }
+        }
+    }
+#else
     opt_toggle("REKARINA_HDR", UI_MENU_HDR, UI_MENU_HDR_DESC);
     opt_slider("REKARINA_HDR_PEAK_NITS", UI_MENU_HDR_PEAK, 400, 10000, UI_MENU_HDR_PEAK_DESC, 50, "%.0f", nullptr, nullptr, true);
     // brightness in nits: logarithmic bars, as the eye takes light; the 203 default near the middle
     opt_slider("REKARINA_HDR_GAME_NITS", UI_MENU_HDR_GAME, 80, 500, UI_MENU_HDR_GAME_DESC, 5, "%.0f", nullptr, nullptr, true);
     opt_slider("REKARINA_HDR_UI_NITS", UI_MENU_HDR_UI, 80, 500, UI_MENU_HDR_UI_DESC, 5, "%.0f", nullptr, nullptr, true);
     opt_slider("REKARINA_HDR_HUE", UI_MENU_HDR_HUE, 0, 100, UI_MENU_HDR_HUE_DESC, 5, "%.0f %%");
+#endif
     opt_end();
 }
 

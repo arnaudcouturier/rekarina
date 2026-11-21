@@ -89,22 +89,42 @@ static double pq_nits(double e) {
     return 10000 * pow(fmax(p - c1, 0.0) / (c2 - c3 * p), 1 / m1);
 }
 
-typedef struct { double white, ui, peak; } Nits;   // the picture's white against the HUD's, the HUD's nits, the peak
+typedef struct { double white, ui, peak; const char *gamma; } Nits;   // white vs HUD, HUD nits, peak, gamma mode
+
+static double sign_pow(double x, double e) { return copysign(pow(fabs(x), e), x); }
 
 // hdr_encode.comp: linear Rec. 709 (1.0 the HUD's white) to PQ code values in Rec. 2020; grade 0: the profile off
 static void ref_hdr(const double lin[3], int grade, Profile p, Nits n, double out[3]) {
     double c[3];
-    for (int i = 0; i < 3; i++) c[i] = fmax(lin[i], 0.0);
+    for (int i = 0; i < 3; i++) c[i] = lin[i];
     if (grade) {
-        for (int i = 0; i < 3; i++) c[i] = srgb_encode(c[i] / n.white);
+        for (int i = 0; i < 3; i++) c[i] = srgb_encode(fmax(c[i], 0.0) / n.white);
         grade_codes(c, p);
         for (int i = 0; i < 3; i++) c[i] = srgb_decode(c[i]) * n.white;
     }
-    static const double m[9] = {0.6274, 0.3293, 0.0433, 0.0691, 0.9195, 0.0114, 0.0164, 0.0880, 0.8956};
+    double gexp = !strcmp(n.gamma, "2.2") ? 2.2 : !strcmp(n.gamma, "2.4") ? 2.4 : 0.0;
+    if (gexp > 0.0)
+        for (int i = 0; i < 3; i++) c[i] = copysign(pow(srgb_encode(fabs(c[i])), gexp), c[i]);
+    static const double m[9] = {0.6274038960, 0.3292830384, 0.0433130657,
+                                0.0690972894, 0.9195403951, 0.0113623156,
+                                0.0163914388, 0.0880133078, 0.8955952532};
+    double r2020[3];
+    for (int i = 0; i < 3; i++) r2020[i] = m[3 * i] * c[0] + m[3 * i + 1] * c[1] + m[3 * i + 2] * c[2];
+    double gray = 0.2627002120 * r2020[0] + 0.6779980715 * r2020[1] + 0.0593017165 * r2020[2];
+    double mgg = log(1.0 / pow(10.0, 0.75)) / log(0.5);
+    double enc[3], low = 0.0;
     for (int i = 0; i < 3; i++) {
-        double v = m[3 * i] * c[0] + m[3 * i + 1] * c[1] + m[3 * i + 2] * c[2];
-        out[i] = pq(fmin(fmax(v, 0.0) * n.ui, n.peak));
+        enc[i] = sign_pow(r2020[i], 1.0 / mgg);
+        if (enc[i] < low) low = enc[i];
     }
+    double egray = pow(fmax(gray, 0.0), 1.0 / mgg);
+    double dist = egray - low, ratio = dist == 0.0 ? 0.0 : -low / dist;
+    double mx = n.peak;
+    for (int i = 0; i < 3; i++) {
+        r2020[i] = sign_pow(egray + (enc[i] - egray) * (1.0 - ratio), mgg) * n.ui;
+        if (r2020[i] > mx) mx = r2020[i];
+    }
+    for (int i = 0; i < 3; i++) out[i] = pq(fmax(r2020[i] * (n.peak / mx), 0.0));
 }
 
 // ---- the samples
@@ -234,6 +254,7 @@ static void profile_case(VkCtx *c, const Img *sdr, const Img *hdri, const char *
     set_num("REKARINA_HDR_GAME_NITS", n.white * n.ui);
     set_num("REKARINA_HDR_UI_NITS", n.ui);
     set_num("REKARINA_HDR_PEAK_NITS", n.peak);
+    cfg_set("REKARINA_HDR_GAMMA", n.gamma);
     set_num("REKARINA_COLOR_BRIGHTNESS", p.b), set_num("REKARINA_COLOR_CONTRAST", p.k);
     set_num("REKARINA_COLOR_SATURATION", p.s), set_num("REKARINA_COLOR_GAMMA", p.g);
     int on = p.b || p.k != 100 || p.s != 100 || p.g != 1;
@@ -276,7 +297,7 @@ static void profile_case(VkCtx *c, const Img *sdr, const Img *hdri, const char *
 int probe_color(void) {
     static const char *const vars[] = {"REKARINA_COLOR_BRIGHTNESS", "REKARINA_COLOR_CONTRAST", "REKARINA_COLOR_SATURATION",
                                        "REKARINA_COLOR_GAMMA", "REKARINA_HDR_GAME_NITS", "REKARINA_HDR_UI_NITS",
-                                       "REKARINA_HDR_PEAK_NITS"};
+                                       "REKARINA_HDR_PEAK_NITS", "REKARINA_HDR_GAMMA"};
     for (size_t i = 0; i < sizeof vars / sizeof *vars; i++) plat_setenv(vars[i], NULL);
     if (!vk_init()) {
         printf("probe-color: FAIL vk_init\n");
@@ -289,12 +310,14 @@ int probe_color(void) {
         printf("probe-color: FAIL the source pictures could not be made\n");
         return 1;
     }
-    const Nits std = {1, 203, 1000}, bright = {300.0 / 203, 203, 1000};
+    const Nits std = {1, 203, 1000, "off"}, bright = {300.0 / 203, 203, 1000, "off"},
+               std22 = {1, 203, 1000, "2.2"};
     profile_case(c, &sdr, &hdri, "off (203 nits white, peak 1000)", (Profile){0, 100, 100, 1}, std);
     profile_case(c, &sdr, &hdri, "vivid (203 nits white, peak 1000)", (Profile){0, 115, 135, 0.95}, std);
     profile_case(c, &sdr, &hdri, "+10 / 90 / 70 / 1.1 (203 nits white)", (Profile){10, 90, 70, 1.1}, std);
     profile_case(c, &sdr, &hdri, "vivid (300 nits white, HUD 203)", (Profile){0, 115, 135, 0.95}, bright);
     profile_case(c, &sdr, &hdri, "off (300 nits white, HUD 203)", (Profile){0, 100, 100, 1}, bright);
+    profile_case(c, &sdr, &hdri, "off + gamma 2.2 (203 nits, peak 1000)", (Profile){0, 100, 100, 1}, std22);
     vk_defer_image(sdr.img, sdr.alloc);
     vk_defer_image(hdri.img, hdri.alloc);
     vk_upload_flush(1);

@@ -202,6 +202,7 @@ static PlatRMutex g_pl;
 static VkSwapchainKHR g_sc;
 static VkFormat g_sc_fmt;
 static int g_sc_hdr;                        // HDR10 (REKARINA_HDR, vk_hdr.c): PQ code values in Rec. 2020
+static int g_sc_hdr_wanted;                 // vk_hdr_wanted() when the swapchain was built (for live HDR toggles)
 static VkExtent2D g_sc_ext;
 static int g_scaler;                        // the last present: 0 the game image 1:1, 1 scaled by the blit, 2 by FSR
 static uint32_t g_sc_n;
@@ -329,6 +330,7 @@ static void window_settings_live(void) {
         snprintf(present, sizeof present, "%s", e);
         if (started) plat_xchg32(&g_dirty, 1);
     }
+    if (started && vk_hdr_wanted() != g_sc_hdr_wanted) plat_xchg32(&g_dirty, 1);
     if (started) gfx_window_apply_settings();
     started = 1;
 }
@@ -589,8 +591,10 @@ static int create_swapchain(void) {
     else if (old) vkDestroySwapchainKHR(c->device, old, NULL);
     g_sc_fmt = sf.format;
     g_sc_hdr = hdr;
+    g_sc_hdr_wanted = vk_hdr_wanted();
     vk_hdr_set_active(hdr);
     if (hdr) vk_hdr_metadata(g_sc, 1);
+    else vk_hdr_images_release();
     {   // the first one is in gfx_window_start's line; a remade one (a resize, a mode change) says its size here
         static int made;
         if (made++ && (ext.width != g_sc_ext.width || ext.height != g_sc_ext.height))

@@ -180,11 +180,18 @@ void vk_color_release(void);   // before the device goes away
 // and returns 1 when a profile is set (logged per picture size); vk_color_not_drawn_hdr says once when it could not.
 int vk_color_hdr(float adj[4], const int crop[4]);
 void vk_color_not_drawn_hdr(void);
-// HDR output (vk_hdr.c). vk_hdr_wanted: REKARINA_HDR, read once. vk_hdr_surface_format: the HDR10 surface format when wanted
-// and offered (1). vk_hdr_set_active: gfx_present.c says whether the swapchain is HDR10 (vk_hdr_active). vk_hdr_encode:
-// like vk_color_record, src's crop as PQ code values (RGBA16F, crop {0, 0, w, h}). vk_hdr_ui_target / vk_hdr_ui_compose:
-// the in-game menu's RGBA8 target, then blended onto the swapchain image. vk_hdr_to_srgb8: 10-bit PQ pixels to sRGB bytes.
+// HDR output (vk_hdr.c). vk_hdr_armed: the HDR path is set up for this run (extensions, spliced tonemap, support
+// buffer). vk_hdr_wanted: HDR is requested now (follows the menu live on OoT when armed). vk_hdr_native /
+// vk_hdr_native_picture: the game's own PQ Rec. 2020 output (REKARINA_HDR=native). vk_hdr_surface_format: the HDR10
+// surface format when wanted and offered (1). vk_hdr_set_active: gfx_present.c says whether the swapchain is HDR10
+// (vk_hdr_active). vk_hdr_encode: like vk_color_record, src's crop as PQ code values (RGBA16F, crop {0, 0, w, h}).
+// vk_hdr_ui_target / vk_hdr_ui_compose: the in-game menu's RGBA8 target, then blended onto the swapchain image.
+// vk_hdr_to_srgb8: 10-bit PQ pixels to sRGB bytes. vk_hdr_images_release: drops present pass images when leaving HDR.
+int vk_hdr_armed(void);
+int vk_hdr_native(void);
+int vk_hdr_native_picture(VkFormat fmt);
 int vk_hdr_wanted(void);
+int vk_hdr_needs_restart(void);
 void vk_hdr_off(void);   // probes that read back 8-bit swapchain pixels: SDR whatever the setting
 int vk_hdr_surface_format(const VkSurfaceFormatKHR *f, uint32_t n, VkSurfaceFormatKHR *out);
 void vk_hdr_metadata(VkSwapchainKHR sc, int new_sc);
@@ -194,9 +201,10 @@ VkImage vk_hdr_encode(VkCommandBuffer cb, unsigned slot, VkImage src, VkFormat f
 VkImageView vk_hdr_ui_target(VkCommandBuffer cb, uint32_t w, uint32_t h);
 void vk_hdr_ui_compose(VkCommandBuffer cb, VkImageView dst_view, VkFormat fmt, uint32_t w, uint32_t h);
 void vk_hdr_to_srgb8(const uint8_t *in, uint8_t *out, size_t px, int a2r);
+void vk_hdr_images_release(void);   // swapchain moved to SDR: drop transient HDR images
 void vk_hdr_release(void);   // before the device goes away
 // The support buffer's HDR parameters (vk_exec_draw.c support_fill, read by shaders/hdr_tonemap.frag).
-void vk_hdr_support(float out[4]);
+void vk_hdr_support(float out[20]);
 // vk_contact.c: screen-space contact shadows on the game's composed scene colour (REKARINA_CONTACT_SHADOWS)
 int vk_contact_strength(void);   // percent, 0 = off
 void vk_contact_release(void);   // before the device goes away

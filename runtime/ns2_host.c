@@ -15,6 +15,7 @@
 #include "fs.h"
 #include "host.h"
 #include "ov.h"
+#include "vk.h"
 #include "platform/platform.h"
 
 #define R_NO_NINTENDO_ACCOUNT 0x7c67u
@@ -30,20 +31,40 @@ static uint64_t bound_event(Cpu *c, int signalled) {   // a SystemEvent the host
     return ev;
 }
 
-// ---- vi: HDR, VRR, refresh rate. The host presents SDR at the display's rate.
+// ---- vi: HDR, VRR, refresh rate. With REKARINA_HDR=native, report an HDR10 display at the configured peak and paper white.
 // Result QueryDisplayHdrStatus(bool *on, HdrOutputFormat *fmt, u16 *peak, const Display *)
 static void vi_hdr_status(Cpu *c) {
     uint8_t *on = arg_p(c, 0);
     uint32_t *fmt = arg_p(c, 1);
     uint16_t *peak = arg_p(c, 2);
-    if (on) *on = 0;
-    if (fmt) *fmt = 0;
-    if (peak) *peak = 0;
+    if (vk_hdr_native()) {
+        double p = cfg_double("REKARINA_HDR_PEAK_NITS");
+        if (p < 80.0) p = 80.0;
+        if (p > 10000.0) p = 10000.0;
+        if (on) *on = 1;
+        if (fmt) *fmt = 1;   // HDR10 (PQ Rec. 2020)
+        if (peak) *peak = (uint16_t)(p + 0.5);
+        static int logged;
+        if (!logged++) rt_log("ns2: vi::QueryDisplayHdrStatus: native HDR10, peak %u nits", (unsigned)(p + 0.5));
+    } else {
+        if (on) *on = 0;
+        if (fmt) *fmt = 0;
+        if (peak) *peak = 0;
+    }
     ret_x(c, 0);
 }
 static void vi_paper_white(Cpu *c) {   // Result QueryDisplayHdrPaperWhite(u16 *nits, const Display *): BT.2408's 203
     uint16_t *nits = arg_p(c, 0);
-    if (nits) *nits = 203;
+    if (nits) {
+        if (vk_hdr_native()) {
+            double g = cfg_double("REKARINA_HDR_GAME_NITS");
+            if (g < 48.0) g = 48.0;
+            if (g > 500.0) g = 500.0;
+            *nits = (uint16_t)(g + 0.5);
+        } else {
+            *nits = 203;
+        }
+    }
     ret_x(c, 0);
 }
 static void vi_vrr_supported(Cpu *c) {   // Result QueryDisplayVrrSupported(bool *, const Display *)

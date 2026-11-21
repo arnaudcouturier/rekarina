@@ -248,18 +248,42 @@
 # pass that this setting does not reach, so the settings menu has no such row there.
 # fxaa = 1
 
-# HDR output: hdr = 1 sends the picture as HDR10 (needs HDR on in Windows, "Use HDR", or a Wayland compositor with
-# colour management; without it the picture stays SDR). The game's tonemap keeps highlights up to hdr_peak_nits (your
-# display's peak); hdr_game_nits is the picture's white (paper white, 203 is the HDR reference) and hdr_ui_nits the
-# HUD's and the menu's. hdr is read at start, the nits at once. The colour profile above also applies in HDR, to the
-# picture relative to its white, highlights included.
+# HDR output (OoT): 0 = SDR, 1 = RenoDX HDR (HDR10 swapchain with RenoDX tone mapping, switches live while
+# hdr_live = 1), native = the game's own PQ Rec. 2020 HDR output (read at start). Needs HDR turned on in Windows
+# ("Use HDR") or a Wayland compositor with colour management; without it the picture stays SDR.
 # hdr = 0
+# Arm HDR extensions and spliced tonemap at start so hdr = 0/1 can toggle live without restarting (0 disables live arming).
+# hdr_live = 1
+# Display peak brightness in nits (400 to 10000), game white / paper white (48 to 500; 203 is the BT.2408 reference),
+# and HUD / menu white (48 to 500). All apply live.
 # hdr_peak_nits = 1000
 # hdr_game_nits = 203
 # hdr_ui_nits = 203
-# Highlight hue correction in percent (0 to 100): bright colours such as fire turn towards white as in the game's SDR
-# picture, matching the light they cast; 0 keeps them fully saturated. Changes take effect at once.
-# hdr_hue = 80
+# Display gamma correction on the HDR10 present: 2.2 (default), 2.4, or off (sRGB decode).
+# hdr_gamma = 2.2
+# RenoDX tone mapper: psychov35 (observer-response cone mapper, default), renodrt (Daniele luminance mapper + OkLab
+# grading), or vanilla (the game's ACES curve scaled to game brightness).
+# hdr_tonemap = psychov35
+# PsychoV35 parameters: mid-grey anchor (vanilla or render), match the game's ACES tone slope (0 or 1), tone slope
+# multiplier (0 to 100; 50 = 1.0x), and vanilla highlight hue clip emulation (0 to 100 percent).
+# hdr_midgray = vanilla
+# hdr_match_slope = 1
+# hdr_tone_slope = 50
+# hdr_hue_clip = 50
+# Grading sliders shared by PsychoV35 and RenoDRT: exposure (0 to 200 percent, 100 = neutral), highlights, shadows,
+# contrast, and saturation (0 to 100, 50 = neutral).
+# hdr_exposure = 100
+# hdr_highlights = 50
+# hdr_shadows = 50
+# hdr_contrast = 50
+# hdr_saturation = 50
+# RenoDRT parameters: highlight saturation (0 to 100, 50 = neutral), blowout (0 to 100 percent), flare (0 to 100),
+# highlight hue correction (0 to 100 percent), and vanilla grade strength (0 to 100 percent).
+# hdr_highlight_sat = 50
+# hdr_blowout = 0
+# hdr_flare = 0
+# hdr_hue = 100
+# hdr_grade = 100
 
 [language]
 # Language: a Windows locale such as de-DE, or a Switch code (en-US, ja, zh-Hant, ...). Default: the Windows locale.
