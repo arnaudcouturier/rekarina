@@ -28,15 +28,31 @@ from nup.read import NupReader  # noqa: E402
 TITLE = 0x0400486024DEC000   # OoT (Switch 2)
 
 
-def find_nup(path):
-    """The .nup a path names: the file itself, or the largest .nup in the folder or one level below it."""
+def titles_of(nup):
+    """The applications a .nup holds packages of (their title ids without the low 12 bits, which tell the base game
+    from its update), or an empty set when it cannot be read as one."""
+    try:
+        with NupReader(str(nup)) as reader:
+            return {p.title_id & ~0xFFF for p in reader.packages}
+    except Exception:
+        return set()
+
+
+def find_nup(path, titles=titles_of):
+    """The .nup a path names: the file itself, or in the folder (or one level below it) the one that holds this game
+    (TITLE), the largest of them; when none does, the largest .nup there, and the setup then says what it is. A
+    folder of several Switch 2 dumps gave the largest before, another game's."""
     path = Path(path)
     if path.is_file():
         return path
     if not path.is_dir():
         return None
-    found = sorted(list(path.glob('*.nup')) + list(path.glob('*/*.nup')), key=lambda p: p.stat().st_size)
-    return found[-1] if found else None
+    found = sorted(list(path.glob('*.nup')) + list(path.glob('*/*.nup')), key=lambda p: p.stat().st_size, reverse=True)
+    if len(found) > 1:
+        for nup in found:
+            if TITLE & ~0xFFF in titles(nup):
+                return nup
+    return found[0] if found else None
 
 
 def newest_exefs(reader):

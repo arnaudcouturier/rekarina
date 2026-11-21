@@ -3323,7 +3323,7 @@ conversation log and the third frame after it is dark (the same in the tour, thr
 draws a 640x360 capture of the scene (R11G11B10F) as its blurred background; the dark frame is the one before that
 capture is first drawn.
 
-### Guest memory from the GPU driver on Linux (design, 2026-11-16; the test is built, the game path is not)
+### Guest memory from the GPU driver on Linux (design, 2026-11-16; the platform layer and the pool path are built 2026-11-19, not yet played)
 
 Why shadow storage exists on Linux: the Windows build imports the game's pools for the GPU as host pointers and
 watches them with GetWriteWatch. On Linux a host-pointer import is a userptr, which amdgpu (and i915) follow through
@@ -3361,6 +3361,24 @@ of a mapping of it does not touch the GPU's view. Decisions:
   passes the same checks `--memory-test` runs (a placed or dma-buf map at a test address, both directions of reads,
   a write fault on a read-only page, no cost on the next submission after a protection change), else shadow, and the
   log line says which and why. Until the game path is built every value runs shadow storage, and the log line says so.
+
+What is built (2026-11-19). `plat_mem_back` / `plat_mem_unback` (platform.h, `platform/linux.c`) swap a committed range
+for memory the caller maps over it, with the range read-only and every writer held in the fault handler until the swap
+ends; the pages the kernel's write watch had reported written stay dirty. Backed pages are kept read-only while clean:
+the first write faults, sets the page's dirty bit and opens it, and `plat_mem_written` answers from the bits (a reset
+closes the pages it reports, closing before clearing, so a write is either in the bytes the caller copies or marks the
+page again). A protection from `plat_mem_protect` stays in the state table as the wanted one and the page gets the
+composition (`eff_prot`), so freeze, lazy close and the result guard work unchanged (a thaw of a clean backed page
+faults twice, the second time to set the bit). `plat_mem_unback` moves a copy over the range with `mremap` and
+registers it with the write watch again, protecting the clean pages. `tests/mem_backed_check.c` checks all of it with a
+memfd mapping in place of the driver's, including four threads writing counters while the range is unbacked and backed
+twenty times (no write lost). `vk_memory.c` `backed_pool` is the placed way: device memory (host-visible, coherent,
+cached where offered) bound to the pool's buffer, the guest bytes copied in through a plain map, then mapped at the
+pool's address with `VK_MEMORY_MAP_PLACED_BIT_EXT`; `vk_pool_fini` gives the pages back after the queue wait and the
+record's memory is freed later as before. A pool that cannot be backed is imported as without driver memory. The
+dma-buf way and the per-pool 64 KiB rule for NVIDIA's allocation limit are not built. It is off by default: set
+`REKARINA_LINUX_GUEST_MEMORY=driver` (`auto` and `shadow` still mean shadow storage) until a play session has shown the
+frame, the saves and a map change are right with it.
 
 The test: `Rekarina --memory-test` (runtime/memtest.c), or built alone with
 `cc -O1 -DMEMTEST_STANDALONE runtime/memtest.c -l:libvulkan.so.1 -o memtest`. In WSL (lavapipe only) the placed way is
@@ -3826,3 +3844,360 @@ gaps of the run only: after the loading screen (4 small ranges) and after each c
 4 small ones), nowhere in play. Its wait costs once per close: the second frame after it took 12.6-14.6 ms against
 8.7-9.5 ms without (the first frame after a close takes 14-19 ms either way); frames over 25 ms in 100 s 16 against
 13, mean frame 6.89 against 6.86 ms.
+
+## 2026-11-20: the depth of field at half the scene that is drawn (set `dofscale`)
+
+The blur behind a lock-on, a conversation or a shop's items was drawn at 960x540 whatever the picture, and stretched
+over it: at 1440p and above the sharp outlines in front of it (hair, ears, a shop's items) got a dark, blocky fringe
+from the coarse blur. The size comes from `main+0x260270`, which makes an effect's render target from its descriptor:
+a reference texture's size (`[[x20+0x18]+0x20]` +0x48 / +0x4a, 16 bits each) times the descriptor's floats, width *
++0x53c * +0x538 and height * +0x540 * +0x538. For the depth of field these are 0.75, 0.75 and 0.5 of a 2560x1440
+reference: the game's own picture. 0.75 brings it to the console's 1080p scene and 0.5 halves that. The scene constant,
+the Bootup pack's resolution palette and its ResolutionParam were each raised in earlier tries and none of them moved
+it (it stayed 960x540 with the console's dynamic 1080p scene too).
+
+The set `dofscale` (REKARINA_DOF_SCALE, on) calls `runtime/oot_fps.c` dof_scale at `main+0x2603c8`, right after the
+size is stored in the target request on the stack (`stp w27, w25, [sp, #0x50]`; neither register is read again before
+it is loaded with something else, and a host may not write x19-x29 anyway). For a descriptor with 0.75 on both sides
+it writes the reference times the fixed scene's share of the picture (`frame_rate.c` res_fixed_scene_share) times
++0x538 over the request: 1280x720 for the whole 2560x1440 picture. It never goes below the game's own size (a DLSS
+mode's smaller scene keeps 960x540), and leaves every other descriptor alone. `res_sizes` is no use here: without the
+output and scene sets it gives placeholders (1600x900), which made the first try draw the blur at 800x450.
+
+What the size changes and what it does not (1440p, the lock-on on a villager, the same frame of three runs): the
+blur's strength in the picture stays the same at 800x450, 960x540 and 1280x720 (its radius is in picture space; the
+high-frequency content of a background crop 0.337, 0.352, 0.351), while the dark, blocky fringe along the sharp
+outlines in front of it (hair, ears) is widest at 800x450 and finest at 1280x720. REKARINA_DOF_LOG=1 logs the first 32 requests with the reference, the share and
+the size before and after.
+
+The set is off by default since the evening of 2026-11-20. With the instrument out in the forest (and, by the owner's
+eye, with a target locked) the far scene came out black beyond 0.75 of the picture across and down: the right
+quarter of the upper three quarters and the bottom quarter where far things show, the near grass and foliage drawn
+normally over it, at 1440p in base mode (no DLSS, no frame generation) and, by the owner's report, with FSR 3.1
+native AA. 0.75 is the
+descriptor's own factor: a part of the effect (a pass's viewport, a later level of the blur or the way the result
+is read back) still covers the game's 960x540 of the 1280x720 target, and the composite reads the rest, which was
+never written, as black. The forest run (the owner's save, the instrument out for about 12 s, thumbnails every 30
+presents): 26 of 425 thumbnails with the black quarter with the set on, 0 of 424 with it off. A DLSS mode whose
+scene is under 0.75 of the picture never had the larger target, so it never showed it. Until the part that keeps
+960x540 is found (a frame dump of that moment), the blur is the game's own, stretched as in 1.2.7.
+
+## 2026-11-20: DLSS Frame Generation in the pause screens
+
+The pause screens (their tabs Collection, Equipment, Items, System) mostly give frame generation no depth, motion or
+camera (`vk_dlaa_fg_inputs` has nothing fresh: the game draws no scene there). `vk_dlssg.c` kept generation on
+through such frames once it had been on, because turning it off freed its resources and turning it on again made
+them anew, 400-750 ms a frame for four or five frames at each inventory opening. Kept on without inputs, it blended whole pause
+screens with the frames before them: a tab switch blinked through the generated frames between, and our overlay's
+numbers showed twice (the owner's shot: "319" with a ghost "200").
+
+Streamline's guide for pause menus is DLSS-G off with `DLSSGFlags::eRetainResourcesWhenOff`: off then suspends
+generation without freeing its memory, and on again costs nothing (`slFreeResources` is for a long deactivation).
+`runtime/dlssg/nx2_sl.cpp` sets that flag on both switches; `vk_dlssg.c` turns generation off in every frame without
+the inputs (and while our menu is open, as before) and gives the first frame back `reset`, since the frame before it
+is the last one before the pause. `eEnableFullscreenMenuDetection` would need the interface's colour and alpha tagged
+(`kBufferTypeUIColorAndAlpha`), which the port does not have. The library's interface is version 4; a library of
+version 3 is still taken and keeps generation on through those frames as before.
+
+The library is built by `tools/build_dlssg.py` with the project's clang (llvm-mingw) against the Streamline SDK
+2.14.16 headers, as the shipped copy was (same imports: KERNEL32 and the UCRT's api sets). Streamline's DLLs are
+MSVC's; the library passes them structures by reference and enums only, and `nx2_sl.cpp` asserts the offsets
+Streamline's own `sl.api/sl.cpp` asserts (Preferences, Resource, ResourceTag, Constants) and those of DLSSGOptions,
+DLSSGState and ReflexOptions. `REKARINA_DLSSG_DLL=<path>` loads the library from elsewhere (a test beside a game
+folder whose copy other builds still use).
+
+A background run cannot show a generated frame (generation needs the window in front), so the check here is the
+plumbing (1440p, DLSS Quality + DLSS-G, the pause screen opened twice with its tabs switched, 80 s): with the
+library of version 4 Streamline answered every switch with eOk, generation went off at each opening, on and off
+again with the tabs (one of them draws the scene behind it) and on at each closing, with no error and
+no frame over 50 ms; with the old way (version 3, kept on) Streamline logged in the pause screens "Unable to find
+'common' constants for frame N - using last set" and "Failed to find global tag kBufferTypeDepth / MotionVectors":
+the stale inputs it blended. The picture itself is for a run with the window in front.
+
+Frames without inputs are not every pause screen. The Equipment tab draws the hero and the Items tab its turning items
+into a scene with a camera of their own, which the game ends at an output pass instead of its scaling dispatch: frame
+generation got depth, motion vectors and a camera there and blended the tabs into each other and ghosted the turning
+items (the owner, DLSS-G, 2026-11-20). `vk_dlaa.c` fg_menu_frame gives neither frame generation inputs for a frame
+whose evaluation ran at such an output pass (`oot_pass`), logs where each such stretch begins and ends ("dlaa: frame
+generation off from frame N ... (a pause screen)", "... back at frame N after M frames of a pause screen") and resets
+generation's history on the first frame of play after it. `REKARINA_FG_MENU_OFF=0` hands those frames on as before.
+The same plumbing check with it (1440p, DLSS Quality + DLSS-G, the pause screen opened twice, its tabs switched):
+generation went off 6 frames after each opening, stayed off through 3149 and 1811 frames of tabs and came back 5
+frames after each closing; with
+`REKARINA_FG_MENU_OFF=0` DLSS-G went on again inside the first pause screen, on the tab that draws the hero.
+
+## 2026-11-20: button prompts that change in the running game reach texts laid out before (set `promptglyphs`)
+
+With a pad switched on after the start, the action hint kept the keyboard's key and the pause screen's Back its SHIFT
+until a restart, while a text first shown after the change had the pad's buttons. `romfs.c` live_main swaps the button
+font's character table in memory; what kept the old buttons is the laid-out text and the font's glyph cache:
+
+- A laid-out text keeps per character the font, the character, the glyph its shaping gave and its size (the glyph
+  buffer at text+0x10: pages at +0x30 of 1024 records of 0xa0 bytes, the character at +8, the size at +0x1c/+0x20, the
+  glyph at +0x94; 0x48 bytes with the character at +0 and the glyph at +0x3c when the byte at +0xd5 is set; the count
+  at +0xac). Its quads are built from those records (`main+0x1515660` / `main+0x1516120`, each glyph through its font's
+  plot) only when the text's +0x180 holds bit 7 (`main+0xe4e0e0`, the text's draw, clears it).
+- The font's glyph cache (`main+0x1540640`, used by the FreeType font's plot `main+0x154ca60`) keys a picture by the
+  font, the character, the glyph and the size (the key `main+0x15403d0`, the compare `main+0x1540300`).
+- The texts with buttons seen in the Market and the pause screen all hold glyph 0: they are drawn by character, the
+  plot looks the character up in the table in use, but the cache answers (character, 0, size) with the picture of
+  the character's first drawing. The earlier tries laid texts out again (bits 8 and 9) and asked panes to shape again
+  (bit 17): neither changes that key.
+
+The set `promptglyphs` (REKARINA_PROMPT_GLYPHS, on) calls `runtime/oot_fps.c` prompt_glyphs at `main+0xe4e100`, after
+the draw's prologue. Once per text after each change (`romfs.c` romfs_text_generation), and again whenever the game is
+about to build the text's quads, a button character (U+E000..U+E0FF) drawn by character gets this change's mark in
+the lowest four bits of its two size floats (a cache key no earlier change used, the size changed by less than a
+millionth), and one holding another set's glyph gets the glyph of the set in use (`romfs.c` romfs_prompt_glyph; every
+set's glyph keeps the game's advance, so nothing moves). A text that changed gets bit 7, so the same draw builds its
+quads again, and again every fourth draw until the first changed glyph has new texture coordinates (a text built
+while hidden skips the glyphs outside its clip). A text of size over 96 (the pause screen's guide is 102, the action
+hint's key 160) gets the same change to its records but is built when the game builds it: a build asked for by us
+left the hint's key blank in every form tried (a glyph id, the size mark, a build again every fourth draw until its
+coordinates changed), while the guide, built by the game when the pause screen opens, takes the new buttons.
+
+Runs in the Market (1440p, prompts switched at frames 300 and 4500, the hint at the fountain, then the pause screen):
+with the set off the guide reads "Rotate (R) Select (A) Back [SHIFT]" after the keyboard -> pad change (the
+owner's report); with it "Back (B)", and after pad -> keyboard "Rotate [mouse] Select [E] Back [SHIFT]". The action
+hint's key still keeps the set it was first shown with until a restart: the game never builds that text again, and
+a build of it asked for here comes out blank (open: its large glyph is plotted on another path, `main+0x1516048` /
+`main+0x1519300`, that a build without a new layout does not feed).
+
+## 2026-11-20: frame generation's picture without the HUD is the picture the HUD is drawn on
+
+A player with AMD frame generation (FSR 3.1 native AA, RX 7900 XTX) recorded single frames that were brighter and
+showed the scene's detail wrong. Frame generation (AMD's and DLSS's) is given a picture without the HUD and tells the
+HUD apart by what differs between it and the presented frame; what differs is kept out of the generated frames and
+taken from the real one. That picture was a copy of DLSS's (or FSR 3.1's) output at its evaluation, and the game's
+frame goes on after that point (one frame dump in the Market, passes 283-293): DLSS's armed target is the tonemap's
+output (pass 283, ACES with the bloom, drawn with the scene depth attached), then three dispatches are the game's own
+morphological anti-aliasing (edges into an RG16UI 640x360 image, weights into an RGBA8 one, the blend), a fourth is
+its scaler into the output picture, the HUD passes draw into that picture, and one last pass copies it into the 8-bit
+sRGB window texture (a plain copy). In DLAA, where DLSS runs in place before the first of those dispatches, the copy
+lacked the anti-aliasing and the scaler pass; in every mode it also missed what the present does to the real frame:
+RCAS after DLSS at the sharpness setting (80 by default), the colour profile, FSR's scaling.
+
+Now (`vk_dlaa.c` hudless_track, hudless_at_pass): after the evaluation at the scaling dispatch, every dispatch that
+writes a colour image of the output's size names the picture, and the copy is taken at the first render pass that
+draws into that picture (the HUD's) or, in a frame without HUD, into the window texture. At the present
+(`gfx_present.c` hudless_record) the copy takes the same path as the game's picture (picture_into: the colour
+profile or the HDR10 encode, then FSR or the blit), with source views of its own (the slots after FRAMES). The
+upscaler's history resets (another scene size, no camera, another scene target) now reach both frame generations
+(`vk_dlaa_fg_inputs` reset; it was always 0). Test knobs: `REKARINA_FG_HUDLESS_AT_DLSS=1` (the old copy point),
+`REKARINA_FG_HUDLESS_PLAIN=1` (the old plain blit at the present); `REKARINA_HL_SHOT=lo-hi:step` saves the presented
+frame (`sc<frame>.png`) and the HUD-less picture of the same present (`hl<frame>.png`).
+
+Measured (Market, 2560x1440, AMD frame generation on the RTX 5070, 11 pairs a run): with the old copy 56 % of the
+pixels differed by more than 2 levels and 5.7 % by more than 24, the copy brighter (mean level 98.8 against 96.3),
+along every edge and texture of the scene; now 1.1 % and 0.8 %, all of them the HUD (hearts, the action hint). The
+frames generated from it cannot be captured here (they are made inside AMD's swapchain): what a player sees still
+needs a run in front.
+
+The picture those dispatches name has to be the scene's colour, a float image (B10G11R11 or RGBA16F). The game's
+anti-aliasing also writes its blend weights into an RGBA8 image of the output's size, black with coloured edge pixels,
+and in frames where no later dispatch named another image, that one was taken for the picture: frame generation was
+given black areas with coloured dots and saturated green and yellow slabs as the picture without the HUD and blended
+them into its frames (the owner, FSR 3 frame generation, 2026-11-20: a slab over the Market gate's light shaft that
+moved with the camera). `hudless_track` now names only float images.
+Market runs with the owner's save and settings (FSR 3.1 native AA + AMD frame generation, 2560x1440, the hero moved
+to the Market, 120 s, the HUD-less picture saved every 60 presents): the build before it hung in 1 of 2 runs (no
+present for 10 s, every game thread waiting), this one in none of 5. Outside the HUD's fixed places (hearts, minimap,
+the button cluster) the HUD-less picture differs from the presented frame in 0.5 % and 1.1 % of the pixels on
+average, and every such pair is interface too: speech bubbles, the place's name
+title and the arrival's fade from black, which the game draws over the finished scene.
+
+## 2026-11-20: the action hint's key follows a live prompt change (its large glyph's sheet)
+
+The action hint's key (size 160) kept the set it was first shown with until a restart, and every build of its text
+asked for after the change (bit 7 of text+0x180) showed it blank or old. Probe runs (DEBUG-SHEETLOG, uncommitted) and
+the disassembly of the text's draw (`main+0xe4e0e0`) say why:
+
+- A glyph larger than the cache's (the key; the pause screen's guide at 102 too) is not drawn from the font's glyph
+  cache. The text's full quad build (`main+0x1515660`) rasterises it on the CPU (`main+0x1519300`, a shelf packer
+  `main+0x150f540`) into one of the text's own sheets: a ring at text+0x68 (count +0xa4, the one in use +0xa0), each
+  sheet 0x158 bytes (set up: byte +8; NVN memory pool +0xe0, offset +0xe8; 128x73 texels of a byte for the key;
+  packer cursor +0x148/+0x14c, row height +0x150). Each build moves the ring on (`main+0xe4e2a4`) and empties the
+  sheet it takes (`main+0x150f4d0`).
+- The draw runs that full build only when the text's state word (*(text+8)) holds bit 20 with bits 17 and 18 clear
+  (`main+0xe4e20c`; bits 20 and 7 are cleared after it, `main+0xe4e430`). Bit 7 alone runs the other build
+  (`main+0x1516120`), which moves the ring on and plots no large glyph.
+- The game sets a sheet up in its own layout only: the key's ring has two sheets and only sheet 1 was ever set up.
+  So a bit-7 build moved the ring onto sheet 0 (nothing: blank) or back onto sheet 1 (not plotted again: the old key).
+- The texture cache does not see the CPU's writes into a sheet after its first upload.
+
+Now (`runtime/oot_fps.c` sheet_request, sheet_pending_draw; REKARINA_PROMPT_SHEETS, on): at a prompt change, a text
+holding a large button glyph of another set whose sheet in use the game set up is built again through the full
+build: the ring is set one before a set-up sheet and bit 20 asks for the build; at a later draw, once the ring is on
+that sheet and its texels changed, the texture cache is told they were written (`vk_guest_written`). A text the game
+does not build at that moment (bits 17/18) is asked again every fourth draw, for at most 3600 draws. A text whose
+sheet was never set up (the guide before the pause screen first opened) is left to the game's own layout, and once
+the game built it the texture cache is told too: in one run the guide's Back kept the keyboard's SHIFT while its
+Rotate and Equip took the pad's buttons, its sheet's storage having held an older picture.
+
+Runs in the Market (1440p, prompts switched at frames 300 and 4500, the hint at the fountain, then the pause
+screen): before, the key kept "E" after keyboard -> pad; with the fix the build is asked once and the next draw
+logs the plot ("its large glyph was plotted again into sheet 1 (1 requests, 0 draws)"), the pill reads "A Talk",
+and after pad -> keyboard "E Talk"; the pause screen's guide, opened after the change, reads "Rotate (R) Select (A)
+Back (B)" and "Rotate [mouse] Select [E] Back [SHIFT]". Work is done only in the draws after a change.
+
+## 2026-11-20: the render target heap, the game's lock-free queues, the movies' start
+
+### The room of pots beside the Market's gate (the render target heap)
+
+Walking into the room of pots and torches beside the Market's gate froze the game (1.2.0 to 1.2.5; a player's hang
+dump at main+0x26b294). The render target cache (main+0x3ed00) places its transient targets first fit in one heap,
+DynamicTextureAllocatorMem of the HeapDef table (312320 KiB, the cache's 0x13100000 bytes; its pools are a physical
+one of that size, flags 0x18c, and a virtual one over it). A target it cannot place is not handed out: its retry reads
+x23->+0x48 with x23 = 0, and our fault handler took the null page for a watched one and let the read run again for
+ever (b43d55b made it a crash report). In that room the game asks for 6 to 17 square shadow maps a frame (depth,
+compressible, 386 to 1918 texels, a new side each frame while the camera moves); square sides do not follow the scene
+scale (mean side 1064 at 100 %, 1107 at 62 %). The console's dynamic resolution keeps its scene at 1920x1080 at most
+and lower where the GPU is busy; ours has the whole picture, and square depth targets report padded storage
+(`REKARINA_DEPTH_SQUARE_PAD`). With the same exe and the walk of the room (`REKARINA_TEX_HEAP_MIB` sets the heap):
+305 MiB (the shipped size) ends in the null read at a 1080-line picture too, 384 MiB at 1440 as well; 448 MiB and up
+play on in the room. The fix grows the heap through the HeapDef table, as `widescreen.c` already did for wider
+pictures: 256 MiB for the 16:9 picture (561 MiB in all), and the twin block of that physical pool covers only the
+shipped 305 MiB (`vk_memory.c` `vk_mem_phys_twin`), so the growth costs its size once under VRAM pressure. A tour
+of the Market, the castle and the field runs the same with and without it.
+
+### The game's lock-free queues (set ringpost)
+
+A player's game ended after the first boss's death with an nn::diag abort from main+0x34fc280, reached from the
+game's post of a named text value (main+0xd24e50). The post writes a lock-free ring (the object at
+[[main+0x4c7e180]]: word +0x640 with the next record in bits 0-19, the records written in 20-27 and a generation in
+28-31; capacity +0x630, 96): it takes a record, writes it, counts it written and checks the generation. Once a frame
+the consumer (main+0xb99980) reads the records up to the first empty one and swaps the generation without waiting for
+writers; a writer still copying then, or one that finds the ring full, aborts. The engine relies on its writers being
+done by then; a job held up on a busy 8-thread CPU is not. The patch set turns that abort into a return: the record is
+dropped or read a frame later. The same writer is compiled into 77 functions, the game's other lock-free queues (each
+commits with the mask 0xf00fffff and ends in a tail branch to the abort); the set has a site at each of those branches. `REKARINA_RING_LOG=1` (with `REKARINA_HANG_DUMP`) samples the ring: at most 7 of its 96
+records in use and about 19 swaps a second on the Market, the field and the castle. An SDK Break now logs the ring.
+
+### The movies' start on cards without tensor cores
+
+The movies' network decision (2b75592) measured 180 frames of the first movie, ten seconds at a GTX 1650 Super's
+17 fps while the sound ran on. Frames 8 to 20 of a movie now decide at once where they take more than twice the
+movie's frame time, and the verdict is kept per GPU and driver in `movie-network.txt` beside rekarina.exe.
+
+### Video memory on a 6 GB card: the heap's growth and cold mirrors
+
+A player's RTX 3060 Laptop (6 GB) lost the device near the castle, in the village and on the field, and after some map
+changes the GPU time went from 14 to 60 ms a frame for good: the game held 4.8-5.5 GiB of a 4.1-4.9 GiB budget, and
+before one loss binding an image into the render-target heap's 305 MiB pool memory took 486 ms (Windows paging that
+allocation back in). What held the memory in a Market / castle / field tour with a VRAM hog standing in for the small
+card (the hog subtracted): the driver's own ~1.25 GiB, mirrors of buffer pools 1.3 GiB (1,025 pools), textures 1.7 GiB
+live and 0.3 released, the render-target heap's pool and twin 0.6 GiB.
+
+The heap's growth (039fe41) had device memory on every card. Now only on cards with more than 8.5 GiB of device-local
+memory (`REKARINA_HEAP_GROWTH_MIN_MB`, `vk_memory.c phys_backed`); on smaller ones the address resolve calls the growth
+unbacked, an image placed there takes memory of its own, and the pool table and the twin stop at the backed end. The
+room of pots with the growth unbacked plays: 18-20 frames over 25 ms and 26-71 image creations over 3 ms in the room
+(three walks, 1440p) against 11-18 and 9-68 with it backed (two); under a VRAM hog 35 and 189 (one) against 19-27 and
+129-148 (two). The twin stays at the shipped 305 MiB on both paths. The shipped heap alone still ends in the null read.
+
+Mirrors: a mirror lives as long as its pool, and the game keeps the pools of the maps it left. Every mirror is synced
+for the global memory table each submission, so that sync says nothing about use; a buffer binding does (`vk_mem_use`,
+`vk_mem_pick` stamp `use_frame`). `vk_memory.c mirror_cold_release` (`REKARINA_MIRROR_COLD=1`, off by default): over
+90 % of the budget, a mirror no binding named for 3600 frames and the GPU never wrote gives its memory back; the pool
+is read in place, and its next binding asks for a mirror again. With the hog, two 5.5-minute tours: 1,415 mirrors
+given back, mirrors at the end 714 MiB against 1,150, the same frame rate, but textures took the room (1,967 MiB
+against 1,646) and the driver's total did not fall: the freed pieces are holes in shared blocks and the texture
+eviction keeps what is not cold. A lower total needs the textures' line to follow; not done.
+
+## 2026-11-20: distant lights that went out for a frame (early results)
+
+Players saw the distant candles of a cave flicker while the near ones stayed steady, with the
+uniform snapshot's compute exception (5c450c5) already in. Reproduced on the RTX 5070 with the owner's save (warp
+`45:domain`, still camera, every frame at 640x360): the light pool a far candle throws on the wall is missing in one
+frame and back in the next, in 15-28 % of the frames; the flame itself stays, and the picture's mean brightness does not
+move (not the exposure).
+
+The cause is the results point (vk_sync.c, "Results before the frame's end"). The game's next frame runs while the GPU
+still works on the frame's tail, and what shaders write in that tail went back to guest memory only at the submission's
+end. Six compute programs right after the point write small records (two pools of 0x3980 and 0x5b40 bytes, double
+buffered by frame) that the game reads in its next frame: f_7000345f00 takes a light's record only when the stamp at
+record + 0x1540 says "the frame just before"; otherwise it invalidates the CPU cache over the record and drops the light
+for that frame. `REKARINA_RESULT_WATCH=1` shows these reads, and the occlusion read-back's (f_700354ae30), happening
+before the GPU finished in most frames.
+
+What was measured, blinks per 1000 frames at the far candle (control 111-278) and frames per second:
+
+| change | blinks | cost |
+|---|---|---|
+| `REKARINA_RESULTS_FENCE=0` / `=1` (no point / a later one) | 0 | -23 % / -17 % |
+| the result guard on reads (a guest read of such a page waits for the submission) | 0 | 0 to -9 % (Market: 5 ms waits) |
+| every pending write-back from 8 KB on (`REKARINA_WB_EARLY_KB=8`) | 7 | -5 to -8 % |
+| `REKARINA_OQ_FORCE=1000` (every samples-passed count reads as visible) | 295 | 0 |
+| the early results below, plain copies of whole records | no change | 0 |
+| the early results below, through the word merge | 0 | 0 (three pairs) |
+
+The early results (`vk_memory.c vk_mem_early_results`, `REKARINA_WB_EARLY_RESULTS`, on for OoT): the small ranges (up
+to 64 KiB) shaders write after the results point go back on their own at the first part start after they were written
+(`vk_exec.c wb_early`; the part's prologue has taken their snapshots by then), through the word merge where the CPU
+also writes them and as plain copies otherwise, behind barriers on the shader stages only, and they leave the end's
+write-back. Plain copies of the whole records did nothing: the records hold the CPU's own fields too, and a copy put the
+mirror's old values of those back over the game's. Three alternating pairs in the cave: 0 blinks in all six windows,
+118.7-121.0 fps against 118.3-118.7. In off / on / on / off order (the machine's load drifts within a series): the cave
+104.4 / 104.8 fps against 103.7 / 101.5 with 0 blinks against 33-161 per 1000, the Market (standing at the fountain)
+79.0 / 82.2 against 76.3 / 80.3, so the shorter write-back at the submission's end gains 2-3 %. Closing the inventory
+and the map (five times each, every frame's mean brightness) shows no step with it on or off.
+
+The same change also keeps the exposure right where float atomics are compare-and-swap loops (RDNA2 cards, or
+`REKARINA_FLOAT_ATOMICS=0`): there the exposure's sum is not marked as a float sum, its write-back at the submission's
+end went over the CPU's reset of it, and the picture turned white within seconds in the field by day; with the early
+results the sum goes back before the game reads and resets it (field by day: mean brightness 78-88 against 81 with
+native atomics, against 101-254 without the early results).
+
+## 2026-11-20: the driver's build and the texture cache leave the setup for the first start
+
+Players' setups of 1.2.6/1.2.7 waited 20 minutes to 1.5 hours in the package step's `Rekarina.exe --warm-shaders` (a
+cold driver cache after a driver change; on AMD always, its disk cache is keyed to the exe's path, so the build folder's
+libraries did not count in the game folder) and about 43 minutes in the texture preparation. Since then the setup
+translates only (`REKARINA_PREPARE_DRIVER=0` from `installer/oot.py`) and copies; the game's entry step builds what is
+missing before play, the launcher's background job gives it a head start (`docs/installer.md`).
+
+Measured on the RTX 5070 (16 threads), a game folder with no driver cache, no texture cache, no pipeline-cache.bin, the
+launcher's job stopped by Play after 8,000 of 56,402 prepared variants (329 s, ~24/s at below-normal priority, the stop
+1.97 s): the entry step counted 81,041 items (10,995 pipelines, 48,388 libraries, 21,658 texture archives) and took
+2,186 s. The mesh pipelines come first (121 s, the longest 30 s; the count crawls), then ~15 graphics pipelines a
+second; the libraries ~29 a second (1,673 s); the texture walk beside them 912 s (11,739 textures, 7.73 GiB written).
+The time left the picture showed was within about -30..+20 % of the real rest once the step was steady; in the first
+five minutes it jumped (the mesh phase's pace, archives that vary a thousandfold): the texture part's pace is now taken
+on the archives' bytes, the pipelines' only in their steady phase, and the shown figure moves at a bounded speed.
+
+That run, with the libraries and the walk inside the game's process, failed one minute into play: "host memory import
+failed (-2)" 1,423 times, then `counter report ... is in no memory pool`, "memory commit: this process 68352 MB". After
+the step the driver held 43,193 MiB (11,665 MiB of VMA blocks in 11,648 live allocations: the walk's staging buffers
+and images, which the game's process does not give back during the step; 31.5 GiB outside VMA). The figure was the
+same at the first library count line and after the 48,000th: the libraries added nothing, the walk had it all. The walk
+now runs in a child process of the same exe (`--scan-textures`, `prep.c prep_child`), whose count lines the step reads
+and whose memory goes with it.
+
+The libraries were moved to a child too (`--warm-libraries`) and had to come back: the drivers give each process a disk
+cache file of its own. NVIDIA's `GLCache` folder held `...31.bin` with all 56,402 libraries from the run above; the game
+process took that file at its device's creation, the texture child got a new `...32`, the libraries child a new
+`...33`, and it compiled every library from nothing (480 ms each, ~30 a second, its own footprint 297-322 MiB) into a
+file the game never reads (the next start takes `...31` again). A chain of children that a bug started made `...34` to
+`...53`, all empty. AMD's `VkCache` shows the same pattern (`<hash>.parc` beside `<hash>_1.parc`). So whatever play
+needs from the driver is built in the game's own process; the launcher's background build runs while no game does
+and fills the folder's file. The texture child asks for no NVIDIA disk cache (`__GL_SHADER_DISK_CACHE=0`, `main.c`):
+the Linux driver honours it, the Windows one does not and gives it an 82 KB file of its own (`...32`), which costs
+nothing.
+
+## 2026-11-20: the setup's translation waited on the disk, not on the translators
+
+Players saw the translation phase run at a few shaders a second with the translators idle (twelve `totk_xlate`
+processes at 0.1 % on an i7-13700, the machine at 7-11 %; 8.9 shaders a second on another PC). Each translated shader
+waited for four FlushFileBuffers calls and four write-through renames of the cache's files, and a drive serializes
+those. The same 3,000 shaders on 8 translators (9700X, 16 threads):
+
+| disk | with the flushes (1.2.7) | without |
+|---|---|---|
+| fast NVMe | 37.1 s | 15.6 s |
+| DRAM-less NVMe | 46.5 s | 16.0 s |
+| hard disk (1,500 shaders) | 211 s, 7 a second, one translator busy | 13.2 s |
+
+`--prepare-shaders` now writes without them (`gfx_shader_cache_flush`); the progress line every 5 s says how many
+translators were busy and where a translation's time went (translator, waiting for one, cache files, same program).
+Without the flushes all translators are busy on every disk; sixteen translators on sixteen threads were slower than
+eight (17.2 s).

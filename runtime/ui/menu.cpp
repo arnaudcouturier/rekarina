@@ -1436,11 +1436,12 @@ static void tab_controls(float scale) {
                true);   // an exponent: logarithmic, the 0.6 default near the middle
     opt_toggle("REKARINA_RUMBLE_TRIGGERS", UI_MENU_RUMBLE_TRIGGERS, UI_MENU_RUMBLE_TRIGGERS_DESC);
     {   // the direct mouse camera needs the patch set mouse_direct (mouse_direct.c direct_mode): TotK 1.4.3 and OoT have it
-        static const UiTextId mouse_modes[] = {UI_MENU_MOUSE_STICK, UI_MENU_MOUSE_DIRECT};
+        // (off: input.c mouse_sens_get reads 0, as the speed's 0 does: no camera, the cursor never captured)
+        static const UiTextId mouse_modes[] = {UI_MENU_MOUSE_STICK, UI_MENU_MOUSE_DIRECT, UI_MENU_MOUSE_OFF};
 #ifdef GAME_OOT
-        opt_choice("REKARINA_MOUSE_MODE", UI_MENU_MOUSE_MODE, mouse_modes, 2, UI_MENU_MOUSE_MODE_DESC_OOT);
+        opt_choice("REKARINA_MOUSE_MODE", UI_MENU_MOUSE_MODE, mouse_modes, 3, UI_MENU_MOUSE_MODE_DESC_OOT);
 #else
-        opt_choice("REKARINA_MOUSE_MODE", UI_MENU_MOUSE_MODE, mouse_modes, 2, UI_MENU_MOUSE_MODE_DESC);
+        opt_choice("REKARINA_MOUSE_MODE", UI_MENU_MOUSE_MODE, mouse_modes, 3, UI_MENU_MOUSE_MODE_DESC);
 #endif
     }
     // multipliers: on a logarithmic bar the default 1 sits in the middle of the mouse speed's 0.1..10 and fine steps
@@ -2652,7 +2653,8 @@ extern "C" int menu_overlay_frame(uint64_t frame, const MenuTarget *t, const cha
     amiibo_tick();
     {
         double used, budget;
-        g_vram_short = vk_mem_vram_short(&used, &budget) != 0;
+        // asked every frame for the log line; shown only with vram_notice = 1 (off by default: players found it in the way)
+        g_vram_short = vk_mem_vram_short(&used, &budget) != 0 && cfg_bool("REKARINA_VRAM_NOTICE");
     }
     bool open = g_open.load(std::memory_order_relaxed);
     if (!open) {

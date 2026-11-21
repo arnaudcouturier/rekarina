@@ -48,7 +48,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
-from . import components, eta, ini, mods, net, oot, saves, shaderjob, uninstall, update
+from . import components, eta, ini, mods, net, oot, saves, setup_report, shaderjob, uninstall, update
 from . import shots as screenshots
 from . import state as statefile
 from tkinter import font as tkfont
@@ -1029,7 +1029,7 @@ class RekarinaApp(App):
         self.comp_label = line(INK_WARN, 'RekText', ('home:comp',), SHEET_TEXT - 190)
         self.comp_retry = Plate(self, 'plate40', 150, self.retry_components, 'RekStrong', tags + ('home:comp',))
         self.bind_text(self.comp_retry, 'text', 'ui.oot_components_retry')
-        # the shaders' background job's row (never shown since every setup run prepares every variant: shader_wanted)
+        # the background job's row (shader_view): the driver's build of the shaders and the textures after the setup
         self.shaders_name = line(INK_DIM, 'RekText', ('home:shaders',), 90)
         self.shaders_status = line(INK, 'RekText', ('home:shaders',), SHEET_TEXT - 100)
         self.shaders_detail = line(INK, 'RekText', ('home:shaders',), SHEET_TEXT - 100)
@@ -1240,27 +1240,32 @@ class RekarinaApp(App):
             return
         end_now()
 
-    # ---- the shaders' background preparation (not started since 2026-11-19: shader_wanted) ----------------------------
-    # 1.2.1 to 1.2.3: the setup's first run prepared the variants play met and the rest were prepared here, by
-    # themselves (shaderjob.py): a child at low priority while the window was open and no game ran. Play stopped it,
-    # started the game, hid the window and took the job up again when the game had ended.
+    # ---- the background work after the setup (installer/oot.py background_main, shaderjob.py) ---------------------
+    # Since 1.2.8 the setup's package step leaves the driver's build of every prepared shader variant and the texture
+    # cache to the launcher (it held players up for 20 minutes to 1.5 hours): a child at low priority while the window
+    # is open and no game runs, from the end of the setup on. Play stops it within a moment (oot.stop_background: the
+    # stop file, then the tree), starts the game, hides the window and takes the job up again when the game has ended.
+    # 1.2.1 to 1.2.3 prepared the rarer shader variants this way.
 
     shader_job = None
+    launching = False   # Play: the background work is finishing what the driver has in hand, the game starts next
     shader_hidden = False       # the window is hidden while the game runs, for the job's sake
     shader_finished = None      # 'done' or 'failed' once the job ended in this window's life: the row says so
     shader_error = ''
 
+    def shader_dest(self):
+        dest = (self.model.dest if getattr(self, 'model', None) and self.model.dest else '') or self.vars['dest'].get().strip()
+        return Path(dest) if dest else None
+
     def shader_wanted(self):
-        """Never since the owner's call of 2026-11-19: a setup run prepares every variant in the foreground and a folder
-        that prepared the variants play met only gets the rest at its next setup run (oot.shader_mode), so the window
-        starts no background job and the home sheet shows no shader row. The job's code stays for now."""
-        return False
+        """Whether the game folder has background work left (oot.background_pending: one small file read)."""
+        dest = self.shader_dest()
+        return bool(dest and oot.background_pending(dest))
 
     def shader_command(self):
         python = Path(sys.executable) if self.layout.dev else self.layout.python
-        form = self.form()
-        form.all_shaders = True
-        return form.command(python, root=self.layout.root if self.layout.dev else None, temp=self.run_args.get('temp'))
+        cmd = [str(python), '-m', 'installer.oot', '--dest', str(self.shader_dest()), '--background']
+        return cmd + (['--root', str(self.layout.root)] if self.layout.dev else [])
 
     def shader_tick(self):
         """Once a second: take in the job's events, stop the job when a game runs, start it when none does, and show the
@@ -1274,21 +1279,27 @@ class RekarinaApp(App):
 
     def shader_step(self):
         job, changed = self.shader_job, False
+        if job is not None and job.stopping and job.stop_poll(oot.BACKGROUND_STOP_WAIT):   # (Pause)
+            changed = True
         if job is not None:
-            changed = job.poll()
+            changed = job.poll() or changed
             if job.state in ('done', 'failed') and self.shader_finished is None:
                 self.shader_finished, self.shader_error = job.state, job.error or ''
                 changed = True
         if self.shader_finished is None and (job is not None and job.active or self.shader_hidden or
-                                             (self.screen in ('home', 'mods', 'saves') and not self.process and not self.job)):
+                                             (self.screen in ('home', 'mods', 'saves', 'finish') and not self.process and
+                                              not self.job)):
             game = shaderjob.games_running(oot.GAME_EXE, job.pid if job is not None and job.active else None)
             if game:
                 if job is not None and job.active:
                     job.stop()
                     changed = True
-            elif self.shader_wanted():
+            elif self.shader_wanted() and not self.launching:   # (not between Play's stop and the game's start)
                 if job is None:
-                    job = self.shader_job = shaderjob.ShaderJob(self.shader_command(), self.layout.root)
+                    dest = self.shader_dest()
+                    job = self.shader_job = shaderjob.ShaderJob(self.shader_command(), self.layout.root,
+                                                                stopper=lambda proc: oot.stop_background(dest, proc),
+                                                                asker=lambda: oot.stop_background(dest))
                 if job.start():
                     changed = True
         if self.shader_hidden and not (self.shader_job is not None and self.shader_job.active) and \
@@ -1324,26 +1335,26 @@ class RekarinaApp(App):
             return self.forced_shaders or None
         job = self.shader_job
         if self.shader_finished == 'done':
-            return {'status': self.cat('ui.oot_shaders_done'), 'detail': '', 'fraction': None, 'button': None, 'note': ''}
+            return {'status': self.cat('ui.oot_bg_done'), 'detail': '', 'fraction': None, 'button': None, 'note': ''}
         if self.shader_finished == 'failed':
-            return {'status': self.cat('ui.oot_shaders_ready'), 'fraction': None, 'button': None, 'note': '',
-                    'detail': self.cat('ui.oot_shaders_failed', error=self.shader_error or '?')}
+            return {'status': self.cat('ui.oot_bg_ready'), 'fraction': None, 'button': None, 'note': '',
+                    'detail': self.cat('ui.oot_bg_failed', error=self.shader_error or '?')}
         if job is None or not self.shader_wanted():
             return None
-        status, note, button, fraction = self.cat('ui.oot_shaders_ready'), '', None, None
+        status, note, button, fraction = self.cat('ui.oot_bg_ready'), '', None, None
         if job.paused:
             detail, button = self.cat('ui.oot_shaders_paused'), 'ui.oot_shaders_resume'
         elif job.active:
             left = job.remaining()
             minutes = max(1, round(left / 60)) if left is not None else '?'
-            if job.done and job.total and job.phase in ('translate', 'libraries'):
-                detail = self.cat('ui.oot_shaders_running', done=f'{job.done:,}'.replace(',', ' '),
+            if job.done and job.total and job.phase in ('libraries', 'textures'):
+                detail = self.cat('ui.oot_bg_' + job.phase, done=f'{job.done:,}'.replace(',', ' '),
                                   total=f'{job.total:,}'.replace(',', ' '), minutes=minutes)
             else:
-                detail = self.cat('ui.oot_shaders_starting')
+                detail = self.cat('ui.oot_bg_starting')
             fraction, button, note = job.fraction, 'ui.oot_shaders_pause', self.cat('ui.oot_shaders_note')
         else:
-            detail, note = self.cat('ui.oot_shaders_waiting'), self.cat('ui.oot_shaders_note')
+            detail, note = self.cat('ui.oot_bg_waiting'), self.cat('ui.oot_shaders_note')
         return {'status': status, 'detail': detail, 'fraction': fraction, 'button': button, 'note': note}
 
     def open_game_folder(self):
@@ -1365,28 +1376,27 @@ class RekarinaApp(App):
         return b'FATAL' in tail or b'vk: device lost' in tail
 
     def make_report(self):
-        """The game makes the problem report (rekarina --make-report: one zip in reports/ beside it, nothing sent);
-        the launcher then shows the folder. The game runs without a window for it, a few seconds."""
-        exe = self.game_exe()
-        if not exe.is_file():
-            return
+        """The problem report (installer/setup_report.py: one zip in reports/ of the game folder, nothing sent): the
+        setup's logs, the window's log, the computer, and the game's own report (rekarina --make-report) when the game
+        exists. It works before the game exists too: a player stuck in the setup has the setup's logs to send. The
+        launcher then shows the folder."""
+        dest = self.shader_dest()
+        dest = dest.resolve() if dest else None
+        try:
+            work = oot.work_folder(self.layout.temp, self.run_args.get('temp'), dest)[0] if dest else None
+        except OSError:
+            work = None
+        lines = setup_report.json_lines(getattr(self, 'log_entries', []) or [], self.cat)
 
-        def work():
-            env = dict(os.environ, REKARINA_REPORT_NO_OPEN='1')
-            flags = subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
-            r = subprocess.run([str(exe), '--make-report'], cwd=str(exe.parent), env=env, capture_output=True,
-                               timeout=120, creationflags=flags)
-            path = r.stdout.decode('utf-8', 'replace').strip().splitlines()
-            if r.returncode or not path or not Path(path[-1]).is_file():
-                raise RuntimeError(r.stderr.decode('utf-8', 'replace').strip() or f'exit {r.returncode}')
-            return Path(path[-1])
+        def work_fn():
+            return setup_report.make(self.layout, dest, work, lines)
 
         def then(value):
             if isinstance(value, Exception):
                 messagebox.showerror(self.cat('ui.oot_title'), self.cat('ui.oot_report_failed', detail=str(value)[:300]))
                 return
             open_folder_window(value.parent)
-        self.background(work, then)
+        self.background(work_fn, then)
 
     def open_settings(self):
         """rekarina.ini in the player's text editor: every setting has its explanation there. (totk.ini in a folder
@@ -2200,6 +2210,7 @@ class RekarinaApp(App):
         self.cancel_button.configure(state='normal')
         self.bound = [b for b in self.bound if b[0] is not self.cancel_button]
         self.bind_text(self.cancel_button, 'text', 'ui.cancel')
+        self.run_t0 = time.monotonic()   # the log's times (gui.py log_entry)
         self.job_event({'type': 'start', 'steps': list(steps), 'mode': 'update', 'dest': self.vars['dest'].get().strip()})
         self.job_event({'type': 'eta', **eta.estimates({s: 'first' for s in steps})})
         self.build_step_rows(self.model.steps)
@@ -2211,8 +2222,7 @@ class RekarinaApp(App):
     def job_event(self, event):
         self.tracker.feed(event)
         self.model.apply(event)
-        self.log_entries.append(event)
-        self.append_log(describe_event(self.cat, event))
+        self.log_entry(event)
 
     def poll_job(self):
         job = self.job
@@ -2306,6 +2316,9 @@ class RekarinaApp(App):
         self.run_space = c.create_text(34, 0, anchor='nw', fill=DIM, font='RekSmall', width=STAGE_W - 68, tags=tags)
         self.run_log_plate = Plate(self, 'plate40', 200, self.toggle_log, 'RekStrong', tags)
         self.run_cancel_plate = Plate(self, 'plate40', 170, self.cancel, 'RekStrong', tags)
+        # the problem report while the setup runs: a player whose setup seems stuck sends its logs (make_report)
+        self.run_report_plate = Plate(self, 'plate40', 200, self.make_report, 'RekStrong', tags)
+        self.bind_text(self.run_report_plate, 'text', 'ui.oot_home_report')
         c.itemconfigure('scr:run', state='hidden')
 
     def build_stage_rows(self, steps):
@@ -2399,6 +2412,8 @@ class RekarinaApp(App):
         self.run_cancel_plate.configure(text=self.cancel_button.cget('text'))
         self.run_cancel_plate.fit(least=150)
         self.run_cancel_plate.place(STAGE_W - 34 - self.run_cancel_plate.width, STAGE_H - 58)
+        self.run_report_plate.fit(least=170)
+        self.run_report_plate.place(34 + self.run_log_plate.width + 12, STAGE_H - 58)
         self.run_cancel_plate.state(['disabled' if self.cancel_button.instate(['disabled']) else '!disabled'])
         # the warnings, then the free space, in the room that is left above the buttons: the oldest warnings give
         # way first (the log has them all), then the space line
@@ -2689,6 +2704,8 @@ class RekarinaApp(App):
         bar = self.open_button.master
         self.play_button = self.button(bar, 'ui.oot_play', self.start_game, style='Go.TButton')
         self.play_button.pack(side='right', padx=(0, 8), before=self.open_button)
+        self.report_button = self.button(bar, 'ui.oot_home_report', self.make_report)   # a setup that failed: its logs
+        self.report_button.pack(side='left', padx=(8, 0))
         self.back_button.configure(command=self.leave_finish)
         return f
 
@@ -2705,7 +2722,11 @@ class RekarinaApp(App):
         m = self.model
         result = m.result or 'ok'
         if result == 'ok':
-            self.finish_text.configure(text=self.cat('ui.oot_done_text', dest=m.dest))
+            text = self.cat('ui.oot_done_text', dest=m.dest)
+            first = oot.first_start_estimate(m.dest) if m.dest else 0
+            if first >= 60:   # what the first start builds that the launcher's background work may do first
+                text += '\n\n' + self.cat('ui.oot_done_first_start', minutes=max(1, round(first / 60)))
+            self.finish_text.configure(text=text)
         elif result == 'failed' and self.finish_kind:
             self.finish_title.configure(text=self.cat('ui.oot_update_failed' if self.finish_kind == 'update'
                                                       else 'ui.oot_components_failed'))
@@ -2728,6 +2749,8 @@ class RekarinaApp(App):
             self.panel_focus()
 
     def start_game(self):
+        if self.shader_job is not None and self.shader_job.stopping:
+            return   # (a second press while the background work is finishing what the driver has in hand)
         dest = Path(self.model.dest or self.vars['dest'].get().strip())
         exe = dest / oot.GAME_EXE
         if exe.is_file():
@@ -2745,22 +2768,46 @@ class RekarinaApp(App):
                 return
             save_settings(game=self.extra['game'].get().strip(), dest=str(dest))
             pending = self.shader_wanted() and not (self.shader_job is not None and self.shader_job.paused)
-            self.shader_stop()   # nothing of the preparation runs while the game does
-            flags = subprocess.DETACHED_PROCESS if os.name == 'nt' else 0
-            began = time.monotonic()
-            proc = subprocess.Popen([str(exe)], cwd=str(dest), creationflags=flags, close_fds=True)
-            self.start_failure = ''
-            # The window goes out of sight, not destroyed: the press came from a binding of the stage's canvas (the Play
-            # plate), and taking the window down from inside its own event makes Tcl free what it is still running and
-            # panic with a "Fatal Error" box.
-            self.root.withdraw()
-            if pending:
-                # The preparation is not done: the window takes the job up again when the game has ended (shader_step).
-                self.shader_hidden = True
+            # Nothing of the preparation runs while the game does, and the game starts only once the background work
+            # has ended: its build still holding the driver's cache file would leave the game an empty one of its own
+            # (runtime/vk_pipeline.c vk_pipeline_prewarm), and one killed while it writes may leave the file damaged.
+            # So the libraries in the driver's hands are finished first (oot.BACKGROUND_STOP_WAIT at most), the
+            # window responsive meanwhile.
+            job = self.shader_job
+            if job is not None and job.active:
+                self.launching = True
+                job.stop_begin()
+                self.launch_when_stopped(dest, exe, pending)
                 return
-            # The settings are saved and the game runs on its own: once it has run for GAME_WATCH_S the launcher just
-            # ends, without Tk's teardown (watch_game, end_now).
-            self.root.after(200, lambda: self.watch_game(proc, dest, began))
+            self.shader_stop()
+            self.launch_game(dest, exe, pending)
+
+    def launch_when_stopped(self, dest, exe, pending):
+        job = self.shader_job
+        if job is not None and not job.stop_poll(oot.BACKGROUND_STOP_WAIT):
+            self.root.after(100, lambda: self.launch_when_stopped(dest, exe, pending))
+            return
+        self.launch_game(dest, exe, pending)
+
+    def launch_game(self, dest, exe, pending):
+        flags = subprocess.DETACHED_PROCESS if os.name == 'nt' else 0
+        began = time.monotonic()
+        try:
+            proc = subprocess.Popen([str(exe)], cwd=str(dest), creationflags=flags, close_fds=True)
+        finally:
+            self.launching = False   # (from here on shader_step sees the game)
+        self.start_failure = ''
+        # The window goes out of sight, not destroyed: the press came from a binding of the stage's canvas (the Play
+        # plate), and taking the window down from inside its own event makes Tcl free what it is still running and
+        # panic with a "Fatal Error" box.
+        self.root.withdraw()
+        if pending:
+            # The preparation is not done: the window takes the job up again when the game has ended (shader_step).
+            self.shader_hidden = True
+            return
+        # The settings are saved and the game runs on its own: once it has run for GAME_WATCH_S the launcher just
+        # ends, without Tk's teardown (watch_game, end_now).
+        self.root.after(200, lambda: self.watch_game(proc, dest, began))
 
 
 # ---- self test ---------------------------------------------------------------------------------------------------
@@ -2923,12 +2970,12 @@ def selftest(layout, shots=None):
             app.home_play.state(['!disabled'])
             app.home_text.configure(text=app.cat('ui.oot_home_text', dest=app.vars['dest'].get()))
             shot(f'oot-home-update-{lang}')
-            for name, view in (('running', {'status': app.cat('ui.oot_shaders_ready'), 'fraction': 0.38, 'button': 'ui.oot_shaders_pause',
+            for name, view in (('running', {'status': app.cat('ui.oot_bg_ready'), 'fraction': 0.38, 'button': 'ui.oot_shaders_pause',
                                             'note': app.cat('ui.oot_shaders_note'),
-                                            'detail': app.cat('ui.oot_shaders_running', done='18 240', total='47 542', minutes=22)}),
-                               ('waiting', {'status': app.cat('ui.oot_shaders_ready'), 'fraction': None, 'button': None,
-                                            'note': app.cat('ui.oot_shaders_note'), 'detail': app.cat('ui.oot_shaders_waiting')}),
-                               ('done', {'status': app.cat('ui.oot_shaders_done'), 'fraction': None, 'button': None, 'note': '', 'detail': ''})):
+                                            'detail': app.cat('ui.oot_bg_libraries', done='18 240', total='56 402', minutes=22)}),
+                               ('waiting', {'status': app.cat('ui.oot_bg_ready'), 'fraction': None, 'button': None,
+                                            'note': app.cat('ui.oot_shaders_note'), 'detail': app.cat('ui.oot_bg_waiting')}),
+                               ('done', {'status': app.cat('ui.oot_bg_done'), 'fraction': None, 'button': None, 'note': '', 'detail': ''})):
                 app.forced_shaders = view
                 app.update_info, app.forced_missing = sample_update('1.0.0', False), []
                 app.refresh_home()

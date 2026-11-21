@@ -448,6 +448,7 @@ typedef struct {
 #endif
     VkPhysicalDevicePresentTimingFeaturesEXT pt;      // DEBUG-PRESENTTIMING
     VkPhysicalDevicePresentId2FeaturesKHR pid2;
+    VkPhysicalDeviceMapMemoryPlacedFeaturesEXT mmp;   // Linux: driver-backed guest memory (vk_memory.c vk_mem_driver_backed)
 #ifdef GAME_NS2
     VkPhysicalDeviceMeshShaderFeaturesEXT mesh;
     VkPhysicalDeviceFragmentShadingRateFeaturesKHR vrs;
@@ -480,9 +481,9 @@ static int create_device(void) {
     VkExtensionProperties *ep = calloc(ne ? ne : 1, sizeof *ep);
     vkEnumerateDeviceExtensionProperties(g_vk.phys, NULL, &ne, ep);
 #ifdef GAME_NS2
-    const char *ext[55];   // one more: VK_EXT_mesh_shader (and one for DEBUG-PIPESTATS, one for cooperative matrices)
+    const char *ext[57];   // one more: VK_EXT_mesh_shader (and one for DEBUG-PIPESTATS, one for cooperative matrices)
 #else
-    const char *ext[54];   // two for FSR 4's extensions
+    const char *ext[56];   // two for FSR 4's extensions, two for the placed map (VK_KHR_map_memory2, VK_EXT_map_memory_placed)
 #endif
     uint32_t n_ext = 0;
     for (size_t i = 0; i < sizeof k_required_ext / sizeof *k_required_ext; i++) ext[n_ext++] = k_required_ext[i];
@@ -550,6 +551,15 @@ static int create_device(void) {
     }
     // Float atomic add (gfx_shader_float_atomics): the translator's RED / ATOMG .ADD.F32 become one atomic, not a compare-and-swap loop.
     OPTIONAL_EXT(has_atomic_float, VK_EXT_SHADER_ATOMIC_FLOAT_EXTENSION_NAME, af, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_ATOMIC_FLOAT_FEATURES_EXT);
+#ifndef _WIN32
+    // Driver-backed guest memory (plat_mem_back): a pool's device memory mapped at the pool's address.
+    if (has_ext(ep, ne, VK_KHR_MAP_MEMORY_2_EXTENSION_NAME) && has_ext(ep, ne, VK_EXT_MAP_MEMORY_PLACED_EXTENSION_NAME)) {
+        g_vk.has_map_placed = 1;
+        ext[n_ext++] = VK_KHR_MAP_MEMORY_2_EXTENSION_NAME;
+        ext[n_ext++] = VK_EXT_MAP_MEMORY_PLACED_EXTENSION_NAME;
+        CHAIN(mmp, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAP_MEMORY_PLACED_FEATURES_EXT);
+    }
+#endif
     if (has_ext(ep, ne, VK_EXT_MEMORY_BUDGET_EXTENSION_NAME)) { g_vk.has_memory_budget = 1; ext[n_ext++] = VK_EXT_MEMORY_BUDGET_EXTENSION_NAME; }
     // GPU timestamps on the CPU clock (vk_sync.c): the perf line splits GPU idle time into waiting for a submission or not.
     if (has_ext(ep, ne, VK_KHR_CALIBRATED_TIMESTAMPS_EXTENSION_NAME)) { g_vk.has_calibrated = 2; ext[n_ext++] = VK_KHR_CALIBRATED_TIMESTAMPS_EXTENSION_NAME; }
@@ -673,6 +683,10 @@ static int create_device(void) {
     else if (!h->textureCompressionBC) miss = "textureCompressionBC";
     if (miss) { rt_log("vk: required feature missing on %s: %s", g_vk.props.deviceName, miss); free(c); return 0; }
     if (!c->fault.deviceFault) g_vk.has_device_fault = 0;   // vkGetDeviceFaultInfoEXT needs the feature, not just the extension
+    if (g_vk.has_map_placed && !(c->mmp.memoryMapPlaced && c->mmp.memoryUnmapReserve)) g_vk.has_map_placed = 0;
+#ifndef _WIN32
+    vk_mem_driver_memory(g_vk.has_map_placed);
+#endif
     if (!c->af.shaderBufferFloat32AtomicAdd) g_vk.has_atomic_float = 0;   // storage buffers and device addresses both need it
 #ifdef GAME_NS2
     if (g_vk.has_vrs) {   // the rate is set per draw: no rate attachment and no per-primitive rates
@@ -746,9 +760,12 @@ static int create_device(void) {
     if (g_vk.awb_family != UINT32_MAX) vkGetDeviceQueue(g_vk.device, g_vk.awb_family, 0, &g_vk.awb_queue);
 
     VkPhysicalDeviceExternalMemoryHostPropertiesEXT emh = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_MEMORY_HOST_PROPERTIES_EXT};
+    VkPhysicalDeviceMapMemoryPlacedPropertiesEXT mpp = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAP_MEMORY_PLACED_PROPERTIES_EXT};
+    if (g_vk.has_map_placed) emh.pNext = &mpp;
     VkPhysicalDeviceProperties2 p2 = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, .pNext = &emh};
     vkGetPhysicalDeviceProperties2(g_vk.phys, &p2);
     g_vk.min_imported_host_alignment = (uint32_t)emh.minImportedHostPointerAlignment;
+    g_vk.map_placed_align = (uint32_t)(mpp.minPlacedMemoryMapAlignment ? mpp.minPlacedMemoryMapAlignment : 4096);
 #ifdef GAME_NS2
     // NVN2 shaders reach global memory at loaded addresses through device addresses of the pool buffers (vk_memory.c
     // vk_mem_gmem_table); shaderInt64 is required above. Read by gfx_shader_set_host, which vk_caps_init calls.

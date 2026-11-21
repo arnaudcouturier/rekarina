@@ -1,11 +1,14 @@
-// The C interface of totk_dlssg.dll (runtime/dlssg/nx2_sl.cpp), which runtime/vk_dlssg.c loads for DLSS Frame
-// Generation. The DLL is built with MSVC against NVIDIA's Streamline SDK (its C++ types have MSVC's ABI); nothing of
-// the SDK is in this repository, and the game itself is built without it.
+// The C interface of rekarina_dlssg.dll (runtime/dlssg/nx2_sl.cpp), which runtime/vk_dlssg.c loads for DLSS Frame
+// Generation. The DLL is built against NVIDIA's Streamline SDK (tools/build_dlssg.py); nothing of the SDK is in this
+// repository, and the game itself is built without it.
 #pragma once
 #include <stdint.h>
 #include <vulkan/vulkan.h>
 
-#define NX2SL_VERSION 3
+// 4: frame generation that is off keeps its resources (nx2sl_frame), so the game turns it off in every frame without
+// a camera. A library of version 3 is still taken: the game then keeps generation on through such frames, as it did.
+#define NX2SL_VERSION 4
+#define NX2SL_VERSION_OLDEST 3
 
 typedef struct {
     VkImage image;
@@ -54,8 +57,9 @@ typedef void (*PFN_nx2sl_sleep)(uint32_t frame, int hold);
 // The frame's submissions went out (at the game's present; with asynchronous replay, when the replay reaches it): its
 // render-submit-end marker.
 typedef void (*PFN_nx2sl_submit_end)(uint32_t frame);
-// Each host present, before the present call: the frame's constants and tags, and frame generation on or off. Then
-// nx2sl_present_marker(0) before and (1) after the present.
+// Each host present, before the present call: the frame's constants and tags, and frame generation on or off (off
+// keeps its resources from version 4 on, so on again costs nothing). Then nx2sl_present_marker(0) before and (1) after
+// the present.
 typedef int (*PFN_nx2sl_frame)(VkCommandBuffer cb, const Nx2SlImage *depth, const Nx2SlImage *mv, const Nx2SlImage *hudless,
                                const Nx2SlCamera *cam, uint32_t out_w, uint32_t out_h, int enable, uint32_t frame);
 typedef void (*PFN_nx2sl_present_marker)(int after, uint32_t frame);

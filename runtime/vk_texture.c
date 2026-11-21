@@ -7379,6 +7379,24 @@ static int dlss_biased(const samp_par *k) {
     return !k->cmp_mode && k->minf == NVN_MIN_FILTER_LINEAR_MIPMAP_LINEAR && (rep_s || rep_t || all);
 }
 
+// The sharpness slider's hold on the game's own texture sharpening (vk_sampler_sharpness): the game samples its scene
+// textures half a mip level sharp (LOD bias -0.5 on its repeating material samplers, 4,145 of a village frame's sampler
+// uses), made for a scene of 0.75 of the picture that its scaling enlarges. At the port's full-size scene, with no
+// temporal anti-aliasing, that reads as hard, shimmering detail, and at a native picture no other sharpening runs for
+// the slider to take back. A positive b moves those negative biases towards 0, never past it, and touches no other
+// sampler.
+static float sharp_bias;
+
+void vk_sampler_sharpness(float b) {
+    lock();
+    if (b != sharp_bias) {
+        sharp_bias = b;
+        for (int i = 0; i < nsslots; i++) sslots[i].s = sslots[i].sp = sslots[i].sc = VK_NULL_HANDLE;   // looked up again (the key moves)
+        samp_gen++;
+    }
+    unlock();
+}
+
 void vk_sampler_dlss_bias(float b) {
     lock();
     if (b != dlss_bias) {
@@ -7394,6 +7412,7 @@ static VkSampler sampler_for(VkCtx *c, const samp_par *s) {
     samp_par k;
     memset(&k, 0, sizeof k);
     k = *s;
+    if (sharp_bias != 0 && k.lod_bias < 0 && dlss_biased(&k)) k.lod_bias = fminf(0.0f, k.lod_bias + sharp_bias);
     if (dlss_bias != 0 && dlss_biased(&k)) k.lod_bias += dlss_bias;   // part of the key: samplers live until shutdown
     VkSampler v = (VkSampler)nvn_hm_get(&samplers, &k);
     if (!v) {

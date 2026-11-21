@@ -153,6 +153,24 @@ static void arena_done(void *arg) {   // completion thread: the GPU has read it
 
 // DEBUG-USNAP-MASK: REKARINA_USNAP_SCHED=<tick0>:<ticks> with REKARINA_USNAP_RANGES=lo-hi,lo-hi,...: from tick0 on, each
 // window of <ticks> game ticks snapshots only the bindings in the next range (the stage mask still applies)
+// OoT: the fog's light injection (a compute pass) reads a uniform block of 0x3500 bytes, bound at two slots, that the
+// game keeps in two buffers by frame and writes after the submission's snapshot is taken and before the console's GPU
+// would read it, with no wait for the CPU between (every CPU wait of the frame is met before the copy: the game
+// signals earlier). The copy then held an older state in some frames: the first dungeon's light shaft lost light for
+// a frame and its smoothing showed it for eight (25-38 dips per 1000 frames; 0 with the compute blocks live; 197 when
+// that block alone was copied, 2026-11-20). So that block is read where it is (USNAP_LIVE_SIZE: a compute-stage block
+// of that size). Every compute block read live (the first form of this fix, REKARINA_USNAP_STAGES=0xffdf) mended the
+// shaft as well but read every other compute block live too, though only this one was shown to need it; the others
+// keep their copy as in 1.2.7. The graphics stages keep the snapshot too: their camera, jitter and shadow blocks are
+// rewritten for the next frame and read live they shook the picture.
+// REKARINA_USNAP_STAGES=<mask of stage slots> picks the stages copied (0xffdf: every compute block live);
+// REKARINA_USNAP_LIVE_SIZE=0 copies the injection's block too (1.2.7's way).
+#define USNAP_STAGES_DEFAULT 0xffff
+#ifdef GAME_OOT
+#define USNAP_LIVE_SIZE_DEFAULT "0x3500"
+#else
+#define USNAP_LIVE_SIZE_DEFAULT "0"
+#endif
 static uint64_t sched_lo, sched_hi = ~0ull;
 static void sched_update(void) {
     static int read, nr, cur = -2;
@@ -199,14 +217,20 @@ static void collect(const op_hdr *h, int depth) {
             const p_bind_buf *b = a;
             // DEBUG-USNAP-MASK: REKARINA_USNAP_STAGES=<mask of stage slots>, REKARINA_USNAP_LO/HI=<guest range> snapshotted
             static int64_t smask = -1;
-            static uint64_t alo, ahi;
+            static uint64_t alo, ahi, live_size;
             if (smask < 0) {
                 const char *e = cfg_get("REKARINA_USNAP_STAGES");
-                smask = e ? strtoll(e, NULL, 0) : 0xffff;
+                smask = e ? strtoll(e, NULL, 0) : USNAP_STAGES_DEFAULT;
+                e = cfg_get("REKARINA_USNAP_LIVE_SIZE"), live_size = strtoull(e ? e : USNAP_LIVE_SIZE_DEFAULT, NULL, 0);
                 e = cfg_get("REKARINA_USNAP_LO"), alo = e ? strtoull(e, NULL, 0) : 0;
                 e = cfg_get("REKARINA_USNAP_HI"), ahi = e ? strtoull(e, NULL, 0) : ~0ull;
             }
-            if (!(smask >> (b->stage & 15) & 1) || b->addr < alo || b->addr >= ahi ||
+            int live = (b->stage & 15) == 5 && live_size && b->size == live_size;   // the injection's block
+            static int live_told;
+            if (live && live_told < 4 && __atomic_fetch_add(&live_told, 1, __ATOMIC_RELAXED) < 4)
+                rt_log("vk_usnap: the compute block %#llx of %#llx bytes at c%d is read where it is (REKARINA_USNAP_LIVE_SIZE)",
+                       (unsigned long long)b->addr, (unsigned long long)b->size, (int)b->index);
+            if (!(smask >> (b->stage & 15) & 1) || b->addr < alo || b->addr >= ahi || live ||
                 (!(b->stage & 15) && (b->addr < sched_lo || b->addr >= sched_hi))) {
                 h = nvn_op_next(h);
                 continue;

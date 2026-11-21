@@ -282,4 +282,115 @@ set ringpost REKARINA_RING_POST 1
 # the ring full, ends the game (b main+0x34fc280, an nn::diag abort): a crash after the first boss's death, the writer
 # a job on a worker (main+0x340a460). The console's timing keeps its writers out of the consumer's way; here a worker
 # can be held up past it. With the set that writer returns: its record is dropped (a full ring) or read a frame later.
-site ringpost main d2507c 149f5c81 d65f03c0   # b main+0x34fc280 (the abort) -> ret
+# The same writer is compiled into 77 functions, the game's other lock-free queues (each commits with the mask
+# 0xf00fffff and ends in a tail branch to the abort): every site is that b main+0x34fc280 -> ret, the first the
+# named-value post's.
+site ringpost main d2507c 149f5c81 d65f03c0   # b main+0x34fc280 (the abort) -> ret, in main+0xd24e50
+site ringpost main 163cc8 14ce616e d65f03c0   # in main+163b70
+site ringpost main 3e0ad4 14c46deb d65f03c0   # in main+3e0980
+site ringpost main 444a80 14c2de00 d65f03c0   # in main+444840
+site ringpost main 44c788 14c2bebe d65f03c0   # in main+44c5d0
+site ringpost main 4b48c0 14c11e70 d65f03c0   # in main+4b4720
+site ringpost main 57b080 14be0480 d65f03c0   # in main+57af30
+site ringpost main 57be18 14be011a d65f03c0   # in main+57bcc0
+site ringpost main 608bd0 14bbcdac d65f03c0   # in main+608a10
+site ringpost main 682c7c 14b9e581 d65f03c0   # in main+682b20
+site ringpost main 9b3020 14ad2498 d65f03c0   # in main+9b2f80
+site ringpost main 9b3b94 14ad21bb d65f03c0   # in main+9b39e0
+site ringpost main 9b3d3c 14ad2151 d65f03c0   # in main+9b3ba0
+site ringpost main ba6ed8 14a554ea d65f03c0   # in main+ba6e50
+site ringpost main ba70cc 14a5546d d65f03c0   # in main+ba6f80
+site ringpost main ba7e88 14a550fe d65f03c0   # in main+ba7e00
+site ringpost main bf8f80 14a40cc0 d65f03c0   # in main+bf8dc0
+site ringpost main cc2efc 14a0e4e1 d65f03c0   # in main+cc2da0
+site ringpost main d5e9c4 149e762f d65f03c0   # in main+d5e860
+site ringpost main f07244 1497d40f d65f03c0   # in main+f071c0
+site ringpost main f6a188 1496483e d65f03c0   # in main+f69ff0
+site ringpost main fc4420 1494df98 d65f03c0   # in main+fc42d0
+site ringpost main 10a5f44 149158cf d65f03c0   # in main+10a5ec0
+site ringpost main 1100b7c 148fedc1 d65f03c0   # in main+1100af0
+site ringpost main 1116a44 148f960f d65f03c0   # in main+11169c0
+site ringpost main 111b79c 148f82b9 d65f03c0   # in main+111b680
+site ringpost main 11d57ec 148c9aa5 d65f03c0   # in main+11d5760
+site ringpost main 11dd938 148c7a52 d65f03c0   # in main+11dd8b0
+site ringpost main 3745680 17f6db00 d65f03c0   # in main+37454e0
+site ringpost main 37484f8 17f6cf62 d65f03c0   # in main+3748350
+site ringpost main 374af44 17f6c4cf d65f03c0   # in main+374ae10
+site ringpost main 3759598 17f68b3a d65f03c0   # in main+3759370
+site ringpost main 375d9e0 17f67a28 d65f03c0   # in main+375d850
+site ringpost main 375f4cc 17f6736d d65f03c0   # in main+375f320
+site ringpost main 376a0a8 17f64876 d65f03c0   # in main+376a020
+site ringpost main 376a144 17f6484f d65f03c0   # in main+376a0b0
+site ringpost main 376a1d8 17f6482a d65f03c0   # in main+376a150
+site ringpost main 376a274 17f64803 d65f03c0   # in main+376a1e0
+site ringpost main 376a584 17f6473f d65f03c0   # in main+376a500
+site ringpost main 376a618 17f6471a d65f03c0   # in main+376a590
+site ringpost main 376a6ac 17f646f5 d65f03c0   # in main+376a620
+site ringpost main 376a73c 17f646d1 d65f03c0   # in main+376a6b0
+site ringpost main 376a7c8 17f646ae d65f03c0   # in main+376a740
+site ringpost main 376a85c 17f64689 d65f03c0   # in main+376a7d0
+site ringpost main 376a8ec 17f64665 d65f03c0   # in main+376a860
+site ringpost main 376a980 17f64640 d65f03c0   # in main+376a8f0
+site ringpost main 376aa2c 17f64615 d65f03c0   # in main+376a990
+site ringpost main 376aabc 17f645f1 d65f03c0   # in main+376aa30
+site ringpost main 376ab48 17f645ce d65f03c0   # in main+376aac0
+site ringpost main 376abdc 17f645a9 d65f03c0   # in main+376ab50
+site ringpost main 376ac6c 17f64585 d65f03c0   # in main+376abe0
+site ringpost main 376acf0 17f64564 d65f03c0   # in main+376ac70
+site ringpost main 376ad8c 17f6453d d65f03c0   # in main+376ad00
+site ringpost main 376ae18 17f6451a d65f03c0   # in main+376ad90
+site ringpost main 376aeac 17f644f5 d65f03c0   # in main+376ae20
+site ringpost main 376af40 17f644d0 d65f03c0   # in main+376aeb0
+site ringpost main 376afe4 17f644a7 d65f03c0   # in main+376af50
+site ringpost main 376b090 17f6447c d65f03c0   # in main+376aff0
+site ringpost main 376b134 17f64453 d65f03c0   # in main+376b0a0
+site ringpost main 376b1dc 17f64429 d65f03c0   # in main+376b140
+site ringpost main 376b27c 17f64401 d65f03c0   # in main+376b1e0
+site ringpost main 376b314 17f643db d65f03c0   # in main+376b280
+site ringpost main 376b3b4 17f643b3 d65f03c0   # in main+376b320
+site ringpost main 376b4c0 17f64370 d65f03c0   # in main+376b3c0
+site ringpost main 376b614 17f6431b d65f03c0   # in main+376b4f0
+site ringpost main 376b744 17f642cf d65f03c0   # in main+376b620
+site ringpost main 376b874 17f64283 d65f03c0   # in main+376b750
+site ringpost main 376b9a4 17f64237 d65f03c0   # in main+376b880
+site ringpost main 376bad4 17f641eb d65f03c0   # in main+376b9b0
+site ringpost main 376bc18 17f6419a d65f03c0   # in main+376bae0
+site ringpost main 376bcb4 17f64173 d65f03c0   # in main+376bc20
+site ringpost main 376bd54 17f6414b d65f03c0   # in main+376bcc0
+site ringpost main 376bdf8 17f64122 d65f03c0   # in main+376bd60
+site ringpost main 376be8c 17f640fd d65f03c0   # in main+376be00
+site ringpost main 376bf1c 17f640d9 d65f03c0   # in main+376be90
+site ringpost main 376bfb4 17f640b3 d65f03c0   # in main+376bf20
+site ringpost main 376c04c 17f6408d d65f03c0   # in main+376bfc0
+
+set dofscale REKARINA_DOF_SCALE 0
+
+# Off by default: with the blur's target at 1280x720 a part of the effect still covers only the game's 960x540 of it,
+# and the far scene the blur stands for came out black beyond 0.75 of the picture across and down, near things drawn
+# over it (the instrument out in the forest at 1440p: 26 of 425 frames with the set on, 0 of 424 off; the owner saw
+# the same with a target locked, 2026-11-20). REKARINA_DOF_SCALE=1 turns it on for a test.
+# The depth of field at half the scene that is drawn, not at half the console's 1080p (960x540 stretched over a 1440p or
+# 4K scene). main+0x260270 makes an effect's render target as a reference texture's size times its descriptor's floats
+# and stores it in the request on the stack (main+0x2603c4); after that store, runtime/oot_fps.c dof_scale gives the
+# depth of field's descriptor (0.75 on both sides of the game's picture) its scale of the scene the fixed path draws
+# instead, never less than the game's own size. The function saved x30 in its prologue.
+site dofscale main 2603c8 a9067fff a9067fff 95310256   # stp xzr, xzr, [sp, #0x60] -> the same; bl page+0xd20
+
+set promptglyphs REKARINA_PROMPT_GLYPHS 0
+
+# Off by default (2026-11-20, before 1.2.8): with the pause screen opened and closed while the prompts changed in the
+# running game, the game's glyph drawing (main+0x1519424) faulted on a null glyph right after its rasteriser ran
+# out of room, on a character drawn with the size this set marks (and a build without that guard hung instead);
+# 1.2.7, without the set, neither hangs nor faults there. Off, texts laid out before a change keep the old set's
+# buttons until the game lays them out again, as in 1.2.7; the action hint's and the song screen's images still
+# change (runtime/romfs.c hint_apply writes texture bytes, not glyphs). REKARINA_PROMPT_GLYPHS=1 turns it on for a
+# test, both the size marks and the rebuild of large glyphs (REKARINA_PROMPT_SHEETS).
+# Texts laid out before the button prompts changed in the running game (runtime/romfs.c live_main swaps the button
+# font's table). A text keeps, per character, the glyph its shaping gave when it was laid out (or 0: drawn by
+# character, and the font's cache keeps the picture the character had when it was first drawn), and its quads are
+# built from those glyphs: a text the game set once (the action hint's key, the pause screen's guide) kept the old
+# set's buttons until the next start. The site is in a text's draw (main+0xe4e0e0, x0 the text), after the prologue
+# saved x30: the host (runtime/oot_fps.c prompt_glyphs) gives such a text's button characters the glyphs of the set in use
+# (or, drawn by character, a size the cache has no picture for), once per text after each change and at each new build
+# of its quads, and asks this draw to build the text's quads again.
+site promptglyphs main e4e100 f9407409 f9407409 95014b0c   # ldr x9, [x0, #0xe8] -> the same; bl page+0xd30

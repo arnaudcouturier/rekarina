@@ -58,8 +58,8 @@
     [UI_MENU_ANISO] = "Filtrado de texturas",
     [UI_MENU_ANISO_DESC] = "Filtrado anisotrópico de las texturas de superficie: el suelo, los caminos y las paredes vistos en ángulo rasante siguen nítidos a lo lejos en vez de emborronarse. Juego: el nivel que pide el juego, como en la Switch.",
     [UI_MENU_ANISO_GAME] = "Juego",
-    [UI_MENU_SHARPNESS] = "Nitidez de FSR",
-    [UI_MENU_SHARPNESS_DESC] = "Enfoque tras el escalado FSR; 0 lo desactiva.",
+    [UI_MENU_SHARPNESS] = "Nitidez",
+    [UI_MENU_SHARPNESS_DESC] = "El enfoque tras el escalado FSR o DLSS y, por debajo del 80 %, la nitidez propia de las texturas del juego. 0 lo desactiva todo.",
     [UI_MENU_COLOR] = "Color",
     [UI_MENU_COLOR_PRESET] = "Perfil de color",
     [UI_MENU_COLOR_PRESET_DESC] = "Ajusta los cuatro valores de abajo. Intenso: más contraste y saturación, con las sombras "
@@ -117,7 +117,7 @@
     [UI_MENU_TAA] = "Reescalador",
     [UI_MENU_TAA_DESC] = "Qué reescalador usa la fila DLSS / DLAA: NVIDIA DLSS (GPU RTX), AMD FSR (cualquier GPU, temporal) o AMD FSR 1 (cualquier GPU, espacial: el más ligero, para tarjetas antiguas y portátiles). Tras reiniciar.",
     [UI_MENU_FRAMEGEN] = "Generación de fotogramas",
-    [UI_MENU_FRAMEGEN_DESC] = "Un fotograma generado entre cada dos que dibuja el juego, con el HUD al margen: AMD FSR en cualquier GPU, NVIDIA DLSS en las series RTX 40 y 50. Tras reiniciar.",
+    [UI_MENU_FRAMEGEN_DESC] = "Un fotograma generado entre cada dos que dibuja el juego, con el HUD al margen: AMD FSR en cualquier GPU, NVIDIA DLSS en las series RTX 40 y 50. Activa el reescalado temporal (DLSS / DLAA), cuyos vectores de movimiento usa; el modo de DLSS fija el coste: DLAA (nativo) es el más pesado, Calidad y Equilibrado son más ligeros. Tras reiniciar.",
     [UI_MENU_FRAMEGEN_NEEDS] = "Requiere DLSS / DLAA activado: usa sus vectores de movimiento.",
     [UI_MENU_DLAA] = "NVIDIA DLSS / DLAA",
     [UI_MENU_DLAA_DESC] = "NVIDIA DLSS para la escena 3D (GPU NVIDIA RTX; " DLSS_FILE " junto a " EXE_FILE "): bordes más "
@@ -147,7 +147,8 @@
 
     [UI_MENU_FPS_LIMIT] = "Límite de FPS",
     [UI_MENU_FPS_LIMIT_DESC] = "El máximo de fotogramas por segundo que dibuja el juego. Por encima de 60 es experimental "
-                               "y requiere Velocidad según el reloj.",
+                               "y requiere Velocidad según el reloj. "
+                               "Con la generación de fotogramas de AMD cuenta los fotogramas que ves, así que el juego dibuja la mitad; la de DLSS añade sus fotogramas por encima de este valor.",
     [UI_MENU_FPS_30] = "30 FPS", [UI_MENU_FPS_40] = "40 FPS", [UI_MENU_FPS_45] = "45 FPS",
     [UI_MENU_FPS_60] = "60 FPS", [UI_MENU_FPS_90] = "90 FPS", [UI_MENU_FPS_120] = "120 FPS", [UI_MENU_FPS_144] = "144 FPS",
     // the monitor's refresh rate; printf format with the rate in Hz when it is known
@@ -251,12 +252,13 @@
     [UI_MENU_STICK_DEADZONE_DESC] = "Cuánto debe moverse una palanca del mando antes de que el juego lo note. Súbela si el personaje o la cámara se mueven solos: suelta la palanca, lee \"palanca ahora\" y pon la zona muerta unos puntos porcentuales por encima.",
     [UI_MENU_STICK_DEADZONE_NOW] = "palanca ahora: %.0f %%",
     [UI_MENU_MOUSE_MODE] = "Cámara con ratón",
-    [UI_MENU_MOUSE_MODE_DESC] = "Directo: la cámara gira según lo que se mueve el ratón, como en un juego de PC, sin zona muerta ni curva de palanca (juego 1.4.3; las demás versiones usan la emulación de palanca). Emulación de palanca: el ratón actúa como la palanca derecha.",
+    [UI_MENU_MOUSE_MODE_DESC] = "Directo: la cámara gira según lo que se mueve el ratón, como en un juego de PC, sin zona muerta ni curva de palanca (juego 1.4.3; las demás versiones usan la emulación de palanca). Emulación de palanca: el ratón actúa como la palanca derecha. Desactivada: el ratón nunca gira la cámara y el puntero queda libre para los menús.",
     [UI_MENU_FAST_TEXT] = "Diálogos más rápidos",
     [UI_MENU_FAST_TEXT_DESC] = "Quita las pausas que los mensajes del juego hacen entre frases, para que el texto avance sin detenerse.",
-    [UI_MENU_MOUSE_MODE_DESC_OOT] = "Directo: la cámara gira exactamente lo que se mueve el ratón, a cualquier velocidad, sin zona muerta, curva ni velocidad máxima del stick. Emulación del stick: el ratón actúa como el stick derecho, con su curva y su velocidad máxima.",
+    [UI_MENU_MOUSE_MODE_DESC_OOT] = "Directo: la cámara gira exactamente lo que se mueve el ratón, a cualquier velocidad, sin zona muerta, curva ni velocidad máxima del stick. Emulación del stick: el ratón actúa como el stick derecho, con su curva y su velocidad máxima. Desactivada: el ratón nunca gira la cámara y el puntero queda libre para los menús.",
     [UI_MENU_MOUSE_STICK] = "Emulación de palanca",
     [UI_MENU_MOUSE_DIRECT] = "Directo",
+    [UI_MENU_MOUSE_OFF] = "Desactivada",
     [UI_MENU_MENU_CURSOR] = "Ratón en los menús del juego",
     [UI_MENU_MENU_CURSOR_DESC] = "En los menús propios del juego (título, inventario, tiendas, opciones de diálogo) aparece el puntero: se selecciona el elemento que tiene debajo, el clic izquierdo confirma y el clic derecho vuelve atrás. Solo cuando lo último que se usó fue el ratón o una tecla, así que con un mando los menús no cambian (juego 1.4.3).",
     [UI_MENU_MOUSE_SENS] = "Sensibilidad de cámara (ratón)",

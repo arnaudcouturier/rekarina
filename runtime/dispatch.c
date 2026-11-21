@@ -105,6 +105,12 @@ void rt_dispatch_replace(uint64_t addr, GuestFn fn) {
     g_repl[g_nrepl].addr = addr, g_repl[g_nrepl].fn = fn, g_nrepl++;
 }
 
+int rt_dispatch_replaced(uint64_t addr) {
+    for (int i = 0; i < g_nrepl; i++)
+        if (g_repl[i].addr == addr) return 1;
+    return 0;
+}
+
 static void *table_alloc(uint64_t bytes) {
     return plat_mem_alloc(bytes);   // zero pages, backed on first write
 }

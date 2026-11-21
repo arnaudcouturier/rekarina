@@ -517,12 +517,20 @@ static void svc_set_limit(int n) {
 
 // One request on a child; a dead child is restarted once. 0 when the translator is unavailable. The caller has given
 // up its virtual core (kern_core_away): the wait for a child and the translation are host time.
+// Where a translation's time goes, summed over the threads (prepare_files' progress lines): the translators' work, the
+// waits for a free translator and for another thread's translation of the same program, and the rest of
+// translate_one (the cache's files: writes, renames, reads). It tells a busy processor from a slow disk in a log.
+static volatile int64_t tm_xchg, tm_svc_wait, tm_flight, tm_one, tm_n;
+
 static int svc_request(const char *line, char *reply, size_t reply_size) {
+    uint64_t t0 = plat_now_ns();
     Svc *v = svc_get();
+    uint64_t t1 = plat_now_ns();
     int ok = 0;
     for (int attempt = 0; attempt < 2 && !ok; attempt++)
         if (!(ok = child_exchange(v, line, reply, reply_size))) child_stop(v);
     svc_put(v);
+    plat_add64(&tm_svc_wait, (int64_t)(t1 - t0)), plat_add64(&tm_xchg, (int64_t)(plat_now_ns() - t1));
     return ok;
 }
 
@@ -1658,13 +1666,24 @@ static int use_find(const uint8_t h[32], UseMask *m) {
     return known;
 }
 
+// Whether the cache's files are flushed to the disk as they are written (gfx_shader_cache_flush). Every reader checks
+// what it reads (reflection_valid, spirv_complete, the use and input files' magic), so a file a power cut left
+// zero-filled is translated again; the flushes, four FlushFileBuffers and four write-through renames a translation,
+// each a wait for the disk, held a player's setup to 9 shaders a second on a slow disk with the processor idle.
+static int cache_flush = 1;
+void gfx_shader_cache_flush(int on) { cache_flush = on; }
+
+static int cache_write(const char *path, const void *data, size_t n) {
+    return cache_flush ? plat_file_write_atomic(path, data, n) : plat_file_write_lazy(path, data, n);
+}
+
 static void use_store(const uint8_t h[32], const UseMask *m) {
     char p[PATH_CAP + 80];
     uint8_t name[32];
     use_name(h, name);
     use_path_of(name, p);
     uint32_t f[5] = {USE_MAGIC, USE_VERSION, m->slots, m->attrs, m->fouts};
-    plat_file_write_atomic(p, f, sizeof f);
+    cache_write(p, f, sizeof f);
     UseRec r;
     use_rec_fill(&r, name, m);
     plat_mutex_lock(&use_files_lock);
@@ -1700,13 +1719,30 @@ static size_t pack_answers(uint8_t *o, const GfxShaderAnswers *a) {
 // 2: a triangle naming a vertex past the meshlet's last is dropped, as the mesh stage drops it; 3: the buffer's layout
 // with room for the tasks (vertices from 8 MiB), and the task kernels
 #define MESHC_REVISION 3u
+
+// The subgroup lanes a stage's programs are translated for (the request's "subgroup", build_request): the vertex,
+// compute or fragment stage's answer, which task and mesh stages and their kernels share unless they are pinned.
+static uint32_t xlate_lanes(int stage) {
+    uint32_t lanes = host_sg[stage == GFX_STAGE_VS ? 0 : stage == GFX_STAGE_CS ? 2 : 1];
+#ifdef GAME_NS2
+    if (gfx_shader_mesh_subgroup &&
+        (stage == GFX_STAGE_TS || stage == GFX_STAGE_MS || stage == GFX_STAGE_MSC || stage == GFX_STAGE_TSC))
+        lanes = gfx_shader_mesh_subgroup;
+#endif
+    return lanes;
+}
+
 static int build_code_hash(int stage, const uint8_t *control, const uint8_t *code, uint64_t code_size,
                            const uint8_t *c1, uint32_t c1_len, uint8_t hash[32]) {
-    static const char tag[8] = "TKMP\1", tag_whole[8] = "TKMW\1", tag_voteu[8] = "TKVU\1";
+    static const char tag[8] = "TKMP\1", tag_whole[8] = "TKMW\1", tag_voteu[8] = "TKVU\1", tag_wide[8] = "TKWL\1";
     int tagged = stage == GFX_STAGE_MS && nvn2_ctl_mesh_points(control, code, code_size);
     // A program whose VOTEU writes a uniform predicate is another translation since patch 0042 (the eye shaders'
     // probe light): a tag keeps the earlier translator identity for every other program
     int voteu = nvn2_ctl_voteu_pred(control, code, code_size);
+    // A compute program with REDUX, MATCH or a per-lane HMMA, LDSM or MOVM is another translation since patch 0044 where
+    // compute is translated for subgroups wider than 32 lanes (AMD GCN): a tag there only. Every other device keeps
+    // every key; this one's entries for those programs, made with the first warp's lanes, are not found any more.
+    int wide = stage == GFX_STAGE_CS && xlate_lanes(stage) > 32 && nvn2_ctl_warp_lanes(control, code, code_size);
     // Where mesh shaders are asked for with whole index vectors (gfx_shader_mesh_whole, patch 0041: every device but
     // NVIDIA's) they are other translations of the same programs: a second tag, there only, keeps the two apart
     // without another translator identity for everything else the device has cached.
@@ -1715,7 +1751,7 @@ static int build_code_hash(int stage, const uint8_t *control, const uint8_t *cod
     whole = gfx_shader_mesh_whole && stage == GFX_STAGE_MS && nvn2_ctl(control);
 #endif
     size_t total = 4 + CONTROL_SIZE + 8 + (size_t)code_size + 4 + c1_len + (tagged ? sizeof tag : 0) + (whole ? sizeof tag_whole : 0) +
-                   (voteu ? sizeof tag_voteu : 0);
+                   (voteu ? sizeof tag_voteu : 0) + (wide ? sizeof tag_wide : 0);
     uint8_t *buf = malloc(total), *p = buf;
     if (!buf) return 0;
     // a mesh emulation kernel carries its layout's revision: a change of the kernel (tools/xlate MeshStageWrapper
@@ -1728,7 +1764,8 @@ static int build_code_hash(int stage, const uint8_t *control, const uint8_t *cod
     if (c1_len) memcpy(p, c1, c1_len), p += c1_len;
     if (tagged) memcpy(p, tag, sizeof tag), p += sizeof tag;
     if (whole) memcpy(p, tag_whole, sizeof tag_whole), p += sizeof tag_whole;
-    if (voteu) memcpy(p, tag_voteu, sizeof tag_voteu);
+    if (voteu) memcpy(p, tag_voteu, sizeof tag_voteu), p += sizeof tag_voteu;
+    if (wide) memcpy(p, tag_wide, sizeof tag_wide);
     rt_sha256(buf, total, hash);
     free(buf);
     return 1;
@@ -1891,7 +1928,7 @@ static size_t build_request(char *o0, const char *hex, const char *stage, const 
 #ifdef GAME_NS2
     o = ns2_request(o, stage, control);
 #endif
-    int si = !strcmp(stage, "vs") ? 0 : !strcmp(stage, "cs") ? 2 : 1;   // gfx_shader_set_host answers
+    int si = !strcmp(stage, "vs") ? 0 : !strcmp(stage, "cs") ? 2 : 1;   // gfx_shader_set_host answers (as xlate_lanes)
     if (!host_f64) o += sprintf(o, ",\"softfloat64\":true");
     if (a && a->mvprev && !strcmp(stage, "vs")) o += sprintf(o, ",\"mvprev\":true");
     if (host_sbuf) o += sprintf(o, ",\"sbuf_align\":%u", host_sbuf);
@@ -2065,7 +2102,7 @@ static void in_store(const uint8_t iid[32], int stage, const uint8_t *control, c
     if (r->c1_len) memcpy(o, r->c1, r->c1_len);
     snprintf(tmp, PATH_CAP + 120, "%s/in", cache_dir);
     mkdir_p(tmp);
-    plat_file_write_atomic(p, buf, n);
+    cache_write(p, buf, n);
     free(buf);
 }
 
@@ -2175,7 +2212,7 @@ static const GfxShader *translate_one(const Req *r, int stage, const uint8_t *co
         plat_file_delete(spv_path), plat_file_delete(res_path);
         return fail_keep(key, reply, hex);
     }
-    plat_file_flush(spv_path), plat_file_flush(res_path);   // the translator wrote them; on disk before use or rename
+    if (cache_flush) plat_file_flush(spv_path), plat_file_flush(res_path);   // the translator wrote them: on disk first
     if (!(s = disk_load(key, r->iid))) return fail_keep(key, "translator output missing or malformed", hex);
     if (!r->final) {                                       // name the files after the cache key, remember the mask
         m = use_of(s);
@@ -2183,9 +2220,10 @@ static const GfxShader *translate_one(const Req *r, int stage, const uint8_t *co
         char mhex[65], to[PATH_CAP + 80];
         key_hex(mk, mhex);
         snprintf(to, PATH_CAP + 80, "%s/%s.spv", cache_dir, mhex);
-        int moved = plat_file_replace(spv_path, to);
+        int (*move)(const char *, const char *) = cache_flush ? plat_file_replace : plat_file_replace_lazy;
+        int moved = move(spv_path, to);
         snprintf(to, PATH_CAP + 80, "%s/%s.res.json", cache_dir, mhex);
-        moved = moved && plat_file_replace(res_path, to);
+        moved = moved && move(res_path, to);
         if (moved) {
             use_store(r->code_hash, &m);
         } else {                                           // keep the mask for this run only
@@ -2207,11 +2245,14 @@ static const GfxShader *translate(const Req *r, int stage, const uint8_t *contro
                                   const GfxShaderAnswers *a) {
     int away = kern_core_away();
     const uint8_t *id = r->final ? r->key : r->code_hash;
+    uint64_t tf = plat_now_ns();
     flight_enter(id);
     uint64_t t0 = plat_now_ns(), x0 = (uint64_t)n_xlated;
     const GfxShader *s = translate_one(r, stage, control, code, a);
+    uint64_t t1 = plat_now_ns();
+    plat_add64(&tm_flight, (int64_t)(t0 - tf)), plat_add64(&tm_one, (int64_t)(t1 - t0)), plat_inc64(&tm_n);
     if ((uint64_t)n_xlated != x0)   // translated here, not found in a cache: in play it goes into the ledger (prep.c)
-        prep_note(PREP_XLATE, 0, (double)(plat_now_ns() - t0) / 1e6);
+        prep_note(PREP_XLATE, 0, (double)(t1 - t0) / 1e6);
     flight_leave(id);
     kern_core_back(&away);
     return s;
@@ -2840,10 +2881,21 @@ static long long prepare_files(const char *ans_path, const char *prg_path, int t
     for (int i = 0; i < threads; i++)
         if ((t[k] = plat_thread_new(prep_worker, &p, "shader prepare"))) k++;
     if (!k) prep_worker(&p);
+    int64_t was[5] = {tm_xchg, tm_svc_wait, tm_flight, tm_one, tm_n};
+    double tw = (double)plat_now_ms();
     for (int m = 0; m < k; m++)
-        while (!plat_thread_join_ns(t[m], 5000000000u))
-            rt_log("gfx_shader: prepare: %lld of %zu pairs, %llu translated, %.0f ms", (long long)p.done, p.n_ans,
-                   (unsigned long long)((uint64_t)n_xlated - xl0), (double)plat_now_ms() - t0);
+        while (!plat_thread_join_ns(t[m], 5000000000u)) {
+            // the window since the line before: translators busy on average, and a translation's time by part (ms)
+            int64_t now[5] = {tm_xchg, tm_svc_wait, tm_flight, tm_one, tm_n}, d[5];
+            for (int j = 0; j < 5; j++) d[j] = now[j] - was[j], was[j] = now[j];
+            double tn = (double)plat_now_ms(), per = d[4] ? 1e6 * (double)d[4] : 1;
+            rt_log("gfx_shader: prepare: %lld of %zu pairs, %llu translated, %.0f ms; %.1f of %d translators busy, a "
+                   "translation %.0f ms: translator %.0f, waiting for one %.0f, cache files %.0f, same program %.0f",
+                   (long long)p.done, p.n_ans, (unsigned long long)((uint64_t)n_xlated - xl0), tn - t0,
+                   (double)d[0] / 1e6 / (tn - tw > 1 ? tn - tw : 1), procs, (double)(d[3] + d[2]) / per,
+                   (double)d[0] / per, (double)d[1] / per, (double)(d[3] - d[0] - d[1]) / per, (double)d[2] / per);
+            tw = tn;
+        }
     svc_set_limit(svc_runtime_limit());
     rt_log("gfx_shader: prepare: %zu %s of %zu programs: %llu translated, %lld failed, %lld without a program, the rest "
            "cached; %lld default variants refined; %.0f ms", p.n_ans, what, p.progs.n,

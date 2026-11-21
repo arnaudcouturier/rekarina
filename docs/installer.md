@@ -202,6 +202,17 @@ bin/                  totk_xlate, hactool, ninja, libSDL3.so.0
   SteamOS 3): the official LLVM binaries and the `cryptography` wheel are built against it. `make_release_linux.py`
   checks every ELF file in the folder against that floor (`check_glibc`), and the setup's check step stops with one
   message on an older system.
+- The same setup folder is also packed as `Rekarina-Setup-<version>-linux-x86_64.tar.gz` (`tools/pack_linux_release.sh
+  <setup folder>`, with `SHA256SUMS` for it and the AppImage): unpack it and run `./AppRun`; its setup keeps its temp
+  folder in `temp/` of the unpacked folder. `.github/workflows/release-linux.yml` makes both by hand from the Actions tab.
+  Checked 2026-11-20 on Fedora 44, from the AppImage's own mount (`--appimage-mount`, with `--temp` inside the install
+  folder as the window does): check, extract, lift, compile (10 minutes with the bundled LLVM and sysroot; the binary
+  needs glibc 2.29, links Opus, libvpx, zstd and dav1d statically and passes `--selftest`), prompts, shader
+  preparation (16 minutes), package and the driver-cache warm-up (26 minutes on the first start) all finished, and the
+  game it built starts and runs at 62 fps in the title scene. The Python of the AppImage lives on a read-only mount, so
+  the `zbic` wheel goes under the setup's temp folder (`installer/oot.py` `ensure_zbic`). The setup's last step, the
+  texture cache (`--no-textures` skips it), ran the machine out of memory (31 GiB with 16 GiB of zram swap) and froze it
+  after 4.4 GiB of the cache; on a machine with less free memory pass `--no-textures`.
 - The setup's temp folder is `.setup-temp` inside the install folder (`--temp` changes it): the AppImage is mounted
   read-only, and a Steam Deck's `/home` is often too full for the generated C while the game goes to the SD card.
 - The game keeps Mesa's shader cache in `mesa-cache` beside `totk` unless `MESA_SHADER_CACHE_DIR` is set, for the
@@ -252,7 +263,9 @@ the same way, from the player's NUP container. The player chooses the folder tha
 folder; the steps are those of `installer/oot.py`:
 
 
-1. **Check**: the `.nup` in the folder (the largest one, also one level down), its newest package's ExeFS against the
+1. **Check**: the `.nup` in the folder (also one level down): the one that holds the game's title id
+   (`0400486024DEC000`, `tools/oot_exefs.py find_nup`; the largest of those, else the largest `.nup`: a folder of
+   several Switch 2 dumps gave another game's), its newest package's ExeFS against the
    hashes the code patches were written for (`tools/data/expected-oot.json`), the tools, the free space.
 2. **Extract** the ExeFS (`tools/oot_exefs.py`, the NUP reader in `tools/vendor/nup`): as stored for the lifter,
    with uncompressed modules into `<install folder>/exefs` for the game.
@@ -270,10 +283,16 @@ folder; the steps are those of `installer/oot.py`:
    a new exe costs the compile and the package step (which copies it and warms the driver's cache under the game's file
    name), not the preparation. A record made under the older key form is taken over (`Step.adopts`) when its release
    is in `LEGACY_PREPARED_BY` and the translator is the one that prepared it.
-   Every run prepares every variant (`all`), in the foreground: 35 to 40 minutes of the shader part on 16 threads
-   (2116 s from nothing; 2269 s from a folder that had prepared the variants play met, of which the translation took
-   11 minutes, the driver's phase 25 and the pack 2), the whole setup about an hour, longer on fewer threads (the
-   estimate scales the step by 16 / logical cores, up to four times). 1.2.1 to 1.2.3
+   Every run translates every variant (`all`), in the foreground, and since 1.2.8 only translates
+   (`REKARINA_PREPARE_DRIVER=0` through the environment, so the tools and the key stay as they were): the driver's
+   build of every prepared variant's stage library, 25 of the step's 35-40 minutes on 16 threads and 20 minutes to 1.5
+   hours on players' PCs (a cold driver cache; an AMD card, whose disk cache is keyed to the exe's path, built them a
+   second time in the game folder), is the game's first start and the launcher's background work (below). The
+   translation writes the shader cache without a disk flush per file (`gfx_shader_cache_flush`; the package step packs
+   and checks every file afterwards): until 1.2.7 each translated shader waited for four flushes and four write-through
+   renames, which held players on a DRAM-less NVMe, a SATA SSD or an HDD (and under Proton) to a few shaders a second with
+   the translators and the processor idle. Its progress line every 5 s says where the time goes ("N of P translators
+   busy, a translation X ms: translator, waiting for one, cache files, same program"). 1.2.1 to 1.2.3
    prepared the variants play met on a first install (`met`, `--met-only`, a sixth of the work) and left the rest to a
    background job of the launcher; play then translated and built the rest in its frames, and a setup run from a fresh
    temp folder over a folder that had prepared all prepared `met` and its package replaced the folder's pack of every
@@ -290,7 +309,12 @@ folder; the steps are those of `installer/oot.py`:
      only the folder's holds go into it when both were made under one translator (`package_oot.py keep_pack_entries`).
    `--all-shaders` and `--shaders-later` are still taken and change nothing.
 6. **Package** the folder (`tools/package_oot.py`): `Rekarina.exe`, its libraries, the caches and `rekarina.ini`
-   (a `totk.ini` left by an earlier package is renamed to it).
+   (a `totk.ini` left by an earlier package is renamed to it). A copy and nothing else: the game's records go back
+   only where the build folder's copy is newer (what the game wrote since stays), the driver's `nv-cache` only into a
+   folder without one, and a file that is there already is not copied again. Until 1.2.7 the step then ran
+   `Rekarina.exe --warm-shaders` and `tools/oot_prepare_textures.py` while the player waited (20 minutes to 1.5 hours
+   and about 43 minutes on some PCs); now it writes `build-cache/background.json` with that work, each part keyed by
+   what it follows from (`plan_background`).
 
 **Shortcuts to the launcher.** `Rekarina.exe` in the game folder is the game alone, and players looking there for the
 launcher (to update) did not find it: it lives in `<home>\setup\<version>\Rekarina-Launcher.exe`
@@ -327,11 +351,40 @@ PowerShell of its own once the launcher's process has ended (`-WaitPid`), so it 
 `python tests/uninstall_test.py` runs it on scratch installs (application data, Start menu, desktop and registry key
 of the test's own).
 
-**No preparation in the background.** 1.2.1 to 1.2.3 prepared the rest of the variants of a `met` folder from the
-launcher itself (`installer/shaderjob.py`: the setup with `--all-shaders` as a child at below-normal priority while the
-window was open and no game ran, with a row and a Pause button on the home sheet). From the release after 1.2.3 on, the launcher starts and
-offers no such job (`RekarinaApp.shader_wanted`) and its home sheet has no shader row: everything is prepared by the
-setup run, before play. The job's code stays for now.
+**What the first start prepares, and the launcher before it.** Play never waits on anything that was not prepared:
+the game's entry step (`runtime/vk_pipeline.c` `vk_pipeline_prewarm`, with its progress picture, closable and resumed
+at the next start) builds the pipelines play recorded, then every prepared variant's stage library the driver does not
+have yet (`shader-warm-done.bin`: a bit per variant of `shader-prepared.bin`, keyed by the device, the driver, its cache
+identity, the library state, the exe's path and the list), and beside them walks the dump's texture archives into the
+texture cache (`runtime/tex_prepare.c`, done once `tex-cache/prepared.txt` names this dump). The walk runs in a child
+process of the game's exe (`--scan-textures`, `prep.c` `prep_child`), whose count lines the step reads: done inside
+the game's process on a cold first start it left 11.6 GiB of buffers and 31.5 GiB of the driver's memory there, and
+play failed for want of memory. The child ends when its input closes, so closing the game during the step leaves none
+behind; it writes its own log (`logs/rekarina-scan-textures.log`, in the problem report), and only
+`REKARINA_WARM_STOP` gives it a stop file (Play leaves the launcher's behind). The libraries are
+built in the game's own process: the drivers give each process a disk cache file of its own (NVIDIA's `GLCache`: the
+first process takes the folder's file, one started while it runs gets a new empty one, and none reads another's;
+AMD's `VkCache` keeps `_1` files the same way), so a libraries child of the running game built every library into a
+file the game never read; and their memory is small (the driver's footprint did not move over 48,000 of them in the
+game's process). The picture counts all
+three and gives one time left (`prep.c` `prep_progress_left`: each part at its own measured pace; the pipelines and the
+libraries one after the other, the textures beside them), and the log has a line every 30 s with the parts' counts. It
+takes long the first time and after a driver update: about half an hour on 16 threads with a cold driver cache.
+The launcher gives it a head start: from the setup's finish screen on (which says how long the first start would take),
+while its window is open and no game runs, it runs `python -m installer.oot --dest <game folder> --background`
+(`background_main`) as a child at below-normal priority on all cores but one (`installer/shaderjob.py`, a row with a
+count, a time left and Pause on the home sheet): `Rekarina.exe --warm-libraries` (the entry step without its pipelines:
+the libraries alone, built as the game's start builds them, into the driver's disk cache, `pipeline-cache.bin` neither
+read nor written), then `Rekarina.exe --scan-textures`. Play writes
+`build-cache/background.stop` (`stop_background`): the build ends after the libraries in the driver's hands
+(`REKARINA_WARM_STOP`, exit code 3), the texture walk after its archive. The launcher's window stays responsive
+meanwhile and the game starts only once the job has ended (`ShaderJob.stop_begin`, `stop_poll`): a build killed while
+it writes the driver's cache may leave that file damaged (a first start after such a kill crashed in the driver's
+compiler), and one still alive holds it, so the game would get an empty file of its own. After
+`BACKGROUND_STOP_WAIT` (20 s; a cold mesh library takes up to 15) the job is stopped the hard way: its tree killed,
+its journal removed, and every process of it gone before the game starts. Closing the launcher stops the job within
+two seconds the hard way. The stop file goes once the job has. Whatever was done counts for the entry step, which does the rest. 1.2.1 to 1.2.3 ran
+the setup's own shader step this way for the rarer variants.
 
 The RomFS is not copied: `rekarina.ini` names the NUP and the game reads it in place, so the dump must stay where it is.
 A second run on the same folder continues or updates it under the rule of `installer/runner.py`; the dump is asked
@@ -412,11 +465,15 @@ the tools read zstd through the standard library (`tools/py314/zstandard.py` sta
 for the vendored NUP reader; the prompt overlays come out byte for byte the same). One part is not in the folder: the
 `zbic` package that unpacks the game's main module is GPL software, so the check step downloads its wheel for the
 running Python from the Python Package Index (`win_amd64`, on x86-64 Linux the `manylinux` one) and verifies it against
-the index's SHA-256 (`installer/oot.py` `ensure_zbic`); the first setup on a machine needs the internet for that. The shader
-preparation runs under the game's own file name and the package step warms the prepared shaders in the install folder
-(`Rekarina.exe --warm-shaders`), because NVIDIA's driver names its disk cache after the exe's file name and AMD's keys it
-to the exe's path (docs/oot-notes.md, 2026-11-11 morning). The long shader step reports its count
-(`prebuild preparation progress: N of M variants`) so the window's bar moves through it.
+the index's SHA-256 (`installer/oot.py` `ensure_zbic`); the first setup on a machine needs the internet for that.
+When Python's certificate check fails (an antivirus or proxy that scans HTTPS, a chain Windows completes and
+OpenSSL does not), the index and the wheel come through Windows' own TLS (`installer/net.py` `fetch_bytes`:
+PowerShell's `Invoke-WebRequest`), the checksum checked as before; the setup log says which way it went. The shader
+preparation runs under the game's own file name; the driver's build of the prepared shaders happens in the game folder
+(the entry step, the launcher's background work), because NVIDIA's driver names its disk cache after the exe's file name
+and AMD's keys it to the exe's path (docs/oot-notes.md, 2026-11-11 morning). The translation reports its count
+(`gfx_shader: prepare: N of M pairs`) so the window's bar moves through it, and every estimate follows the measured
+pace of the phase that runs (`installer/eta.py`).
 
 The Linux setup folder comes from the same script with a Linux toolchain folder as `--from`:
 

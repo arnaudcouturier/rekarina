@@ -114,6 +114,19 @@ static inline int nvn2_ctl_voteu_pred(const uint8_t *c, const uint8_t *code, uin
     }
     return 0;
 }
+// An NVN2 program with REDUX (0x3c4), MATCH (0x3a1), HMMA (0x23c), LDSM (0x83b) or MOVM (0x23a): the warp collectives
+// that translator patch 0044 translates otherwise in compute shaders translated for subgroups wider than 32 lanes
+// (gfx_shader.c build_code_hash).
+static inline int nvn2_ctl_warp_lanes(const uint8_t *c, const uint8_t *code, uint64_t code_size) {
+    if (!nvn2_ctl(c)) return 0;
+    for (uint64_t o = 0; o + 16 <= code_size; o += 16) {
+        uint64_t lo;
+        memcpy(&lo, code + o, 8);
+        uint32_t op = (uint32_t)(lo & 0xfff);
+        if (op == 0x3c4 || op == 0x3a1 || op == 0x23c || op == 0x83b || op == 0x23a) return 1;
+    }
+    return 0;
+}
 // An NVN2 task or mesh shader's workgroup threads (control +0x58, u16).
 static inline uint32_t nvn2_ctl_mesh_threads(const uint8_t *c) {
     uint16_t t;

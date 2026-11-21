@@ -419,21 +419,40 @@ static struct {
     VkDlaaCamera fg_cam;         // this frame's camera (mv_pass), fg_cam_ok when known
     int fg_cam_ok;
     float fg_jx, fg_jy;
-    int fg_fresh, fg_reset;      // fresh: not handed out yet (vk_dlaa_fg_inputs)
-    // the picture without the HUD for frame generation (vk_dlaa_fg_hudless): DLSS's output encoded to sRGB as the game's
-    // last pass encodes its picture, then copied bit for bit into an RGBA8 UNORM image, the format the present reads; with
-    // HDR on, DLSS's output as RGBA16F, as the game's float picture the present encodes (hl_srgb unused)
+    int fg_fresh, fg_reset;      // fresh: not handed out yet (vk_dlaa_fg_inputs); reset: this evaluation reset its history
+    // the picture without the HUD for frame generation (vk_dlaa_fg_hudless): the game's finished picture before its HUD
+    // (hudless_at_pass) encoded to sRGB as the game's last pass encodes its picture, then copied bit for bit into an RGBA8
+    // UNORM image, the format the present reads; with HDR on, as RGBA16F, as the game's float picture the present encodes
+    // (hl_srgb unused)
     VkImage hl_srgb, hl;
     VmaAllocation hl_srgb_mem, hl_mem;
     VkImageView hl_view;
     uint32_t hl_w, hl_h;
     VkFormat hl_fmt;
     int hl_fresh;
+    // where that copy is taken (hudless_at_pass): after the evaluation at the scaling dispatch the game's own passes still
+    // run on the picture (in DLAA its anti-aliasing and its scaler's dispatches), so the copy waits for the first render
+    // pass that draws into the picture (the HUD's) or into the window texture (a frame without HUD)
+    int hl_later;                // set by vk_dlaa_dispatch around its evaluation: the copy may wait
+    int hl_wait;                 // this frame's copy is still to be taken
+    const VkTexImage *hl_pic;    // the output-sized colour image a dispatch wrote last since the evaluation, NULL: none yet
+    VkImage hl_pic_image;
+    uint64_t hl_pic_addr;        // its storage: the HUD's pass may draw into it through another entry of that storage
+    uint32_t hl_ow, hl_oh;       // the output's size
+    uint64_t hl_taken, hl_window, hl_early, hl_missed;   // copies at the HUD's pass, at the window copy, at DLSS, none
+    // presents (the present thread) that found a later frame's HUD-less copy or depth and motion already recorded by the
+    // replay: hl_fresh and fg_fresh count the frames recorded since the present before
+    uint64_t hl_ahead, fg_ahead;
+    // the game's pause screens (vk_dlaa_fg_inputs): oot_pass is set while OoT's frame runs the upscaler at an output pass;
+    // fg_menu: the evaluation handed to frame generation ran there; fg_menu_on, fg_menu_at, fg_menu_n: the stretch now
+    int oot_pass, fg_menu, fg_menu_on;
+    uint64_t fg_menu_at, fg_menu_n, fg_menu_frames;
 } D = {.mv_ok = -1, .cfg_seen = ~0u};
 
 int vk_dlaa_fg_hudless(VkImage *img, VkImageView *view, uint32_t *w, uint32_t *h, VkFormat *fmt) {
-    if (!D.hl_fresh) return 0;
-    D.hl_fresh = 0;
+    int n = __atomic_exchange_n(&D.hl_fresh, 0, __ATOMIC_ACQ_REL);
+    if (!n) return 0;
+    if (n > 1) D.hl_ahead++;
     *img = D.hl, *view = D.hl_view, *w = D.hl_w, *h = D.hl_h, *fmt = D.hl_fmt;
     return 1;
 }
@@ -449,10 +468,39 @@ int vk_dlaa_fg_camera(VkDlaaCamera *c) {
     return 1;
 }
 
+// OoT's play frames run the upscaler at the game's scaling dispatch (vk_dlaa_dispatch); its pause screens draw their 3D
+// (the hero on the Equipment tab, the items turning) into a scene the game ends at an output pass (vk_dlaa_pass_),
+// with a camera of their own. Frame generation given those frames blended the tabs into each other and ghosted the
+// turning items (owner, 2026-11-20, DLSS-G), so they give it no inputs: both frame generations go off there (DLSS-G
+// keeps its resources, vk_dlssg.c) and the first play frame after them starts generation's history anew.
+// REKARINA_FG_MENU_OFF=0: such frames are handed on as before (test).
+static int fg_menu_frame(void) {
+    static int on = -1;
+    if (on < 0) on = rt_knob("FG_MENU_OFF", "1");
+    int menu = on && D.fg_menu;
+    uint64_t f = __atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED);
+    if (menu != D.fg_menu_on) {
+        if (menu) rt_log("dlaa: frame generation off from frame %llu: the scene is drawn outside the game's scaling dispatch "
+                         "(a pause screen)", (unsigned long long)f);
+        else rt_log("dlaa: frame generation back at frame %llu after %llu frames of a pause screen (stretch %llu)",
+                    (unsigned long long)f, (unsigned long long)(f - D.fg_menu_at), (unsigned long long)D.fg_menu_n);
+        if (menu) D.fg_menu_at = f, D.fg_menu_n++;
+        else D.fg_reset = 1;   // the frame before is the last one before the pause screen
+        D.fg_menu_on = menu;
+    }
+    if (menu) D.fg_menu_frames++;
+    return menu;
+}
+
 int vk_dlaa_fg_inputs(VkFfxImage *depth, VkFfxImage *mv, float *jx, float *jy, int *reset) {
-    if (!D.fg_fresh || D.failed) return 0;
-    D.fg_fresh = 0;
-    *depth = D.fg_depth, *mv = D.fg_mv, *jx = D.fg_jx, *jy = D.fg_jy, *reset = 0;
+    int n = __atomic_exchange_n(&D.fg_fresh, 0, __ATOMIC_ACQ_REL);
+    if (!n || D.failed) return 0;
+    if (n > 1) D.fg_ahead++;
+    if (fg_menu_frame()) return 0;
+    // the upscaler's history resets (another scene size, no camera, another scene target) are frame generation's too:
+    // its last frame's depth and motion are of another picture
+    *depth = D.fg_depth, *mv = D.fg_mv, *jx = D.fg_jx, *jy = D.fg_jy, *reset = D.fg_reset;
+    D.fg_reset = 0;
     return 1;
 }
 
@@ -1616,8 +1664,9 @@ static int perf_quality(uint32_t w, uint32_t ow) {
     return k >= 0.66 ? 2 : k >= 0.57 ? 1 : k >= 0.49 ? 0 : 3;
 }
 
-// dst: the target DLSS's picture goes to, NULL for the light target itself (DLAA in place).
-static void hudless(VkCommandBuffer cb, struct Size *e, uint32_t w, uint32_t h);
+// The HUD-less picture's copy of src (w x h, a colour image in GENERAL), and the log of the copies, below.
+static void hudless(VkCommandBuffer cb, VkImage src, uint32_t w, uint32_t h);
+static void hudless_log(void);
 
 // Creates the DLSS feature of a size; 0 when NGX refuses. The parameter object is the frame's (evaluate).
 static int feature_make(VkCommandBuffer cb, NgxParam *p, struct Size *e, uint32_t w, uint32_t h, uint32_t ow, uint32_t oh,
@@ -1769,6 +1818,8 @@ static void evaluate(VkExec *ex, const VkExecTarget *dst) {
     if (!NGX_OK(r)) return dl_fail("DLSS evaluation", r);
 evaluated:
     if (timed) times_mark(cb, T_DL1);   // through the recorder, after NGX's own commands
+    D.fg_reset |= D.reset;
+    D.fg_menu = D.oot_pass;
     D.reset = 0;
     D.last = e, e->used = D.evals + 1;
     full_barrier(cb);
@@ -1817,7 +1868,22 @@ evaluated:
     vkCmdBlitImage(cb, shown, VK_IMAGE_LAYOUT_GENERAL, dst->image, VK_IMAGE_LAYOUT_GENERAL, 1, &b, VK_FILTER_NEAREST);
     full_barrier(cb);
     if (dst != t) vk_dlaa_swap_img = t->img, vk_dlaa_swap_view = e->out_view;   // the scaling draw reads DLSS's picture
-    if (vk_dlaa_hudless_wanted) hudless(cb, e, ow, oh);   // frame generation keeps the HUD out of its generated frames
+    if (vk_dlaa_hudless_wanted) {   // frame generation keeps the HUD out of its generated frames
+        // At the scaling dispatch the copy waits for the HUD's first pass (hudless_at_pass): the game's anti-aliasing
+        // and its scaler still run on the picture in DLAA, the window copy encodes it. At an output pass the HUD is
+        // drawn into the same pass, so the copy is DLSS's output now.
+        static int at_dlss = -1;
+        if (at_dlss < 0) at_dlss = rt_knob("FG_HUDLESS_AT_DLSS", "0");   // REKARINA_FG_HUDLESS_AT_DLSS=1: the old copy point (test)
+        if (D.hl_later && !at_dlss) {
+            D.hl_wait = 1, D.hl_ow = ow, D.hl_oh = oh;
+            D.hl_pic = dst != t ? dst->img : NULL, D.hl_pic_image = dst != t ? dst->image : VK_NULL_HANDLE;
+            D.hl_pic_addr = D.hl_pic ? D.hl_pic->addr : 0;
+        } else {
+            hudless(cb, e->out, ow, oh);
+            D.hl_early++, D.hl_ow = ow, D.hl_oh = oh;
+            hudless_log();
+        }
+    }
     ex->recorded += 4;
     vk_exec_draw_new_cb();   // NGX bound pipelines and descriptor sets of its own: the next draw binds everything again
     D.jdepth = z->image;
@@ -1825,7 +1891,8 @@ evaluated:
     D.fg_depth = (VkFfxImage){z->image, z->format, w, h, 0};
     D.fg_mv = (VkFfxImage){e->mv, VK_FORMAT_R16G16_SFLOAT, w, h, 1};
     D.fg_depth_view = zv, D.fg_mv_view = e->mv_view;
-    D.fg_jx = jx, D.fg_jy = jy, D.fg_fresh = 1;
+    D.fg_jx = jx, D.fg_jy = jy;
+    __atomic_add_fetch(&D.fg_fresh, 1, __ATOMIC_ACQ_REL);
     next_jitter(w, ow);
     if (++D.evals == 1 || D.evals == 300 || D.evals % 3600 == 0)   // 300: one early line with the frames counted
         rt_log("dlaa: %llu frames anti-aliased (scene %ux%u, output %ux%u; %llu frames without the DLAA point, %llu with camera "
@@ -1837,13 +1904,13 @@ evaluated:
                (unsigned long long)D.why[2], (unsigned long long)R.made, (unsigned long long)R.missed);
 }
 
-// The HUD-less picture (vk_dlaa_fg_hudless): DLSS's output, which the HUD is then drawn over, through the encode the
-// game's last pass gives its picture (linear to sRGB), as RGBA8 UNORM bytes like the picture the present reads. With
-// HDR (REKARINA_HDR = 1) the game's picture stays float and linear up to the present, which encodes it to PQ
-// (vk_hdr_encode): DLSS's output is kept as RGBA16F for the same encode. The game's own HDR (native) encodes inside the
-// game, which this cannot follow: no HUD-less picture there.
+// The HUD-less picture (vk_dlaa_fg_hudless): the game's picture before its HUD (hudless_at_pass; DLSS's output where
+// the HUD follows in the same pass), through the encode the game's last pass gives its picture (linear to sRGB), as
+// RGBA8 UNORM bytes like the picture the present reads. With HDR (REKARINA_HDR = 1) the game's picture stays float and
+// linear up to the present, which encodes it to PQ (vk_hdr_encode): the copy is kept as RGBA16F for the same encode.
+// The game's own HDR (native) encodes inside the game, which this cannot follow: no HUD-less picture there.
 int vk_dlaa_hudless_wanted;
-static void hudless(VkCommandBuffer cb, struct Size *e, uint32_t w, uint32_t h) {
+static void hudless(VkCommandBuffer cb, VkImage src, uint32_t w, uint32_t h) {
     const VkCtx *c = vk_ctx();
     int hdr = vk_hdr_wanted() && !vk_hdr_native();
     if (vk_hdr_native()) return;
@@ -1884,18 +1951,18 @@ static void hudless(VkCommandBuffer cb, struct Size *e, uint32_t w, uint32_t h) 
     }
     VkImageBlit b = {.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .srcOffsets = {{0, 0, 0}, {(int32_t)w, (int32_t)h, 1}},
                      .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .dstOffsets = {{0, 0, 0}, {(int32_t)w, (int32_t)h, 1}}};
-    vkCmdBlitImage(cb, e->out, VK_IMAGE_LAYOUT_GENERAL, hdr ? D.hl : D.hl_srgb, VK_IMAGE_LAYOUT_GENERAL, 1, &b,
+    vkCmdBlitImage(cb, src, VK_IMAGE_LAYOUT_GENERAL, hdr ? D.hl : D.hl_srgb, VK_IMAGE_LAYOUT_GENERAL, 1, &b,
                    VK_FILTER_NEAREST);
     full_barrier(cb);
     if (hdr) {
-        D.hl_fresh = 1;
+        __atomic_add_fetch(&D.hl_fresh, 1, __ATOMIC_ACQ_REL);
         return;
     }
     VkImageCopy cp = {.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
                       .extent = {w, h, 1}};
     vkCmdCopyImage(cb, D.hl_srgb, VK_IMAGE_LAYOUT_GENERAL, D.hl, VK_IMAGE_LAYOUT_GENERAL, 1, &cp);
     full_barrier(cb);
-    D.hl_fresh = 1;
+    __atomic_add_fetch(&D.hl_fresh, 1, __ATOMIC_ACQ_REL);
 }
 
 static int scene_color(VkFormat f) {
@@ -1941,9 +2008,70 @@ int vk_dlaa_pathlog(void) {
     return 0;
 }
 
+// Frame generation's picture without the HUD is the game's finished picture right before its HUD: frame generation
+// tells the HUD apart by what differs between it and the presented frame, and keeps that out of the frames it makes.
+// The copy at DLSS's evaluation was taken before passes that still change the picture (OoT in DLAA: the game's own
+// anti-aliasing, three dispatches, and its scaler's dispatch run after DLSS, measured in a frame dump), so the
+// presented frame differed from it over the whole scene and generation took parts of the scene for interface. So the
+// evaluation at the scaling dispatch leaves the copy for later (hl_wait): every dispatch after it that writes a colour
+// image of the output's size names the picture (the last one is the one the HUD is drawn into), and the copy is taken
+// at the first render pass that draws into that picture (the HUD's) or, in a frame without HUD, into the window texture
+// the picture is copied into. A frame that reaches neither has none: frame generation then goes without one for it.
+static void hudless_track(VkExec *ex, const GfxShader *cs) {
+    const GfxShaderRes *r;
+    int n = gfx_shader_resources(cs, GFX_RES_IMG, &r);
+    vk_texture_lock();
+    for (int i = 0; i < n; i++) {
+        if (r[i].slot < 0 || r[i].slot >= 32) continue;
+        uint64_t h = ex->img[5][r[i].slot];   // the compute stage's images (NVN_STAGE_CS)
+        const VkTexImage *img = h ? vk_texture_by_id_locked((int)(h & 0xfffff), NULL, NULL) : NULL;
+        // the picture is float (B10G11R11 or RGBA16F, as the scene); the game's anti-aliasing also writes its blend
+        // weights into an RGBA8 image of the output's size (black with coloured edges), which taken for the picture
+        // gave frame generation green and yellow slabs and black areas with dots (owner, FSR 3 FG, 2026-11-20)
+        if (img && (img->aspect & VK_IMAGE_ASPECT_COLOR_BIT) && img->width == D.hl_ow && img->height == D.hl_oh &&
+            img->image && scene_color(img->format))
+            D.hl_pic = img, D.hl_pic_image = img->image, D.hl_pic_addr = img->addr;
+    }
+    vk_texture_unlock();
+}
+
+// The HUD-less copies so far, in the log at the first and every 1800th.
+static void hudless_log(void) {
+    uint64_t n = D.hl_taken + D.hl_window + D.hl_early;
+    if (n != 1 && n % 1800) return;
+    rt_log("dlaa: frame generation's HUD-less picture %ux%u: %llu taken before the HUD's pass, %llu at the window copy, "
+           "%llu at DLSS, %llu frames without one; presents that found a later frame's copy already recorded %llu, "
+           "its depth and motion %llu", D.hl_ow, D.hl_oh, (unsigned long long)D.hl_taken,
+           (unsigned long long)D.hl_window, (unsigned long long)D.hl_early, (unsigned long long)D.hl_missed,
+           (unsigned long long)D.hl_ahead, (unsigned long long)D.fg_ahead);
+}
+
+static void hudless_at_pass(VkExec *ex) {
+    const VkExecTarget *c = &ex->color[0];
+    if (ex->pass_ncolor < 1 || !c->image) return;
+    int pic = D.hl_pic && c->img && (c->img == D.hl_pic || (D.hl_pic_addr && c->img->addr == D.hl_pic_addr)) &&
+              c->width == D.hl_ow && c->height == D.hl_oh;
+    int window = !pic && ex->pass_ncolor == 1 && !ex->depth.image && output_target(c->format) && c->width == D.hl_ow &&
+                 c->height == D.hl_oh;
+    if (!pic && !window) return;
+    D.hl_wait = 0;
+    VkImage src = pic ? c->image : D.hl_pic ? D.hl_pic_image : D.last ? D.last->out : VK_NULL_HANDLE;
+    if (!src) return;
+    vk_exec_par_join();
+    vk_exec_barrier(ex);   // the dispatches that wrote the picture are done (no pass is open here)
+    VkCommandBuffer cb = ex->cb;
+    full_barrier(cb);
+    hudless(cb, src, D.hl_ow, D.hl_oh);
+    ex->recorded += 2;
+    if (pic) D.hl_taken++;
+    else D.hl_window++;
+    hudless_log();
+}
+
 static void vk_dlaa_pass_(VkExec *ex);
 void vk_dlaa_pass(VkExec *ex) {
     int armed0 = D.armed, done0 = D.done, ended0 = D.ended;
+    if (D.hl_wait) hudless_at_pass(ex);
     vk_dlaa_pass_(ex);
     if (vk_dlaa_pathlog()) {
         const VkExecTarget *c = &ex->color[0], *z = &ex->depth;
@@ -1968,6 +2096,7 @@ static int deferred;   // a scene-size G-buffer was seen: the deferred shape
 int vk_dlaa_dispatch(VkExec *ex, const GfxShader *cs) {
     static int on = -1;
     if (on < 0) on = rt_knob("DLAA_AT_DISPATCH", "1");
+    if (D.hl_wait && cs) hudless_track(ex, cs);   // after the evaluation: the picture the HUD-less copy is taken of
     if (!on || !dl_active() || D.done || !D.armed || deferred || !cs) return 0;
     const GfxShaderRes *r;
     if (!res_dlss_upscales()) {
@@ -1987,7 +2116,7 @@ int vk_dlaa_dispatch(VkExec *ex, const GfxShader *cs) {
         if (!reads) return 0;
         vk_exec_pass_end(ex);
         D.ended = D.done = 1, D.up = 0, D.at_dispatch++;
-        evaluate(ex, NULL);
+        D.hl_later = 1, evaluate(ex, NULL), D.hl_later = 0;
         return 0;
     }
     int n = gfx_shader_resources(cs, GFX_RES_IMG, &r);
@@ -2016,7 +2145,7 @@ int vk_dlaa_dispatch(VkExec *ex, const GfxShader *cs) {
         rt_log("PATHLOG   DLSS at the scaling dispatch: storage %llx %ux%u vkfmt %d, light %llx %ux%u", (unsigned long long)out->addr,
                out->width, out->height, (int)out->format, D.color.img ? (unsigned long long)D.color.img->addr : 0ull, D.color.width,
                D.color.height);
-    evaluate(ex, &dst);
+    D.hl_later = 1, evaluate(ex, &dst), D.hl_later = 0;
     return 1;
 }
 
@@ -2066,6 +2195,7 @@ static void vk_dlaa_pass_(VkExec *ex) {
     if (!deferred) {   // OoT's shape: the output pass ends the scene and runs DLSS
         int one = ex->pass_ncolor == 1 && c->image && !z->image && c->image != D.color.image && c->samples <= 1 &&
                   !c->is3d;
+        D.oot_pass = 1;   // a pause screen's scene (vk_dlaa_fg_inputs)
         if (one && c->width > D.color.width && c->height > D.color.height) {
             D.ended = D.done = D.up = 1;
             D.at_pass++;
@@ -2075,6 +2205,7 @@ static void vk_dlaa_pass_(VkExec *ex) {
             D.ended = D.done = 1;
             evaluate(ex, NULL);
         }
+        D.oot_pass = 0;
         return;
     }
     if (!D.ended) {
@@ -2171,6 +2302,31 @@ static void dlss_mode(void) {
     }
     int b = dl_active();
     if (b != bias_on) bias_on = b, vk_sampler_dlss_bias(b ? (fsr1() ? fsr1_bias() : res_dlss_lod_bias()) : 0.0f);
+    // The sharpness slider below its default (80 %) takes back the game's own texture sharpening as well, all of it at
+    // 0 % (vk_sampler_sharpness): at a native picture no RCAS runs, and 0 % still showed the game's sharp textures.
+    // At the default and above the game's textures stay as they are.
+    {   // DEBUG-SHARPAT: REKARINA_SHARPNESS_AT=<frame>:<value> sets the slider at that present (an A/B in one run)
+        static int at = -2, val;
+        static uint64_t frame;
+        if (at == -2) {
+            const char *e = cfg_get("REKARINA_SHARPNESS_AT");
+            if (!e || sscanf(e, "%d:%d", &at, &val) != 2) at = -1;
+        }
+        if (at >= 0 && ++frame == (uint64_t)at) {
+            char v[16];
+            snprintf(v, sizeof v, "%d", val);
+            cfg_set("REKARINA_SHARPNESS", v);
+        }
+    }
+    int s = cfg_int("REKARINA_SHARPNESS");
+    float take = s >= 80 ? 0.0f : s <= 0 ? 0.5f : 0.5f * (float)(80 - s) / 80.0f;
+    static float took = -1.0f;
+    if (take != took) {
+        took = take;
+        vk_sampler_sharpness(take);
+        rt_log("dlaa: the game's texture sharpening (LOD bias -0.5) %s at sharpness %d %%", take == 0 ? "as the game has it" :
+               take == 0.5f ? "taken back to 0" : "partly taken back", s < 0 ? 0 : s > 100 ? 100 : s);
+    }
 }
 
 
@@ -2201,6 +2357,8 @@ void vk_dlaa_frame(void) {
         D.hold = 0;
         return;
     }
+    if (D.hl_wait) D.hl_missed++, D.hl_wait = 0;   // no pass of the HUD or the window copy came: no HUD-less picture
+    D.hl_pic = NULL, D.hl_pic_image = VK_NULL_HANDLE, D.hl_pic_addr = 0;
     if (!dl_active()) return;
     if (!D.done) D.frames_missed++;
     if (D.jit_used && !D.done) D.hold = 60, D.holds++;   // jittered but not resolved: that frame shook

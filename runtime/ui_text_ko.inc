@@ -53,8 +53,8 @@
     [UI_MENU_ANISO] = "텍스처 필터링",
     [UI_MENU_ANISO_DESC] = "표면 텍스처의 이방성 필터링입니다. 비스듬히 보이는 지면, 길, 벽이 멀리까지 흐려지지 않고 선명하게 보입니다. 게임: Switch에서처럼 게임이 요청하는 수준입니다.",
     [UI_MENU_ANISO_GAME] = "게임",
-    [UI_MENU_SHARPNESS] = "FSR 선명도",
-    [UI_MENU_SHARPNESS_DESC] = "FSR 확대 후의 샤프닝입니다. 0이면 끕니다.",
+    [UI_MENU_SHARPNESS] = "선명도",
+    [UI_MENU_SHARPNESS_DESC] = "FSR 또는 DLSS 확대 후의 샤프닝과, 80% 미만에서는 게임 자체의 텍스처 선명도입니다. 0이면 모두 끕니다.",
     [UI_MENU_COLOR] = "색상",
     [UI_MENU_COLOR_PRESET] = "색상 프로필",
     [UI_MENU_COLOR_PRESET_DESC] = "아래 네 가지 값을 설정합니다. 비비드: 대비와 채도를 높이고 어두운 부분을 조금 "
@@ -110,7 +110,7 @@
     [UI_MENU_TAA] = "업스케일러",
     [UI_MENU_TAA_DESC] = "DLSS / DLAA 항목이 사용할 업스케일러입니다: NVIDIA DLSS(RTX GPU), AMD FSR(모든 GPU, 템포럴) 또는 AMD FSR 1(모든 GPU, 공간: 가장 가벼움, 구형 그래픽카드와 휴대용 게이밍 PC용). 재시작 후 적용됩니다.",
     [UI_MENU_FRAMEGEN] = "프레임 생성",
-    [UI_MENU_FRAMEGEN_DESC] = "게임이 그리는 두 프레임 사이마다 생성된 프레임을 하나씩 넣으며, HUD는 생성에서 제외됩니다. AMD FSR은 모든 GPU, NVIDIA DLSS는 RTX 40 및 50 시리즈에서 사용할 수 있습니다. 재시작 후 적용됩니다.",
+    [UI_MENU_FRAMEGEN_DESC] = "게임이 그리는 두 프레임 사이마다 생성된 프레임을 하나씩 넣으며, HUD는 생성에서 제외됩니다. AMD FSR은 모든 GPU, NVIDIA DLSS는 RTX 40 및 50 시리즈에서 사용할 수 있습니다. 시간적 업스케일러(DLSS / DLAA)를 켜고 그 모션 벡터를 사용합니다. 부하는 DLSS 모드에 따라 달라지며 DLAA (네이티브)가 가장 무겁고 품질과 균형은 더 가볍습니다. 재시작 후 적용됩니다.",
     [UI_MENU_FRAMEGEN_NEEDS] = "DLSS / DLAA를 켜야 합니다. 그 모션 벡터를 사용합니다.",
     [UI_MENU_DLAA] = "NVIDIA DLSS / DLAA",
     [UI_MENU_DLAA_DESC] = "3D 장면에 NVIDIA DLSS를 적용합니다(NVIDIA RTX GPU, " DLSS_FILE " 파일이 " EXE_FILE " 옆에 있어야 "
@@ -140,7 +140,8 @@
 
     [UI_MENU_FPS_LIMIT] = "프레임 레이트 제한",
     [UI_MENU_FPS_LIMIT_DESC] = "게임이 1초에 그리는 최대 프레임 수입니다. 60을 넘는 값은 실험적 기능이며 게임 속도 실시간 "
-                               "동기화가 필요합니다.",
+                               "동기화가 필요합니다. "
+                               "AMD 프레임 생성에서는 화면에 보이는 프레임 수를 기준으로 하므로 게임 자체는 그 절반을 그립니다. DLSS 프레임 생성은 이 값에 생성 프레임을 더합니다.",
     [UI_MENU_FPS_30] = "30 FPS", [UI_MENU_FPS_40] = "40 FPS", [UI_MENU_FPS_45] = "45 FPS",
     [UI_MENU_FPS_60] = "60 FPS", [UI_MENU_FPS_90] = "90 FPS", [UI_MENU_FPS_120] = "120 FPS", [UI_MENU_FPS_144] = "144 FPS",
     // the monitor's refresh rate; printf format with the rate in Hz when it is known
@@ -244,12 +245,13 @@
     [UI_MENU_STICK_DEADZONE_DESC] = "게임패드 스틱을 얼마나 움직여야 게임이 입력으로 받아들이는지 정합니다. 캐릭터나 카메라가 저절로 움직이면 값을 높이세요. 스틱에서 손을 떼고 \"현재 스틱\" 값을 확인한 다음, 데드존을 그보다 몇 퍼센트 높게 설정합니다.",
     [UI_MENU_STICK_DEADZONE_NOW] = "현재 스틱: %.0f%%",
     [UI_MENU_MOUSE_MODE] = "마우스 카메라",
-    [UI_MENU_MOUSE_MODE_DESC] = "직접: PC 게임처럼 마우스를 움직인 만큼 카메라가 돌아가며, 스틱 데드존이나 커브가 없습니다(게임 1.4.3 전용이며 다른 버전은 스틱 에뮬레이션을 사용합니다). 스틱 에뮬레이션: 마우스가 오른쪽 스틱 역할을 합니다.",
+    [UI_MENU_MOUSE_MODE_DESC] = "직접: PC 게임처럼 마우스를 움직인 만큼 카메라가 돌아가며, 스틱 데드존이나 커브가 없습니다(게임 1.4.3 전용이며 다른 버전은 스틱 에뮬레이션을 사용합니다). 스틱 에뮬레이션: 마우스가 오른쪽 스틱 역할을 합니다. 끄기: 마우스가 카메라를 돌리지 않으며, 커서는 메뉴에서 그대로 쓸 수 있습니다.",
     [UI_MENU_FAST_TEXT] = "빠른 대화",
     [UI_MENU_FAST_TEXT_DESC] = "게임 메시지가 문장 사이에 두는 멈춤을 없애 글이 멈추지 않고 이어집니다.",
-    [UI_MENU_MOUSE_MODE_DESC_OOT] = "직접: 마우스를 움직인 만큼 정확히 카메라가 회전하며, 속도 제한이 없고 스틱의 데드존이나 커브도 없습니다. 스틱 에뮬레이션: 마우스가 오른쪽 스틱처럼 작동하며 스틱의 커브와 최고 속도가 적용됩니다.",
+    [UI_MENU_MOUSE_MODE_DESC_OOT] = "직접: 마우스를 움직인 만큼 정확히 카메라가 회전하며, 속도 제한이 없고 스틱의 데드존이나 커브도 없습니다. 스틱 에뮬레이션: 마우스가 오른쪽 스틱처럼 작동하며 스틱의 커브와 최고 속도가 적용됩니다. 끄기: 마우스가 카메라를 돌리지 않으며, 커서는 메뉴에서 그대로 쓸 수 있습니다.",
     [UI_MENU_MOUSE_STICK] = "스틱 에뮬레이션",
     [UI_MENU_MOUSE_DIRECT] = "직접",
+    [UI_MENU_MOUSE_OFF] = "끄기",
     [UI_MENU_MENU_CURSOR] = "게임 메뉴에서 마우스 사용",
     [UI_MENU_MENU_CURSOR_DESC] = "게임 자체의 메뉴(타이틀, 인벤토리, 상점, 대화 선택지)에 포인터가 표시됩니다. 포인터 아래의 항목이 선택되고, 왼쪽 클릭으로 결정하며 오른쪽 클릭으로 돌아갑니다. 마우스나 키를 마지막으로 사용했을 때만 표시되므로 게임패드를 쓸 때는 메뉴가 원래대로 보입니다(게임 1.4.3).",
     [UI_MENU_MOUSE_SENS] = "마우스 카메라 감도",

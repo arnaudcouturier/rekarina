@@ -56,8 +56,8 @@
     [UI_MENU_ANISO] = "Filtragem de texturas",
     [UI_MENU_ANISO_DESC] = "Filtragem anisotrópica das texturas das superfícies: o chão, as estradas e as paredes vistos de um ângulo raso mantêm-se nítidos à distância em vez de ficarem desfocados. Jogo: o nível que o jogo pede, como na Switch.",
     [UI_MENU_ANISO_GAME] = "Jogo",
-    [UI_MENU_SHARPNESS] = "Nitidez do FSR",
-    [UI_MENU_SHARPNESS_DESC] = "Nitidez aplicada depois da escala FSR; 0 desliga-a.",
+    [UI_MENU_SHARPNESS] = "Nitidez",
+    [UI_MENU_SHARPNESS_DESC] = "A nitidez aplicada depois da escala FSR ou DLSS e, abaixo de 80 %, a nitidez própria das texturas do jogo. 0 desliga tudo.",
     [UI_MENU_COLOR] = "Cor",
     [UI_MENU_COLOR_PRESET] = "Perfil de cor",
     [UI_MENU_COLOR_PRESET_DESC] = "Define os quatro valores abaixo. Vivo: mais contraste e saturação, sombras um pouco "
@@ -115,7 +115,7 @@
     [UI_MENU_TAA] = "Upscaler",
     [UI_MENU_TAA_DESC] = "Que upscaler a linha DLSS / DLAA usa: NVIDIA DLSS (GPU RTX), AMD FSR (qualquer GPU, temporal) ou AMD FSR 1 (qualquer GPU, espacial: o mais leve, para placas antigas e portáteis). Após reiniciar.",
     [UI_MENU_FRAMEGEN] = "Geração de fotogramas",
-    [UI_MENU_FRAMEGEN_DESC] = "Um fotograma gerado entre cada dois que o jogo desenha, com o HUD deixado de fora: AMD FSR em qualquer GPU, NVIDIA DLSS nas séries RTX 40 e 50. Após reiniciar.",
+    [UI_MENU_FRAMEGEN_DESC] = "Um fotograma gerado entre cada dois que o jogo desenha, com o HUD deixado de fora: AMD FSR em qualquer GPU, NVIDIA DLSS nas séries RTX 40 e 50. Liga o upscaler temporal (DLSS / DLAA), cujos vetores de movimento usa; o Modo DLSS define o custo: DLAA (nativo) é o mais pesado, Qualidade e Equilibrado são mais leves. Após reiniciar.",
     [UI_MENU_FRAMEGEN_NEEDS] = "Requer DLSS / DLAA ligado: usa os seus vetores de movimento.",
     [UI_MENU_DLAA] = "NVIDIA DLSS / DLAA",
     [UI_MENU_DLAA_DESC] = "NVIDIA DLSS para a cena 3D (GPU NVIDIA RTX; " DLSS_FILE " junto de " EXE_FILE "): contornos "
@@ -145,7 +145,8 @@
 
     [UI_MENU_FPS_LIMIT] = "Limite de fotogramas",
     [UI_MENU_FPS_LIMIT_DESC] = "O máximo de fotogramas por segundo que o jogo desenha. Acima de 60 é experimental e "
-                               "requer Velocidade do jogo pelo relógio.",
+                               "requer Velocidade do jogo pelo relógio. "
+                               "Com a geração de fotogramas da AMD conta os fotogramas que vês, pelo que o próprio jogo desenha metade; a do DLSS junta os seus fotogramas acima deste valor.",
     [UI_MENU_FPS_30] = "30 FPS", [UI_MENU_FPS_40] = "40 FPS", [UI_MENU_FPS_45] = "45 FPS",
     [UI_MENU_FPS_60] = "60 FPS", [UI_MENU_FPS_90] = "90 FPS", [UI_MENU_FPS_120] = "120 FPS", [UI_MENU_FPS_144] = "144 FPS",
     // the monitor's refresh rate; printf format with the rate in Hz when it is known
@@ -250,12 +251,13 @@
     [UI_MENU_STICK_DEADZONE_DESC] = "Quanto um manípulo do comando tem de se mover até o jogo dar por ele. Aumenta-a se a personagem ou a câmara se moverem sozinhas: larga o manípulo, lê «manípulo agora» e define a zona morta uns pontos percentuais acima.",
     [UI_MENU_STICK_DEADZONE_NOW] = "manípulo agora: %.0f %%",
     [UI_MENU_MOUSE_MODE] = "Câmara com o rato",
-    [UI_MENU_MOUSE_MODE_DESC] = "Direto: a câmara roda consoante a distância que o rato se move, como num jogo de PC, sem zona morta nem curva de manípulo (jogo 1.4.3; as outras versões usam a emulação de manípulo). Emulação de manípulo: o rato funciona como o manípulo direito.",
+    [UI_MENU_MOUSE_MODE_DESC] = "Direto: a câmara roda consoante a distância que o rato se move, como num jogo de PC, sem zona morta nem curva de manípulo (jogo 1.4.3; as outras versões usam a emulação de manípulo). Emulação de manípulo: o rato funciona como o manípulo direito. Desligada: o rato nunca roda a câmara, e o cursor fica livre para os menus.",
     [UI_MENU_FAST_TEXT] = "Diálogos mais rápidos",
     [UI_MENU_FAST_TEXT_DESC] = "Retira as pausas que as mensagens do jogo fazem entre as frases, para que o texto avance sem parar.",
-    [UI_MENU_MOUSE_MODE_DESC_OOT] = "Direto: a câmara roda exatamente o quanto o rato se move, a qualquer velocidade, sem zona morta, curva nem velocidade máxima do manípulo. Emulação do manípulo: o rato funciona como o manípulo direito, com a curva e a velocidade máxima dele.",
+    [UI_MENU_MOUSE_MODE_DESC_OOT] = "Direto: a câmara roda exatamente o quanto o rato se move, a qualquer velocidade, sem zona morta, curva nem velocidade máxima do manípulo. Emulação do manípulo: o rato funciona como o manípulo direito, com a curva e a velocidade máxima dele. Desligada: o rato nunca roda a câmara, e o cursor fica livre para os menus.",
     [UI_MENU_MOUSE_STICK] = "Emulação de manípulo",
     [UI_MENU_MOUSE_DIRECT] = "Direto",
+    [UI_MENU_MOUSE_OFF] = "Desligada",
     [UI_MENU_MENU_CURSOR] = "Rato nos menus do jogo",
     [UI_MENU_MENU_CURSOR_DESC] = "Nos menus do próprio jogo (título, inventário, lojas, escolhas de diálogo) aparece o ponteiro: o item por baixo dele fica selecionado, o clique esquerdo confirma, o clique direito volta atrás. Só depois de o rato ou uma tecla terem sido os últimos a ser usados, pelo que um comando vê os menus inalterados (jogo 1.4.3).",
     [UI_MENU_MOUSE_SENS] = "Sensibilidade da câmara (rato)",

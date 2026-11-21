@@ -37,9 +37,66 @@
     <p class="sub rv">Every version, the newest first. The launcher offers a new version by itself; these files are for a fresh install or a look back. The same releases with their source code are in <a href="https://git.rekarina.dev/rekarina/rekarina/releases" rel="noopener">the repository</a>.</p>
     <div class="list">
         <!-- release:list -->
-        <article class="rel panel rv" id="v1.2.7">
-          <div class="head"><h2>Rekarina 1.2.7</h2><span class="meta">20 November 2026 &middot; the newest</span></div>
+        <article class="rel panel rv" id="v1.2.8">
+          <div class="head"><h2>Rekarina 1.2.8</h2><span class="meta">21 November 2026 &middot; the newest</span></div>
           <details class="notes" open>
+            <summary>Release notes</summary>
+            <h3>Rekarina 1.2.8: less flicker, a shorter setup</h3>
+            <p>Flicker</p>
+            <ul>
+              <li>Distant trees, bushes, their shadows and far lights no longer blink while the camera turns, and the doors around the Market fountain hold still (thanks matthieugo and OmniiOMEGA).</li>
+              <li>The light in the candle cave and the light shafts falling from above no longer blink.</li>
+              <li>Frame generation (DLSS and FSR) is off in the pause screens, so tabs and turning items no longer ghost into each other, and it starts fresh when you go back to play.</li>
+              <li>With DLSS frame generation on, opening and closing the Rekarina menu no longer stalls the picture for up to a quarter of a second.</li>
+            </ul>
+            <p>Setup and launcher</p>
+            <ul>
+              <li>The setup no longer builds the graphics driver's shaders or prepares the textures. That work moved to the game's first start, which shows one count and the time left, and pressing Play while it runs no longer cuts it off halfway.</li>
+              <li>Shader translation in the setup is two to sixteen times faster (on a hard drive 211 s became 13 s).</li>
+              <li>Cancel and closing the setup window stop everything within two seconds (thanks Dr Dyaddae, TheSeed and MusicGoat).</li>
+              <li>The compile starts each compiler only when there is free memory for it at that moment, so the programs you have open count.</li>
+              <li>With several dumps in one folder, the setup takes this game's .nup by its title id instead of the largest file (thanks Cellrat).</li>
+              <li>A problem report can be made from the setup and the launcher before the game is installed.</li>
+              <li>The update from 1.2.7 does not translate the shaders again. It does build the game's code again: about ten minutes on a fast PC, up to an hour on a laptop with 16 GB.</li>
+            </ul>
+            <p>Settings</p>
+            <ul>
+              <li>Sharpness below its default also takes back the game's own texture sharpening, all of it at 0 % (thanks SuperTouch).</li>
+              <li>The mouse camera row has a third choice, Off: the mouse leaves the camera alone (thanks OmniiOMEGA).</li>
+              <li>voice_lang in rekarina.ini sets the spoken language apart from the text language (thanks Boomer).</li>
+              <li>Mods that ship the Bootup pack keep the port's scene resolution and the Xbox button prompts (thanks OmniiOMEGA).</li>
+              <li>Cards with 8 GB or less use about 256 MB less video memory (thanks Alejandro Sanz II).</li>
+              <li>The low video memory notice at the top of the picture is off by default; vram_notice = 1 in rekarina.ini brings it back (thanks JohSuE20).</li>
+              <li>The frame rate limit and frame generation say in the menu how they count and what they cost, in every menu language.</li>
+            </ul>
+            <p>Crashes and older cards</p>
+            <ul>
+              <li>A crash when one of the game's internal queues filled up is gone (thanks Nehalem).</li>
+              <li>Older Radeon cards (RX 400 and 500 series, Vega): a translation error in compute shaders is fixed. It may be behind the missing walls on an RX 570 (thanks AHMEDII); that is not confirmed yet.</li>
+            </ul>
+            <p>Not ready yet</p>
+            <ul>
+              <li>Flicker that still needs checking with this update: the light on water, parts of the frozen domain (OmniiOMEGA) and the ghost portraits (Sable). If you still see it, a short clip in #bug-reports helps a lot.</li>
+              <li>Memory: crashes on handhelds with shared memory like the Ally X (k4k4shi) and on some 16 GB PCs in long sessions (huchi001).</li>
+              <li>Cards without mesh shaders (RX 400, 500 and 5000 series): missing walls and crashes are still being worked on; Radeon cards can also show a band in the shadows (zelldincht).</li>
+              <li>Older processors are held back by recording each frame on the CPU; that is the next performance work.</li>
+              <li>V-Sync modes other than Mailbox can flash the screen and change alt-tab (Arrant).</li>
+              <li>Depth of field still looks coarse at 1440p (Valentyn_L).</li>
+              <li>After switching between keyboard and pad in the running game, some texts already on screen keep the old buttons until they are shown again.</li>
+              <li>Linux and Steam Deck: not ready yet.</li>
+            </ul>
+            <p>Something broken? Esc, Advanced, Make a problem report, and post the zip in #bug-reports.</p>
+          </details>
+          <div class="files">
+          <a class="plate" href="https://dl.rekarina.dev/releases/1.2.8/Rekarina.exe">Rekarina.exe <small>155 MB</small></a>
+          <a class="plate" href="https://dl.rekarina.dev/releases/1.2.8/Rekarina-Setup-1.2.8-windows.zip">Setup as a .zip <small>155 MB</small></a>
+          <a class="plate" href="https://dl.rekarina.dev/releases/1.2.8/SHA256SUMS">SHA256SUMS</a>
+          </div>
+          <div class="sum"><b>SHA-256 of Rekarina.exe 1.2.8</b><code>b4ba665eb5173fff48ade8319c064249553677beeab9c3c65ffd3cf897be2b0e</code></div>
+        </article>
+        <article class="rel panel rv" id="v1.2.7">
+          <div class="head"><h2>Rekarina 1.2.7</h2><span class="meta">20 November 2026</span></div>
+          <details class="notes">
             <summary>Release notes</summary>
             <h3>Rekarina 1.2.7: the setup works on older processors</h3>
             <p>On a PC whose processor has no AVX2 (older Intel and AMD CPUs), the setup stopped at "Compiling the game" with code 1, every time, after the whole compile had run. That's fixed (thanks AHMEDII). Open the launcher and update, or start the setup again: it carries on where it stopped and doesn't compile the game from scratch.</p>

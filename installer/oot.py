@@ -15,9 +15,13 @@ did not change since it was recorded is skipped, so a second run continues or up
     oot_components  the upscaler libraries this machine's graphics card can use (DLSS, frame generation, FSR 3.1),
                   downloaded from NVIDIA's and AMD's own repositories (components.py); a failure only warns
     oot_prompts   the button prompt overlays and fonts (a minute)
-    oot_prepare   the shaders translated and built before play: every variant, in the foreground
+    oot_prepare   the shaders translated before play: every variant, in the foreground (the driver's build of them is
+                  the game's start and the launcher's background work, background_main)
     oot_package   the folder to play from (tools/package_oot.py): Rekarina.exe, its libraries, caches and rekarina.ini,
-                  a new rekarina.ini with first settings for the graphics card (components.preset)
+                  a new rekarina.ini with first settings for the graphics card (components.preset), and the list of
+                  what the launcher does after the setup (plan_background)
+
+`--background` runs that list instead (the launcher's background job, background_main).
 
 The RomFS stays in the player's NUP: the game reads it in place, so the dump must stay where it is. Prints JSON events
 on stdout like installer/cli.py (events.py), and after "start" one "eta" event with the time each step should take
@@ -29,6 +33,7 @@ release), else REKARINA_TOOLCHAIN, else toolchain/llvm-mingw-* of the checkout, 
 found beside the checkout's parent folder.
 """
 import argparse
+import ast
 import hashlib
 import io
 import json
@@ -265,6 +270,15 @@ def kill_tree(proc):
         proc.kill()
 
 
+def extra_python_path(ctx):
+    """PYTHONPATH for the tools when ensure_zbic had to unpack the package into the temp folder (a Python whose own
+    site-packages is read-only, as inside an AppImage); nothing otherwise."""
+    site = ctx.temp / 'site-packages'
+    if not site.is_dir():
+        return {}
+    return {'PYTHONPATH': os.pathsep.join(p for p in (str(site), os.environ.get('PYTHONPATH', '')) if p)}
+
+
 def run_tool(ctx, step, script, args, parse=None, env=None):
     """Run a tool script with the setup's Python. Its output goes to <temp>/logs/<step>-<script>.log and, line by line,
     to parse(line); env: variables added to the setup's own. Returns (exit code, log path). The tool runs with
@@ -275,7 +289,7 @@ def run_tool(ctx, step, script, args, parse=None, env=None):
     log = logs / f'{step}-{Path(script).stem}.log'
     command = [str(ctx.layout.python), '-X', 'faulthandler', '-c', RUN_SCRIPT, str(script), *map(str, args)]
     ctx.reporter.log('run ' + ' '.join(command[5:]))
-    env = dict(os.environ, PYTHONUNBUFFERED='1', PYTHONIOENCODING='utf-8', **(env or {}))
+    env = dict(os.environ, PYTHONUNBUFFERED='1', PYTHONIOENCODING='utf-8', **extra_python_path(ctx), **(env or {}))
     with open(log, 'w', encoding='utf-8', newline='\n') as out:
         proc = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, cwd=ctx.layout.root, env=env,
                                 text=True, encoding='utf-8', errors='replace', bufsize=1, start_new_session=not WIN)
@@ -454,7 +468,7 @@ ZBIC_INDEX = 'https://pypi.org/pypi/zbic/json'
 def ensure_zbic(ctx, step):
     python = str(ctx.layout.python)
     quiet = dict(capture_output=True, text=True, creationflags=subprocess.CREATE_NO_WINDOW if WIN else 0)
-    if subprocess.run([python, '-c', 'import zbic'], **quiet).returncode == 0:
+    if subprocess.run([python, '-c', 'import zbic'], env=dict(os.environ, **extra_python_path(ctx)), **quiet).returncode == 0:
         return
     ctx.reporter.progress(step, 'zbic', force=True)
     probe = subprocess.run([python, '-c', 'import sys, sysconfig; print(f"cp{sys.version_info[0]}{sys.version_info[1]}"); '
@@ -467,27 +481,32 @@ def ensure_zbic(ctx, step):
         if probe.returncode or len(lines) < 2 or not plat:
             raise OSError('no wheel is known for this Python; install the package with: pip install zbic')
         tag, site = lines[0], Path(lines[1])
-        request = urllib.request.Request(ZBIC_INDEX, headers={'User-Agent': 'Rekarina-Setup'})
-        with urllib.request.urlopen(request, timeout=30) as r:
-            meta = json.load(r)
+        # (through Windows' own TLS when Python's certificate check fails: net.fetch_bytes; the wheel is checked
+        # against the index's checksum either way)
+        data, how = net.fetch_bytes(ZBIC_INDEX, 30, ctx.reporter.log)
+        meta = json.loads(data)
         wheels = [f for f in meta.get('urls', []) if f['filename'].endswith('.whl') and (
             f['filename'].endswith(f'-{tag}-{tag}-win_amd64.whl') if WIN else
             f'-{tag}-{tag}-manylinux' in f['filename'] and f['filename'].endswith('_x86_64.whl'))]
         if not wheels:
             raise OSError(f'the index has no {tag} {plat} wheel of zbic {meta.get("info", {}).get("version", "")}')
-        with urllib.request.urlopen(urllib.request.Request(wheels[0]['url'], headers={'User-Agent': 'Rekarina-Setup'}),
-                                    timeout=60) as r:
-            data = r.read()
+        data, how = net.fetch_bytes(wheels[0]['url'], 60, ctx.reporter.log)
         if hashlib.sha256(data).hexdigest() != wheels[0]['digests']['sha256']:
             raise OSError('the downloaded wheel does not match the checksum the index gives')
+        ctx.reporter.log(f'zbic: {wheels[0]["filename"]} downloaded ({how}), its checksum is the index\'s')
+        parent = site
+        while not parent.exists() and parent != parent.parent:
+            parent = parent.parent
+        if not os.access(parent, os.W_OK):   # the Python lives on a read-only mount (an AppImage): into the temp folder
+            site = ctx.temp / 'site-packages'
         site.mkdir(parents=True, exist_ok=True)
         with zipfile.ZipFile(io.BytesIO(data)) as z:
             for name in z.namelist():
                 if not name.endswith('/') and '..' not in Path(name).parts and not Path(name).is_absolute():
                     z.extract(name, site)
-        if subprocess.run([python, '-c', 'import zbic'], **quiet).returncode:
+        if subprocess.run([python, '-c', 'import zbic'], env=dict(os.environ, **extra_python_path(ctx)), **quiet).returncode:
             raise OSError('the package was unpacked but does not load')
-    except (OSError, ValueError, KeyError, zipfile.BadZipFile) as e:
+    except (ValueError, KeyError, zipfile.BadZipFile, *net.NET_ERRORS) as e:
         raise InstallError('oot.zbic_failed', reason=str(e)) from None
 
 
@@ -517,6 +536,43 @@ def tree_stamp(*paths):
         for f in files:
             name = f.relative_to(p).as_posix() if p.is_dir() else f.name
             h.update(name.encode() + bytes(1) + (bytes.fromhex(file_sha256(f)) if f.is_file() else b'missing') + bytes([1]))
+    return h.hexdigest()
+
+
+def code_text(path):
+    """What a source file says as code, for a step's key: a Python file's syntax tree without its docstrings (comments
+    are not in it), a patch file's lines as recomp/patches.py reads them (cut at '#', words joined by one space, blank
+    lines left out), any other file its bytes. A comment or a docstring edited in the lifter or a drawing tool then
+    makes no player translate the game code again (the lift: minutes, and the compile of every chunk that changed)."""
+    data = Path(path).read_bytes()
+    suffix = Path(path).suffix
+    if suffix == '.py':
+        try:
+            tree = ast.parse(data)
+        except (SyntaxError, ValueError):
+            return data
+        for node in ast.walk(tree):
+            body = getattr(node, 'body', None)
+            if isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)) and body and \
+                    isinstance(body[0], ast.Expr) and isinstance(body[0].value, ast.Constant) and \
+                    isinstance(body[0].value.value, str):
+                node.body = body[1:] or [ast.Pass()]
+        return b'py-ast\0' + ast.dump(tree, include_attributes=False).encode()
+    if suffix == '.txt':
+        lines = [' '.join(line.split('#', 1)[0].split()) for line in data.decode('utf-8', errors='replace').splitlines()]
+        return b'patch-lines\0' + '\n'.join(line for line in lines if line).encode()
+    return data
+
+
+def code_stamp(*paths):
+    """tree_stamp by code_text: the path and what every file says as code."""
+    h = hashlib.sha256()
+    for p in paths:
+        files = sorted(f for f in p.rglob('*') if f.is_file() and '__pycache__' not in f.parts) if p.is_dir() else [p]
+        for f in files:
+            name = f.relative_to(p).as_posix() if p.is_dir() else f.name
+            h.update(name.encode() + bytes(1) + (hashlib.sha256(code_text(f)).digest() if f.is_file() else b'missing') +
+                     bytes([1]))
     return h.hexdigest()
 
 
@@ -618,7 +674,9 @@ def status_file(ctx, name):
 def lift_base_key(ctx):
     """The lift's key without the mods' files: what it was before mods were built in, and what a game folder without
     code patches still has, so nothing is built again for it."""
-    return fingerprint('oot-lift-2', ctx.keys['oot_extract'], ctx.layout.patches, tree_stamp(ctx.layout.recomp))
+    # (by code since 1.2.8: an edited comment of the patch file or the lifter lifts nothing again; 'oot-lift-2' held the
+    # bytes)
+    return fingerprint('oot-lift-4', ctx.keys['oot_extract'], code_stamp(ctx.layout.patches), code_stamp(ctx.layout.recomp))
 
 
 def compile_base_key(ctx):
@@ -632,13 +690,20 @@ def compile_base_key(ctx):
 class Lift(Step):
     id = 'oot_lift'
 
-    def key(self, ctx):
+    def key(self, ctx, base=None):
         files = mod_patch_files(ctx)
+        base = base or lift_base_key(ctx)
         if not files:
-            return lift_base_key(ctx)
+            return base
         # a file's name and content, and its place under mods/: the tools name each patch set after its mod folder
-        return fingerprint('oot-lift-3', lift_base_key(ctx), ctx.layout.tools / 'cheats.py', ctx.layout.tools / 'exefs_patches.py',
+        return fingerprint('oot-lift-3', base, ctx.layout.tools / 'cheats.py', ctx.layout.tools / 'exefs_patches.py',
                            *files, *(f.relative_to(mods.mods_dir(ctx.dest)).as_posix() for f in files))
+
+    def adopts(self, ctx, record):
+        """A record of the key's form before 1.2.8 ('oot-lift-2': the patch file and the lifter by their bytes) stands
+        when those bytes are still the ones it was lifted from: the key's form changed, not the lift."""
+        legacy = fingerprint('oot-lift-2', ctx.keys['oot_extract'], ctx.layout.patches, tree_stamp(ctx.layout.recomp))
+        return record.get('key') == self.key(ctx, legacy)
 
     def current(self, ctx, record):
         return (ctx.temp / 'gen' / 'lift.done').is_file() and \
@@ -794,10 +859,16 @@ class Prompts(Step):
 
     id = 'oot_prompts'
 
+    TOOLS = ('make_oot_prompts.py', 'oot_hint_layout.py', 'button_icons.py', 'make_ext_font.py')
+
     def key(self, ctx):
-        return fingerprint('oot-prompts-2', ctx.keys['oot_extract'],
-                           tree_stamp(*(ctx.layout.tools / n for n in ('make_oot_prompts.py', 'oot_hint_layout.py', 'button_icons.py',
-                                                                      'make_ext_font.py'))))
+        return fingerprint('oot-prompts-3', ctx.keys['oot_extract'], code_stamp(*(ctx.layout.tools / n for n in self.TOOLS)))
+
+    def adopts(self, ctx, record):
+        """A record of the key's form before 1.2.8 ('oot-prompts-2': the tools by their bytes) stands when those bytes
+        are still the ones it was drawn with."""
+        return record.get('key') == fingerprint('oot-prompts-2', ctx.keys['oot_extract'],
+                                                tree_stamp(*(ctx.layout.tools / n for n in self.TOOLS)))
 
     def current(self, ctx, record):
         build = ctx.temp / 'build'
@@ -853,14 +924,15 @@ def shader_mode(ctx):
 def shader_case(ctx):
     """The shader step's case for the estimate (eta.py), from what it will do in this run: 'rerun' when it will be
     skipped (its record stands and its output is in the temp folder or the game folder, as Context.plan decides), else
-    'all' (every variant). A folder that prepared before but has no prepared output where Prepare.current looks does
-    that work in full, which a 'rerun' estimate (a minute) hid: the window counted down to a couple of minutes and
+    'translate' (every variant, translated: the case 'all' until 1.2.7 also built them in the driver, and its recorded
+    times are not this step's). A folder that prepared before but has no prepared output where Prepare.current looks
+    does that work in full, which a 'rerun' estimate (a minute) hid: the window counted down to a couple of minutes and
     stayed there."""
     rec = ctx.record('oot_prepare')
     step = Prepare()
     if rec and (rec.get('key') == step.key(ctx, 'all') or step.adopts(ctx, rec)) and step.current(ctx, rec):
         return 'rerun'
-    return 'all'
+    return 'translate'
 
 
 def shaders_only_met(state):
@@ -944,6 +1016,14 @@ class Prepare(Step):
         (build / self.PREPARING).write_text(mode + '\n', encoding='ascii')   # a run cut short leaves it (current)
         seed_from_folder(ctx, self.id, build)
         phase = ['seed']
+        # Translation only (REKARINA_PREPARE_DRIVER=0, runtime/vk_pipeline.c vk_pipeline_prepare_shaders): the driver's
+        # build of every prepared variant's stage library is left out of the setup. It held players up for 20 minutes
+        # to 1.5 hours after the translation (a cold driver cache, an AMD card whose cache is keyed to the exe's path
+        # so that it was built a second time in the game folder), while it only fills the driver's disk cache. The
+        # game's own start builds what play recorded (its entry step, with its progress picture), and the launcher
+        # builds the rest while the game is closed (background_main). Passed through the environment: the tools and
+        # their key (SHADER_TOOLS) stay as they were, so no folder translates its shaders again for this.
+        translate_only = {'REKARINA_PREPARE_DRIVER': '0'}
 
         def parse(line):
             m = TRANSLATED.search(line)
@@ -953,18 +1033,17 @@ class Prepare(Step):
             elif 'variants of' in line:
                 phase[0] = 'translate'
                 rep.progress(self.id, 'translate', force=True)
-            elif LIBRARIES.search(line):   # the long phase (half an hour on a busy machine): its count, not only its name
+            elif LIBRARIES.search(line):   # (the driver's phase, which REKARINA_PREPARE_DRIVER=0 leaves out)
                 m = LIBRARIES.search(line)
                 phase[0] = 'libraries'
                 rep.progress(self.id, 'libraries', int(m.group(1)), int(m.group(2)), 'shaders')
-            elif phase[0] == 'translate' and ('librar' in line or 'pipeline' in line):
-                rep.progress(self.id, 'libraries')
 
         rep.progress(self.id, 'seed', force=True)
         try:   # once more after an early failure that need not come back (tool_steady), not after a long run
             code, log = tool_steady(ctx, self.id, layout.tools / 'oot_prepare_shaders.py',
                                     [build, '--nup', ctx.nup, '--exefs', ctx.dest / 'exefs', '--exe-name', GAME_EXE,
-                                     *(['--met-only'] if mode == 'met' else [])], parse, tries=2, within=300)
+                                     *(['--met-only'] if mode == 'met' else [])], parse, env=translate_only, tries=2,
+                                    within=300)
         except Unstable as e:
             raise e.error() from None
         if code or not (build / 'shader-prepared.bin').is_file():
@@ -1110,36 +1189,16 @@ class Package(Step):
             code, log = run_tool(ctx, self.id, layout.tools / 'pack_shader_cache.py', [ctx.dest / 'shader-cache'])
             if code:
                 raise InstallError('oot.package_failed', code=code, log=str(log))
-        # The prepared pipelines, once more where the game is played from: a driver that keys its disk cache to the
-        # executable's path (AMD) has none for this folder yet and builds them now instead of during play; one that
-        # keys it to the file name (NVIDIA: the preparation ran under this name, tools/oot_prepare_shaders.py) finds
-        # them all and is done in seconds. A failure here costs smoothness in the first minutes, not the install.
-        rep.progress(self.id, 'warm', force=True)
-        logs = ctx.temp / 'logs'
-        logs.mkdir(parents=True, exist_ok=True)
-        try:
-            with open(logs / f'{self.id}-warm.log', 'w', encoding='utf-8', newline='\n') as out:
-                proc = subprocess.Popen([str(exe), '--warm-shaders'], cwd=str(ctx.dest), stdout=out, stderr=subprocess.STDOUT,
-                                        creationflags=subprocess.CREATE_NO_WINDOW if WIN else 0, start_new_session=not WIN)
-                try:
-                    warm = proc.wait()
-                except BaseException:
-                    kill_tree(proc)
-                    raise
-            rep.log(f'{GAME_EXE} --warm-shaders: exit code {warm}')
-        except OSError as e:
-            rep.log(f'{GAME_EXE} --warm-shaders did not start: {e}')
-        # Every ASTC texture of the game into the texture cache, as play would write it (tools/oot_prepare_textures.py,
-        # rekarina.exe --prepare-textures): a new player's first visit of a place no longer decodes and encodes its
-        # textures in the frames that draw them. Skipped with --no-textures; a disk without room stops it with a
-        # message (the game then fills the cache in play, as before), and a failure costs smoothness, not the install.
-        if not getattr(opt, 'no_textures', False):
-            rep.progress(self.id, 'textures', force=True)
-            code, tlog = run_tool(ctx, self.id, layout.tools / 'oot_prepare_textures.py',
-                                  [ctx.dest, '--nup', ctx.nup, '--exe-name', GAME_EXE])
-            rep.log(f'texture preparation: exit code {code} ({tlog})')
+        # What the package step did after the copy until 1.2.7, the driver's build of every prepared variant in the
+        # game folder (Rekarina.exe --warm-shaders) and the texture cache (tools/oot_prepare_textures.py), is the
+        # launcher's to do now, in the background while the game is closed (background_main): on players' PCs the two
+        # took 20 minutes to 1.5 hours and about 43 minutes, and the setup waited for them. The game's own start builds
+        # the pipelines play recorded (its entry step, with its progress picture), and a texture the cache lacks is
+        # made at its first use, as before 1.2.0.
+        exe_sha256 = file_sha256(exe)
+        plan_background(ctx, exe_sha256)
         write_rebuild_command(ctx)
-        return {'exe_size': exe.stat().st_size, 'exe_sha256': file_sha256(exe),
+        return {'exe_size': exe.stat().st_size, 'exe_sha256': exe_sha256,
                 'ini_preset': chosen['id'] if new_ini else None}
 
 
@@ -1165,6 +1224,313 @@ def write_rebuild_command(ctx):
     tmp = cache / 'rebuild.txt.tmp'
     tmp.write_text('\n'.join(rebuild_command(ctx)) + '\n', encoding='utf-8', newline='\n')
     os.replace(tmp, cache / 'rebuild.txt')
+
+
+# ---- the work the launcher does after the setup, while the game is closed
+# <game folder>/build-cache/background.json: {"format": 1, "warm": entry, "textures": entry}, an entry being {"key": what
+# the work follows from, "state": "pending" | "done" | "failed", "fails": n}. The package step writes it
+# (plan_background); the launcher's background job (installer/shaderjob.py, gui_oot.py shader_wanted) runs
+# `python -m installer.oot --dest <game folder> --background` (background_main) while the launcher is open and no game
+# runs, at below-normal priority on all cores but one, and Play stops it within a moment (BACKGROUND_STOP).
+#   warm      Rekarina.exe --warm-libraries: the game's entry step without its pipelines
+#             (the records' shaders and their vertex output unions, as the game takes them), then every prepared
+#             variant's stage library into the driver's disk cache (runtime/vk_pipeline.c lb_warm_prepared), so that a
+#             pairing play has not recorded links from libraries the driver has (0.1 ms) instead of building them in a
+#             frame (5-180 ms). The pipelines and pipeline-cache.bin are left to the game's start;
+#             the mode keeps the file out of this process altogether (not read, not written).
+#   textures  Rekarina.exe --scan-textures: every ASTC texture of the dump into
+#             the texture cache, as play would write it (runtime/tex_prepare.c reads the archives itself).
+# Neither is required: the game's entry step builds whatever is still missing before play, with its progress picture
+# (runtime/vk_pipeline.c vk_pipeline_prewarm: the libraries in the game's own process; tex_prepare.c
+# tex_prepare_entry_start: the walk through --scan-textures as its child); this only gives it a head start.
+BACKGROUND_FILE = Path('build-cache') / 'background.json'
+BACKGROUND_STOP = Path('build-cache') / 'background.stop'   # its appearance stops the job (REKARINA_WARM_STOP)
+BACKGROUND_WORK = ('warm', 'textures')   # in this order: missing libraries cost stutter, a missing texture far less
+BACKGROUND_TRIES = 2       # failures under one key before the job leaves the work alone (another key tries again)
+BACKGROUND_GRACE = 1.5     # closing the launcher: seconds the job has before its tree is killed (with half a second
+                           # more, stop_background)
+BACKGROUND_STOP_WAIT = 20.0   # Play and Pause: seconds the launcher waits for the libraries in the driver's hands
+                              # before it stops the job the hard way (a cold mesh library takes up to ~15 s)
+BACKGROUND_CHILD_WAIT = BACKGROUND_STOP_WAIT - 2   # the job's own wait for its stopped child before it kills it: a
+                              # build killed while it writes the driver's cache may leave that damaged
+TEXTURE_SOURCES = ('tex_prepare.c', 'tex_astc.c', 'tex_astc_mt.c', 'tex_deswizzle.c', 'vk_texture.c', 'vk_astc.c',
+                   'bc3_encode_spv.h', 'astc_decode_spv.h')   # what a texture cache file follows from (runtime/)
+TEXTURE_ARCHIVES = re.compile(r'^textures: (\d+) of (\d+) archives')   # runtime/tex_prepare.c scan_rows
+
+
+def background_state(dest):
+    """The game folder's background.json as a dict ({} when there is none or it cannot be read)."""
+    try:
+        data = json.loads((Path(dest) / BACKGROUND_FILE).read_text(encoding='utf-8'))
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def save_background(dest, data):
+    path = Path(dest) / BACKGROUND_FILE
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + '.tmp')
+    tmp.write_text(json.dumps(data, indent=1) + '\n', encoding='utf-8', newline='\n')
+    os.replace(tmp, path)
+
+
+def background_pending(dest):
+    """The work the launcher still has to do for the game in dest, in order (BACKGROUND_WORK); [] when the folder has no
+    game or nothing is left. Cheap: one small file read (the window asks once a second)."""
+    if not (Path(dest) / GAME_EXE).is_file():
+        return []
+    data = background_state(dest)
+    return [w for w in BACKGROUND_WORK if isinstance(data.get(w), dict) and data[w].get('state') == 'pending']
+
+
+# The game's first start without the background work (the setup's finish screen says it): the entry step's recorded
+# pipelines and the prepared variants' stage libraries on every thread, the textures beside them. Thread seconds an
+# item with a cold driver cache (runtime/vk_pipeline.c: a graphics job 0.6 s; a library 0.47 s, the setup's driver
+# phase: 56,402 in 1,650 s on 16 threads), and the texture walk's seconds on that machine.
+FIRST_START_RECORDS = 10847          # the pipelines the release's seeds name
+FIRST_START_PIPE_S = 0.6
+FIRST_START_LIB_S = 0.47
+FIRST_START_TEXTURES_S = 600
+
+
+def first_start_estimate(dest, cores=None):
+    """Seconds the next start of the game in dest should spend before play on what the background work has not done
+    (background.json): 0 when nothing is left."""
+    pending = background_pending(dest)
+    if not pending:
+        return 0.0
+    cores = max(1, cores or os.cpu_count() or 8)
+    try:
+        variants = max(0, (os.path.getsize(Path(dest) / 'shader-prepared.bin') - 16) // 36) if 'warm' in pending else 0
+    except OSError:
+        variants = 0
+    cpu = (FIRST_START_RECORDS * FIRST_START_PIPE_S + variants * FIRST_START_LIB_S) / cores
+    return max(cpu, FIRST_START_TEXTURES_S if 'textures' in pending else 0.0)
+
+
+def texture_key(layout, nup):
+    """What the texture cache's files follow from: the runtime's texture code, the dump (path, size, time)."""
+    try:
+        st = os.stat(nup)
+        dump = f'{Path(nup).resolve()}|{st.st_size}|{st.st_mtime_ns}'
+    except (OSError, TypeError):
+        dump = str(nup)
+    runtime = layout.root / 'runtime'
+    return fingerprint('bg-textures-2', dump, *(runtime / n for n in TEXTURE_SOURCES))
+
+
+def plan_background(ctx, exe_sha256):
+    """After the copy (Package.run): the background work this folder needs, written to background.json. A work whose key
+    is the one done before stays done; any other is pending, with its failures counted from nothing."""
+    dest = ctx.dest
+    prepared = dest / 'shader-prepared.bin'
+    want = {'warm': fingerprint('bg-warm-1', exe_sha256, prepared, ('rekarina_xlate.id', dest / 'rekarina_xlate.id'))
+            if prepared.is_file() else None,
+            'textures': None if getattr(ctx.options, 'no_textures', False) else texture_key(ctx.layout, ctx.nup)}
+    old = background_state(dest)
+    data = {'format': 1, 'nup': str(ctx.nup)}
+    for work in BACKGROUND_WORK:
+        before = old.get(work) if isinstance(old.get(work), dict) else {}
+        if want[work] is None:
+            data[work] = {'key': None, 'state': 'skipped', 'fails': 0}
+        elif before.get('key') == want[work] and before.get('state') == 'done':
+            data[work] = before
+        else:
+            data[work] = {'key': want[work], 'state': 'pending', 'fails': 0}
+    (dest / BACKGROUND_STOP).unlink(missing_ok=True)
+    save_background(dest, data)
+    ctx.reporter.log('background work for the launcher: ' +
+                     ', '.join(f'{w} {data[w]["state"]}' for w in BACKGROUND_WORK))
+
+
+def stop_background(dest, proc=None, grace=BACKGROUND_GRACE + 0.5):
+    """Stop the background job of the game in dest: BACKGROUND_STOP appears (the libraries' build ends after the ones in
+    the driver's hands, runtime/vk_pipeline.c warm_stop_watch; background_main stops the texture tool), proc (the job,
+    when the caller started it) gets grace seconds to end, then its whole tree is killed. A killed build leaves its
+    journal behind; it names variants that did not crash the driver, so it goes (vk_pipeline.c skip_init would make
+    them suspects). Returns True when the job ended by itself."""
+    stop = Path(dest) / BACKGROUND_STOP
+    try:
+        stop.parent.mkdir(parents=True, exist_ok=True)
+        stop.write_bytes(b'')
+    except OSError:
+        pass
+    ended = proc is None
+    if proc is not None:
+        until = time.monotonic() + grace
+        while proc.poll() is None and time.monotonic() < until:
+            time.sleep(0.05)
+        ended = proc.poll() is not None
+        if not ended:
+            from . import shaderjob
+            tree = shaderjob.descendants(shaderjob.process_table(), proc.pid)
+            kill_tree(proc)
+            try:
+                proc.wait(timeout=10)
+            except (subprocess.TimeoutExpired, OSError):
+                pass
+            # Every process of the tree gone before the game starts: a killed Rekarina.exe still alive holds the
+            # driver's cache file, and the game would then get an empty one of its own (vk_pipeline.c
+            # vk_pipeline_prewarm). It was still listed right after taskkill returned.
+            until = time.monotonic() + 5
+            while tree & set(shaderjob.process_table()) and time.monotonic() < until:
+                time.sleep(0.05)
+            (Path(dest) / 'shader-prepare-journal.bin').unlink(missing_ok=True)
+        stop.unlink(missing_ok=True)   # the job is gone: the file has done its work
+    return ended
+
+
+def wait_child(proc, stopped, poll=0.2):
+    """Wait for proc in short slices, so that Ctrl+Break (KeyboardInterrupt) and the stop file reach this process:
+    Popen.wait() without a timeout is one WaitForSingleObject that no signal handler interrupts on Windows (a setup's
+    Cancel waited for the whole driver build that way). stopped(): True when the caller wants the child gone. Returns
+    the exit code, or None when stopped() said so first (the child still runs)."""
+    while True:
+        try:
+            return proc.wait(timeout=poll)
+        except subprocess.TimeoutExpired:
+            if stopped():
+                return None
+
+
+def background_main(args):
+    """`--background`: the pending work of the game folder (background.json), in order, with events on stdout for the
+    launcher (step "background", phases "libraries" and "textures" with their counts) and a log in the game folder's
+    logs/launcher-background.log. Exit code 0 when everything pending is done, 3 when stopped, 1 when a work failed."""
+    dest = args.dest.resolve()
+    layout = find_layout(args.root, args.toolchain)
+    logs = dest / 'logs'
+    log = logs / 'launcher-background.log'
+    try:
+        if log.is_file() and log.stat().st_size > (1 << 20):
+            log.replace(log.with_name('launcher-background.1.log'))
+    except OSError:
+        pass
+    rep = Reporter(log_path=log)
+    rep.log(f'---- {time.strftime("%Y-%m-%d %H:%M:%S")} background work, setup {layout.release}')
+    stop = dest / BACKGROUND_STOP
+    stop.unlink(missing_ok=True)
+    data = background_state(dest)
+    todo = background_pending(dest)
+    rep.emit('start', release=layout.release, mode='background', dest=str(dest), log=str(log),
+             steps=['background'], work=todo)
+    exe = dest / GAME_EXE
+    result = 'ok'
+    for work in todo:
+        if stop.exists():
+            result = 'cancelled'
+            break
+        rep.step('background', 'started', work=work)
+        t0 = time.monotonic()
+        try:
+            if work == 'warm':
+                outcome = background_warm(rep, dest, exe, stop)
+            else:
+                outcome = background_textures(rep, layout, dest, exe, data.get('nup'), stop)
+        except KeyboardInterrupt:
+            outcome = 'stopped'
+        except Exception as e:   # the work is optional: a failure is counted, not raised
+            rep.log(traceback.format_exc())
+            outcome = f'failed: {type(e).__name__}: {e}'
+        data = background_state(dest)   # as it is now: another run may have written it meanwhile
+        entry = data.get(work) if isinstance(data.get(work), dict) else None
+        if entry is None:
+            break
+        if outcome == 'done':
+            entry['state'] = 'done'
+        elif outcome == 'stopped':
+            result = 'cancelled'
+        else:
+            entry['fails'] = int(entry.get('fails') or 0) + 1
+            entry['state'] = 'failed' if entry['fails'] >= BACKGROUND_TRIES else 'pending'
+            entry['last_error'] = outcome[:300]
+            result = 'failed'
+        save_background(dest, data)
+        rep.log(f'{work}: {outcome} in {time.monotonic() - t0:.0f} s')
+        rep.step('background', 'done', work=work, outcome=outcome.split(':')[0], seconds=round(time.monotonic() - t0, 1))
+        if result == 'cancelled':
+            break
+    stop.unlink(missing_ok=True)
+    rep.emit('end', result=result, seconds=round(rep.elapsed(), 1))
+    rep.close()
+    return EXIT[result]
+
+
+def background_child(rep, command, cwd, env, stop, parse, journal=None):
+    """Run one process of the background work with its output parsed line by line (from a thread, so that the wait
+    itself stays interruptible: wait_child). 'done', 'stopped' or 'failed: ...'."""
+    import threading
+    flags = subprocess.CREATE_NO_WINDOW if WIN else 0
+    # (stdin a pipe held open: --warm-libraries and --scan-textures stop when it closes, this process gone)
+    proc = subprocess.Popen(command, cwd=str(cwd), env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                            stderr=subprocess.STDOUT, text=True, encoding='utf-8', errors='replace', bufsize=1,
+                            creationflags=flags, start_new_session=not WIN)
+    tail = []
+
+    def read():
+        for line in proc.stdout:
+            line = line.rstrip()
+            tail.append(line)
+            del tail[:-20]
+            parse(line)
+
+    reader = threading.Thread(target=read, daemon=True)
+    reader.start()
+    try:
+        code = wait_child(proc, stop.exists)
+    except BaseException:
+        kill_tree(proc)
+        raise
+    if code is None:   # the stop file: the libraries' build ends by itself (warm_stop_watch), anything else is killed
+        try:
+            code = proc.wait(timeout=BACKGROUND_CHILD_WAIT) if 'REKARINA_WARM_STOP' in env else None
+        except subprocess.TimeoutExpired:
+            code = None
+        if code is None:
+            kill_tree(proc)
+            proc.wait(timeout=10)
+            if journal is not None:   # a killed build's journal names innocent variants (stop_background)
+                Path(journal).unlink(missing_ok=True)
+            rep.log(f'{Path(command[0]).name}: stopped, killed after {BACKGROUND_CHILD_WAIT} s')
+        else:
+            rep.log(f'{Path(command[0]).name}: stopped by itself (exit code {code})')
+        reader.join(timeout=2)
+        return 'stopped'
+    reader.join(timeout=5)
+    rep.log(f'{Path(command[0]).name} {" ".join(command[1:])}: exit code {code}')
+    for line in tail[-5:]:
+        rep.log('  ' + line)
+    if code == 3 and stop.exists():
+        return 'stopped'
+    return 'done' if code == 0 else f'failed: exit code {code}'
+
+
+def background_warm(rep, dest, exe, stop):
+    env = dict(os.environ, REKARINA_WARM_STOP=str(stop))
+
+    def parse(line):
+        m = LIBRARIES.search(line)
+        if m:
+            rep.progress('background', 'libraries', int(m.group(1)), int(m.group(2)), 'shaders')
+
+    rep.progress('background', 'libraries', force=True)
+    return background_child(rep, [str(exe), '--warm-libraries'], dest, env, stop, parse,
+                            journal=dest / 'shader-prepare-journal.bin')
+
+
+def background_textures(rep, layout, dest, exe, nup, stop):
+    if not nup or not Path(nup).is_file():
+        return f'failed: the dump {nup} is not there'
+
+    def parse(line):
+        m = TEXTURE_ARCHIVES.match(line)
+        if m:
+            rep.progress('background', 'textures', int(m.group(1)), int(m.group(2)), 'archives')
+
+    rep.progress('background', 'textures', force=True)
+    env = dict(os.environ, REKARINA_WARM_STOP=str(stop))
+    return background_child(rep, [str(exe), '--scan-textures'], dest, env, stop, parse)
 
 
 LAUNCHER_EXE = 'Rekarina-Launcher.exe'   # the setup folder's launcher (installer/update.py LAUNCHER)
@@ -1356,10 +1722,15 @@ def main(argv=None):
     ap.add_argument('--no-textures', action='store_true',
                     help='do not prepare the textures for play (about 12 GiB on the disk; the game then prepares each one '
                          'at its first use)')
+    ap.add_argument('--background', action='store_true',
+                    help="the launcher's work after the setup for the game in --dest: the driver's shader libraries and "
+                         'the texture cache (background_main); nothing else runs')
     args = ap.parse_args(argv)
     for name in ('SIGBREAK', 'SIGTERM'):
         if hasattr(signal, name):
             signal.signal(getattr(signal, name), cancel)
+    if args.background:
+        return background_main(args)
     rep, t0 = None, time.monotonic()
     try:
         dest = args.dest.resolve()

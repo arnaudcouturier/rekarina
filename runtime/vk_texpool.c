@@ -551,6 +551,13 @@ static void update(void) {
         if (before / 4096 != parked_slots / 4096 || (!before && parked_slots))
             rt_log("vk_texpool: %llu slots so far took the stand-in while they waited for their turn after their image went",
                    (unsigned long long)parked_slots);
+        {   // DEBUG-PARKLOG: REKARINA_PARK_LOG=1: each update that parks slots on the stand-in, with its frame
+            static int on = -1;
+            if (on < 0) on = cfg_env("REKARINA_PARK_LOG") != NULL;
+            if (on && parked_slots != before)
+                rt_log("PARKLOG frame %llu: %llu slots on the stand-in", (unsigned long long)gfx_counters.frames,
+                       (unsigned long long)(parked_slots - before));
+        }
     }
     if (__builtin_expect(vk_live_check_on(), 0)) {   // DEBUG-LIVECHECK: what every slot shows after the update
         void vk_texture_slot_log(int id);

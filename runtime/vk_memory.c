@@ -49,6 +49,7 @@ typedef struct PoolRec {
     VkBuffer buf;
     VkDeviceMemory mem;                // POOL_IMPORT
     VmaAllocation alloc;               // POOL_PHYS
+    uint64_t backed;                   // POOL_PHYS: the bytes from lo alloc and buf cover (size, or less: phys_backed)
     VmaAllocation alloc_tw;            // POOL_PHYS: a second block of the same size for images whose offset the first cannot
                                        // take (vk_mem_phys_twin)
     VPage *pt;                         // POOL_VIRT: size / 64 KiB entries
@@ -67,6 +68,7 @@ typedef struct PoolRec {
     uint64_t up_bytes;                 // replay: CPU -> mirror bytes copied since the last mirror log (REKARINA_TRACE=perf)
     uint64_t hot_bytes;                // replay: CPU -> mirror bytes this frame (hot pools, vk_mem_census)
     uint32_t hot_frames;               // frames in a row it was copied (nearly) whole
+    uint32_t use_frame;                // the frame of its last buffer use (vk_mem_use, vk_mem_pick; cold mirrors)
     VkBuffer mbuf;                     // MS_ON: device-local copy of [import_lo, import_hi), same offsets as buf
     VkBuffer da_of[2];                 // replay thread: the buffer da[i] is the device address of (0 buf, 1 mbuf)
     VkDeviceAddress da[2];
@@ -84,6 +86,7 @@ typedef struct PoolRec {
     uint32_t sgen;                     // gen_lock: every page write stamped up to this generation is in the shadow
     volatile uint8_t stouched;         // on the touched list: the GPU may use it in the submission being recorded
     uint8_t shader_written;            // a shader wrote into its mirror: its uploads read guest memory late (snap_late)
+    uint8_t drv_backed;                // POOL_IMPORT on driver memory placed over the guest pages (backed_pool): mem holds them
 } PoolRec;
 
 static void mirror_forget(PoolRec *r);   // pool_lock exclusive: off the mirrored list
@@ -145,9 +148,18 @@ static int memory_type(const VkCtx *c, uint32_t bits, VkMemoryPropertyFlags want
     return -1;
 }
 
+#ifndef _WIN32
+static int driver_mem;                   // Linux: pools are device memory placed over the guest pages (backed_pool)
+static int backed_pool(VkCtx *c, PoolRec *r, uint64_t addr, uint64_t size);
+static void backed_release(VkCtx *c, PoolRec *r);   // vk_pool_fini: the guest pages are plain memory again
+#endif
+
 // CPU-visible storage: the guest pages themselves become the buffer's memory (VK_EXT_external_memory_host).
 static int import_pool(VkCtx *c, PoolRec *r, uint64_t addr, uint64_t size) {
     if (shadow_on) return shadow_pool(c, r, addr, size);
+#ifndef _WIN32
+    if (driver_mem && backed_pool(c, r, addr, size)) return 1;   // else the import below, as without driver memory
+#endif
     if (!p_host_props)
         p_host_props = (PFN_vkGetMemoryHostPointerPropertiesEXT)vkGetDeviceProcAddr(c->device, "vkGetMemoryHostPointerPropertiesEXT");
     uint64_t al = c->min_imported_host_alignment ? c->min_imported_host_alignment : 0x1000;
@@ -205,9 +217,119 @@ static int import_pool(VkCtx *c, PoolRec *r, uint64_t addr, uint64_t size) {
     return 1;
 }
 
+#ifndef _WIN32
+// Driver-backed pool (Linux, docs/oot-notes.md "Guest memory from the GPU driver on Linux"): the pool's bytes live in
+// device memory the driver allocated (host-visible, coherent), mapped at the guest's own address with
+// VK_EXT_map_memory_placed over the pages the guest has been using (plat_mem_back copies them across with the writers
+// held). The GPU's view is then the guest's memory with no userptr import: a CPU write needs no copy and a protection
+// change costs the GPU nothing. The write watch of those pages is the platform's dirty bits (plat_mem_written).
+static PFN_vkMapMemory2KHR p_map2;
+static PFN_vkUnmapMemory2KHR p_unmap2;
+static int32_t n_backed, n_backed_live, n_backed_fail;   // made, alive now, refused
+
+typedef struct { VkCtx *c; VkDeviceMemory mem; uint64_t lo, n; } BackCtx;
+
+static int back_place(void *arg) {
+    BackCtx *b = arg;
+    VkMemoryMapInfoKHR mi = {.sType = VK_STRUCTURE_TYPE_MEMORY_MAP_INFO_KHR, .memory = b->mem, .size = VK_WHOLE_SIZE};
+    void *tmp = NULL;
+    if (p_map2(b->c->device, &mi, &tmp) != VK_SUCCESS || !tmp) return 0;   // a plain map first: the bytes go across
+    memcpy(tmp, (const void *)(uintptr_t)b->lo, b->n);
+    VkMemoryUnmapInfoKHR ui = {.sType = VK_STRUCTURE_TYPE_MEMORY_UNMAP_INFO_KHR, .memory = b->mem};
+    if (p_unmap2(b->c->device, &ui) != VK_SUCCESS) return 0;
+    VkMemoryMapPlacedInfoEXT pl = {.sType = VK_STRUCTURE_TYPE_MEMORY_MAP_PLACED_INFO_EXT,
+                                   .pPlacedAddress = (void *)(uintptr_t)b->lo};
+    mi.pNext = &pl, mi.flags = VK_MEMORY_MAP_PLACED_BIT_EXT;
+    void *at = NULL;
+    return p_map2(b->c->device, &mi, &at) == VK_SUCCESS && at == (void *)(uintptr_t)b->lo;
+}
+
+static int back_release(void *arg) {
+    BackCtx *b = arg;
+    VkMemoryUnmapInfoKHR ui = {.sType = VK_STRUCTURE_TYPE_MEMORY_UNMAP_INFO_KHR, .flags = VK_MEMORY_UNMAP_RESERVE_BIT_EXT,
+                               .memory = b->mem};
+    return p_unmap2(b->c->device, &ui) == VK_SUCCESS;
+}
+
+static int backed_pool(VkCtx *c, PoolRec *r, uint64_t addr, uint64_t size) {
+    if (!p_map2) {
+        p_map2 = (PFN_vkMapMemory2KHR)vkGetDeviceProcAddr(c->device, "vkMapMemory2KHR");
+        p_unmap2 = (PFN_vkUnmapMemory2KHR)vkGetDeviceProcAddr(c->device, "vkUnmapMemory2KHR");
+    }
+    uint64_t al = c->map_placed_align > 4096 ? c->map_placed_align : 4096;
+    r->import_lo = addr & ~(al - 1);
+    r->import_hi = (addr + size + al - 1) & ~(al - 1);
+    uint64_t n = r->import_hi - r->import_lo;
+    VkResult res = VK_ERROR_INITIALIZATION_FAILED;
+    VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = n, .usage = pool_usage(c),
+                             .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
+    VkMemoryRequirements req;
+    VkBuffer buf = VK_NULL_HANDLE;
+    VkDeviceMemory mem = VK_NULL_HANDLE;
+    if (!p_map2 || !p_unmap2) goto out;
+    if ((res = vkCreateBuffer(c->device, &bi, NULL, &buf)) != VK_SUCCESS) goto out;
+    vkGetBufferMemoryRequirements(c->device, buf, &req);
+    int type = -1;
+    static const VkMemoryPropertyFlags want[2] = {
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT | VK_MEMORY_PROPERTY_HOST_CACHED_BIT,
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT};
+    for (int w = 0; w < 2 && type < 0; w++)
+        for (uint32_t i = 0; i < c->mem_props.memoryTypeCount; i++)
+            if ((req.memoryTypeBits >> i & 1) && (c->mem_props.memoryTypes[i].propertyFlags & want[w]) == want[w]) {
+                type = (int)i;
+                break;
+            }
+    if (type < 0 || req.size > n) goto out;
+    VkMemoryAllocateInfo ai = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .allocationSize = n,
+                               .memoryTypeIndex = (uint32_t)type};
+#ifdef GAME_NS2
+    VkMemoryAllocateFlagsInfo af = {.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_FLAGS_INFO,
+                                    .flags = VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT};
+    if (c->has_buffer_device_address) ai.pNext = &af;   // the buffer has SHADER_DEVICE_ADDRESS usage (pool_usage)
+#endif
+    if ((res = vkAllocateMemory(c->device, &ai, NULL, &mem)) != VK_SUCCESS ||
+        (res = vkBindBufferMemory(c->device, buf, mem, 0)) != VK_SUCCESS)
+        goto out;
+    BackCtx b = {c, mem, r->import_lo, n};
+    if (!plat_mem_back(r->import_lo, n, back_place, &b)) {
+        res = VK_ERROR_MEMORY_MAP_FAILED;
+        goto out;
+    }
+    r->buf = buf, r->mem = mem, r->drv_backed = 1;
+    plat_inc32(&n_backed);
+    plat_inc32(&n_backed_live);
+    return 1;
+out:
+    {
+        long k = plat_inc32(&n_backed_fail);
+        if (k <= 8)
+            rt_log("vk: pool %#llx+%#llx: driver memory not usable (%d), importing the guest pages instead (%ld so far)",
+                   (unsigned long long)addr, (unsigned long long)size, (int)res, k);
+    }
+    if (buf) vkDestroyBuffer(c->device, buf, NULL);
+    if (mem) vkFreeMemory(c->device, mem, NULL);
+    return 0;
+}
+
+// The pool is finalized and the GPU done with the work that names it: the bytes go back to ordinary guest memory and the
+// device memory is no longer mapped (the record's later destruction frees it, past the last submission that can name it).
+static void backed_release(VkCtx *c, PoolRec *r) {
+    BackCtx b = {c, r->mem, r->import_lo, r->import_hi - r->import_lo};
+    if (plat_mem_unback(b.lo, b.n, back_release, &b)) {
+        r->drv_backed = 0;
+        __atomic_sub_fetch(&n_backed_live, 1, __ATOMIC_RELAXED);
+        return;
+    }
+    // The guest still reaches the driver's memory: it must outlive the process, so it is not freed with the record.
+    rt_log("vk: pool %#llx+%#llx: could not give the guest pages back from driver memory; the memory stays mapped",
+           (unsigned long long)r->lo, (unsigned long long)r->size);
+    r->mem = VK_NULL_HANDLE;
+}
+#endif
+
 // Physical pool: device-local memory of the pool size that both buffers and optimal-tiling images can be bound to.
 static int alloc_physical(VkCtx *c, PoolRec *r) {
-    VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = r->size, .usage = pool_usage(c),
+    VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = r->backed, .usage = pool_usage(c),
                              .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
     VkResult res = vkCreateBuffer(c->device, &bi, NULL, &r->buf);
     if (res != VK_SUCCESS) { rt_log("vk: physical pool: vkCreateBuffer failed (%d)", (int)res); return 0; }
@@ -621,14 +743,13 @@ VmaAllocation vk_mem_phys_twin(VmaAllocation main) {
         if (!r->alloc_tw) {
             VmaAllocationInfo info;
             vmaGetAllocationInfo(c->vma, main, &info);
-            VkDeviceSize tw_size = info.size;
+            VkDeviceSize tw_size = info.size;   // the pool's backed part (phys_backed)
 #ifdef GAME_OOT
-            // The game's texture heap grown for the full-size scene (widescreen.c wide_heap_extra_kib): the twin covers
-            // its shipped part, where every frame's targets lie. The growth holds targets only where a frame needs more
-            // than that (many square shadow maps); one there at an odd offset takes memory of its own (bind_pool_memory
-            // finds it past the twin's end), so under VRAM pressure the growth does not cost its size twice.
+            // and of the game's grown texture heap only the shipped part, where every frame's targets lie, also where
+            // the growth has device memory: a target in the growth at an odd offset takes memory of its own
+            // (bind_pool_memory finds it past the twin's end), so under VRAM pressure the growth is not paid twice
             uint64_t grown = res_heap_extra_kib() << 10, shipped = wide_heap_base_kib() << 10;
-            if (grown && r->size == shipped + grown && tw_size >= shipped) tw_size = shipped;
+            if (grown && r->size == shipped + grown && tw_size > shipped) tw_size = shipped;
 #endif
             VkMemoryRequirements req = {.size = tw_size, .alignment = 65536, .memoryTypeBits = 1u << info.memoryType};
             VmaAllocationCreateInfo ai = {.flags = VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT,
@@ -648,6 +769,40 @@ VmaAllocation vk_mem_phys_twin(VmaAllocation main) {
 #ifndef _WIN32
 static void guest_memory_log(void);   // below, at mirror_mode
 #endif
+// The bytes of a physical pool that get device memory. All of it, except the game's texture heap grown for the
+// full-size scene (widescreen.c wide_heap_extra_kib) on a card with REKARINA_HEAP_GROWTH_MIN_MB (8704: more than
+// 8 GiB) or less of device-local memory: there only its shipped part, where every frame's targets lie. The growth
+// holds targets only where a frame needs more than that (many square shadow maps: a room of torches); the address
+// resolve calls its addresses unbacked (vk_mem_resolve), so an image placed there takes memory of its own
+// (vk_texture.c bind_pool_memory) and gives it back when it goes, the pool table leaves them out (gmem_table_ordered),
+// and the twin covers the backed part only. A 6 GB card was over its budget already, and 256 MiB more for the growth
+// made it worse; on a larger card the growth keeps its device memory and the room's targets bind into it. The room,
+// walks of 2026-11-20 at 1440p: with room on the card 11-18 frames over 25 ms and 9-68 image creations over 3 ms with
+// the growth's memory (two walks) against 18-20 and 26-71 without (three); under a VRAM hog 19-27 and 129-148 (two)
+// against 35 and 189 (one).
+static uint64_t phys_backed(uint64_t size) {
+#ifdef GAME_OOT
+    uint64_t grown = res_heap_extra_kib() << 10, shipped = wide_heap_base_kib() << 10;
+    if (!grown || size != shipped + grown) return size;
+    VkCtx *c = vk_ctx();
+    uint64_t local = 0;
+    for (uint32_t h = 0; c && h < c->mem_props.memoryHeapCount && h < VK_MAX_MEMORY_HEAPS; h++)
+        if ((c->mem_props.memoryHeaps[h].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) &&
+            c->mem_props.memoryHeaps[h].size > local)
+            local = c->mem_props.memoryHeaps[h].size;
+    static int64_t min_mb = -1;
+    if (min_mb < 0) { const char *e = cfg_get("REKARINA_HEAP_GROWTH_MIN_MB"); min_mb = e && *e ? atoll(e) : 8704; }
+    int keep = local > (uint64_t)min_mb << 20;
+    rt_log("vk: the texture heap's growth of %llu MiB %s (%llu MiB of device-local memory)",
+           (unsigned long long)(grown >> 20),
+           keep ? "has device memory" : "has no device memory: targets placed there take memory of their own",
+           (unsigned long long)(local >> 20));
+    return keep ? size : shipped;
+#else
+    return size;
+#endif
+}
+
 int vk_pool_init(pool_t *p) {
     VkCtx *c = vk_ctx();
     if (!c) { rt_log("vk: MemoryPoolInitialize before vk_init"); return 0; }
@@ -671,7 +826,7 @@ int vk_pool_init(pool_t *p) {
     r->key = p;
     r->flags = p->flags;
     r->lo = (uintptr_t)p->mem;
-    r->size = p->size;
+    r->size = r->backed = p->size;
     int ok;
     if (p->flags & NVN_MEMORY_POOL_FLAGS_VIRTUAL) {
         r->kind = POOL_VIRT;
@@ -680,6 +835,7 @@ int vk_pool_init(pool_t *p) {
         ok = r->pt != NULL;
     } else if (p->flags & NVN_MEMORY_POOL_FLAGS_PHYSICAL) {
         r->kind = POOL_PHYS;
+        r->backed = phys_backed(p->size);
         ok = alloc_physical(c, r);
     } else {
         r->kind = POOL_IMPORT;
@@ -743,6 +899,9 @@ void vk_pool_fini(pool_t *p) {
         vk_queue_unlock();
     }
     vk_mem_collect();
+#ifndef _WIN32
+    if (r->drv_backed) backed_release(c, r);
+#endif
     // The record, its buffers and its memory outlive every submission that can still name them: the one being recorded
     // (its sync copies, write-backs and draws may name them; the game frees a pool once its own fence says the GPU is
     // done, but the replay may not have submitted all of that work yet: held rests, chunk-thread parts, the early
@@ -863,7 +1022,7 @@ static int resolve_locked(uint64_t addr, uint64_t size, VkMemSpan *out) {
             h->gen = __atomic_load_n(&pool_gen, __ATOMIC_RELAXED);   // stable: changed only under the exclusive lock
             h->lo = e->lo, h->hi = e->hi, h->buf = r->buf, h->cls = rec_class(r);
             if (r->kind == POOL_IMPORT) h->base = r->import_lo, h->end = r->import_hi, h->alloc = NULL, h->pool = r;
-            else h->base = r->lo, h->end = r->lo + r->size, h->alloc = r->alloc, h->pool = NULL;
+            else h->base = r->lo, h->end = h->hi = r->lo + r->backed, h->alloc = r->alloc, h->pool = NULL;
             rmru[rmru_next++ % RMRU_N] = *h;
         }
     }
@@ -875,19 +1034,22 @@ static int resolve_locked(uint64_t addr, uint64_t size, VkMemSpan *out) {
         out->avail = r->import_hi - addr;
         if (r->smap && !r->stouched) shadow_touch(r);
         ok = 1;
-    } else if (r && r->kind == POOL_PHYS) {
+    } else if (r && r->kind == POOL_PHYS && addr - r->lo < r->backed) {
         out->buffer = r->buf;
         out->offset = out->alloc_offset = addr - r->lo;
-        out->avail = r->size - out->offset;
+        out->avail = r->backed - out->offset;
         out->alloc = r->alloc;
         out->cls = VK_MCLS_DEVICE;
         ok = 1;
     } else if (r && r->kind == POOL_VIRT) {
         uint64_t rel = addr - r->lo, k = rel / NVN_VPOOL_PAGE;
-        if (k < r->npages && r->pt[k].phys) {
+        if (k < r->npages && r->pt[k].phys && r->pt[k].off < r->pt[k].phys->backed) {
             PoolRec *ph = r->pt[k].phys;
             uint64_t off = r->pt[k].off + rel % NVN_VPOOL_PAGE, end = r->pt[k].off + NVN_VPOOL_PAGE;
-            for (uint64_t j = k + 1; j < r->npages && r->pt[j].phys == ph && r->pt[j].off == end; j++) end += NVN_VPOOL_PAGE;
+            for (uint64_t j = k + 1;
+                 j < r->npages && r->pt[j].phys == ph && r->pt[j].off == end && end < ph->backed; j++)
+                end += NVN_VPOOL_PAGE;
+            if (end > ph->backed) end = ph->backed;
             out->buffer = ph->buf;
             out->offset = out->alloc_offset = off;
             out->avail = end - off;
@@ -950,6 +1112,7 @@ static volatile uint64_t mirror_frame;   // the frame vk_mem_census last saw, fo
 
 static void hot_census(void);          // hot pools (end of file)
 static void hot_demote_pending(void);
+static void mirror_cold_release(void);   // vk_mem_mirror_begin: mirrors no binding named lately, under VRAM pressure
 
 void vk_mem_census(uint64_t frame) {
     mirror_frame = frame;
@@ -2491,6 +2654,12 @@ static void vk_gpu_written_(uint64_t addr, uint64_t size) {
 }
 
 static void shadow_log(uint64_t frame) {
+#ifndef _WIN32
+    if (driver_mem)
+        rt_log("mem: driver memory at frame %llu: %d pools backed now (%d made, %d refused and imported instead)",
+               (unsigned long long)frame, (int)__atomic_load_n(&n_backed_live, __ATOMIC_RELAXED),
+               (int)__atomic_load_n(&n_backed, __ATOMIC_RELAXED), (int)__atomic_load_n(&n_backed_fail, __ATOMIC_RELAXED));
+#endif
     if (!shadow_on) return;
     plat_mutex_lock(&shadow_lock);
     rt_log("mem: shadow at frame %llu: %lld pools %.1f MiB; since the last: %llu pool syncs, %llu queries, %.1f MiB "
@@ -2622,13 +2791,15 @@ static int gmem_table_ordered(VkMemGmemEnt *e, int cap, uint64_t *gen) {
             if (a) gmem_add(e, &n, cap, r->lo, r->lo + r->size, a - r->import_lo, mirror ? -1 : 1, &end, &over);
         } else if (r->kind == POOL_PHYS && r->buf) {
             VkDeviceAddress a = rec_address(c, r, 0);
-            if (a) gmem_add(e, &n, cap, r->lo, r->lo + r->size, a - r->lo, 0, &end, &over);
+            if (a) gmem_add(e, &n, cap, r->lo, r->lo + r->backed, a - r->lo, 0, &end, &over);
         } else if (r->kind == POOL_VIRT && r->pt) {
             for (uint64_t k = 0; k < r->npages;) {
                 PoolRec *ph = r->pt[k].phys;
-                if (!ph || !ph->buf) { k++; continue; }
+                if (!ph || !ph->buf || r->pt[k].off >= ph->backed) { k++; continue; }
                 uint64_t j = k + 1, off = r->pt[k].off;
-                while (j < r->npages && r->pt[j].phys == ph && r->pt[j].off == off + (j - k) * NVN_VPOOL_PAGE) j++;
+                while (j < r->npages && r->pt[j].phys == ph && r->pt[j].off == off + (j - k) * NVN_VPOOL_PAGE &&
+                       r->pt[j].off < ph->backed)
+                    j++;
                 VkDeviceAddress a = rec_address(c, ph, 0);
                 uint64_t lo = r->lo + k * NVN_VPOOL_PAGE;
                 if (a) gmem_add(e, &n, cap, lo, r->lo + j * NVN_VPOOL_PAGE, a + off - lo, 0, &end, &over);
@@ -2834,20 +3005,32 @@ static volatile int64_t m_flush_calls, m_flush_bytes, v_pages, v_skipped, v_mism
 static void guest_memory_log(void) {
     const char *want = cfg_get("REKARINA_LINUX_GUEST_MEMORY");
     if (!want || !*want) want = "auto";
-    uint32_t n = 0;
     VkCtx *c = vk_ctx();
+    uint32_t n = 0;
     vkEnumerateDeviceExtensionProperties(c->phys, NULL, &n, NULL);
     VkExtensionProperties *e = calloc(n ? n : 1, sizeof *e);
-    int placed = 0, dmabuf = 0;
+    int dmabuf = 0;
     if (e && vkEnumerateDeviceExtensionProperties(c->phys, NULL, &n, e) >= 0)
-        for (uint32_t i = 0; i < n; i++) {
-            placed |= !strcmp(e[i].extensionName, "VK_EXT_map_memory_placed");
-            dmabuf |= !strcmp(e[i].extensionName, "VK_EXT_external_memory_dma_buf");
-        }
+        for (uint32_t i = 0; i < n; i++) dmabuf |= !strcmp(e[i].extensionName, "VK_EXT_external_memory_dma_buf");
     free(e);
-    rt_log("mem: guest memory: shadow storage (REKARINA_LINUX_GUEST_MEMORY=%s; the driver-memory way is not built into "
-           "this version; this device offers placed maps %s, dma-buf export %s; `--memory-test` checks it)",
-           want, placed ? "yes" : "no", dmabuf ? "yes" : "no");
+    rt_log("mem: guest memory: %s (REKARINA_LINUX_GUEST_MEMORY=%s; this device offers placed maps %s, dma-buf export %s; "
+           "`--memory-test` checks it)",
+           driver_mem ? "driver memory placed over the guest pages, the write watch is the platform's dirty bits"
+                      : "shadow storage",
+           want, c->has_map_placed ? "yes" : "no", dmabuf ? "yes" : "no");
+    if (!driver_mem && !strcmp(want, "driver"))
+        rt_log("mem: guest memory: driver memory asked for and not available (%s)",
+               c->has_map_placed ? "REKARINA_SHADOW is set" : "the device has no usable VK_EXT_map_memory_placed");
+}
+
+// Called by create_device once the device's features are known (before any pool): chooses the Linux guest memory way.
+// REKARINA_LINUX_GUEST_MEMORY=driver turns driver memory on; auto and shadow keep shadow storage until the driver way
+// has been played on a real GPU (it is verified against the platform layer and `--memory-test`, not yet in the game).
+void vk_mem_driver_memory(int placed) {
+    const char *want = cfg_get("REKARINA_LINUX_GUEST_MEMORY");
+    const char *sh = cfg_get("REKARINA_SHADOW");
+    driver_mem = placed && want && !strcmp(want, "driver") && !(sh && *sh && strcmp(sh, "0"));
+    if (driver_mem) shadow_on = 0;
 }
 #endif
 
@@ -2883,6 +3066,12 @@ static void mirror_mode(int discrete) {
 #endif
     if (shadow_on) rt_log("mem: shadow storage: CPU-visible pools are host-visible copies of guest memory, not imports%s",
                           sh && *sh ? " (REKARINA_SHADOW)" : "");
+#ifndef _WIN32
+    if (shadow_on && !(sh && *sh)) {   // the device's features are not known here: vk_mem_driver_memory decides later
+        const char *gm = cfg_get("REKARINA_LINUX_GUEST_MEMORY");
+        if (gm && !strcmp(gm, "driver")) rt_log("mem: REKARINA_LINUX_GUEST_MEMORY=driver: shadow storage is replaced by driver memory if the device allows it (the guest memory line says)");
+    }
+#endif
     rt_log("mem: mode %s (%s): %s", mode == 2 ? "verify" : mode ? "mirror" : "import", why,
            mode ? "pools used as buffers get a device-local mirror" : "every CPU-visible pool is imported host memory");
     // Import is the integrated-GPU mode. On a discrete card every draw reads the pools over PCIe (the comment above
@@ -3111,6 +3300,7 @@ static void mirror_create(PoolRec *r) {
     nm++;
     plat_mutex_unlock(&pool_lock);
     r->acc_sub = msub;
+    r->use_frame = (uint32_t)__atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED);
     r->mstate = MS_ON;
 #ifdef GAME_NS2
     __atomic_add_fetch(&gmem_mgen, 1, __ATOMIC_RELEASE);   // the global memory table points into the mirror from now on
@@ -3318,8 +3508,14 @@ int vk_mem_host_read_recent(void) {
 // and synced for this submission is read without it.
 static PlatRMutex use_lock = PLAT_RMUTEX_INIT;
 
+static inline void use_note(PoolRec *r) {   // mirror_cold_release's clock (any recording thread: a plain stamp)
+    uint32_t f = (uint32_t)__atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED);
+    if (__atomic_load_n(&r->use_frame, __ATOMIC_RELAXED) != f) __atomic_store_n(&r->use_frame, f, __ATOMIC_RELAXED);
+}
+
 void vk_mem_use(VkMemSpan *sp) {
     PoolRec *r = sp->pool;
+    use_note(r);
     if (r->mstate == MS_ON && r->acc_sub == msub) {
         sp->buffer = r->mbuf;
         return;
@@ -3358,6 +3554,7 @@ void vk_mem_use(VkMemSpan *sp) {
 void vk_mem_pick(VkMemSpan *sp) {
     PoolRec *r = sp->pool;
     if (!r || r->mstate != MS_ON) return;
+    use_note(r);
     if (r->acc_sub != msub) {
         plat_rmutex_lock(&use_lock);
         if (r->acc_sub != msub) {
@@ -3845,6 +4042,19 @@ static void snap_free(void *arg) {   // completion thread: the submission is don
 // those guest pages at the recording and the completion of the fence opens them (an earlier CPU access is logged).
 typedef struct { uint64_t addr, size; } RwRange;
 static RwRange guard_q[GUARD_N];
+// The small results a shader writes after the submission's results point, for the write-back at the next part's start
+// (REKARINA_WB_EARLY_RESULTS, vk_mem_early_results).
+static MRange *erl;
+static int nerl, cerl;
+static int early_results_on(void) {
+    static int on = -1;
+#ifdef GAME_OOT
+    if (on < 0) on = rt_knob("WB_EARLY_RESULTS", "1");
+#else
+    if (on < 0) on = rt_knob("WB_EARLY_RESULTS", "0");
+#endif
+    return on;
+}
 static int nguard;
 static void rw_open_cb(void *arg) { RwRange *q = arg; mem_result_release(q->addr, q->size); free(q); }
 // ---- Write-back on demand (REKARINA_LAZY_WB, default on for OoT)
@@ -4151,6 +4361,8 @@ static int gpu_wrote(const VkMemSpan *sp, uint64_t size, int shader) {
     // With the results fence only what a shader writes after the submission's results point is guarded: the rest is in
     // guest memory when the game's wait for the frame returns.
     int vk_sync_results_sent(void);
+    if (shader == 1 && size <= GUARD_MAX && vk_sync_results_on() && vk_sync_results_sent() && early_results_on())
+        range_add(&erl, &nerl, &cerl, r, sp->offset, size);   // vk_mem_early_results
     if (shader && size <= GUARD_MAX && mem_result_guard_on() && (!vk_sync_results_on() || vk_sync_results_sent())) {
         uint64_t f = vk_exec_recording_fence(), a = r->import_lo + sp->offset;
         RwRange *q = malloc(sizeof *q);
@@ -4621,6 +4833,7 @@ void vk_mem_mirror_begin_ex(int presnap) {
     uint64_t t0 = qpc(), sec1 = sec_begin();
     gmem_demote_pending();
     hot_demote_pending();
+    mirror_cold_release();
     sec_end(SEC_MB_DEMOTE, sec1);
     nsnl = snl_copied = nchunks = 0;   // the previous submission handed its chunks to snap_free
     uint32_t prev = msub;
@@ -4664,6 +4877,79 @@ void vk_mem_mirror_begin_ex(int presnap) {
 }
 
 int vk_mem_mirror_pending(void) { return npend || snl_copied < nsnl; }
+
+// ---- Early results (REKARINA_WB_EARLY_RESULTS, on for OoT with the results point)
+// The results point (vk_sync.c) lets the game's next frame run while the GPU still works on the frame's tail, and what
+// shaders write in that tail went back to guest memory only at the submission's end. The game reads some of it early
+// in its next frame: f_7000345f00 takes a light's record only when the record's frame stamp (+0x1540) says "the frame
+// just before", else it drops the light for that frame. In a cave lit by candles the distant candles' light
+// went out in 15-28 % of the frames (still camera, 2026-11-20); making the game wait for those records (a result guard
+// on the reads) cost up to 9 % of the frame rate at the Market, where they came 5 ms late. So the small ranges (up to
+// GUARD_MAX) a shader writes after the results point go back on their own at the first part start after they were
+// written (vk_exec.c wb_early: their snapshots are taken by that part's prologue), before the game's next frame reads
+// them: a range the CPU also writes through the word merge (only the words the GPU changed, so the CPU's own fields in
+// the same records stay; plain copies of whole records put the mirror's old CPU fields back over the game's and changed
+// nothing), the others as plain copies, behind barriers on the shader stages only, and they leave the end's write-back
+// (a later write of the same range lists it again). Three pairs in the cave: 0 blinks against 111-278 per 1000 frames,
+// 118.7-121.0 fps against 118.3-118.7. *bound: a compute pipeline was bound (the caller binds its state again).
+// Returns the commands recorded.
+int vk_mem_early_pending(void) { return nerl; }
+
+static int erl_has(const PoolRec *r, uint64_t off, uint64_t size) {
+    for (int e = 0; e < nerl; e++)
+        if (erl[e].r == r && off >= erl[e].off && off + size <= erl[e].off + erl[e].size) return 1;
+    return 0;
+}
+
+int vk_mem_early_results(VkCommandBuffer cb, int *bound) {
+    *bound = 0;
+    if (!nerl) return 0;
+    if (!vk_mirror_on || mirror_verify || vk_sync_awb_on()) {
+        nerl = 0;
+        return 0;
+    }
+    if (snl_copied < nsnl) return 0;   // a range's snapshot is not taken yet: the next part's start
+    const VkPipelineStageFlags2 SH = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+    SnapRange *mine = nsnl ? malloc(sizeof *mine * (size_t)nsnl) : NULL;
+    MRange *plain = nwbl ? malloc(sizeof *plain * (size_t)nwbl) : NULL;
+    if ((nsnl && !mine) || (nwbl && !plain)) rt_fatal("vk: out of memory");
+    int nm = 0, np = 0, k = 0;
+    for (int i = 0; i < nsnl; i++) {
+        if (!snl[i].fadd && erl_has(snl[i].r, snl[i].off, snl[i].size)) mine[nm++] = snl[i];
+        else snl[k++] = snl[i];
+    }
+    nsnl = snl_copied = k;
+    k = 0;
+    for (int i = 0; i < nwbl; i++) {
+        if (erl_has(wbl[i].r, wbl[i].off, wbl[i].size)) plain[np++] = wbl[i];
+        else wbl[k++] = wbl[i];
+    }
+    nwbl = k;
+    int rec = 0;
+    if (nm) {
+        mbarrier(cb, SH, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                 VK_ACCESS_2_SHADER_STORAGE_READ_BIT);
+        SnapRange *keep = snl;
+        int nkeep = nsnl;
+        snl = mine, nsnl = nm;   // wb_merge_record merges the list in snl
+        rec += wb_merge_record(cb) + 2;
+        snl = keep, nsnl = nkeep;
+        *bound = 1;
+        // the host reads the merged words; a later shader that writes the same mirror range waits for the merge's read
+        mbarrier(cb, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT | VK_ACCESS_2_SHADER_STORAGE_READ_BIT,
+                 VK_PIPELINE_STAGE_2_HOST_BIT | SH, VK_ACCESS_2_HOST_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
+    }
+    if (np) {
+        mbarrier(cb, SH, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_READ_BIT);
+        rec += copy_ranges(cb, plain, np, 0, &mrep.wb_bytes, &mrep.wb_copies) + 2;
+        mbarrier(cb, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT | VK_ACCESS_2_TRANSFER_READ_BIT,
+                 VK_PIPELINE_STAGE_2_HOST_BIT | SH, VK_ACCESS_2_HOST_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
+    }
+    free(mine);
+    free(plain);
+    nerl = 0;
+    return rec;
+}
 
 // The write-back this submission has collected so far: bytes of plain copies and of merges.
 void vk_mem_wb_pending(uint64_t *plain, uint64_t *merge) {
@@ -5463,11 +5749,13 @@ int vk_mem_mirror_flush(VkCommandBuffer cb, uint64_t fence) {
     if (!vk_mirror_on || mirror_verify || vk_sync_awb_on() || (!nsnl && !nwbl) || snl_copied < nsnl) return 0;
     int rec = wb_emit(cb, 1, fence);
     nsnl = snl_copied = 0;   // the chunks stay until the fence (vk_mem_mirror_end hands them all to snap_free)
+    nerl = 0;   // gone back with the rest
     mrep.early_flushes++;
     return rec;
 }
 
 int vk_mem_mirror_end(VkCommandBuffer cb, uint64_t fence) {
+    nerl = 0;   // what is left goes back with the end's write-back
     if (!vk_mirror_on) {
         for (int i = 0; i < nguard; i++) mem_result_guard(guard_q[i].addr, guard_q[i].size, fence);
         nguard = 0;
@@ -6478,6 +6766,29 @@ void vk_mem_note_submit(uint64_t timeline_value) {
     plat_rmutex_unlock(&cmd_lock);
 }
 
+// A process that submits no frame (the texture walk, tex_prepare.c) waits for its uploads itself (vk_upload_flush(1)),
+// and its timeline never passes the stamps that collect_locked waits for: what it deferred stayed for good. The walk's
+// ASTC decoder defers one buffer a texture (vk_astc.c), so a cold walk held 11 GiB at its end, and the game whose
+// child it is ran out of video memory beside it (the driver's compiler crashed in the entry step, twice). Frees every
+// deferral whose upload batch has completed; nothing in a game process (its frames collect).
+void vk_mem_collect_idle(void) {
+    VkCtx *c = vk_ctx();
+    if (!c || vk_sync_issued() || vk_sync_reserved()) return;
+    plat_once(&cmd_once, cmd_init, NULL);
+    plat_rmutex_lock(&cmd_lock);
+    retire(c, 0);
+    int k = 0, n = 0;
+    Dead *go = ndead ? malloc((size_t)ndead * sizeof *go) : NULL;
+    for (int i = 0; i < ndead; i++) {
+        if (dead[i].seq > done_seq || !go) dead[k++] = dead[i];
+        else go[n++] = dead[i];
+    }
+    ndead = k;
+    plat_rmutex_unlock(&cmd_lock);
+    for (int i = 0; i < n; i++) reap_one(c, &go[i]);
+    free(go);
+}
+
 void vk_mem_collect(void) {
     VkCtx *c = vk_ctx();
     if (!c) return;
@@ -6597,4 +6908,83 @@ static void hot_demote_pending(void) {   // vk_mem_mirror_begin (replay thread)
     plat_mutex_unlock(&pool_lock);
     __atomic_add_fetch(&gmem_mgen, 1, __ATOMIC_RELEASE);   // the pool table points at the import buffers
     __atomic_add_fetch(&mirror_gen, 1, __ATOMIC_RELEASE);
+}
+
+// ---- mirrors given back under VRAM pressure
+// A mirror lives as long as its pool, and the game keeps the pools of the maps it left (its own resource cache):
+// after a tour of the Market, the castle and the field 1,025 mirrors held 1.3 GiB (2026-11-20, the census). On a
+// 6 GB card the budget left the game about 4.7 GiB, and Windows moved the rest of the game's memory to system memory (a
+// player's GPU time went from 14 to 60 ms a frame after a map change). Every mirror is synced for the global memory
+// table each submission, so that sync says nothing about use; a buffer binding does (vk_mem_use, vk_mem_pick:
+// use_frame).
+// While video memory is over MIRROR_COLD_LINE percent of the budget, a mirror no binding named for MIRROR_COLD_FRAMES
+// frames and the GPU never wrote (no shader write, no write-back, no lazy write-back pages, no flush ranges pending:
+// guest memory holds every byte of it) gives its memory back, at most MIRROR_COLD_STEP bytes a call: the pool is read
+// in place (its import buffer, the table points there from the next submission on), and its next binding asks for a
+// mirror again as a pool refused for room does (vk_mem_use, MIRROR_RETRY frames on), which copies it whole. The buffer
+// goes once the GPU is past every submission handed out so far (vk_defer_past_reserved).
+// Off by default (REKARINA_MIRROR_COLD=1 turns it on): in a Market / castle / field tour of 5.5 min with a VRAM hog
+// (2026-11-20, hv3 against hv4) it gave back 1,415 mirrors, the mirrors held 714 MiB at the end against 1,150, at the
+// same frame rate, but textures took the room (1,967 MiB against 1,646) and the driver's total stayed where it was: the
+// freed pieces are holes in shared blocks, and the eviction keeps what is not cold. A lower total needs the textures'
+// line to move with it.
+#define MIRROR_COLD_FRAMES 3600u
+#define MIRROR_COLD_LINE 90
+#define MIRROR_COLD_STEP (128ull << 20)
+static uint64_t cold_n, cold_bytes;
+
+static int lz_has(const PoolRec *r) {
+    int had = 0;
+    plat_mutex_lock(&lz_lock);
+    for (int i = 0; i < lz_npool && !had; i++) had = lz_pool[i].lo == r->import_lo && lz_pool[i].mbuf == r->mbuf;
+    plat_mutex_unlock(&lz_lock);
+    return had;
+}
+
+static void mirror_cold_release(void) {   // vk_mem_mirror_begin (replay thread), before the submission records
+    static int on = -1;
+    if (on < 0) on = rt_knob("MIRROR_COLD", "0") != 0;
+    if (!on || (msub & 63)) return;   // every 64 submissions, some ten frames
+    uint64_t used = 0, budget = 0;
+    int exact = 0;
+    if (!vk_mem_vram(&used, &budget, &exact) || !budget || used <= budget / 100 * MIRROR_COLD_LINE) return;
+    uint32_t now = (uint32_t)__atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED);
+    VkBuffer bufs[64];
+    VmaAllocation allocs[64];
+    int nb = 0;
+    uint64_t freed = 0;
+    plat_rmutex_lock(&use_lock);
+    plat_mutex_lock(&pool_lock);
+    for (int i = 0; i < nm && nb < 64 && freed < MIRROR_COLD_STEP;) {
+        PoolRec *r = mlist[i];
+        uint64_t n = r->import_hi - r->import_lo;
+        uint32_t idle = now - __atomic_load_n(&r->use_frame, __ATOMIC_RELAXED);
+        if (r->mstate != MS_ON || !r->mbuf || idle < MIRROR_COLD_FRAMES || r->shader_written || r->wb_sub || r->fl_n ||
+            lz_has(r)) {
+            i++;
+            continue;
+        }
+        mirror_forget(r);   // out of mlist: i names the next one now
+        bufs[nb] = r->mbuf, allocs[nb++] = r->malloc_;
+        r->mbuf = VK_NULL_HANDLE, r->malloc_ = NULL;
+        r->da_of[1] = VK_NULL_HANDLE, r->da[1] = 0;
+        r->mstate = MS_REFUSED, r->mwhy = MR_BUDGET, r->mtry = now;
+        plat_inc64(&m_refused_n[MR_BUDGET]);
+        plat_add64(&m_refused_bytes[MR_BUDGET], (int64_t)n);
+        freed += n;
+    }
+    plat_mutex_unlock(&pool_lock);
+    plat_rmutex_unlock(&use_lock);
+    if (!nb) return;
+    __atomic_add_fetch(&gmem_mgen, 1, __ATOMIC_RELEASE);   // the pool table points at the import buffers
+    __atomic_add_fetch(&mirror_gen, 1, __ATOMIC_RELEASE);
+    vk_defer_past_reserved(1);
+    for (int k = 0; k < nb; k++) defer(DEAD_BUFFER_VMA, (uint64_t)(uintptr_t)bufs[k], allocs[k]);
+    vk_defer_past_reserved(0);
+    cold_n += (uint64_t)nb, cold_bytes += freed;
+    static int lines;
+    if (lines++ < 32 || !(lines % 64))
+        rt_log("mem: %d mirrors no binding named for %u frames gave their memory back (%.1f MiB; %llu, %.0f MiB so "
+               "far; %.0f of %.0f MiB in use)", nb, MIRROR_COLD_FRAMES, freed / 1048576.0, (unsigned long long)cold_n,
+               cold_bytes / 1048576.0, used / 1048576.0, budget / 1048576.0);
 }

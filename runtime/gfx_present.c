@@ -963,22 +963,46 @@ static const char *screenshot_path(void) {
     return path;
 }
 
-// The captured swapchain image as a PNG (the menu's test hook), RGBA with opaque alpha.
-static void save_capture(const char *path) {
+// A captured image of the swapchain's format and size as a PNG, RGBA with opaque alpha.
+static void save_pixels(const char *path, const uint8_t *cap) {
     size_t n = (size_t)g_cap_w * (size_t)g_cap_h * 4;
     uint8_t *px = malloc(n);
     if (!px) return;
     int bgra = g_sc_fmt == VK_FORMAT_B8G8R8A8_UNORM || g_sc_fmt == VK_FORMAT_B8G8R8A8_SRGB;
-    if (g_sc_hdr) vk_hdr_to_srgb8(g_cap_ptr, px, n / 4, g_sc_fmt == VK_FORMAT_A2R10G10B10_UNORM_PACK32);
+    if (g_sc_hdr) vk_hdr_to_srgb8(cap, px, n / 4, g_sc_fmt == VK_FORMAT_A2R10G10B10_UNORM_PACK32);
     else for (size_t i = 0; i < n; i += 4) {
-        px[i] = g_cap_ptr[i + (bgra ? 2 : 0)];
-        px[i + 1] = g_cap_ptr[i + 1];
-        px[i + 2] = g_cap_ptr[i + (bgra ? 0 : 2)];
+        px[i] = cap[i + (bgra ? 2 : 0)];
+        px[i + 1] = cap[i + 1];
+        px[i + 2] = cap[i + (bgra ? 0 : 2)];
         px[i + 3] = 255;
     }
     rt_write_png(path, px, (uint32_t)g_cap_w, (uint32_t)g_cap_h);
     free(px);
+}
+
+// The captured swapchain image as a PNG (the menu's test hook).
+static void save_capture(const char *path) {
+    save_pixels(path, g_cap_ptr);
     rt_log("gfx: menu test shot %s (%dx%d)", path, g_cap_w, g_cap_h);
+}
+
+// DEBUG-HLSHOT: frame generation's HUD-less picture of a present, copied beside the swapchain image's capture
+static VkBuffer g_hlcap_buf;
+static VmaAllocation g_hlcap_alloc;
+static uint8_t *g_hlcap_ptr;
+static VkDeviceSize g_hlcap_size;
+static int hlcap_buffer(void) {
+    VkCtx *c = vk_ctx();
+    VkDeviceSize need = (VkDeviceSize)g_sc_ext.width * g_sc_ext.height * 4;
+    if (g_hlcap_buf && g_hlcap_size == need) return 1;
+    if (g_hlcap_buf) vmaDestroyBuffer(c->vma, g_hlcap_buf, g_hlcap_alloc), g_hlcap_buf = VK_NULL_HANDLE;
+    VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = need, .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT};
+    VmaAllocationCreateInfo ai = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST,
+                                  .flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT};
+    VmaAllocationInfo info;
+    if (vmaCreateBuffer(c->vma, &bi, &ai, &g_hlcap_buf, &g_hlcap_alloc, &info) != VK_SUCCESS) return g_hlcap_buf = VK_NULL_HANDLE, 0;
+    g_hlcap_ptr = info.pMappedData, g_hlcap_size = need;
+    return g_hlcap_ptr != NULL;
 }
 
 // The rectangle {x, y, w, h} of a dw x dh swapchain image the cw x ch picture goes into: the whole image with
@@ -1024,7 +1048,46 @@ static VkImageView g_hl_view;
 static uint32_t g_hl_w, g_hl_h;
 static VkFormat g_hl_fmt;
 
-static VkImage hudless_record(VkCommandBuffer cb, int w, int h, const int rect[4], const int to[4]) {
+// The game's picture into a swapchain-sized image dst (in TRANSFER_DST_OPTIMAL) at to, as the screen shows it: the colour
+// adjustment (REKARINA_COLOR_*, vk_color.c), or on an HDR10 swapchain the PQ encode (vk_hdr.c), which grades with the
+// same values, takes a copy of the crop; then FSR (REKARINA_UPSCALER, vk_fsr.c: EASU when the picture's rectangle is
+// larger than the crop, RCAS alone after DLSS) or the bilinear blit. general: src is in GENERAL (vk_texture.c images),
+// else in TRANSFER_SRC_OPTIMAL; full: the whole path (a GENERAL source only), else the blit alone. slot picks the
+// source views those passes keep (one per frame in flight; frame generation's HUD-less picture takes the slots after
+// FRAMES). *psrc and prect: what the picture was read from at the end (the menu's live picture reads it again).
+// Returns vk_fsr_record's answer, 0 when the blit drew it.
+static int picture_into(VkCommandBuffer cb, unsigned slot, VkImage src, VkFormat fmt, int w, int h, const int rect[4],
+                        int general, int full, VkImage dst, const int to[4], VkImage *psrc, int prect[4]) {
+    int cw = rect[2], ch = rect[3];
+    VkImage graded = !full ? VK_NULL_HANDLE : g_sc_hdr ? vk_hdr_encode(cb, slot, src, fmt, rect)
+                                                         : vk_color_record(cb, slot, src, fmt, rect);
+    *psrc = graded ? graded : src;
+    VkFormat pfmt = graded ? VK_FORMAT_R16G16B16A16_SFLOAT : fmt;
+    for (int i = 0; i < 4; i++) prect[i] = graded && i < 2 ? 0 : rect[i];   // the graded copy is the crop alone
+    int fsr = full ? vk_fsr_record(cb, slot, *psrc, pfmt, graded ? cw : w, graded ? ch : h, prect, dst, to) : 0;
+    if (!fsr) {
+        if (general)   // earlier submissions' writes become visible to the blit here
+            sync_barrier(cb, *psrc, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_GENERAL, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+                         VK_ACCESS_2_MEMORY_WRITE_BIT, VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_READ_BIT);
+        VkImageBlit region = {
+            .srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+            .srcOffsets = {{prect[0], prect[1], 0}, {prect[0] + cw, prect[1] + ch, 1}},
+            .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .dstOffsets = {{to[0], to[1], 0}, {to[0] + to[2], to[1] + to[3], 1}}};
+        vkCmdBlitImage(cb, *psrc, general ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, dst,
+                       VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region, VK_FILTER_LINEAR);
+        if (general)   // later submissions that write the source wait for the blit's read
+            sync_barrier(cb, *psrc, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_GENERAL, VK_PIPELINE_STAGE_2_TRANSFER_BIT, 0,
+                         VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, 0);
+    }
+    return fsr;
+}
+
+// The HUD-less picture goes through the same path as the game's picture (picture_into): frame generation takes as
+// interface whatever differs between the two, and the present's sharpening after DLSS (RCAS at the sharpness setting,
+// 80 by default), the colour profile or FSR's scaling applied to one of them alone differed over the whole scene.
+// full: the game's picture took the whole path (it was in GENERAL). REKARINA_FG_HUDLESS_PLAIN=1: the bilinear blit alone,
+// as before (test).
+static VkImage hudless_record(VkCommandBuffer cb, unsigned slot, int w, int h, const int rect[4], const int to[4], int full) {
     VkImage pic;
     VkImageView pv;
     uint32_t pw, ph;
@@ -1059,13 +1122,14 @@ static VkImage hudless_record(VkCommandBuffer cb, int w, int h, const int rect[4
     VkClearColorValue black = {.float32 = {0, 0, 0, 1}};
     VkImageSubresourceRange all = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
     vkCmdClearColorImage(cb, g_hl, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &black, 1, &all);
-    sync_barrier(cb, pic, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_GENERAL, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
-                 VK_ACCESS_2_MEMORY_WRITE_BIT, VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_READ_BIT);
-    VkImageBlit region = {.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
-                          .srcOffsets = {{rect[0], rect[1], 0}, {rect[0] + rect[2], rect[1] + rect[3], 1}},
-                          .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
-                          .dstOffsets = {{to[0], to[1], 0}, {to[0] + to[2], to[1] + to[3], 1}}};
-    vkCmdBlitImage(cb, pic, VK_IMAGE_LAYOUT_GENERAL, g_hl, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region, VK_FILTER_LINEAR);
+    sync_barrier(cb, g_hl, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                 VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+                 VK_ACCESS_2_MEMORY_WRITE_BIT);
+    static int plain = -1;
+    if (plain < 0) plain = rt_knob("FG_HUDLESS_PLAIN", "0");
+    VkImage ps;
+    int pr[4];
+    picture_into(cb, slot + FRAMES, pic, pf, w, h, rect, 1, full && !plain, g_hl, to, &ps, pr);
     sync_barrier(cb, g_hl, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
                  VK_ACCESS_2_MEMORY_WRITE_BIT, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
                  VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT);
@@ -1281,6 +1345,19 @@ static void present_image(VkImage src, VkImageLayout layout, VkFormat fmt, int w
             menu_shot = scp;
         }
     }
+    static char hlp[512];
+    int hlshot = 0;
+    {   // DEBUG-HLSHOT: REKARINA_HL_SHOT=lo-hi:step saves those frames' swapchain image (sc<frame>.png) and frame
+        // generation's HUD-less picture of the same present (hl<frame>.png) to REKARINA_SHOTS_DIR
+        static char scp2[512];
+        const char *e = cfg_get("REKARINA_HL_SHOT"), *dir = cfg_get("REKARINA_SHOTS_DIR");
+        unsigned long long lo, hi, st, f = __atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED);
+        if (e && sscanf(e, "%llu-%llu:%llu", &lo, &hi, &st) == 3 && st && f >= lo && f <= hi && (f - lo) % st == 0) {
+            if (!menu_shot) snprintf(scp2, sizeof scp2, "%s/sc%05llu.png", dir ? dir : ".", f), menu_shot = scp2;
+            snprintf(hlp, sizeof hlp, "%s/hl%05llu.png", dir ? dir : ".", f);
+            hlshot = 1;
+        }
+    }
     if (g_video.pending[slot]) {   // this slot's copy of FRAMES presents ago: its work ended with the wait above
         g_video.pending[slot] = 0;
         vmaInvalidateAllocation(c->vma, g_video.alloc[slot], 0, VK_WHOLE_SIZE);
@@ -1315,32 +1392,10 @@ static void present_image(VkImage src, VkImageLayout layout, VkFormat fmt, int w
                      VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_TRANSFER_BIT,
                      VK_ACCESS_2_TRANSFER_WRITE_BIT);
     }
-    // Colour adjustment (REKARINA_COLOR_*, vk_color.c), or on an HDR10 swapchain the PQ encode (vk_hdr.c), which grades with
-    // the same values: a copy of the crop takes the game image's place below
-    VkImage graded = !general ? VK_NULL_HANDLE : g_sc_hdr ? vk_hdr_encode(cb, slot, src, fmt, rect)
-                                                         : vk_color_record(cb, slot, src, fmt, rect);
-    const int grect[4] = {0, 0, cw, ch};
-    VkImage psrc = graded ? graded : src;
-    VkFormat pfmt = graded ? VK_FORMAT_R16G16B16A16_SFLOAT : fmt;
-    const int *prect = graded ? grect : rect;
-    // FSR (REKARINA_UPSCALER) when the picture's rectangle is larger than the crop; else the bilinear blit
-    int fsr = general ? vk_fsr_record(cb, slot, psrc, pfmt, graded ? cw : w, graded ? ch : h, prect, dst, to) : 0;
+    VkImage psrc;
+    int prect[4];
+    int fsr = picture_into(cb, slot, src, fmt, w, h, rect, general, general, dst, to, &psrc, prect);
     g_scaler = fsr == 1 ? 2 : cw != to[2] || ch != to[3];   // 2 from vk_fsr_record: sharpened, not scaled
-    if (!fsr) {
-        if (general)   // a GENERAL source (vk_texture.c images): earlier submissions' writes become visible to the blit here
-            sync_barrier(cb, psrc, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_GENERAL, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
-                         VK_ACCESS_2_MEMORY_WRITE_BIT, VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_READ_BIT);
-        VkImageBlit region = {
-            .srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
-            .srcOffsets = {{prect[0], prect[1], 0}, {prect[0] + cw, prect[1] + ch, 1}},
-            .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, .dstOffsets = {{to[0], to[1], 0}, {to[0] + to[2], to[1] + to[3], 1}}};
-        vkCmdBlitImage(cb, psrc, general ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, dst,
-                       VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region, VK_FILTER_LINEAR);
-        if (general)   // later submissions that write the source wait for the blit's read
-            sync_barrier(cb, psrc, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_GENERAL, VK_PIPELINE_STAGE_2_TRANSFER_BIT, 0,
-                         VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, 0);
-    }
-    VkImage hudless = src ? hudless_record(cb, w, h, rect, to) : VK_NULL_HANDLE;
     // The open menu's live picture (ui/menu.cpp): the game picture once more, scaled into the menu's frame; the menu
     // leaves that rectangle clear.
     int pv[4];
@@ -1362,6 +1417,19 @@ static void present_image(VkImage src, VkImageLayout layout, VkFormat fmt, int w
         if (general)
             sync_barrier(cb, psrc, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_GENERAL, VK_PIPELINE_STAGE_2_TRANSFER_BIT, 0,
                          VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, 0);
+    }
+    // frame generation's picture without the HUD, through the same path; after the menu's live picture, which reads the
+    // colour adjustment's image that this makes again
+    VkImage hudless = src ? hudless_record(cb, slot, w, h, rect, to, general) : VK_NULL_HANDLE;
+    hlshot = hlshot && hudless && hlcap_buffer();
+    if (hlshot) {   // DEBUG-HLSHOT
+        sync_barrier(cb, hudless, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+                     VK_ACCESS_2_MEMORY_WRITE_BIT, VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_READ_BIT);
+        VkBufferImageCopy hc = {.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+                                .imageExtent = {g_sc_ext.width, g_sc_ext.height, 1}};
+        vkCmdCopyImageToBuffer(cb, hudless, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, g_hlcap_buf, 1, &hc);
+        sync_barrier(cb, hudless, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL, VK_PIPELINE_STAGE_2_TRANSFER_BIT, 0,
+                     VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT);
     }
     // last: the image's layout, and the stage and access of its last write, as each step leaves it
     VkImageLayout last = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
@@ -1450,6 +1518,10 @@ static void present_image(VkImage src, VkImageLayout layout, VkFormat fmt, int w
         g_cap_h = (int)g_sc_ext.height;
         g_cap_valid = 1;
         if (menu_shot) save_capture(menu_shot);
+        if (hlshot) {   // DEBUG-HLSHOT
+            vmaInvalidateAllocation(c->vma, g_hlcap_alloc, 0, VK_WHOLE_SIZE);
+            save_pixels(hlp, g_hlcap_ptr);
+        }
     }
 out:
     plat_rmutex_unlock(&g_pl);

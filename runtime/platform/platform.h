@@ -248,6 +248,19 @@ int plat_mem_state_walk(uint64_t addr, uint64_t limit, uint64_t *end);
 // The pages of a watched reservation written since the last reset, up to max page addresses into pages, in address
 // order; reset: those reported start over as unwritten. UINT64_MAX when writes to the range are not tracked.
 uint64_t plat_mem_written(uint64_t addr, uint64_t n, uint64_t *pages, uint64_t max, int reset);
+// Driver-backed memory. Replaces the committed, unbacked pages of [addr, addr + n) (both page aligned, inside a watched
+// reservation) by memory the caller maps over them, keeping the write watch working: a mapping the kernel's write
+// protection cannot cover (a GPU driver's) is tracked by a dirty bit per page instead, and plat_mem_written answers from
+// it. place(ctx) runs with the pages read-only and every writer to them held; it copies the bytes out of the range, maps
+// the new memory over it (mmap MAP_FIXED semantics, as vkMapMemory2 with VK_MEMORY_MAP_PLACED_BIT_EXT) and returns 1.
+// Pages the write watch reported written before stay dirty. 0 and nothing changed when place fails, a page is not
+// committed or already backed, the write watch is unavailable, or the host cannot do this (Windows).
+int plat_mem_back(uint64_t addr, uint64_t n, int (*place)(void *ctx), void *ctx);
+// The reverse, for the range of one plat_mem_back call: the writers are held, the bytes go to fresh anonymous memory
+// that replaces the range, the write watch covers it again (pages not dirty stay unwritten), and release(ctx) runs
+// after the copy and must leave [addr, addr + n) mapped (a placed map's unmap with the reserve bit does). Protections
+// set meanwhile (plat_mem_protect) are kept. 0 and unchanged when release fails or a page is not backed.
+int plat_mem_unback(uint64_t addr, uint64_t n, int (*release)(void *ctx), void *ctx);
 // A write that faulted on a read-only page at addr goes to fn first; fn returns 1 when it made the page writable and
 // the write should run again, 0 to let the fault go on (to the crash handler). One hook per process.
 void plat_mem_fault_hook(int (*fn)(uint64_t addr));
@@ -317,6 +330,8 @@ void plat_file_mkdir_p(const char *path);                 // creates every missi
 uint8_t *plat_file_read(const char *path, uint64_t *size);
 int plat_file_write(const char *path, const void *data, size_t n);   // create or truncate; 1 when all n bytes landed
 int plat_file_replace(const char *from, const char *to);  // rename, replacing to (write-through); 1 on success
+int plat_file_replace_lazy(const char *from, const char *to);   // the same without waiting for the disk
+int plat_file_write_lazy(const char *path, const void *data, size_t n);   // written whole, then renamed; not flushed
 // Writes path.<pid>.<tid>.tmp, flushes it to the disk and renames it over path: a crash leaves the old file or the new
 // one, never a torn or zero-filled one. 1 on success.
 int plat_file_write_atomic(const char *path, const void *data, size_t n);
@@ -476,6 +491,7 @@ PlatChild *plat_child_start(const char *exe, const char *arg, uint32_t *err);
 void plat_child_stop(PlatChild *c);                       // kills the child and frees c
 int plat_child_write(PlatChild *c, const void *data, size_t n);   // 1 when all n bytes were written
 long plat_child_read(PlatChild *c, void *buf, size_t cap);        // bytes read (at least 1); 0 or negative: pipe broke
+long plat_stdin_read(void *buf, size_t cap);              // this process's standard input, raw; 0 or negative at its end
 
 // ---- local IPC: a stream connection to another program of this machine, one listen location per name (Discord's
 // Rich Presence, discord_rpc.c). On Windows the named pipe \\.\pipe\<name>; on Linux the Unix domain socket

@@ -11,6 +11,7 @@
 #include <math.h>
 #include <stdio.h>
 #include <stdint.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "cfg.h"
@@ -436,6 +437,368 @@ static void input_step(Cpu *c) {
     if (short_frame(step)) vset(c, 0, step);
 }
 
+// ---- set dofscale: the depth of field at half the scene that is drawn
+// main+0x260270 makes an effect's render target from its descriptor (x15): its size is a reference texture's size
+// ([[x20+0x18]+0x20] +0x48 / +0x4a, 16 bits each) times the descriptor's floats, width * +0x53c * +0x538 and
+// height * +0x540 * +0x538 (main+0x260398..0x2603b8, into w27 and w25). The depth of field's descriptor holds 0.75,
+// 0.75 and 0.5, and its reference is the game's picture (2560x1440 at 1440p) whatever the scene: 0.75 brings that to
+// the console's 1080p scene and 0.5 halves it, so the blur is drawn at 960x540 and stretched over the whole picture
+// the fixed scene draws (pixelated behind a shop's items at 1440p and above). The size's one reader is the target
+// request built on the stack (stp w27, w25, [sp, #0x50] at main+0x2603c4; both registers are loaded with other values
+// before any other use). At main+0x2603c8, after that store, a descriptor with 0.75 on both sides gets its own scale
+// (+0x538) of the scene the fixed path draws instead (the picture times frame_rate.c res_fixed_scene_share): 1280x720
+// for the whole 2560x1440 picture. Never less than the game's own size (a DLSS mode's smaller scene keeps 960x540),
+// and nothing changes while the game's own dynamic resolution runs (share 0) or for any other descriptor. The host
+// writes guest memory only (it must not write x19-x29). DEBUG-DOFLOG: REKARINA_DOF_LOG=1 logs the first 32 sizes.
+#define HOST_DOF_SCALE (RT_PATCH_PAGE + 0xd20)
+double res_fixed_scene_share(void);   // frame_rate.c
+static void dof_scale(Cpu *c) {
+    static int said = -1;
+    if (said < 0) { const char *e = cfg_get("REKARINA_DOF_LOG"); said = e && *e == '1' ? 0 : 32; }
+    uint64_t p = c->x[15], d = c->x[20], at = c->sp + 0x50, ref = 0;
+    if (p < 0x10000 || p >= RT_ADDRESS_LIMIT || (p & 3)) return;
+    if (d >= 0x10000 && d < RT_ADDRESS_LIMIT && !(d & 7)) {
+        uint64_t a = g64(d + 0x18);
+        if (a >= 0x10000 && a < RT_ADDRESS_LIMIT && !(a & 7)) ref = g64(a + 0x20);
+    }
+    if (ref < 0x10000 || ref >= RT_ADDRESS_LIMIT) return;
+    float s = gf(p + 0x538), sx = gf(p + 0x53c), sy = gf(p + 0x540);
+    uint32_t rw = g32(ref + 0x48) & 0xffff, rh = g32(ref + 0x48) >> 16;
+    uint32_t w = g32(at), h = g32(at + 4), nw = w, nh = h;
+    double share = res_fixed_scene_share();
+    if (sx == 0.75f && sy == 0.75f && s > 0.0f && s <= 1.0f && share > 0.0) {
+        uint32_t sw = (uint32_t)(rw * share * s), sh = (uint32_t)(rh * share * s);
+        if (sw > w && sh > h && sw <= 8192 && sh <= 8192) {
+            nw = sw, nh = sh;
+            memcpy((void *)(uintptr_t)at, &nw, 4);
+            memcpy((void *)(uintptr_t)(at + 4), &nh, 4);
+        }
+    }
+    if (said >= 32) return;
+    said++;
+    rt_log("DOFLOG target %ux%u -> %ux%u levels %u, reference %ux%u, scene share %.3f, descriptor %#llx: %g %g %g", w, h,
+           nw, nh, (unsigned)c->x[26], rw, rh, share, (unsigned long long)p, s, sx, sy);
+}
+
+// ---- set promptglyphs: texts laid out before the button prompts changed in the running game
+// main+0xe4e100, after the prologue of a text's draw (main+0xe4e0e0, x0 the text; called for every text drawn, each
+// frame): the text's glyph buffer is at +0x10 (its characters' count at +0xac; their records in pages of 1024 at
+// +0x30, each record 0xa0 bytes with the character at +8 and the glyph the shaping gave at +0x94, or 0x48 bytes with
+// them at +0 and +0x3c when the byte at +0xd5 is set: main+0x1512b80, main+0x15146a0), and the draw builds the text's
+// quads again from those records, each glyph through its font's plot (main+0x1515dd4), when the text's flags (+0x180)
+// hold bit 7 (main+0xe4e298; the draw clears it). The font's glyph cache (main+0x1540640) keys a picture by font,
+// character, glyph and size. runtime/romfs.c live_main swaps the button font's table in the running game, which
+// reaches a text only when the game shapes it again: a text set once kept the old set's glyphs, and a text drawn by
+// character (glyph 0: the action hint's key, the pause screen's guide) the picture its character had when it was
+// first drawn. So once per text after each change (romfs.c romfs_text_generation), and whenever the game is about to
+// build its quads anew, the host gives each button character holding another set's glyph the glyph of the set in use
+// (romfs.c romfs_prompt_glyph), marks the size of each one drawn by character (glyph 0) so its cache key is new, and,
+// where it changed a record, sets bit 7, so this very draw builds the quads again with the new buttons (and again
+// later while the build skipped the glyph: glyph_pending_draw). The texts looked at for this change are kept in a
+// table by address (a text freed and another made at its address is looked at once more only after the table fills,
+// which costs little: a text laid out after the change holds the new glyphs). The host writes guest memory only.
+#define HOST_PROMPT_GLYPHS (RT_PATCH_PAGE + 0xd30)
+uint32_t romfs_text_generation(void);                     // romfs.c
+uint32_t romfs_prompt_glyph(uint32_t cp, uint32_t glyph);   // romfs.c
+enum { GLYPH_TEXTS = 8192 };
+static uint64_t glyph_texts[GLYPH_TEXTS];
+static uint32_t glyph_gen, glyph_used, glyph_looked, glyph_fixed_texts, glyph_fixed, glyph_said;
+static uint64_t glyph_since;
+static PlatMutex glyph_lock = PLAT_MUTEX_INIT;
+
+// A text whose quads are built while it is hidden (the action hint between its showings) skips each glyph outside its
+// clip (main+0x1515ce8): the glyph is not plotted, its quad keeps the old glyph's place in the cache, and the text
+// showed no button, or the old one, when it appeared (2026-11-20, runs that swapped the hint's key in a loading
+// screen). So a text with swapped glyphs stays pending until the draw record of its first swapped glyph (text+0x38:
+// pages of 1024 records of 0xe0 bytes; its quad's texture coordinates at +0x10..+0x1f, written by the build
+// main+0x1515eb0 when the glyph is plotted) holds other texture coordinates: until then every fourth draw asks for
+// the build again. A change of set starts the list anew.
+enum { GLYPH_PENDING = 32 };
+static struct { uint64_t text, drec; uint8_t stale[64]; uint32_t draws; } glyph_pend[GLYPH_PENDING];
+static int glyph_npend;   // under glyph_lock; read without it as a hint
+// texts with a large glyph waiting for their sheet (sheet_pending_draw, below)
+enum { SHEET_PENDING = 16 };
+static struct { uint64_t text, hash; uint32_t draws, builds, idx, watch; } sheet_pend[SHEET_PENDING];   // idx: the target sheet
+static int sheet_npend;   // under glyph_lock; read without it as a hint
+
+static void glyph_pending_draw(uint64_t text) {
+    plat_mutex_lock(&glyph_lock);
+    for (int i = 0; i < glyph_npend; i++) {
+        if (glyph_pend[i].text != text) continue;
+        uint8_t now[64];
+        int read = plat_mem_read(glyph_pend[i].drec, now, sizeof now), uv = 0;
+        for (int k = 0x10; k < 0x20 && read; k++) uv |= now[k];
+        // done when the texture coordinates changed (a quad moved but still on the old glyph is not done: seen when the
+        // text was laid out anew in a loading screen without its glyph being plotted)
+        if (!read || (uv && memcmp(now + 0x10, glyph_pend[i].stale + 0x10, 0x10))) {
+            if (read && glyph_fixed < 64)
+                rt_log("prompt glyphs: text %#llx was drawn with its new buttons after %u draws", (unsigned long long)text,
+                       glyph_pend[i].draws);
+            glyph_pend[i] = glyph_pend[--glyph_npend];
+            break;
+        }
+        uint32_t f = g32(text + 0x180);
+        if (!(f & 0x80) && ++glyph_pend[i].draws % 4 == 0) {
+            f |= 0x80;
+            memcpy((void *)(uintptr_t)(text + 0x180), &f, 4);
+        }
+        break;
+    }
+    plat_mutex_unlock(&glyph_lock);
+}
+
+// 1 when text is to be looked at for change gen (its first draw since), 0 when it was.
+static int glyph_text_first(uint64_t text, uint32_t gen) {
+    uint64_t now = plat_now_ns();
+    plat_mutex_lock(&glyph_lock);
+    if (gen != glyph_gen) {
+        if (glyph_gen)
+            rt_log("prompt glyphs: %u texts drawn since the last change, %u of them held another set's buttons (%u "
+                   "characters swapped)", glyph_looked, glyph_fixed_texts, glyph_fixed);
+        memset(glyph_texts, 0, sizeof glyph_texts);
+        glyph_gen = gen, glyph_used = glyph_looked = glyph_fixed_texts = glyph_fixed = glyph_said = 0, glyph_since = now;
+        glyph_npend = 0, sheet_npend = 0;
+    }
+    if (glyph_said < 2 && now - glyph_since > (glyph_said ? 60000000000ull : 5000000000ull)) {
+        rt_log("prompt glyphs: in the %d s after the change %u texts were drawn, %u of them held another set's buttons "
+               "(%u characters swapped)", glyph_said ? 60 : 5, glyph_looked, glyph_fixed_texts, glyph_fixed);
+        glyph_said++;
+    }
+    if (glyph_used >= GLYPH_TEXTS / 4 * 3) memset(glyph_texts, 0, sizeof glyph_texts), glyph_used = 0;
+    int first = 1;
+    uint32_t h = (uint32_t)((text >> 4) * 0x9E3779B1u) & (GLYPH_TEXTS - 1);
+    for (;; h = (h + 1) & (GLYPH_TEXTS - 1)) {
+        if (glyph_texts[h] == text) { first = 0; break; }
+        if (!glyph_texts[h]) { glyph_texts[h] = text, glyph_used++; break; }
+    }
+    if (first) glyph_looked++;
+    plat_mutex_unlock(&glyph_lock);
+    return first;
+}
+
+// A large glyph (the action hint's key, size 160; the pause screen's guide, 102) is not drawn from the font's glyph
+// cache: the text's full quad build (main+0x1515660) rasterises it on the CPU (main+0x1519300) into one of the text's
+// own sheets, a ring (array at text+0x68, count at +0xa4, the one in use at +0xa0; each sheet 0x158 bytes: valid
+// byte +8, memory pool +0xe0 and offset +0xe8, size +0x140 x +0x144, a byte a texel; the build moves the ring on,
+// main+0xe4e2a4, and empties the sheet it takes, main+0x150f4d0). The draw (main+0xe4e0e0) runs that full build only
+// when the text's state word (*(text+8)) holds bit 20 with bits 17 and 18 clear (main+0xe4e20c); bit 7 of text+0x180,
+// which the small glyphs' fix sets, runs the other build (main+0x1516120), which moves the ring on but plots no
+// large glyph: the blank key of the earlier tries, or the old one when the ring came back to the old sheet. The
+// game sets a sheet up in its own layout only: the hint's key had sheet 1 set up and sheet 0 never. And the texture
+// cache does not see CPU writes into a sheet after its first upload.
+// So a text holding a large button glyph of another set is rebuilt through the full build: the ring is set one
+// before a sheet that is set up (sheet_request), bit 20 asks for the build, and at a later draw, once the ring is on that
+// sheet and its texels changed, the texture cache is told they were written (vk_guest_written). A text the game does
+// not build now (hidden: bit 17 or 18) is asked again every fourth draw, for at most 3600 draws. A text whose sheet in
+// use was never set up (the pause screen's guide before the screen opens) is left to the game's layout, and once the
+// game built it the texture cache is told too: its sheet's storage may have held another picture before (the guide's
+// Back kept the keyboard's SHIFT in one run while its Rotate and Equip took the pad's buttons).
+// REKARINA_PROMPT_SHEETS=0: such a text is left to the game's own builds (the key keeps the old set until a restart).
+void vk_guest_written(uint64_t addr, uint64_t size);
+static int sheets_on = -1;
+
+// Sheet k of text: its texels' CPU address and size; 0 when it is not set up.
+static int sheet_at(uint64_t text, uint32_t k, uint64_t *cpu, uint64_t *size) {
+    uint64_t sheets = g64(text + 0x68);
+    uint32_t n = g32(text + 0xa4);
+    if (!sheets || (sheets & 7) || !n || n > 16 || k >= n) return 0;
+    uint64_t s = sheets + 0x158ull * k;
+    if (!*(const uint8_t *)(uintptr_t)(s + 8)) return 0;
+    uint64_t pool = g64(s + 0xe0), mem = pool && !(pool & 7) ? g64(pool + 8) : 0;
+    uint32_t w = g32(s + 0x140), h = g32(s + 0x144);
+    if (!mem || !w || !h || (uint64_t)w * h > (16u << 20)) return 0;
+    *cpu = mem + g64(s + 0xe8), *size = (uint64_t)w * h;
+    return 1;
+}
+
+static uint64_t sheet_hash(uint64_t cpu, uint64_t n) {
+    const uint8_t *q = (const uint8_t *)(uintptr_t)cpu;
+    uint64_t h = 0xcbf29ce484222325ull;
+    for (uint64_t i = 0; i < n; i++) h = (h ^ q[i]) * 0x100000001b3ull;
+    return h;
+}
+
+// Sets the ring one before the first sheet that is set up (from the one after the sheet in use) and asks for the full
+// build; the sheet the build will take in *target and its texels' hash in *hash. 0: no sheet set up, or the text is
+// not built now (its state word holds bit 17 or 18).
+static int sheet_request(uint64_t text, uint32_t *target, uint64_t *hash) {
+    uint64_t st = g64(text + 8);
+    uint32_t idx = g32(text + 0xa0), n = g32(text + 0xa4);
+    if (!st || (st & 3) || st >= RT_ADDRESS_LIMIT || !n || n > 16 || idx >= n) return 0;
+    uint32_t w = g32(st);
+    if (w & 0x60000) return 0;
+    for (uint32_t k = 1; k <= n; k++) {
+        uint32_t t = (idx + k) % n, before = (t + n - 1) % n;
+        uint64_t cpu, size;
+        if (!sheet_at(text, t, &cpu, &size)) continue;
+        *target = t, *hash = sheet_hash(cpu, size);
+        memcpy((void *)(uintptr_t)(text + 0xa0), &before, 4);
+        w |= 0x100000;
+        memcpy((void *)(uintptr_t)st, &w, 4);
+        return 1;
+    }
+    return 0;
+}
+
+static void sheet_pending_draw(uint64_t text) {
+    plat_mutex_lock(&glyph_lock);
+    for (int i = 0; i < sheet_npend; i++) {
+        if (sheet_pend[i].text != text) continue;
+        uint64_t st = g64(text + 8), cpu = 0, size = 0;
+        uint32_t w = st && !(st & 3) && st < RT_ADDRESS_LIMIT ? g32(st) : 0, idx = g32(text + 0xa0);
+        if (sheet_pend[i].watch) {   // left to the game's layout: once it built the text, its sheet's texels are taken again
+            if (!(w & 0x100000) && idx != sheet_pend[i].idx && sheet_at(text, idx, &cpu, &size)) {
+                vk_guest_written(cpu, size);
+                rt_log("prompt glyphs: text %#llx: the game built it again (sheet %u); the texture cache takes the sheet's "
+                       "%llu texels again", (unsigned long long)text, idx, (unsigned long long)size);
+                sheet_pend[i] = sheet_pend[--sheet_npend];
+            }
+            break;   // no time limit: such a text is drawn only while its screen is open
+        }
+        int asked = sheet_pend[i].builds > 0, have = asked && sheet_at(text, sheet_pend[i].idx, &cpu, &size);
+        if (asked && !(w & 0x100000) && idx == sheet_pend[i].idx && have && sheet_hash(cpu, size) != sheet_pend[i].hash) {
+            vk_guest_written(cpu, size);   // the build plotted the new glyph into that sheet
+            rt_log("prompt glyphs: text %#llx: its large glyph was plotted again into sheet %u (%u requests, %u draws); the "
+                   "texture cache takes the sheet's %llu texels again", (unsigned long long)text, idx, sheet_pend[i].builds,
+                   sheet_pend[i].draws, (unsigned long long)size);
+            sheet_pend[i] = sheet_pend[--sheet_npend];
+            break;
+        }
+        if (++sheet_pend[i].draws > 3600) {
+            rt_log("prompt glyphs: text %#llx: its large glyph was not plotted again after %u draws (%u requests; state "
+                   "%#x, ring at %u)", (unsigned long long)text, sheet_pend[i].draws, sheet_pend[i].builds, w, idx);
+            sheet_pend[i] = sheet_pend[--sheet_npend];
+            break;
+        }
+        if (!(w & 0x100000) && sheet_pend[i].draws % 4 == 0 && sheet_request(text, &sheet_pend[i].idx, &sheet_pend[i].hash))
+            sheet_pend[i].builds++;
+        if (sheet_pend[i].draws % 600 == 0)
+            rt_log("prompt glyphs: text %#llx: waiting for its large glyph (%u draws, %u requests; state %#x, ring at %u)",
+                   (unsigned long long)text, sheet_pend[i].draws, sheet_pend[i].builds, w, idx);
+        break;
+    }
+    plat_mutex_unlock(&glyph_lock);
+}
+
+static void prompt_glyphs(Cpu *c) {
+    uint32_t gen = romfs_text_generation();
+    uint64_t text = c->x[0];
+    if (!gen || !text || (text & 7) || text >= RT_ADDRESS_LIMIT) return;
+    if (__atomic_load_n(&glyph_npend, __ATOMIC_RELAXED)) glyph_pending_draw(text);
+    if (__atomic_load_n(&sheet_npend, __ATOMIC_RELAXED)) sheet_pending_draw(text);
+    // once per text after a change, and again whenever its quads are about to be built anew (bit 7: the game laid it
+    // out again, which takes its records back to the shaping's glyphs and sizes)
+    if (!glyph_text_first(text, gen) && !(g32(text + 0x180) & 0x80)) return;
+    uint64_t pages = 0;
+    uint32_t n = 0;
+    uint8_t compact = 0;
+    if (!plat_mem_read(text + 0xac, &n, 4) || !n || n > (1u << 20) || !plat_mem_read(text + 0x30, &pages, 8) ||
+        !pages || (pages & 7) || !plat_mem_read(text + 0xd5, &compact, 1))
+        return;
+    uint32_t size = compact ? 0x48 : 0xa0, code_at = compact ? 0 : 8, glyph_at = compact ? 0x3c : 0x94;
+    int fixed = 0, passive = 0;   // records changed: built now / when the game builds the text
+    uint64_t drec = 0;   // the draw record of the first glyph swapped
+    uint8_t *rec = malloc((size_t)size * (n < 1024 ? n : 1024));
+    if (!rec) return;
+    for (uint32_t p = 0; p * 1024 < n; p++) {
+        uint64_t page = 0;
+        uint32_t k = n - p * 1024 < 1024 ? n - p * 1024 : 1024;
+        if (!plat_mem_read(pages + 8ull * p, &page, 8) || !page || (page & 7) || !plat_mem_read(page, rec, (size_t)size * k))
+            break;
+        for (uint32_t i = 0; i < k; i++) {
+            uint32_t cp;
+            uint16_t glyph;
+            memcpy(&cp, rec + (size_t)size * i + code_at, 4);
+            memcpy(&glyph, rec + (size_t)size * i + glyph_at, 2);
+            uint32_t now = romfs_prompt_glyph(cp, glyph);
+            if (now == glyph) continue;
+            uint64_t at = page + (uint64_t)size * i;
+            float fs = 0;
+            if (!compact) memcpy(&fs, rec + (size_t)size * i + 0x1c, 4);
+            // A large glyph (size over 96: the action hint's key, the pause screen's guide) is drawn from the text's
+            // own sheet, not the glyph cache, and a build through bit 7 does not plot it: its record is changed the
+            // same way, and a text the game built before is built again through the full build (sheet_request,
+            // sheet_pending_draw); one it never built (the guide before the pause screen first opened) is built when
+            // the game builds it.
+            int large = fs > 96.0f;
+            if (sheets_on < 0) sheets_on = rt_knob("PROMPT_SHEETS", "1");
+            int forced = 0;   // rebuilt through the full build (sheet_request), never through bit 7
+            if (large && sheets_on) {
+                plat_mutex_lock(&glyph_lock);
+                int k = 0;
+                while (k < sheet_npend && sheet_pend[k].text != text) k++;
+                uint64_t cpu, sz;
+                if (k < sheet_npend) forced = 1;
+                else if (k < SHEET_PENDING && sheet_at(text, g32(text + 0xa0), &cpu, &sz)) {   // the game built it before
+                    forced = 1;
+                    sheet_pend[k].text = text, sheet_pend[k].draws = sheet_pend[k].builds = sheet_pend[k].watch = 0;
+                    if (sheet_request(text, &sheet_pend[k].idx, &sheet_pend[k].hash)) sheet_pend[k].builds = 1;
+                    __atomic_store_n(&sheet_npend, sheet_npend + 1, __ATOMIC_RELAXED);
+                } else if (k < SHEET_PENDING) {   // never built: the game's layout builds it, then its sheet is taken again
+                    sheet_pend[k].text = text, sheet_pend[k].draws = sheet_pend[k].builds = 0, sheet_pend[k].watch = 1;
+                    sheet_pend[k].idx = g32(text + 0xa0), sheet_pend[k].hash = 0;
+                    __atomic_store_n(&sheet_npend, sheet_npend + 1, __ATOMIC_RELAXED);
+                }
+                plat_mutex_unlock(&glyph_lock);
+            }
+            int *count = large ? &passive : &fixed;
+            if (!glyph && !compact) {
+                // Drawn by character: the plot looks the character up in the table in use, but the glyph cache keys the
+                // picture by character, glyph 0 and size, so it gave the picture the character had when it was first
+                // drawn. So the record keeps 0 and its size (+0x1c and +0x20, the two floats the plot's size and the
+                // cache key come from: main+0x1512ea0) gets this change's mark in the lowest four bits of each: a key
+                // no earlier change used, at the same size to a millionth.
+                uint32_t sz[2], k = gen % 15 + 1;
+                memcpy(sz, rec + (size_t)size * i + 0x1c, 8);
+                uint32_t mk[2] = {(sz[0] & ~0xFu) | k, (sz[1] & ~0xFu) | k};
+                if (mk[0] == sz[0] && mk[1] == sz[1]) continue;   // marked for this change already
+                if (!fixed && !large) {
+                    uint64_t dp = 0;
+                    if (plat_mem_read(text + 0x38, &dp, 8) && dp && !(dp & 7) && plat_mem_read(dp + 8ull * p, &drec, 8) && drec)
+                        drec += 0xe0ull * i;
+                }
+                memcpy((void *)(uintptr_t)(at + 0x1c), mk, 8);
+                if (++*count <= 4 && glyph_fixed < 32)
+                    rt_log("prompt glyphs: text %#llx character %u U+%04X (size %.1f): drawn by character, its size marked "
+                           "for this change%s", (unsigned long long)text, p * 1024 + i, cp, fs,
+                           large && !forced ? ", built when the game builds it" : forced ? ", rebuilt with its sheet" : "");
+                continue;
+            }
+            if (!fixed && !large) {
+                uint64_t dp = 0;
+                if (plat_mem_read(text + 0x38, &dp, 8) && dp && !(dp & 7) && plat_mem_read(dp + 8ull * p, &drec, 8) && drec)
+                    drec += 0xe0ull * i;
+            }
+            uint16_t v = (uint16_t)now;
+            memcpy((void *)(uintptr_t)(at + glyph_at), &v, 2);
+            if (++*count <= 4 && glyph_fixed < 32)
+                rt_log("prompt glyphs: text %#llx character %u U+%04X (size %.1f): glyph %u -> %u%s", (unsigned long long)text,
+                       p * 1024 + i, cp, fs, glyph, now, large && !forced ? ", built when the game builds it" : forced ? ", rebuilt with its sheet" : "");
+        }
+    }
+    free(rec);
+    if (passive) {
+        plat_mutex_lock(&glyph_lock);
+        glyph_fixed += passive;
+        if (!fixed) glyph_fixed_texts++;
+        plat_mutex_unlock(&glyph_lock);
+    }
+    if (!fixed) return;
+    uint32_t f = g32(text + 0x180) | 0x80;   // the quads are built again from the records, in this draw
+    plat_mutex_lock(&glyph_lock);
+    glyph_fixed_texts++, glyph_fixed += fixed;
+    if (drec && glyph_npend < GLYPH_PENDING && plat_mem_read(drec, glyph_pend[glyph_npend].stale, 64)) {
+        int k = 0;
+        while (k < glyph_npend && glyph_pend[k].text != text) k++;
+        if (k == glyph_npend) {
+            glyph_pend[k].text = text, glyph_pend[k].drec = drec, glyph_pend[k].draws = 0;
+            __atomic_store_n(&glyph_npend, glyph_npend + 1, __ATOMIC_RELAXED);
+        }
+    }
+    plat_mutex_unlock(&glyph_lock);
+    memcpy((void *)(uintptr_t)(text + 0x180), &f, 4);
+}
+
 __attribute__((constructor)) static void oot_fps_register(void) {
     rt_register_host(HOST_DAY_CLOCK, day_clock);
     rt_register_host(HOST_SOUND_GATE, sound_gate);
@@ -455,6 +818,8 @@ __attribute__((constructor)) static void oot_fps_register(void) {
     rt_register_host(HOST_CLOTH_TIME, cloth_time);
     rt_register_host(HOST_WEB_STEPS, web_steps);
     rt_register_host(HOST_INPUT_STEP, input_step);
+    rt_register_host(HOST_DOF_SCALE, dof_scale);
+    rt_register_host(HOST_PROMPT_GLYPHS, prompt_glyphs);
 }
 
 #endif

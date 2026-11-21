@@ -392,6 +392,10 @@ int cam_pack_build(const void *in, size_t n, const void *zsdic, size_t zsdic_n, 
                                                            // Pack/Actor/PlayerCamera.pack.zs with the camera speeds
                                                            // multiplied, malloc'd; 0 = factor 1 or cannot (logged)
 void cam_pack_served(void);                                // romfs.c serves the multiplied pack
+// ---- the port's scene scale on a mod's Bootup pack (scene_pack.c, OoT)
+int scene_pack_build(const void *in, size_t n, const void *zsdic, size_t zsdic_n, void **out, size_t *out_n);
+                                                           // the values set (> 0, out: the pack again, malloc'd), 0 when
+                                                           // the pack has them already, -1 when it cannot (logged)
 // ---- game resolution (resolution.c): REKARINA_OUTPUT_RES, REKARINA_RENDER_SCALE
 uint64_t res_heap_extra_bytes(void);                       // added to the application pool (mem_init), 2 MiB steps
 uint64_t res_heap_extra_kib(void);                         // added to the HeapDef texture heap and its parent; 0 = none
@@ -476,4 +480,8 @@ int probe_codec(const char *path);                         // ns2_codec.c (GAME_
                                                            // video decoder, as OoT's movie library calls it
 int vk_pipeline_prepare_shaders(void);                     // vk_pipeline.c: --prepare-shaders (tools/prepare_shaders.py)
 int vk_pipeline_warm_shaders(void);                        // vk_pipeline.c: --warm-shaders (tools/build_game.py)
+int vk_pipeline_warm_libraries(void);                      // vk_pipeline.c: --warm-libraries (the launcher's background build)
+int tex_prepare_scan_main(void);                           // tex_prepare.c: --scan-textures (the entry step's child)
 int tex_prepare_main(void);                                // tex_prepare.c: --prepare-textures (tools/oot_prepare_textures.py)
+void tex_prepare_entry_start(void);                        // tex_prepare.c: the entry step's textures (vk_pipeline_prewarm)
+void tex_prepare_entry_join(void);

@@ -117,7 +117,12 @@ of `Rekarina.exe` and say what the SmartScreen page is.
            --single <dist>/Rekarina.exe --dist <dist> ^
            --site-url https://dl.rekarina.dev/releases --notes <notes.txt> --sign <private key file>
 
-   `<dist>` then holds the five files; the content check must say "no hit".
+   `<dist>` then holds the five files; the content check must say "no hit". Two more checks keep players' setups
+   short. `--previous <the release before's setup folder>` runs `tools/update_cost.py`: an update that would run the
+   lift or the shader translation again fails unless `--allow-long` names it. `--timing <before.json> <now.json>`
+   compares two fresh installs timed by `tools/setup_timing.py <setup folder> --game <dump> --dest <empty folder>
+   --json <out>` (every step from nothing, 30 to 60 minutes of every core): a step that takes more than a quarter and a
+   minute longer than in the release before fails unless `--allow-slower` names it.
 3. Check the signature against the keys the launcher carries: `python tools/release_sign.py verify <dist>/SHA256SUMS`.
 4. Start `<dist>/Rekarina.exe` on a machine without Rekarina and build the game once.
 5. Publish: `python website/publish_release.py <dist> --dry-run`, then without `--dry-run` and with `--deploy`. It

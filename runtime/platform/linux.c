@@ -774,6 +774,25 @@ int plat_file_replace(const char *from, const char *to) {
     return 1;
 }
 
+int plat_file_replace_lazy(const char *from, const char *to) { return rename(from, to) == 0; }
+
+long plat_stdin_read(void *buf, size_t cap) { return (long)read(0, buf, cap); }
+
+// plat_file_write_atomic without fsync (win32.c says when that is right)
+int plat_file_write_lazy(const char *path, const void *data, size_t n) {
+    if (access(path, W_OK) && errno != ENOENT) return 0;
+    char tmp[PATH_MAX + 48];
+    int len = snprintf(tmp, sizeof tmp, "%s.%u.%u.tmp", path, plat_process_id(), plat_thread_id());
+    if (len < 0 || len >= (int)sizeof tmp) return 0;
+    int fd = open(tmp, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
+    if (fd < 0) return 0;
+    int ok = write_all(fd, data, n);
+    ok = close(fd) == 0 && ok;
+    if (ok && !rename(tmp, path)) return 1;
+    unlink(tmp);
+    return 0;
+}
+
 int plat_file_write_atomic(const char *path, const void *data, size_t n) {
     // A rename replaces a read-only file here (only the folder's permission counts) but not on Windows: a file the
     // player made read-only stays as it is on both.
@@ -853,6 +872,73 @@ static void ps_set(uint64_t addr, uint64_t n, uint8_t v) {
     if (addr < PS_LIMIT) memset(pstate + addr / PG, v, (size_t)((n + PG - 1) / PG));
 }
 
+// Driver-backed pages (plat_mem_back): the kernel's write protection cannot watch a driver's mapping, so a page of one is
+// kept read-only while clean; its first write faults, marks the page dirty (PB_DIRTY) and opens it, and plat_mem_written
+// reports the dirty pages and, on reset, closes them again. A protection asked for with plat_mem_protect stays in
+// pstate ("wanted"); the one the page really has is eff_prot's composition of it with the dirty bit. bk_lock orders
+// the fault handler, plat_mem_protect, the written scan and (back/unback) the swap; nothing under it touches guest memory.
+enum { PB_BACKED = 1, PB_DIRTY = 2 };
+static uint8_t *pback;                    // PB_* per page, mapped with pstate
+static volatile int64_t nbacked;          // pages with PB_BACKED
+static volatile uint32_t bk_lock;
+static volatile uint32_t bk_hold;         // a back/unback swap is under way: writes to [bk_lo, bk_hi) wait
+static uint64_t bk_lo, bk_hi;
+
+static void bk_spin(void) {
+    while (__atomic_exchange_n(&bk_lock, 1, __ATOMIC_ACQUIRE)) {
+        while (__atomic_load_n(&bk_lock, __ATOMIC_RELAXED)) __builtin_ia32_pause();
+    }
+}
+static void bk_unspin(void) { __atomic_store_n(&bk_lock, 0, __ATOMIC_RELEASE); }
+
+// The protection page `pg` has under the wanted state `st` (a committed state, PS_NONE or above).
+static int eff_prot(uint64_t pg, uint8_t st) {
+    if (st == PS_NONE) return PROT_NONE;
+    if (st == PS_READ) return PROT_READ;
+    int held = bk_hold && pg * PG >= bk_lo && pg * PG < bk_hi;
+    int clean = pback && (pback[pg] & (PB_BACKED | PB_DIRTY)) == PB_BACKED;
+    return held || clean ? PROT_READ : PROT_READ | PROT_WRITE;
+}
+
+// bk_lock held: mprotect [addr, addr + n) page by page to the composed protection, in runs of equal ones. Pages that are
+// not committed are left alone.
+static int bk_apply(uint64_t addr, uint64_t n) {
+    int ok = 1;
+    for (uint64_t a = addr, end = addr + n; a < end;) {
+        uint8_t st = pstate[a / PG];
+        if (st < PS_NONE) { a += PG; continue; }
+        int pr = eff_prot(a / PG, st);
+        uint64_t b = a + PG;
+        while (b < end && pstate[b / PG] >= PS_NONE && eff_prot(b / PG, pstate[b / PG]) == pr) b += PG;
+        if (mprotect((void *)(uintptr_t)a, b - a, pr)) ok = 0;
+        a = b;
+    }
+    return ok;
+}
+
+// The fault handler's part: 1 when the write should run again.
+static int bk_write_fault(uint64_t addr) {
+    if (!pback || addr >= PS_LIMIT) return 0;
+    if (bk_hold && addr >= bk_lo && addr < bk_hi) {
+        while (__atomic_load_n(&bk_hold, __ATOMIC_ACQUIRE)) syscall(SYS_futex, &bk_hold, FUTEX_WAIT_PRIVATE, 1, NULL, NULL, 0);
+        return 1;
+    }
+    uint64_t pg = addr / PG;
+    if (!(pback[pg] & PB_BACKED)) return 0;
+    int r = 0;
+    bk_spin();
+    if (pstate[pg] == PS_RW && (pback[pg] & PB_BACKED)) {
+        if (!(pback[pg] & PB_DIRTY)) {
+            pback[pg] |= PB_DIRTY;
+            r = !mprotect((void *)(uintptr_t)(pg * PG), PG, PROT_READ | PROT_WRITE);
+        } else {
+            r = 1;   // another thread opened it first
+        }
+    }
+    bk_unspin();
+    return r;
+}
+
 static void ww_open(void) {
     int fd = (int)syscall(SYS_userfaultfd, O_CLOEXEC | O_NONBLOCK | UFFD_USER_MODE_ONLY);
     struct uffdio_api api = {.api = UFFD_API,
@@ -876,6 +962,8 @@ int plat_mem_reserve(uint64_t addr, uint64_t n, int watch) {
     if (!pstate) {
         void *p = mmap(NULL, PS_LIMIT / PG, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
         pstate = p == MAP_FAILED ? NULL : p;
+        p = mmap(NULL, PS_LIMIT / PG, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
+        pback = p == MAP_FAILED ? NULL : p;
     }
     if (watch && ww_fd < 0 && pm_fd < 0) ww_open();
     void *p = pstate && addr + n <= PS_LIMIT
@@ -916,6 +1004,13 @@ int plat_mem_decommit(uint64_t addr, uint64_t n) {
 }
 
 int plat_mem_protect(uint64_t addr, uint64_t n, int prot) {
+    if (nbacked || bk_hold) {   // some of it may be driver memory: the composed protection (bk_apply)
+        bk_spin();
+        ps_set(addr, n, (uint8_t)(PS_NONE + prot));
+        int ok = bk_apply(addr, n);
+        bk_unspin();
+        return ok;
+    }
     int p = prot == PLAT_PROT_RW ? PROT_READ | PROT_WRITE : prot == PLAT_PROT_READ ? PROT_READ : PROT_NONE;
     if (mprotect((void *)(uintptr_t)addr, n, p)) return 0;
     ps_set(addr, n, (uint8_t)(PS_NONE + prot));
@@ -954,31 +1049,192 @@ int plat_mem_state(uint64_t addr, uint64_t limit, uint64_t *end) {
     return v == PS_FREE ? PLAT_MEM_FREE : v == PS_RESERVED ? PLAT_MEM_RESERVED : v - PS_NONE;
 }
 
-uint64_t plat_mem_written(uint64_t addr, uint64_t n, uint64_t *pages, uint64_t max, int reset) {
-    if (!max || !n) return 0;
-    if (ww_fd < 0) return UINT64_MAX;
+// The kernel's write watch over [at, end): the pages it lists are appended to pages[*got...]. 0 on an error.
+static int scan_written(uint64_t at, uint64_t end, uint64_t *pages, uint64_t *got, uint64_t max, int reset) {
     struct page_region r[256];
-    uint64_t got = 0;
-    for (uint64_t at = addr, end = addr + n; at < end && got < max;) {
+    while (at < end && *got < max) {
         // Written means: write-protection cleared, on a populated page (present or swapped out) that is not the shared
         // zero page. A page never touched since its commit has no protection marker either and counts as written to
         // the kernel; a read maps the zero page there. Neither is a write, as on Windows.
         struct pm_scan_arg arg = {.size = sizeof arg,
                                   .flags = reset ? PM_SCAN_WP_MATCHING | PM_SCAN_CHECK_WPASYNC : 0,
                                   .start = at, .end = end, .vec = (uint64_t)(uintptr_t)r, .vec_len = 256,
-                                  .max_pages = max - got,
+                                  .max_pages = max - *got,
                                   .category_inverted = PAGE_IS_PFNZERO,
                                   .category_mask = PAGE_IS_WRITTEN | PAGE_IS_PFNZERO,
                                   .category_anyof_mask = PAGE_IS_PRESENT | PAGE_IS_SWAPPED,
                                   .return_mask = PAGE_IS_WRITTEN};
         long k = ioctl(pm_fd, PAGEMAP_SCAN, &arg);
-        if (k < 0) return UINT64_MAX;
+        if (k < 0) return 0;
         for (long i = 0; i < k; i++)
-            for (uint64_t p = r[i].start; p < r[i].end && got < max; p += PG) pages[got++] = p;
+            for (uint64_t p = r[i].start; p < r[i].end && *got < max; p += PG) pages[(*got)++] = p;
         if (arg.walk_end <= at) break;
         at = arg.walk_end;
     }
+    return 1;
+}
+
+// The dirty pages of driver-backed [at, end), appended likewise; reset closes them again (bk_apply's composition).
+// Closing comes first for a run, then the bit clears: a writer that opened the page before the close wrote before the
+// caller reads the bytes, one after it faults and marks the page again.
+static void scan_dirty(uint64_t at, uint64_t end, uint64_t *pages, uint64_t *got, uint64_t max, int reset) {
+    bk_spin();
+    for (uint64_t a = at; a < end && *got < max; a += PG) {
+        uint64_t pg = a / PG;
+        if (!(pback[pg] & PB_DIRTY)) continue;
+        pages[(*got)++] = a;
+        if (reset) {
+            pback[pg] &= (uint8_t)~PB_DIRTY;
+            if (pstate[pg] == PS_RW) mprotect((void *)(uintptr_t)a, PG, PROT_READ);
+        }
+    }
+    bk_unspin();
+}
+
+uint64_t plat_mem_written(uint64_t addr, uint64_t n, uint64_t *pages, uint64_t max, int reset) {
+    if (!max || !n) return 0;
+    if (ww_fd < 0) return UINT64_MAX;
+    uint64_t got = 0;
+    for (uint64_t at = addr, end = addr + n; at < end && got < max;) {
+        uint64_t stop = end;
+        int backed = nbacked && at < PS_LIMIT && (pback[at / PG] & PB_BACKED);
+        if (nbacked) {   // the run of pages of one kind from `at`
+            uint64_t x = at;
+            while (x < end && x < PS_LIMIT && !!(pback[x / PG] & PB_BACKED) == backed) x += PG;
+            stop = x;
+        }
+        if (backed) scan_dirty(at, stop, pages, &got, max, reset);
+        else if (!scan_written(at, stop, pages, &got, max, reset)) return UINT64_MAX;
+        at = stop;
+    }
     return got;
+}
+
+// ---- driver-backed memory (platform.h plat_mem_back)
+static void fault_install(void);
+// A swap holds the writers of the range: bk_hold is set, every page is made read-only whatever it wants, and a write
+// fault inside waits in bk_write_fault until the swap ends. The swapping thread only reads the range.
+static void bk_release(void) {
+    __atomic_store_n(&bk_hold, 0, __ATOMIC_RELEASE);
+    syscall(SYS_futex, &bk_hold, FUTEX_WAKE_PRIVATE, INT_MAX, NULL, NULL, 0);
+}
+
+static int bk_begin(uint64_t addr, uint64_t n, int want_backed) {
+    if (!pstate || !pback || ww_fd < 0 || (addr | n) & (PG - 1) || !n || addr + n > PS_LIMIT) return 0;
+    for (uint64_t a = addr; a < addr + n; a += PG)
+        if (pstate[a / PG] < PS_NONE || !!(pback[a / PG] & PB_BACKED) != want_backed) return 0;
+    bk_spin();
+    if (bk_hold) {   // one swap at a time
+        bk_unspin();
+        return 0;
+    }
+    bk_lo = addr, bk_hi = addr + n;
+    __atomic_store_n(&bk_hold, 1, __ATOMIC_RELEASE);
+    int ok = !mprotect((void *)(uintptr_t)addr, n, PROT_READ);
+    bk_unspin();
+    if (!ok) {
+        bk_spin();
+        bk_apply(addr, n);
+        bk_unspin();
+        bk_release();
+    }
+    return ok;
+}
+
+static void bk_end(uint64_t addr, uint64_t n) {
+    bk_spin();
+    __atomic_store_n(&bk_hold, 0, __ATOMIC_RELEASE);
+    bk_apply(addr, n);
+    bk_unspin();
+    bk_release();
+}
+
+int plat_mem_back(uint64_t addr, uint64_t n, int (*place)(void *ctx), void *ctx) {
+    fault_install();   // the dirty bits are set by the write fault
+    plat_mutex_lock(&vm_lock);
+    int ok = bk_begin(addr, n, 0);
+    if (!ok) {
+        plat_mutex_unlock(&vm_lock);
+        return 0;
+    }
+    uint64_t npg = n / PG, got = 0, pages[512];
+    uint8_t *seed = calloc(npg, 1);   // the pages the write watch reported written, which stay dirty
+    if (seed) {
+        for (uint64_t at = addr; at < addr + n && scan_written(at, addr + n, pages, &got, 512, 0);) {
+            for (uint64_t i = 0; i < got; i++) seed[(pages[i] - addr) / PG] = 1;
+            at = got ? pages[got - 1] + PG : addr + n;
+            if (!got) break;
+            got = 0;
+        }
+    }
+    ok = seed && place(ctx);
+    if (ok) {
+        bk_spin();
+        for (uint64_t i = 0; i < npg; i++) pback[addr / PG + i] = (uint8_t)(PB_BACKED | (seed[i] ? PB_DIRTY : 0));
+        __atomic_add_fetch(&nbacked, (int64_t)npg, __ATOMIC_RELAXED);
+        bk_unspin();
+    }
+    free(seed);
+    bk_end(addr, n);
+    plat_mutex_unlock(&vm_lock);
+    return ok;
+}
+
+int plat_mem_unback(uint64_t addr, uint64_t n, int (*release)(void *ctx), void *ctx) {
+    plat_mutex_lock(&vm_lock);
+    int ok = bk_begin(addr, n, 1);
+    if (!ok) {
+        plat_mutex_unlock(&vm_lock);
+        return 0;
+    }
+    uint64_t npg = n / PG;
+    uint8_t *tmp = mmap(NULL, n, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
+    if (tmp == MAP_FAILED) tmp = NULL;
+    if (tmp) {
+        madvise(tmp, n, MADV_NOHUGEPAGE);
+        memcpy(tmp, (void *)(uintptr_t)addr, n);
+    }
+    ok = tmp && release(ctx);
+    if (ok) {
+        // Over the released mapping: a move replaces the pages in one step, with no moment when the range is empty.
+        void *m = mremap(tmp, n, n, MREMAP_MAYMOVE | MREMAP_FIXED, (void *)(uintptr_t)addr);
+        if (m == MAP_FAILED) {   // the copy then
+            m = mmap((void *)(uintptr_t)addr, n, PROT_READ | PROT_WRITE,
+                     MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE | MAP_FIXED, -1, 0);
+            if (m == MAP_FAILED) {
+                fprintf(stderr, "platform: cannot give %#llx+%#llx back to anonymous memory (%s)\n",
+                        (unsigned long long)addr, (unsigned long long)n, strerror(errno));
+                abort();
+            }
+            memcpy(m, tmp, n);
+            munmap(tmp, n);
+        }
+        madvise((void *)(uintptr_t)addr, n, MADV_NOHUGEPAGE);
+        struct uffdio_register reg = {.range = {addr, n}, .mode = UFFDIO_REGISTER_MODE_WP};
+        if (!ioctl(ww_fd, UFFDIO_REGISTER, &reg)) {
+            // The copy populated every page, so all of them read as written; the clean ones are protected again.
+            for (uint64_t i = 0; i < npg;) {
+                if (pback[addr / PG + i] & PB_DIRTY) { i++; continue; }
+                uint64_t j = i;
+                while (j < npg && !(pback[addr / PG + j] & PB_DIRTY)) j++;
+                struct uffdio_writeprotect wp = {.range = {addr + i * PG, (j - i) * PG}, .mode = UFFDIO_WRITEPROTECT_MODE_WP};
+                ioctl(ww_fd, UFFDIO_WRITEPROTECT, &wp);
+                i = j;
+            }
+        } else {
+            fprintf(stderr, "platform: write watch over %#llx+%#llx failed again (%s)\n", (unsigned long long)addr,
+                    (unsigned long long)n, strerror(errno));
+        }
+        bk_spin();
+        memset(pback + addr / PG, 0, npg);
+        __atomic_sub_fetch(&nbacked, (int64_t)npg, __ATOMIC_RELAXED);
+        bk_unspin();
+    } else if (tmp) {
+        munmap(tmp, n);
+    }
+    bk_end(addr, n);
+    plat_mutex_unlock(&vm_lock);
+    return ok;
 }
 
 // One handler for the synchronous faults. A SIGSEGV whose page-fault error code has the write bit set goes to the
@@ -999,6 +1255,7 @@ extern char _end[];   // the end of this executable's image (GNU ld and lld both
 static void fault_handler(int sig, siginfo_t *si, void *uc) {
     ucontext_t *u = uc;
     long err = u->uc_mcontext.gregs[REG_ERR];
+    if (sig == SIGSEGV && (err & 2) && (nbacked || bk_hold) && bk_write_fault((uint64_t)(uintptr_t)si->si_addr)) return;
     if (sig == SIGSEGV && access_hook) {
         uintptr_t ip = (uintptr_t)u->uc_mcontext.gregs[REG_RIP];
         int kind = (err & 16) ? 8 : (err & 2) ? 1 : 0;

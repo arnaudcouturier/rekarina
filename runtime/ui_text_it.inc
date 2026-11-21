@@ -58,8 +58,8 @@
     [UI_MENU_ANISO] = "Filtro texture",
     [UI_MENU_ANISO_DESC] = "Filtro anisotropico delle texture delle superfici: terreno, strade e pareti visti di sbieco restano nitidi in lontananza invece di sfocarsi. Gioco: il livello richiesto dal gioco, come su Switch.",
     [UI_MENU_ANISO_GAME] = "Gioco",
-    [UI_MENU_SHARPNESS] = "Nitidezza FSR",
-    [UI_MENU_SHARPNESS_DESC] = "Nitidezza applicata dopo la scalatura FSR; 0 la disattiva.",
+    [UI_MENU_SHARPNESS] = "Nitidezza",
+    [UI_MENU_SHARPNESS_DESC] = "La nitidezza applicata dopo la scalatura FSR o DLSS e, sotto l'80 %, quella delle texture del gioco. 0 disattiva tutto.",
     [UI_MENU_COLOR] = "Colore",
     [UI_MENU_COLOR_PRESET] = "Profilo colore",
     [UI_MENU_COLOR_PRESET_DESC] = "Imposta i quattro valori qui sotto. Vivido: più contrasto e saturazione, ombre leggermente "
@@ -115,7 +115,7 @@
     [UI_MENU_TAA] = "Upscaler",
     [UI_MENU_TAA_DESC] = "L'upscaler usato dalla riga DLSS / DLAA: NVIDIA DLSS (GPU RTX), AMD FSR (qualsiasi GPU, temporale) o AMD FSR 1 (qualsiasi GPU, spaziale: il più leggero, per schede datate e PC portatili da gioco). Dopo il riavvio.",
     [UI_MENU_FRAMEGEN] = "Generazione fotogrammi",
-    [UI_MENU_FRAMEGEN_DESC] = "Un fotogramma generato tra ogni coppia di fotogrammi disegnati dal gioco, lasciando fuori l'HUD: AMD FSR su qualsiasi GPU, NVIDIA DLSS sulle serie RTX 40 e 50. Dopo il riavvio.",
+    [UI_MENU_FRAMEGEN_DESC] = "Un fotogramma generato tra ogni coppia di fotogrammi disegnati dal gioco, lasciando fuori l'HUD: AMD FSR su qualsiasi GPU, NVIDIA DLSS sulle serie RTX 40 e 50. Attiva l'upscaler temporale (DLSS / DLAA), di cui usa i vettori di movimento; la modalità DLSS ne decide il costo: DLAA (nativa) è la più pesante, Qualità e Bilanciata sono più leggere. Dopo il riavvio.",
     [UI_MENU_FRAMEGEN_NEEDS] = "Richiede DLSS / DLAA attivo: ne usa i vettori di movimento.",
     [UI_MENU_DLAA] = "NVIDIA DLSS / DLAA",
     [UI_MENU_DLAA_DESC] = "NVIDIA DLSS per la scena 3D (GPU NVIDIA RTX; " DLSS_FILE " accanto a " EXE_FILE "): bordi più "
@@ -145,7 +145,8 @@
 
     [UI_MENU_FPS_LIMIT] = "Limite FPS",
     [UI_MENU_FPS_LIMIT_DESC] = "Il numero massimo di fotogrammi al secondo che il gioco disegna. Oltre 60 è sperimentale e "
-                               "richiede Velocità di gioco in tempo reale.",
+                               "richiede Velocità di gioco in tempo reale. "
+                               "Con la generazione fotogrammi AMD conta i fotogrammi che vedi, quindi il gioco ne disegna la metà; quella DLSS aggiunge i suoi fotogrammi oltre questo valore.",
     [UI_MENU_FPS_30] = "30 FPS", [UI_MENU_FPS_40] = "40 FPS", [UI_MENU_FPS_45] = "45 FPS",
     [UI_MENU_FPS_60] = "60 FPS", [UI_MENU_FPS_90] = "90 FPS", [UI_MENU_FPS_120] = "120 FPS", [UI_MENU_FPS_144] = "144 FPS",
     // the monitor's refresh rate; printf format with the rate in Hz when it is known
@@ -249,12 +250,13 @@
     [UI_MENU_STICK_DEADZONE_DESC] = "Di quanto deve muoversi una levetta del gamepad prima che il gioco la rilevi. Aumentala se il personaggio o la telecamera si muovono da soli: lascia la levetta, leggi \"levetta ora\" e imposta la zona morta qualche punto percentuale più in alto.",
     [UI_MENU_STICK_DEADZONE_NOW] = "levetta ora: %.0f %%",
     [UI_MENU_MOUSE_MODE] = "Telecamera con mouse",
-    [UI_MENU_MOUSE_MODE_DESC] = "Diretta: la telecamera ruota di quanto si sposta il mouse, come in un gioco per PC, senza zona morta né curva della levetta (gioco 1.4.3; le altre versioni usano l'emulazione levetta). Emulazione levetta: il mouse fa da levetta destra.",
+    [UI_MENU_MOUSE_MODE_DESC] = "Diretta: la telecamera ruota di quanto si sposta il mouse, come in un gioco per PC, senza zona morta né curva della levetta (gioco 1.4.3; le altre versioni usano l'emulazione levetta). Emulazione levetta: il mouse fa da levetta destra. Disattivata: il mouse non ruota mai la telecamera e il puntatore resta libero per i menu.",
     [UI_MENU_FAST_TEXT] = "Dialoghi più veloci",
     [UI_MENU_FAST_TEXT_DESC] = "Elimina le pause che i messaggi del gioco fanno tra le frasi, così il testo scorre senza fermarsi.",
-    [UI_MENU_MOUSE_MODE_DESC_OOT] = "Diretto: la telecamera ruota esattamente quanto si muove il mouse, a qualsiasi velocità, senza zona morta, curva o velocità massima dello stick. Emulazione dello stick: il mouse agisce come lo stick destro, con la sua curva e la sua velocità massima.",
+    [UI_MENU_MOUSE_MODE_DESC_OOT] = "Diretto: la telecamera ruota esattamente quanto si muove il mouse, a qualsiasi velocità, senza zona morta, curva o velocità massima dello stick. Emulazione dello stick: il mouse agisce come lo stick destro, con la sua curva e la sua velocità massima. Disattivata: il mouse non ruota mai la telecamera e il puntatore resta libero per i menu.",
     [UI_MENU_MOUSE_STICK] = "Emulazione levetta",
     [UI_MENU_MOUSE_DIRECT] = "Diretta",
+    [UI_MENU_MOUSE_OFF] = "Disattivata",
     [UI_MENU_MENU_CURSOR] = "Mouse nei menu del gioco",
     [UI_MENU_MENU_CURSOR_DESC] = "Nei menu del gioco (titolo, inventario, negozi, scelte nei dialoghi) compare il puntatore: l'elemento sotto di esso viene selezionato, il clic sinistro conferma, il clic destro torna indietro. Solo se per ultimi sono stati usati il mouse o un tasto, così con un gamepad i menu restano invariati (gioco 1.4.3).",
     [UI_MENU_MOUSE_SENS] = "Sensibilità telecamera mouse",

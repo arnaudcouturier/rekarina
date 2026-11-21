@@ -301,6 +301,56 @@ class DownloadTest(Sandbox):
         self.assertFalse(list((self.dir / 'dl').glob('*')))
 
 
+class CertFallbackTest(unittest.TestCase):
+    """net.fetch_bytes: when Python's certificate check fails (an HTTPS-scanning antivirus or proxy, a chain without
+    its intermediate), the file comes through Windows' own TLS; any other failure stays a failure."""
+
+    def test_a_failed_certificate_check_goes_through_windows(self):
+        import ssl
+        import urllib.error
+        import urllib.request
+        saved = urllib.request.urlopen
+        said, asked = [], []
+        bad = ssl.SSLCertVerificationError(1, '[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: unable to '
+                                              'get local issuer certificate (_ssl.c:1032)')
+
+        def refuse(*a, **k):
+            raise urllib.error.URLError(bad)
+
+        urllib.request.urlopen = refuse
+        try:
+            data, how = net.fetch_bytes('https://example.org/x.json', 5, said.append,
+                                        windows=lambda url, timeout: asked.append(url) or b'{"ok": 1}')
+            self.assertEqual((data, how, asked), (b'{"ok": 1}', 'windows', ['https://example.org/x.json']))
+            self.assertIn("certificate check failed", said[0])
+
+            def offline(*a, **k):
+                raise urllib.error.URLError(ConnectionRefusedError(10061, 'refused'))
+
+            urllib.request.urlopen = offline
+            with self.assertRaises(urllib.error.URLError):   # not a certificate: no second way
+                net.fetch_bytes('https://example.org/x.json', 5, said.append, windows=lambda url, timeout: b'')
+        finally:
+            urllib.request.urlopen = saved
+
+    @unittest.skipUnless(os.name == 'nt', "Windows' own TLS")
+    def test_a_broken_certificate_store_still_gets_the_index(self):
+        # Python with no root certificate at all against the real package index: its check fails, PowerShell's
+        # Invoke-WebRequest (SChannel, the Windows store) brings the file
+        import ssl
+        empty = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)   # verifies, trusts nothing
+        said = []
+        try:
+            data, how = net.fetch_bytes(oot.ZBIC_INDEX, 20, said.append, context=empty)
+        except OSError as e:
+            if not net.cert_failure(e) and 'could not fetch' in str(e):
+                self.skipTest(f'no network: {e}')
+            raise
+        self.assertEqual(how, 'windows')
+        self.assertIn('urls', json.loads(data))
+        self.assertTrue(said)
+
+
 class Ed25519Test(unittest.TestCase):
     # RFC 8032, section 7.1: private seed, public key, message, signature
     VECTORS = (
@@ -715,6 +765,8 @@ class EtaTest(Sandbox):
         self.assertEqual(eta.estimate('oot_compile', 'first', 128, {})[0], 360.0)             # and at a half
         self.assertEqual(eta.estimate('oot_prepare', 'first', 8, {})[0], 840.0)
         self.assertEqual(eta.estimate('oot_prepare', 'rerun', 16, {})[0], 60.0)
+        self.assertEqual(eta.estimate('oot_prepare', 'translate', 16, {})[0], float(eta.ALL_SHADERS))
+        self.assertEqual(eta.estimate('oot_prepare', 'translate', 8, {})[0], 2.0 * eta.ALL_SHADERS)
         self.assertEqual(eta.estimate('oot_extract', 'first', 4, {})[0], 20.0)                # not a processor's step
         self.assertEqual(eta.estimate('oot_components', 'first', 4, {})[0], 60.0)
         self.assertEqual(eta.estimate('something_new', 'first', 16, {}), (30.0, 'default'))
@@ -735,13 +787,22 @@ class EtaTest(Sandbox):
         eta.record('oot_prepare', 'first', 0)            # a step that reports no time is not kept
         eta.record('oot_prepare', 'other', 5)
         eta.record('oot_prepare', 'all', 2116.3)         # every variant: every setup run's case since 2026-11-19
+        eta.record('oot_prepare', 'translate', 900.0)    # every variant translated: the case since 1.2.8
         self.assertEqual(eta.load_timings(), {'oot_compile': {'first': 702.4, 'rerun': 163.0},
-                                              'oot_prepare': {'first': 1500.0, 'all': 2116.3}})
+                                              'oot_prepare': {'first': 1500.0, 'all': 2116.3, 'translate': 900.0}})
         self.assertEqual(eta.timings_path().parent, update.state_path().parent)   # beside update.json
         self.assertNotIn(b'\r', eta.timings_path().read_bytes())
         self.assertEqual(eta.estimates({'oot_prepare': 'first'}, 8)['steps']['oot_prepare']['source'], 'measured')
         eta.timings_path().write_bytes(b'{broken')
         self.assertEqual(eta.load_timings(), {})
+        # a file of format 1 (to 1.2.7): its shader and package times held the driver's build, which the setup no longer
+        # does (an hour and more on some PCs); the other steps' times stand
+        eta.timings_path().write_text(json.dumps({'format': 1, 'steps': {
+            'oot_compile': {'first': 700.0}, 'oot_prepare': {'all': 7200.0}, 'oot_package': {'rerun': 4000.0}}}))
+        self.assertEqual(eta.load_timings(), {'oot_compile': {'first': 700.0}})
+        eta.record('oot_package', 'rerun', 12.0)
+        self.assertEqual(json.loads(eta.timings_path().read_text())['format'], 2)
+        self.assertEqual(eta.load_timings(), {'oot_compile': {'first': 700.0}, 'oot_package': {'rerun': 12.0}})
 
     def run_to_compile(self, estimate=720.0):
         t = eta.Tracker(clock=lambda: 0.0)
@@ -824,52 +885,84 @@ class EtaTest(Sandbox):
         self.assertGreater(second, first)
 
     def test_a_long_step_past_its_estimate_never_stands_still(self):
-        """A shader step estimated as a rerun (a minute) that prepares every variant for 80 minutes, with the phases
-        and counters the real step reports (installer/oot.py Prepare.run): 10 minutes of seed without a counter, the
-        translation's counter, a moment of 'libraries' without one in the middle of it (a line that names pipelines),
-        the driver's counter every 4,000 variants, and 20 minutes of packing without a counter. The shown time follows
-        the counters while they run and is never the same figure for ten minutes (it stood at "2 min" for an hour)."""
+        """A shader step estimated as a rerun (a minute) that translates every variant for 40 minutes, with the phases
+        and counters the real step reports (installer/oot.py Prepare.run): 5 minutes of seed without a counter, the
+        translation's counter every 5 seconds, and 20 minutes of packing without a counter. The shown time follows the
+        counter while it runs and is never the same figure for ten minutes (it stood at "2 min" for an hour)."""
         t = eta.Tracker(clock=lambda: 0.0)
         t.feed({'type': 'start', 'steps': ['oot_prepare', 'oot_package']}, now=0)
         t.feed({'type': 'eta', 'cores': 16, 'steps': {'oot_prepare': {'seconds': 60}, 'oot_package': {'seconds': 90}}}, now=0)
         t.feed({'type': 'step', 'step': 'oot_prepare', 'state': 'started'}, now=0)
-        events = [(0, 'seed', None, None), (600, 'translate', None, None), (601, 'libraries', None, None)]
-        events += [(s, 'translate', round(72621 * (s - 600) / 1200), 72621) for s in range(605, 1800, 5)]
-        events += [(1800, 'translate', None, None), (1800.5, 'libraries', None, None)]
-        events += [(1800 + 1800 * n / 56402, 'libraries', n, 56402) for n in [*range(4000, 56402, 4000), 56402]]
-        events += [(3600, 'pack', None, None)]
+        events = [(0, 'seed', None, None), (300, 'translate', None, None)]
+        events += [(s, 'translate', round(72621 * (s - 300) / 2400), 72621) for s in range(305, 2700, 5)]
+        events += [(2700, 'pack', None, None)]
         shown, at, k = [], 0.0, 0
-        while at < 4800:
+        while at < 3900:
             while k < len(events) and events[k][0] <= at:
                 _, phase, done, total = events[k]
                 t.feed({'type': 'progress', 'step': 'oot_prepare', 'phase': phase, 'done': done, 'total': total}, now=at)
                 k += 1
             row = t.view(now=at)['steps'][0]
-            shown.append((at, row['remaining'], row['fraction']))
+            shown.append((at, row['remaining']))
             at += 0.5
-        # half way through the driver's phase, just before each new count (the figure moves to a count at a bounded
-        # speed): what the counter says, give or take
-        counts = [s for s, phase, done, _ in events if phase == 'libraries' and done and 2400 <= s <= 3400]
-        self.assertGreater(len(counts), 5)
-        for s in counts:
-            start, left, fraction = shown[int((s - 1) * 2)]
-            self.assertLess(abs(left - start * (1 - fraction) / fraction), 0.15 * start * (1 - fraction) / fraction)
-        minutes = [(s, round(left / 60)) for s, left, _ in shown]
+        # in the translation, once its pace is known and the figure has come down to it: the counter's own time left
+        # (and the pack's share of the estimate, 3 s), give or take 5 %
+        for s in range(900, 2700, 60):
+            left = shown[2 * s][1]
+            truth = 2700 - s
+            self.assertLess(abs(left - truth), 0.05 * truth + 10, s)
+        minutes = [(s, round(left / 60)) for s, left in shown]
         for i, (start, m) in enumerate(minutes):
-            if start + 600 <= 4800:
+            if start + 600 <= 3900:
                 window = {mm for s, mm in minutes[i:i + 1200]}
                 self.assertGreater(len(window), 1, f'"{m} min" from {start} s on for ten minutes')
-        self.assertGreater(shown[-1][1], shown[2 * 3700][1])   # the long pack: the figure grows with it
+        self.assertGreater(shown[-1][1], shown[2 * 2800][1])   # the long pack: the figure grows with it
+
+    def test_a_steady_translation_shows_its_own_time_left(self):
+        """A player's setup (12 threads, a slow disk): the translation ran at a steady 8.9 shaders a second, 40,029 of
+        72,621 at 1:32 into the run, about 61 minutes left, and 1.2.7 showed 3.7 hours, rising. The step's estimate of
+        the default (2800 s) is far off; the counter's pace decides."""
+        t = eta.Tracker(clock=lambda: 0.0)
+        t.feed({'type': 'start', 'steps': ['oot_prepare', 'oot_package']}, now=0)
+        t.feed({'type': 'eta', 'cores': 12, 'steps': {'oot_prepare': {'seconds': 2800}, 'oot_package': {'seconds': 90}}}, now=0)
+        t.feed({'type': 'step', 'step': 'oot_prepare', 'state': 'started'}, now=0)
+        t.feed({'type': 'progress', 'step': 'oot_prepare', 'phase': 'translate', 'done': 0, 'total': 72621}, now=60)
+        at, left = 60.0, None
+        while at < 60 + 4500:
+            at += 5
+            t.feed({'type': 'progress', 'step': 'oot_prepare', 'phase': 'translate', 'done': round(8.9 * (at - 60)),
+                    'total': 72621}, now=at)
+            row = t.view(now=at)['steps'][0]
+            left = row['remaining']
+        done = round(8.9 * 4500)
+        truth = (72621 - done) / 8.9 + 0.05 * 2800        # the counter's rest, then the pack's share
+        self.assertLess(abs(left - truth), 0.03 * truth)
+        self.assertLess(left, 70 * 60)
+
+    def test_rate(self):
+        r = eta.Rate()
+        self.assertIsNone(r.rate(0))
+        r.feed(0, 0)
+        r.feed(10, 100)
+        self.assertIsNone(r.rate(10))                     # not over RATE_SPAN yet
+        for s in range(20, 400, 10):
+            r.feed(s, 10 * s)
+        self.assertAlmostEqual(r.rate(390), 10.0)
+        self.assertLessEqual(r.samples[-1][0] - r.samples[0][0], eta.RATE_WINDOW + 10)   # only the recent history
+        self.assertAlmostEqual(r.rate(390 + 120), 10.0 * 120 / 240, places=1)              # stopped: the pace falls
+        r.feed(400, 5)                                    # counted again from the start: a new history
+        self.assertIsNone(r.rate(400))
 
     def test_phases(self):
         f = eta.step_fraction
         self.assertIsNone(f('oot_compile', 'compile', None, None, ['compile']))    # no counter yet, nothing behind it
         self.assertAlmostEqual(f('oot_compile', 'link', None, None, ['compile', 'link']), 0.95)
-        self.assertAlmostEqual(f('oot_prepare', 'libraries', 500, 1000, []), 0.05 + 0.15 + 0.39)
-        self.assertAlmostEqual(f('oot_prepare', 'pack', None, None, []), 0.98)     # the pack after the driver's phase
-        self.assertAlmostEqual(f('oot_prepare', 'translate', 50, 100, []), 0.05 + 0.075)
+        self.assertIsNone(f('oot_prepare', 'libraries', 500, 1000, []))            # the driver's phase left the setup
+        self.assertAlmostEqual(f('oot_prepare', 'pack', None, None, []), 0.95)     # the pack after the translation
+        self.assertAlmostEqual(f('oot_prepare', 'translate', 50, 100, []), 0.05 + 0.45)
         self.assertAlmostEqual(f('oot_components', 'dlssg', 60, 100, []), 0.05 + 0.95 * 0.6)   # one counter over the groups
-        self.assertAlmostEqual(f('oot_package', 'warm', None, None, []), 0.15)
+        self.assertAlmostEqual(f('oot_package', 'copy', None, None, []), 0.2)
+        self.assertAlmostEqual(f('background', 'textures', 10, 20, []), 0.85 + 0.075)
         self.assertAlmostEqual(f('some_step', 'x', 1, 4, []), 0.25)                 # no table: the counter is the step
         self.assertIsNone(f('some_step', 'x', None, None, []))
         self.assertIsNone(f('oot_compile', 'unknown phase', 1, 2, []))
@@ -1027,16 +1120,41 @@ class WindowPartsTest(unittest.TestCase):
             for code in ini.LANGUAGES_OOT:
                 self.assertIn('lang.' + code, texts, lang)
 
-    def test_no_background_shader_job(self):
-        """The owner's call of 2026-11-19: the window starts and offers no background preparation of the shaders, and
-        its setup runs ask for every variant in the foreground (installer/oot.py shader_mode)."""
-        self.assertFalse(self.gui.RekarinaApp.shader_wanted(None))
+    def test_background_job_follows_the_game_folder(self):
+        """Since 1.2.8 the window runs the work the setup left (installer/oot.py background_main) while it is open and
+        no game runs: wanted while the folder's background.json has work pending, with the command that runs it."""
+        from types import SimpleNamespace
+        with tempfile.TemporaryDirectory() as d:
+            dest = Path(d)
+            app = SimpleNamespace(shader_dest=lambda: dest, layout=SimpleNamespace(dev=False, python=Path('py.exe'),
+                                                                                  root=Path('root')))
+            want = lambda: self.gui.RekarinaApp.shader_wanted(app)   # noqa: E731
+            self.assertFalse(want())                                   # no game, no list
+            (dest / oot.GAME_EXE).write_bytes(b'MZ')
+            self.assertFalse(want())
+            oot.save_background(dest, {'format': 1, 'warm': {'key': 'k', 'state': 'pending', 'fails': 0},
+                                       'textures': {'key': 't', 'state': 'done', 'fails': 0}})
+            self.assertTrue(want())
+            oot.save_background(dest, {'format': 1, 'warm': {'key': 'k', 'state': 'failed', 'fails': 2},
+                                       'textures': {'key': 't', 'state': 'done', 'fails': 0}})
+            self.assertFalse(want())                                   # failed twice under this key: left alone
+            self.assertEqual(self.gui.RekarinaApp.shader_command(app),
+                             ['py.exe', '-m', 'installer.oot', '--dest', str(dest), '--background'])
         cmd = self.gui.OotForm(game='game.nup', dest='game').command('python')
         self.assertIn('--all-shaders', cmd)
         self.assertNotIn('--shaders-later', cmd)
-        from types import SimpleNamespace
-        self.assertIsNone(self.gui.RekarinaApp.shader_view(SimpleNamespace(   # the home sheet has no shader row
+        self.assertIsNone(self.gui.RekarinaApp.shader_view(SimpleNamespace(   # no job, no row
             forced_shaders=None, shader_finished=None, shader_job=None, shader_wanted=lambda: False)))
+
+    def test_log_lines_carry_the_runs_time(self):
+        from .guilogic import Catalog, log_text
+        cat = Catalog('en')
+        self.assertEqual(log_text(cat, {'type': 'raw', 'text': 'a line', 't': 5547.0}), '[1:32:27] a line')
+        line = log_text(cat, {'type': 'progress', 'step': 'oot_prepare', 'phase': 'translate', 'done': 40029,
+                              'total': 72621, 't': 5547.2})
+        self.assertTrue(line.startswith('[1:32:27] ') and '40' in line, line)
+        self.assertEqual(log_text(cat, 'as it is'), 'as it is')
+        self.assertEqual(log_text(cat, {'type': 'raw', 'text': 'no time'}), 'no time')
 
     def test_amount_of_a_download(self):
         from .guilogic import Catalog, amount

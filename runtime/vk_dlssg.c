@@ -1,11 +1,12 @@
-// DLSS Frame Generation (REKARINA_FRAMEGEN = dlss; applies after a restart) through totk_dlssg.dll
+// DLSS Frame Generation (REKARINA_FRAMEGEN = dlss; applies after a restart) through rekarina_dlssg.dll
 // (runtime/dlssg/nx2_sl.cpp), which drives NVIDIA Streamline. Like AMD's frame generation (vk_fg.cpp) it needs DLSS or
 // FSR 3.1 upscaling on, whose depth, motion vectors and camera it hands over, and an RTX 40 or 50 GPU.
 //
 // The DLL and Streamline (sl.interposer.dll and its plugins, nvngx_dlssg.dll) sit next to the game. The instance and
 // device are created through Streamline's proxies (vk_device.c), so it can add the extensions, features and queues
 // DLSS-G needs; the present path calls Streamline's swapchain functions (gfx_present.c), and every present records the
-// frame's constants and tags first (vk_dlssg_frame). Generation pauses while the menu is open.
+// frame's constants and tags first (vk_dlssg_frame). Generation pauses while the menu is open and in the game's frames
+// without a camera (its pause screens).
 //
 // DLSS-G needs Reflex, whose low-latency mode paces the game (REKARINA_REFLEX, default 1; 0 off, 2 on with boost): the
 // game's frame sleeps in Reflex where it starts (its acquire of a window image), and each frame carries the latency
@@ -32,6 +33,7 @@
 static struct {
     int wanted, loaded, active;
     int asked;          // REKARINA_FRAMEGEN was dlss at start (vk_dlssg_wanted)
+    int retains;        // the library keeps generation's resources while it is off (interface version 4 and later)
     int avail;          // Streamline's DLSS-G plugin runs on this card (vk_dlssg_device_ready; 0 before)
     const char *why;    // why it is not running although asked, for the menu's row (vk_dlssg_off_why)
     PFN_nx2sl_init init;
@@ -94,7 +96,17 @@ int vk_dlssg_early(void) {
     while (n && dir[n - 1] != L'\\') n--;
     dir[n ? n - 1 : 0] = 0;
     swprintf(path, MAX_PATH + 32, L"%ls\\%hs_dlssg.dll", dir, RT_FILE_STEM);
-    HMODULE m = LoadLibraryW(path);
+    HMODULE m = NULL;
+    {   // DEBUG-DLSSGDLL: REKARINA_DLSSG_DLL=<path> loads our library from there (a test of a new build of it beside
+        // a game folder whose own copy other builds still use); Streamline's files stay the game folder's
+        const char *e = cfg_get("REKARINA_DLSSG_DLL");
+        if (e && *e) {
+            wchar_t w[MAX_PATH];
+            if (MultiByteToWideChar(CP_UTF8, 0, e, -1, w, MAX_PATH) > 0 && (m = LoadLibraryW(w)))
+                rt_log("dlssg: our library from %s (REKARINA_DLSSG_DLL)", e);
+        }
+    }
+    if (!m) m = LoadLibraryW(path);
 #ifdef RT_OLD_FILE_STEM   // a folder packaged before the file was renamed, or a build folder
     if (!m) {
         swprintf(path, MAX_PATH + 32, L"%ls\\%hs_dlssg.dll", dir, RT_OLD_FILE_STEM);
@@ -118,8 +130,10 @@ int vk_dlssg_early(void) {
     S.shown = (PFN_nx2sl_shown)(void *)GetProcAddress(m, "nx2sl_shown");
     S.shutdown = (PFN_nx2sl_shutdown)(void *)GetProcAddress(m, "nx2sl_shutdown");
     S.reflex = (PFN_nx2sl_reflex)(void *)GetProcAddress(m, "nx2sl_reflex");
-    if (!ver || ver() != NX2SL_VERSION || !S.init || !S.gipa || !S.gdpa || !S.available || !S.frame || !S.marker ||
-        !S.sleep || !S.submit_end || !S.shown || !S.reflex) {
+    int v = ver ? ver() : 0;
+    S.retains = v >= 4;
+    if (v < NX2SL_VERSION_OLDEST || v > NX2SL_VERSION || !S.init || !S.gipa || !S.gdpa || !S.available || !S.frame ||
+        !S.marker || !S.sleep || !S.submit_end || !S.shown || !S.reflex) {
         rt_log("dlssg: " RT_FILE_STEM "_dlssg.dll is from another build: DLSS Frame Generation off");
         S.why = RT_FILE_STEM "_dlssg.dll is from another build (run the setup again)";
         return 0;
@@ -298,11 +312,18 @@ void vk_dlssg_frame(VkCommandBuffer cb, VkExtent2D ext, VkImage hudless, VkImage
     float jx = 0, jy = 0;
     int reset = 0;
     int have = vk_dlaa_fg_inputs(&d, &m, &jx, &jy, &reset) && vk_dlaa_fg_views(&dv, &mvv) && vk_dlaa_fg_camera(&c);
-    // Once on, it stays on through frames without the inputs (the game's pause screens have no camera): every switch
-    // off and on again re-created its resources, 400-750 ms per frame for four or five frames at each inventory opening.
-    static int went_on;
-    int on = (have || went_on) && !menu_is_open();
+    // Off in every frame without the inputs: the game's pause screens have no camera, and generation kept on there
+    // blended whole frames of them (a tab switch of a pause screen blinked through the frames between, our overlay's
+    // numbers showed twice; owner's report 2026-11-20). The library keeps the resources while it is off (nx2_sl.h
+    // version 4), so on again costs nothing, and the first frame back starts generation's history anew (reset): the
+    // frame before it is the last one before the pause. A library of version 3 frees them when off (400-750 ms a
+    // frame for four or five frames at each inventory opening): with it generation stays on through such frames once
+    // it went on, as before.
+    static int went_on, was_on;
+    int on = (have || (went_on && !S.retains)) && !menu_is_open();
     if (on) went_on = 1;
+    if (on && have && S.retains && !was_on) reset = 1;
+    was_on = on;
     static uint64_t generating;
     if (on) fg_guard_running(++generating);
     Nx2SlImage zd = {d.image, dv, d.format, d.width, d.height, VK_IMAGE_LAYOUT_GENERAL,

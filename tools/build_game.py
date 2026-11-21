@@ -44,11 +44,13 @@ can be older than the objects an earlier release's setup left in temp/. So obj/i
 and the exe were made from (sources, headers from Ninja's deps log, command, compiler version), and an output whose
 inputs changed is deleted before Ninja runs (the comment at INPUTS; tests/build_content_test.py).
 
-Compile jobs share a memory budget: the memory available at the start less MEM_RESERVE for the rest of the PC
-(REKARINA_BUILD_MEM_GB sets it), at most MEM_BUDGET. The chunks that are one giant function need gigabytes each and run
-in a pool of their own, largest first (chunk_memory, plan_jobs); the others take LIGHT_MEM. Every compile and the link
-run below normal priority. Each phase reports its wall time and the peak memory of its processes (Windows job object
-accounting: committed private bytes).
+On Windows every compile starts when the memory free at that moment holds its estimate (MemoryGate: the compilers
+Ninja starts are held suspended until then), so programs the player opens or closes mid-compile lower or raise the
+number running. Elsewhere, or with REKARINA_BUILD_MEM_GB, the jobs share a budget fixed at the start: the memory
+available then less MEM_RESERVE for the rest of the PC, at most MEM_BUDGET. The chunks that are one giant function need
+gigabytes each and run in a pool of their own, largest first (chunk_memory, plan_jobs); the others take LIGHT_MEM.
+Every compile and the link run below normal priority. Each phase reports its wall time and the peak memory of its
+processes (Windows job object accounting: committed private bytes).
 
 --ninja PATH names the Ninja to run; without MSYS2 the bin/ninja.exe of the release folder (tools/make_release.py) is used.
 --toolchain DIR builds with an llvm-mingw tree (DIR/bin/clang.exe) instead of MSYS2 UCRT64 clang. Ninja still comes
@@ -236,11 +238,13 @@ GiB = 1 << 30
 # the most main_0258.c, 0.77 MB in 15 s), above it are all the heavy ones (from 1.2 MB, 1.9-2.8 GiB). A few above the line are cheap too
 # (main_0185.c, 1.6 MB of many small branches, 2 s): the pool only makes them wait their turn. A lower line (0.25 MB
 # was tried) puts over a hundred chunks into the giants' pool one at a time, and a 16 GB PC's build took twice as long.
-LIGHT_MEM = 640 << 20          # any compile but a giant one's, with headroom
+LIGHT_MEM = 448 << 20          # any compile but a giant one's: the most measured under the giant line, 434 MiB
+                               # (640 until 1.2.7: a 16 GB PC of a player ran four jobs and compiled for 57 minutes)
 GIANT_FN_BYTES = 900_000       # a chunk whose functions average this much C or more is a giant one
 GIANT_MEM_BASE = 1792 << 20    # a giant chunk's estimate: this plus GIANT_MEM_PER_MB for each MB of its function, with
 GIANT_MEM_PER_MB = 358 << 20   # headroom (1.3 MB -> 2.2 GiB against 1.9 measured, 3.9 MB -> 3.1 GiB against 2.7)
-MEM_RESERVE = 3584 << 20       # kept free for the rest of the PC
+MEM_RESERVE = 3072 << 20       # kept free for the rest of the PC (the memory available already leaves out what
+                               # runs; 3.5 GiB until 1.2.7)
 MEM_BUDGET = 50 * GiB          # at most, for all compile jobs together
 
 
@@ -488,6 +492,12 @@ def ninja_file(gen, out, mods, pool_depth, skip=(), prebuilt=False, runtime_lib=
     hot_list = os.environ.get('REKARINA_HOT_OBJS')
     hot_objs = {l.split()[0] for l in open(hot_list) if l.strip()} if hot_list else set()
     hot_flags = ' '.join('-O2' if f == '-O1' else f for f in GEN_FLAGS) + ' ' + inc
+    # REKARINA_COLD_OBJS=<file>: one object name per line (first word), compiled at -O1 where the rest is at -O2 (a full
+    # profile): a measurement of the giant chunks the profile never entered (main_0282.c, 3.9 MB of one function, takes
+    # two minutes and 2.8 GiB at -O2); off unless set.
+    cold_list = os.environ.get('REKARINA_COLD_OBJS')
+    cold_objs = {l.split()[0] for l in open(cold_list) if l.strip()} if cold_list else set()
+    cold_flags = ' '.join('-O1' if f == '-O2' else f for f in GEN_FLAGS) + ' ' + inc
     gen_pgo = PGO_INPUT if PGO_INPUT and os.environ.get('REKARINA_PGO_RUNTIME_ONLY') != '1' else None
     gen_lines = {}   # generated C file: its build lines
     for mod, files in mods.items():
@@ -497,11 +507,15 @@ def ninja_file(gen, out, mods, pool_depth, skip=(), prebuilt=False, runtime_lib=
             if not prebuilt:
                 el = [f'build {ninja_path(o)}: cc_gen {ninja_path(f)}{"" if os.environ.get("REKARINA_PGO_RUNTIME_ONLY") == "1" else pgo_dep}']
                 hot = Path(o).name in hot_objs
+                cold = not hot and Path(o).name in cold_objs
                 if hot:   # REKARINA_HOT_OBJS: the chunks where the profile finds the game's time
                     el.append(f'  genflags = {hot_flags}')
+                elif cold:   # REKARINA_COLD_OBJS
+                    el.append(f'  genflags = {cold_flags}')
                 el.append('  pool = gen_giant' if f in giants else '  pool = gen')
                 gen_lines[f] = el
-                edges[o] = (f'{cache}{cmd_arg(CLANG.as_posix())} {hot_flags if hot else " ".join(GEN_FLAGS) + " " + inc}',
+                flags = hot_flags if hot else cold_flags if cold else ' '.join(GEN_FLAGS) + ' ' + inc
+                edges[o] = (f'{cache}{cmd_arg(CLANG.as_posix())} {flags}',
                             [f] + ([gen_pgo] if gen_pgo else []))
             objs[mod].append(o)
     # the giants first, largest first: Ninja starts edges of equal weight in the order of the file
@@ -872,9 +886,193 @@ BELOW_NORMAL_PRIORITY_CLASS = 0x4000
 CREATE_SUSPENDED = 0x4
 
 
-def run_measured(cmd, env):
+# ---- the memory gate: each compiler started when memory holds it
+# Ninja runs a job per thread and knows nothing of memory. The gate (Windows) holds every compiler Ninja starts
+# suspended at its start and lets it run when its estimate (chunk_memory) fits what the PC has free NOW: the smaller of
+# the physical memory available and the commit headroom (the commit limit less the commit charge), less what the running
+# compiles will still take (each one's estimate less what it holds) and GATE_RESERVE. A browser or a game opened
+# mid-compile so holds the next compiles back, and closing it lets more run; with none running the oldest waiting one
+# runs whatever the memory, so the compile always goes on. Smaller compiles may pass the oldest waiting one for
+# GATE_PATIENCE seconds, then none does, so a giant chunk is not starved by light ones; the giants keep their own pool
+# besides (ninja_file). Ninja's commands stay as they were: a changed command line would compile every object again on
+# a player's update.
+GATE_RESERVE = 1536 << 20      # kept free besides the estimates (the gate checks again before every start)
+GATE_PATIENCE = 30.0           # seconds the oldest waiting compile lets smaller ones pass it
+GATE_TICK = 0.2                # seconds between checks
+GATE_SAY = 10.0                # seconds between the gate's status lines
+# the source of a compile's command line, quoted (a folder name with a space) or not
+GATE_SOURCE = re.compile(r'\s-c\s+(?:"([^"]+?\.(?:c|cc|cpp))"|([^"\s]+?\.(?:c|cc|cpp)))(?=\s|$)', re.IGNORECASE)
+
+
+def gate_pick(waiting, growth, free, running, oldest_wait, reserve=GATE_RESERVE, patience=GATE_PATIENCE):
+    """Indexes of the waiting compiles (their estimates, oldest first) to start now. free: the memory free now (the
+    smaller of the physical memory available and the commit headroom); growth: what the running compiles will still
+    take; running: how many run; oldest_wait: seconds the oldest one has waited."""
+    room = free - reserve - growth
+    start = []
+    for i, est in enumerate(waiting):
+        if est <= room or (i == 0 and not running):   # (never none running)
+            start.append(i)
+            room -= est
+        elif i == 0 and oldest_wait >= patience:
+            break                                      # the oldest has waited long enough: none passes it
+    return start
+
+
+class JobPort(ctypes.Structure):
+    _fields_ = [('CompletionKey', ctypes.c_void_p), ('CompletionPort', wt.HANDLE)]
+
+
+class ProcMemory(ctypes.Structure):
+    _fields_ = [('cb', wt.DWORD), ('PageFaultCount', wt.DWORD)] + \
+               [(n, ctypes.c_size_t) for n in ('PeakWorkingSetSize', 'WorkingSetSize', 'QuotaPeakPagedPoolUsage',
+                                              'QuotaPagedPoolUsage', 'QuotaPeakNonPagedPoolUsage',
+                                              'QuotaNonPagedPoolUsage', 'PagefileUsage', 'PeakPagefileUsage')]
+
+
+class MemStatusEx(ctypes.Structure):
+    _fields_ = [('dwLength', wt.DWORD), ('dwMemoryLoad', wt.DWORD)] + \
+               [(n, ctypes.c_ulonglong) for n in ('total', 'avail', 'tpf', 'apf', 'tv', 'av', 'aev')]
+
+
+JOB_OBJECT_ASSOCIATE_COMPLETION_PORT_INFORMATION = 7
+JOB_OBJECT_MSG_NEW_PROCESS, JOB_OBJECT_MSG_EXIT_PROCESS, JOB_OBJECT_MSG_ABNORMAL_EXIT_PROCESS = 6, 7, 8
+PROCESS_SUSPEND_RESUME, PROCESS_QUERY_LIMITED_INFORMATION = 0x0800, 0x1000
+PROCESS_COMMAND_LINE_INFORMATION = 60   # NtQueryInformationProcess: the command line (Windows 8.1 and later)
+
+
+class MemoryGate:
+    """The gate on a job object (run_measured): the job's completion port names every process it gains and loses.
+    estimates: {source file: estimated peak memory}; a compile of another source counts LIGHT_MEM."""
+
+    def __init__(self, job, estimates):
+        import threading
+        k32 = self.k32 = ctypes.WinDLL('kernel32', use_last_error=True)
+        nt = self.nt = ctypes.WinDLL('ntdll')
+        k32.CreateIoCompletionPort.restype = wt.HANDLE
+        k32.CreateIoCompletionPort.argtypes = [wt.HANDLE, wt.HANDLE, ctypes.c_size_t, wt.DWORD]
+        k32.GetQueuedCompletionStatus.argtypes = [wt.HANDLE, ctypes.POINTER(wt.DWORD), ctypes.POINTER(ctypes.c_size_t),
+                                                  ctypes.POINTER(ctypes.c_void_p), wt.DWORD]
+        k32.OpenProcess.restype = wt.HANDLE
+        k32.OpenProcess.argtypes = [wt.DWORD, wt.BOOL, wt.DWORD]
+        k32.CloseHandle.argtypes = [wt.HANDLE]
+        k32.K32GetProcessMemoryInfo.argtypes = [wt.HANDLE, ctypes.c_void_p, wt.DWORD]
+        k32.GlobalMemoryStatusEx.argtypes = [ctypes.c_void_p]
+        k32.SetInformationJobObject.argtypes = [wt.HANDLE, ctypes.c_int, ctypes.c_void_p, wt.DWORD]
+        nt.NtSuspendProcess.argtypes = nt.NtResumeProcess.argtypes = [wt.HANDLE]
+        nt.NtQueryInformationProcess.argtypes = [wt.HANDLE, ctypes.c_int, ctypes.c_void_p, wt.ULONG,
+                                                 ctypes.POINTER(wt.ULONG)]
+        self.est = {Path(f).name.lower(): e for f, e in estimates.items()}
+        self.waiting = []      # [pid, handle, estimate, since], oldest first
+        self.running = {}      # pid: (handle, estimate)
+        self.compiles = self.most = self.held = 0
+        self.held_s, self.least_free = 0.0, None
+        self.stop = threading.Event()
+        self.port = k32.CreateIoCompletionPort(wt.HANDLE(-1), None, 0, 1)
+        link = JobPort(None, self.port)
+        self.ok = bool(self.port) and bool(k32.SetInformationJobObject(
+            job, JOB_OBJECT_ASSOCIATE_COMPLETION_PORT_INFORMATION, ctypes.byref(link), ctypes.sizeof(link))) and \
+            self.command_line(-1) is not None   # (a Windows or Wine without the query: no gate)
+        self.thread = threading.Thread(target=self.run, name='memory gate', daemon=True)
+
+    def command_line(self, h):
+        buf, got = ctypes.create_string_buffer(1 << 16), wt.ULONG()
+        if self.nt.NtQueryInformationProcess(wt.HANDLE(h), PROCESS_COMMAND_LINE_INFORMATION, buf, len(buf),
+                                             ctypes.byref(got)) != 0:
+            return None
+        n = int.from_bytes(buf.raw[:2], 'little')             # UNICODE_STRING: Length, MaximumLength, pad, Buffer
+        at = int.from_bytes(buf.raw[8:16], 'little')
+        return ctypes.wstring_at(at, n // 2) if at else ''
+
+    def parent(self, h):
+        info = (ctypes.c_size_t * 6)()                         # PROCESS_BASIC_INFORMATION: the parent's id is last
+        ok = self.nt.NtQueryInformationProcess(h, 0, info, ctypes.sizeof(info), None) == 0
+        return info[5] if ok else 0
+
+    def commit(self, h):
+        m = ProcMemory()
+        m.cb = ctypes.sizeof(m)
+        return m.PagefileUsage if self.k32.K32GetProcessMemoryInfo(h, ctypes.byref(m), m.cb) else 0
+
+    def free(self):
+        s = MemStatusEx()
+        s.dwLength = ctypes.sizeof(s)
+        self.k32.GlobalMemoryStatusEx(ctypes.byref(s))
+        return min(s.avail, s.apf)
+
+    def new(self, pid):
+        h = self.k32.OpenProcess(PROCESS_SUSPEND_RESUME | PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+        if not h:
+            return                                             # gone already
+        m = GATE_SOURCE.search(self.command_line(h) or '')
+        # not Ninja itself, the linker or the resource compiler; nor a process a compile started (a wrapper such as a
+        # compiler cache or a launcher runs the real compiler as its child with the same arguments), which is that
+        # compile, counted for it already
+        if not m or self.parent(h) in self.running:
+            self.k32.CloseHandle(h)
+            return
+        self.nt.NtSuspendProcess(h)
+        self.waiting.append([pid, h, self.est.get(Path(m.group(1) or m.group(2)).name.lower(), LIGHT_MEM), time.monotonic()])
+        self.compiles += 1
+
+    def gone(self, pid):
+        if pid in self.running:
+            self.k32.CloseHandle(self.running.pop(pid)[0])
+        for w in [w for w in self.waiting if w[0] == pid]:   # (killed while held)
+            self.waiting.remove(w)
+            self.k32.CloseHandle(w[1])
+
+    def tick(self):
+        if not self.waiting:
+            return
+        free, now = self.free(), time.monotonic()
+        growth = sum(max(0, est - self.commit(h)) for h, est in self.running.values())
+        pick = gate_pick([w[2] for w in self.waiting], growth, free, len(self.running), now - self.waiting[0][3])
+        for i in pick:
+            pid, h, est, since = self.waiting[i]
+            self.nt.NtResumeProcess(h)
+            self.running[pid] = (h, est)
+            self.held_s += now - since
+            self.held += now - since >= GATE_TICK
+        self.waiting = [w for i, w in enumerate(self.waiting) if i not in pick]
+        self.most = max(self.most, len(self.running))
+
+    def say(self):
+        free = self.free()
+        self.least_free = free if self.least_free is None else min(self.least_free, free)
+        print(f'build_game: memory gate: {len(self.running)} compiling, {len(self.waiting)} held back, '
+              f'{free / GiB:.1f} GiB free', flush=True)
+
+    def run(self):
+        n, key, ov, said = wt.DWORD(), ctypes.c_size_t(), ctypes.c_void_p(), time.monotonic()
+        try:
+            while not self.stop.is_set():
+                if self.k32.GetQueuedCompletionStatus(self.port, ctypes.byref(n), ctypes.byref(key), ctypes.byref(ov),
+                                                      int(GATE_TICK * 1000)):
+                    if n.value == JOB_OBJECT_MSG_NEW_PROCESS:
+                        self.new(ov.value or 0)
+                    elif n.value in (JOB_OBJECT_MSG_EXIT_PROCESS, JOB_OBJECT_MSG_ABNORMAL_EXIT_PROCESS):
+                        self.gone(ov.value or 0)
+                self.tick()
+                if time.monotonic() - said >= GATE_SAY and (self.running or self.waiting):
+                    said = time.monotonic()
+                    self.say()
+        finally:
+            for w in self.waiting:                             # (never left suspended)
+                self.nt.NtResumeProcess(w[1])
+
+    def summary(self):
+        self.stop.set()
+        self.thread.join(5)
+        least = f', the least free {self.least_free / GiB:.1f} GiB' if self.least_free is not None else ''
+        return (f'memory gate: {self.compiles} compiles, at most {self.most} at once, {self.held} held back for '
+                f'{self.held_s:.0f} s in all{least}')
+
+
+def run_measured(cmd, env, gate=None):
     """Run cmd in its own job object. Returns (exit code, seconds, peak bytes of one process, peak bytes of all).
-    Off Windows: the largest resident set of one child process, and 0 for all of them (no job accounting)."""
+    Off Windows: the largest resident set of one child process, and 0 for all of them (no job accounting).
+    gate: {source file: estimated peak} to start each compile of the job when memory holds it (MemoryGate)."""
     if not WIN:
         t0 = time.monotonic()
         code = subprocess.call(cmd, cwd=ROOT, env=env, preexec_fn=lambda: os.nice(10))   # below normal, as on Windows
@@ -897,6 +1095,12 @@ def run_measured(cmd, env):
     info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | JOB_OBJECT_LIMIT_PRIORITY_CLASS
     info.BasicLimitInformation.PriorityClass = BELOW_NORMAL_PRIORITY_CLASS
     k32.SetInformationJobObject(job, JOB_OBJECT_EXTENDED_LIMIT_INFORMATION, ctypes.byref(info), ctypes.sizeof(info))
+    g = MemoryGate(job, gate) if gate else None
+    if g and not g.ok:
+        print('build_game: warning: the memory gate did not start; the compiles run as Ninja starts them', file=sys.stderr)
+        g = None
+    if g:
+        g.thread.start()
     t0 = time.monotonic()
     # Suspended until it is in the job, so the compilers it starts are counted from the first one.
     proc = subprocess.Popen(cmd, cwd=ROOT, env=env, creationflags=CREATE_SUSPENDED | BELOW_NORMAL_PRIORITY_CLASS)
@@ -909,6 +1113,8 @@ def run_measured(cmd, env):
         k32.CloseHandle(job)
         raise
     dt = time.monotonic() - t0
+    if g:
+        print(f'build_game: {g.summary()}', flush=True)
     k32.QueryInformationJobObject(job, JOB_OBJECT_EXTENDED_LIMIT_INFORMATION, ctypes.byref(info),
                                   ctypes.sizeof(info), None)
     k32.CloseHandle(job)
@@ -981,6 +1187,27 @@ def chunk_memory(gen, mods):
             per_fn = size / funcs
             est[f] = int(GIANT_MEM_BASE + GIANT_MEM_PER_MB * per_fn / 1e6) if per_fn >= GIANT_FN_BYTES else LIGHT_MEM
     return est
+
+
+def gate_available():
+    """Whether the memory gate (MemoryGate) works here: Windows (or Wine) with job completion ports and the command line
+    query. Off Windows, with REKARINA_BUILD_MEM_GB or with REKARINA_BUILD_GATE=0 the plan from the memory available at
+    the start stands alone."""
+    if not WIN or os.environ.get('REKARINA_BUILD_MEM_GB', '').strip() or os.environ.get('REKARINA_BUILD_GATE') == '0':
+        return False
+    try:
+        k32 = ctypes.WinDLL('kernel32', use_last_error=True)
+        k32.CreateJobObjectW.restype = wt.HANDLE
+        k32.CreateJobObjectW.argtypes = [ctypes.c_void_p, wt.LPCWSTR]
+        k32.CloseHandle.argtypes = [wt.HANDLE]
+        job = k32.CreateJobObjectW(None, None)
+        g = MemoryGate(job, {})
+        ok = g.ok
+        k32.CloseHandle(g.port)
+        k32.CloseHandle(job)
+        return ok
+    except (OSError, AttributeError, ValueError):
+        return False
 
 
 def plan_jobs(estimates, cpus, budget):
@@ -1172,7 +1399,14 @@ def main():
     mods = {} if args.make_runtime_lib else {m: chunk_files(gen, m) for m in linked}
 
     cpus = os.cpu_count() or 1
-    budget, why_budget = compile_budget()
+    gated = gate_available()
+    if gated:   # the plan is the most the PC's memory could hold; the gate starts each compile when it fits now
+        total, avail = memory_status()
+        budget = min(MEM_BUDGET, max(GiB, total - MEM_RESERVE))
+        why_budget = (f'{avail / GiB:.1f} of {total / GiB:.1f} GiB available now; each compile starts when the memory '
+                      f'free then holds it')
+    else:
+        budget, why_budget = compile_budget()
     estimates = chunk_memory(gen, mods)
     giants = {f: e for f, e in estimates.items() if e > LIGHT_MEM}
     jobs, giant_depth = plan_jobs(list(estimates.values()), cpus, budget)
@@ -1239,7 +1473,7 @@ def main():
     print(f'build_game: {nfiles} generated files in {len(linked)} modules ({", ".join(linked)}), {jobs} jobs', flush=True)
 
     drop_stale_by_content(out, edges, env)   # file times of release sources do not say what changed
-    code, dt, peak_one, peak_all = run_measured(base + ['objects'], env)
+    code, dt, peak_one, peak_all = run_measured(base + ['objects'], env, estimates if gated else None)
     print(f'compile: {dt:.1f} s, peak {mib(peak_one)} per process' + (f', {mib(peak_all)} all processes' if WIN else ''))
     if code:
         sys.exit(code)

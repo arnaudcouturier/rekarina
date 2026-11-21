@@ -1,17 +1,14 @@
-"""The launcher's background shader preparation, not started since 2026-11-19 (gui_oot.py RekarinaApp.shader_wanted):
-every setup run prepares every variant in the foreground (installer/oot.py shader_mode). What follows is how 1.2.1 to
-1.2.3 worked.
-
-A first install prepared the shader variants play met (installer/oot.py, mode 'met'), which is all a player needs at
-once. The rest of the variants (five of six) are prepared by the launcher itself, while it is open and the game is not
-running: this module runs the setup (`python -m installer.oot --all-shaders ...`: every finished step is skipped, the
-shader step prepares the variants that are missing, the package step puts them into the game folder) as a child at
-below-normal priority on all cores but one, and reads its JSON-lines events (events.py) for the counts.
+"""The launcher's background work after the setup (installer/oot.py background_main, since 1.2.8): the driver's build
+of every prepared shader variant and the texture cache, which the setup's package step did itself until 1.2.7 while
+the player waited (20 minutes to 1.5 hours on some PCs). The launcher does them while it is open and the game is not
+running: this module runs `python -m installer.oot --dest <game folder> --background` as a child at below-normal
+priority on all cores but one, and reads its JSON-lines events (events.py) for the counts (step "background", phases
+"libraries" and "textures"). 1.2.1 to 1.2.3 ran the setup's own shader step this way for the rarer variants.
 
     job = ShaderJob(command, cwd)
     job.start()            # a child at low priority; states: idle, running, paused, done, failed
     job.poll()             # drain the child's events; True when what the window shows changed
-    job.stop()             # cleanly: the whole tree is ended, what was translated and built stays (the preparation resumes)
+    job.stop()             # the stop file first (what was built stays), after a moment the whole tree is ended
     job.pause() / job.resume()
 
 A stopped job starts again with start(): the setup's preparation counts what is built already, so the new run goes on from
@@ -161,8 +158,13 @@ def kill_tree(proc):
 class ShaderJob:
     """The setup's preparation of every shader variant as a child of the launcher (module text)."""
 
-    def __init__(self, command, cwd, env=None, clock=time.monotonic, popen=subprocess.Popen):
+    def __init__(self, command, cwd, env=None, clock=time.monotonic, popen=subprocess.Popen, stopper=None, asker=None):
+        """stopper(proc): asks the child to end and returns once it has ended or was killed (installer/oot.py
+        stop_background); without one stop() kills the tree at once. asker(): asks it to end and returns at once (the
+        stop file alone), for stop_begin."""
         self.command, self.cwd, self.env, self.clock, self.popen = command, cwd, env, clock, popen
+        self.stopper, self.asker = stopper, asker
+        self.stop_since = None
         self.state = 'idle'
         self.proc = None
         self.events = queue.Queue()
@@ -172,9 +174,11 @@ class ShaderJob:
 
     def reset_counts(self):
         self.phase = self.done = self.total = None
+        self.step = None
         self.started = None
         self.fraction = 0.0
         self.first_fraction = None
+        self.rate = eta.Rate()   # the running phase's pace: the time left follows it (remaining)
 
     @property
     def pid(self):
@@ -184,9 +188,13 @@ class ShaderJob:
     def active(self):
         return self.state == 'running'
 
+    @property
+    def stopping(self):
+        return self.state == 'stopping'
+
     def start(self):
         """Run the setup as a child. False when one is running or the job is over (done, or failed: not retried by itself)."""
-        if self.state in ('running', 'done', 'failed') or self.paused:
+        if self.state in ('running', 'stopping', 'done', 'failed') or self.paused:
             return False
         self.reset_counts()
         self.error = None
@@ -234,9 +242,14 @@ class ShaderJob:
             if self.state != 'running':
                 continue   # an event of a child that was stopped meanwhile
             kind = e.get('type')
-            if kind == 'progress' and e.get('step') == 'oot_prepare':
+            if kind == 'progress' and e.get('step') in ('background', 'oot_prepare'):
+                if e.get('phase') != self.phase or e.get('total') != self.total:
+                    self.rate.reset()
                 self.phase, self.done, self.total = e.get('phase'), e.get('done'), e.get('total')
-                f = eta.step_fraction('oot_prepare', self.phase, self.done, self.total, [])
+                self.step = e.get('step')
+                if self.total:
+                    self.rate.feed(self.clock(), self.done)
+                f = eta.step_fraction(self.step, self.phase, self.done, self.total, [])
                 if f is not None:   # the latest event's: a phase may count from zero again (a second pass of the translation)
                     self.fraction = f
                     if self.first_fraction is None:
@@ -255,11 +268,18 @@ class ShaderJob:
                     changed = True
 
     def stop(self):
-        """End the child's whole tree and wait for it. The job can start again (start(): it continues)."""
+        """End the child (the stopper, else its whole tree at once) and wait for it. The job can start again (start():
+        it continues)."""
         proc = self.proc
         if self.state == 'running' and proc:
             self.state = 'idle'
-            kill_tree(proc)
+            if self.stopper is not None:
+                try:
+                    self.stopper(proc)
+                except Exception:   # a stopper that fails must not keep the child alive
+                    kill_tree(proc)
+            else:
+                kill_tree(proc)
             try:
                 proc.wait(timeout=30)
             except (subprocess.TimeoutExpired, OSError):
@@ -267,21 +287,50 @@ class ShaderJob:
         elif self.state == 'running':
             self.state = 'idle'
 
+    def stop_begin(self):
+        """Ask the child to end and return at once; stop_poll() says when it has. Play and Pause use it: the libraries
+        in the driver's hands are finished while the window stays responsive (a build killed while it writes the
+        driver's cache may leave that damaged, and the game starts on it next). Without an asker: stop() at once."""
+        if self.state != 'running' or not self.proc:
+            return
+        if self.asker is None:
+            self.stop()
+            return
+        try:
+            self.asker()
+        except Exception:   # an asker that fails: the hard way
+            self.stop()
+            return
+        self.state, self.stop_since = 'stopping', self.clock()
+
+    def stop_poll(self, wait):
+        """True once the child a stop_begin asked has ended; one still there after wait seconds is stopped the hard way
+        (stop(): the stopper's grace, then its tree is killed)."""
+        if self.state != 'stopping':
+            return True
+        if self.proc.poll() is None and self.clock() - self.stop_since < wait:
+            return False
+        self.state = 'running'   # (stop() ends a running job: the stopper returns at once when the child has ended)
+        self.stop()
+        return True
+
     def pause(self):
         self.paused = True
-        self.stop()
+        self.stop_begin()
 
     def resume(self):
         self.paused = False
 
     def remaining(self, n_cores=None):
-        """Seconds the job should take yet: from its progress so far and the time it has taken since, else the
-        estimate of the step; None when nothing is known."""
+        """Seconds the job should take yet: the running phase's count left at its own measured pace (eta.Rate) and
+        the phases after it by their shares of the step's estimate (eta.phase_left), else that estimate by the share
+        done; None when nothing is known."""
         if self.state != 'running':
             return None
-        f = self.fraction
-        base = eta.estimate('oot_prepare', 'all', n_cores)[0]
-        if self.first_fraction and f - self.first_fraction[0] >= 0.03:
-            f0, t0 = self.first_fraction
-            return max(0.0, (self.clock() - t0) * (1 - f) / (f - f0))
-        return base * (1 - f)
+        step = self.step or 'background'
+        base = eta.estimate(step, 'first', n_cores)[0]
+        if self.phase is not None:
+            mine, after = eta.phase_left(step, self.phase, self.done, self.total, self.rate.rate(self.clock()), base, 0.0)
+            if mine is not None:
+                return mine + after
+        return base * (1 - self.fraction)

@@ -1,7 +1,10 @@
-// totk_dlssg.dll: DLSS Frame Generation through NVIDIA Streamline, behind the C interface of nx2_sl.h. Built with
-// MSVC against the Streamline SDK's headers (tools/build_dlssg.py; the SDK stays outside the repository), so its C++
-// types have the ABI of Streamline's own DLLs. sl.interposer.dll and its plugins are loaded from the game's folder at
-// run time; this DLL links none of them.
+// rekarina_dlssg.dll: DLSS Frame Generation through NVIDIA Streamline, behind the C interface of nx2_sl.h. Built with
+// the project's clang (llvm-mingw) against the Streamline SDK's headers (tools/build_dlssg.py; the SDK stays outside
+// the repository). sl.interposer.dll and its plugins are loaded from the game's folder at run time and their functions
+// taken by name; this DLL links none of them. Streamline's DLLs are built with MSVC: what crosses between the two is
+// structures passed by pointer or reference and enums, which both compilers lay out alike for the x64 Windows calling
+// convention (no bit fields, no by-value classes, and the one class with a virtual function, the frame token, is
+// only handed back). The layouts are checked below against the offsets Streamline's own sources assert.
 //
 // Manual hooking (the SDK's ProgrammingGuideManualHooking): the game creates its instance and device through the
 // interposer's vkCreateInstance and vkCreateDevice, which add what DLSS-G needs, and calls the interposer's
@@ -21,6 +24,22 @@
 #include <sl_reflex.h>
 
 #include "nx2_sl.h"
+
+#include <stddef.h>
+
+// The offsets Streamline's sl.api/sl.cpp asserts for its MSVC build (slInit, slSetTag, slSetConstants), and those of
+// the options and state of DLSS-G and Reflex worked out from the SDK's headers by the rules both compilers share.
+static_assert(offsetof(sl::Preferences, renderAPI) == 136, "sl::Preferences differs from Streamline's");
+static_assert(offsetof(sl::ResourceTag, extent) == 48, "sl::ResourceTag differs from Streamline's");
+static_assert(offsetof(sl::Resource, internalFlags) == 104 && offsetof(sl::Resource, reserved) == 106,
+              "sl::Resource differs from Streamline's");
+static_assert(offsetof(sl::Constants, motionVectorsJittered) == 450, "sl::Constants differs from Streamline's");
+static_assert(sizeof(sl::BaseStructure) == 32 && offsetof(sl::DLSSGOptions, mode) == 32 &&
+              offsetof(sl::DLSSGOptions, flags) == 40 && offsetof(sl::DLSSGOptions, onErrorCallback) == 96 &&
+              offsetof(sl::DLSSGOptions, queueParallelismMode) == 108 && sizeof(sl::DLSSGOptions) == 120,
+              "sl::DLSSGOptions differs from the SDK's layout");
+static_assert(offsetof(sl::DLSSGState, numFramesActuallyPresented) == 48, "sl::DLSSGState differs from the SDK's layout");
+static_assert(offsetof(sl::ReflexOptions, mode) == 32, "sl::ReflexOptions differs from the SDK's layout");
 
 namespace {
 
@@ -212,12 +231,22 @@ extern "C" NX2SL_API int nx2sl_frame(VkCommandBuffer cb, const Nx2SlImage *depth
                                    sl::ResourceTag(&rh, sl::kBufferTypeHUDLessColor, sl::ResourceLifecycle::eValidUntilPresent, &eh)};
         if ((t = token(frame))) p_tag(*t, vp, tags, hudless ? 3 : 2, (sl::CommandBuffer *)cb);
     }
+    // Off keeps the resources (the SDK's guide for pause menus): the game turns generation off in every frame without
+    // a camera, which the pause screens are, and on again when the camera is back. Freeing them at each switch cost
+    // 400-750 ms a frame for four or five frames when they were made again; kept on instead, generation blended whole
+    // pause screens, their tabs and our overlay with the frames before them.
     if ((enable != 0) != g_mode) {
         sl::DLSSGOptions o{};
         o.mode = enable ? sl::DLSSGMode::eOn : sl::DLSSGMode::eOff;
         o.numFramesToGenerate = 1;
+        o.flags = sl::DLSSGFlags::eRetainResourcesWhenOff;
         sl::Result r = p_dlssg_options(vp, o);
-        say("dlssg: frame generation %s (%d), output %ux%u", enable ? "on" : "off", (int)r, out_w, out_h);
+        static int said;
+        if (said < 16 || r != sl::Result::eOk) {
+            said++;
+            say("dlssg: frame generation %s (%d), output %ux%u", enable ? "on" : "off (resources kept)", (int)r, out_w,
+                out_h);
+        }
         g_mode = enable != 0;
     }
     return 1;

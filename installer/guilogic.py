@@ -339,6 +339,22 @@ class Model:
                    temp_free=gib(sp.get('temp_free', 0)))
 
 
+def log_text(cat, entry, clock=None):
+    """A line of the window's log: '[1:32:27] text', the run's elapsed time first (players paste these lines, and their
+    pace is what tells a slow step from a stuck one; a log without times could not say whether a count of 9,724 had
+    taken an hour or five minutes). entry: an event, or {"type": "raw", "text", "t"} for a line that is no event, or a
+    plain string (as is). clock: seconds to a time text (eta.clock_text)."""
+    if isinstance(entry, str):
+        return entry
+    text = entry.get('text', '') if entry.get('type') == 'raw' else describe_event(cat, entry)
+    t = entry.get('t')
+    if not text or not isinstance(t, (int, float)):
+        return text
+    if clock is None:
+        from .eta import clock_text as clock
+    return f'[{clock(t)}] {text}'
+
+
 def describe_event(cat, e):
     """One log line for an event, in the window language."""
     kind = e['type']
@@ -360,6 +376,8 @@ def describe_event(cat, e):
         return cat('ui.log_space', need=gib(e.get('need', 0)), free=gib(e.get('free', 0)))
     if kind == 'end':
         return f'{cat("ui.log_end")}: {cat("ui.result_" + str(e.get("result")))}'
+    if kind == 'raw':
+        return e.get('text', '')
     return ''
 
 
@@ -367,6 +385,11 @@ def describe_event(cat, e):
 
 CREATE_NEW_PROCESS_GROUP = 0x200
 CREATE_NO_WINDOW = 0x08000000
+# Seconds a run has after Cancel (Ctrl+Break, which the setup turns into a clean stop between two lines of a tool's
+# output) before its whole tree is killed: a setup of 1.2.7 waited for the driver's build of every shader there, and
+# the window said "Cancelling..." for half an hour. A kill loses nothing a clean stop would keep: every finished step
+# is recorded when it ends, the running one in neither case.
+CANCEL_GRACE = 2.0
 
 _BREAK = """
 import ctypes, sys, time
@@ -432,10 +455,23 @@ class Process:
 
     def poll(self):
         code = self.proc.poll()
+        if code is None and self.cancelled_at is not None and time.monotonic() - self.cancelled_at > CANCEL_GRACE:
+            self.kill()   # Cancel was pressed and the run did not end by itself: no Cancel may wait for a long job
         if code is not None and not self.reader.is_alive() and self.lines.empty():
             return code
         return None
 
     def kill(self):
+        """End the run and everything it started (the tools, the game exe, the translators): Popen.kill alone left the
+        children running."""
         if self.proc.poll() is None:
-            self.proc.kill()
+            if os.name == 'nt':
+                subprocess.run(['taskkill', '/T', '/F', '/PID', str(self.proc.pid)], capture_output=True,
+                               creationflags=CREATE_NO_WINDOW)
+            else:
+                try:
+                    os.killpg(self.proc.pid, signal.SIGKILL)
+                except OSError:
+                    pass
+            if self.proc.poll() is None:
+                self.proc.kill()

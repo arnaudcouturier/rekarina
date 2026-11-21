@@ -58,8 +58,8 @@
     [UI_MENU_ANISO] = "Textuurfiltering",
     [UI_MENU_ANISO_DESC] = "Anisotrope filtering van oppervlaktetexturen: grond, wegen en muren die je onder een vlakke hoek ziet, blijven tot in de verte scherp in plaats van te vervagen. Spel: het niveau dat het spel vraagt, zoals op de Switch.",
     [UI_MENU_ANISO_GAME] = "Spel",
-    [UI_MENU_SHARPNESS] = "FSR-scherpte",
-    [UI_MENU_SHARPNESS_DESC] = "Verscherping na het schalen met FSR; 0 schakelt het uit.",
+    [UI_MENU_SHARPNESS] = "Scherpte",
+    [UI_MENU_SHARPNESS_DESC] = "Het verscherpen na het schalen met FSR of DLSS en, onder 80 %, de eigen scherpte van de textures van de game. 0 schakelt alles uit.",
     [UI_MENU_COLOR] = "Kleur",
     [UI_MENU_COLOR_PRESET] = "Kleurprofiel",
     [UI_MENU_COLOR_PRESET_DESC] = "Stelt de vier waarden hieronder in. Levendig: meer contrast en verzadiging, schaduwen "
@@ -116,7 +116,7 @@
     [UI_MENU_TAA] = "Upscaler",
     [UI_MENU_TAA_DESC] = "Welke upscaler de rij DLSS / DLAA gebruikt: NVIDIA DLSS (RTX-GPU's), AMD FSR (elke GPU, temporeel) of AMD FSR 1 (elke GPU, ruimtelijk: de lichtste, voor oudere kaarten en handhelds). Na een herstart.",
     [UI_MENU_FRAMEGEN] = "Framegeneratie",
-    [UI_MENU_FRAMEGEN_DESC] = "Eén gegenereerd frame tussen elke twee frames die het spel tekent, zonder de HUD erin: AMD FSR op elke GPU, NVIDIA DLSS op de RTX 40- en 50-serie. Na een herstart.",
+    [UI_MENU_FRAMEGEN_DESC] = "Eén gegenereerd frame tussen elke twee frames die het spel tekent, zonder de HUD erin: AMD FSR op elke GPU, NVIDIA DLSS op de RTX 40- en 50-serie. Het zet de temporele upscaler (DLSS / DLAA) aan, waarvan het de bewegingsvectoren gebruikt; de DLSS-modus bepaalt de belasting: DLAA (native) is het zwaarst, Kwaliteit en Gebalanceerd zijn lichter. Na een herstart.",
     [UI_MENU_FRAMEGEN_NEEDS] = "Vereist DLSS / DLAA: gebruikt de bewegingsvectoren ervan.",
     [UI_MENU_DLAA] = "NVIDIA DLSS / DLAA",
     [UI_MENU_DLAA_DESC] = "NVIDIA DLSS voor de 3D-scène (NVIDIA RTX-GPU's; " DLSS_FILE " naast " EXE_FILE "): gladdere "
@@ -146,7 +146,8 @@
 
     [UI_MENU_FPS_LIMIT] = "Frameratelimiet",
     [UI_MENU_FPS_LIMIT_DESC] = "Het hoogste aantal frames per seconde dat het spel tekent. Boven 60 is experimenteel en "
-                               "vereist Spelsnelheid volgt de klok.",
+                               "vereist Spelsnelheid volgt de klok. "
+                               "Met AMD-framegeneratie telt het de frames die je ziet, dus het spel zelf tekent er de helft; DLSS-framegeneratie voegt haar frames toe bovenop deze waarde.",
     [UI_MENU_FPS_30] = "30 FPS", [UI_MENU_FPS_40] = "40 FPS", [UI_MENU_FPS_45] = "45 FPS",
     [UI_MENU_FPS_60] = "60 FPS", [UI_MENU_FPS_90] = "90 FPS", [UI_MENU_FPS_120] = "120 FPS", [UI_MENU_FPS_144] = "144 FPS",
     // the monitor's refresh rate; printf format with the rate in Hz when it is known
@@ -250,12 +251,13 @@
     [UI_MENU_STICK_DEADZONE_DESC] = "Hoe ver een stick van de gamepad moet bewegen voordat het spel het merkt. Verhoog de waarde als het personage of de camera vanzelf beweegt: laat de stick los, lees \"stick nu\" af en zet de dode zone een paar procent hoger.",
     [UI_MENU_STICK_DEADZONE_NOW] = "stick nu: %.0f %%",
     [UI_MENU_MOUSE_MODE] = "Muiscamera",
-    [UI_MENU_MOUSE_MODE_DESC] = "Direct: de camera draait zo ver als de muis beweegt, zoals in een pc-game, zonder dode zone of curve van de stick (spel 1.4.3; andere versies gebruiken stick-emulatie). Stick-emulatie: de muis werkt als de rechterstick.",
+    [UI_MENU_MOUSE_MODE_DESC] = "Direct: de camera draait zo ver als de muis beweegt, zoals in een pc-game, zonder dode zone of curve van de stick (spel 1.4.3; andere versies gebruiken stick-emulatie). Stick-emulatie: de muis werkt als de rechterstick. Uit: de muis draait de camera nooit en de cursor blijft vrij voor de menu's.",
     [UI_MENU_FAST_TEXT] = "Snellere dialogen",
     [UI_MENU_FAST_TEXT_DESC] = "Laat de pauzes weg die de berichten van het spel tussen zinnen houden, zodat de tekst zonder stoppen doorloopt.",
-    [UI_MENU_MOUSE_MODE_DESC_OOT] = "Direct: de camera draait precies zo ver als de muis beweegt, op elke snelheid, zonder dode zone, curve of topsnelheid van de stick. Stick-emulatie: de muis werkt als de rechterstick, met diens curve en topsnelheid.",
+    [UI_MENU_MOUSE_MODE_DESC_OOT] = "Direct: de camera draait precies zo ver als de muis beweegt, op elke snelheid, zonder dode zone, curve of topsnelheid van de stick. Stick-emulatie: de muis werkt als de rechterstick, met diens curve en topsnelheid. Uit: de muis draait de camera nooit en de cursor blijft vrij voor de menu's.",
     [UI_MENU_MOUSE_STICK] = "Stick-emulatie",
     [UI_MENU_MOUSE_DIRECT] = "Direct",
+    [UI_MENU_MOUSE_OFF] = "Uit",
     [UI_MENU_MENU_CURSOR] = "Muis in spelmenu's",
     [UI_MENU_MENU_CURSOR_DESC] = "In de eigen menu's van het spel (titelscherm, inventaris, winkels, dialoogkeuzes) verschijnt de aanwijzer: het item eronder wordt geselecteerd, linksklikken bevestigt, rechtsklikken gaat terug. Alleen als de muis of een toets het laatst is gebruikt, zodat de menu's voor een gamepad niet veranderen (spel 1.4.3).",
     [UI_MENU_MOUSE_SENS] = "Gevoeligheid muiscamera",

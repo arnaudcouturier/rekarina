@@ -102,6 +102,29 @@ def profile_check(pgo):
               file=sys.stderr)
 
 
+def dlssg_version_problem(dll):
+    """Why the DLSS Frame Generation library cannot go into this release, or None. The game takes any library of
+    interface NX2SL_VERSION_OLDEST and later (runtime/vk_dlssg.c), so a library built before the tree's interface
+    changed still loads, and the release shipped it silently: 1.2.7 carried the build of 2026-11-09 (interface 3),
+    which frees frame generation's resources whenever it is turned off, so every opening and closing of the menu cost a
+    frame of 80 to 250 ms. The library must have the interface of this tree's runtime/dlssg/nx2_sl.h. Only checked on
+    Windows (the library is a Windows DLL); its load has no side effects (Streamline is loaded by nx2sl_init only)."""
+    import ctypes
+    import re
+    want = re.search(r'#define NX2SL_VERSION (\d+)', (ROOT / 'runtime' / 'dlssg' / 'nx2_sl.h').read_text(encoding='utf-8'))
+    if not want or sys.platform != 'win32':
+        return None
+    try:
+        lib = ctypes.CDLL(str(dll))
+        have = int(lib.nx2sl_version())
+    except (OSError, AttributeError) as e:
+        return f'{dll} cannot be asked for its interface ({e})'
+    if have != int(want.group(1)):
+        return (f'{dll} has interface {have}, this tree\'s runtime/dlssg/nx2_sl.h is {want.group(1)}: build it again '
+                f'(tools/build_dlssg.py) or pass --dlssg with the library built from this tree')
+    return None
+
+
 def linux_release(base, out, appimage=None):
     """The Linux folder (see the module text), from the folder tools/make_release_linux.py made. 0 when complete."""
     need = [base / 'python' / 'bin' / 'python3', base / 'llvm' / 'bin' / 'clang', base / 'llvm' / 'sysroot',
@@ -283,8 +306,19 @@ def main():
     ap.add_argument('--sign', type=Path, help='with --dist: the private key file (tools/release_sign.py keygen) that '
                                               'signs SHA256SUMS')
     ap.add_argument('--dlssg', type=Path, help='our DLSS Frame Generation library (default build/oot/totk_dlssg.dll of '
-                                               'this tree; it is built with MSVC against the Streamline SDK)')
+                                               'this tree, as tools/build_dlssg.py builds it against the Streamline '
+                                               'SDK)')
     ap.add_argument('--no-dlssg', action='store_true', help='make the release without DLSS Frame Generation')
+    ap.add_argument('--previous', type=Path, help='the setup folder of the release before: tools/update_cost.py says '
+                                                 'which steps the update runs again, and a long one (the lift, the '
+                                                 'shaders) fails the release unless --allow-long names it')
+    ap.add_argument('--allow-long', default='', help='with --previous: long steps this release means to run again '
+                                                     '(lift, shaders), comma separated')
+    ap.add_argument('--timing', nargs=2, type=Path, metavar=('BEFORE', 'NOW'),
+                    help='the timed fresh installs (tools/setup_timing.py) of the release before and of this one: a '
+                         'step that got clearly slower fails the release unless --allow-slower names it')
+    ap.add_argument('--allow-slower', default='', help='with --timing: steps this release means to make slower, '
+                                                       'comma separated')
     a = ap.parse_args()
     base, out = a.base.resolve(), a.out.resolve()
     if (base / 'python' / 'bin' / 'python3').is_file():   # the Linux toolchain folder
@@ -308,6 +342,10 @@ def main():
         sys.exit('make_rekarina_release: missing: ' + ', '.join(missing) +
                  ('' if shim.is_file() or a.no_dlssg else ' (--dlssg names the DLSS Frame Generation library, --no-dlssg '
                                                            'makes the release without it)'))
+    if not a.no_dlssg:
+        problem = dlssg_version_problem(shim)
+        if problem:
+            sys.exit('make_rekarina_release: ' + problem)
     if out.exists():
         if not (out / 'VERSION').is_file() or not (out / 'installer' / 'gui_oot.py').is_file():
             sys.exit(f'make_rekarina_release: {out} exists and is not a Rekarina setup folder: not replaced')
@@ -376,13 +414,31 @@ def main():
     size = sum(f.stat().st_size for f in out.rglob('*') if f.is_file())
     print(f'make_rekarina_release: {out}: {size / 2**20:.0f} MiB; files: ' + ', '.join(f'{k} {v}' for k, v in counts.items()))
     print('make_rekarina_release: content check: ' + ('no hit' if not bad else f'{len(bad)} hits: ' + '; '.join(bad[:20])))
+    long_update = 0
+    if a.previous:   # what the update from the release before costs a player (tools/update_cost.py)
+        import update_cost
+        print(f'make_rekarina_release: the update from {a.previous}:')
+        long_update = update_cost.main([str(a.previous), str(out), '--allow', a.allow_long])
+        if long_update:   # no zip and no release files of a folder that would cost every player the long steps
+            return 1
+    if a.timing:   # a fresh install's steps against the release before (tools/setup_timing.py)
+        import setup_timing
+        before, now = (json.loads(f.read_text(encoding='utf-8')) for f in a.timing)
+        slow = setup_timing.compare(before, now, {x for x in a.allow_slower.split(',') if x})
+        print(f'make_rekarina_release: a fresh install took {now.get("total", 0) / 60:.0f} min ({now.get("result")}), '
+              f'the release before {before.get("total", 0) / 60:.0f} min' +
+              ''.join(f'; {step} {old:.0f} s -> {new:.0f} s' for step, old, new in slow))
+        if slow or now.get('result') != 'ok':
+            print('make_rekarina_release: the fresh install got slower (or failed): no release files written; '
+                  '--allow-slower names steps meant to', file=sys.stderr)
+            return 1
     if a.zip:
         write_zip(out, a.zip)
     if a.single:
         write_single(out, a.single.resolve(), ROOT)
     if a.dist:
         write_dist(out, a.dist.resolve(), a.site_url, a.notes, a.sign)
-    return 1 if bad or stray or lacking else 0
+    return 1 if bad or stray or lacking or long_update else 0
 
 
 if __name__ == '__main__':

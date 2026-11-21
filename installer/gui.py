@@ -15,6 +15,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
@@ -27,7 +28,8 @@ except ImportError:
 from . import ini
 from . import layout as layouts
 from .guilogic import (DONE, FAILED, PENDING, RUNNING, SKIPPED, UI_LANGUAGE_LABELS, UI_LANGUAGES, Catalog, Form, Model,
-                       Process, amount, default_game_language, describe_event, parse_line, windows_ui_language)
+                       Process, amount, default_game_language, describe_event, log_text, parse_line,
+                       windows_ui_language)
 
 POLL_MS = 100
 GLYPH = {PENDING: '\u25cb', RUNNING: '\u25b6', DONE: '\u2714', SKIPPED: '\u2013', FAILED: '\u2716'}
@@ -376,6 +378,7 @@ class App:
         self.show('run')
         self.refresh_run()
         self.process = Process(command, cwd=cwd, helper_python=self.layout.python)
+        self.run_t0 = time.monotonic()
         self.root.after(POLL_MS, self.poll)
 
     def build_step_rows(self, steps):
@@ -406,7 +409,8 @@ class App:
         if code is None:
             self.root.after(POLL_MS, self.poll)
             return
-        self.model.finish(code)
+        # (a run Cancel had to kill after its grace, guilogic.Process.poll, ended as cancelled, not as a crash)
+        self.model.finish(3 if self.process.cancelled_at is not None and code not in (0, 3) else code)
         self.process = None
         if self.rebuild and self.model.result == 'ok' and not self.closing:
             self.start_game()
@@ -422,15 +426,20 @@ class App:
         event = parse_line(line)
         if event is None:
             if line.strip():
-                self.log_entries.append(line.rstrip())
-                self.append_log(line.rstrip())
+                self.log_entry({'type': 'raw', 'text': line.rstrip()})
             return
         before = list(self.model.steps)
         self.model.apply(event)
         if self.model.steps != before:
             self.build_step_rows(self.model.steps)
-        self.log_entries.append(event)
-        self.append_log(describe_event(self.cat, event))
+        self.log_entry(event)
+
+    def log_entry(self, entry):
+        """An event or a raw line into the log, with the run's elapsed time (an event has its own, "t")."""
+        if 't' not in entry and getattr(self, 'run_t0', None) is not None:
+            entry = dict(entry, t=round(time.monotonic() - self.run_t0, 1))
+        self.log_entries.append(entry)
+        self.append_log(log_text(self.cat, entry))
 
     def refresh_run(self):
         m = self.model
@@ -485,7 +494,7 @@ class App:
         self.log.configure(state='normal')
         self.log.delete('1.0', 'end')
         for entry in self.log_entries:
-            text = entry if isinstance(entry, str) else describe_event(self.cat, entry)
+            text = log_text(self.cat, entry)
             if text:
                 self.log.insert('end', text + '\n')
         self.log.see('end')

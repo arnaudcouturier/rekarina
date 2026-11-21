@@ -55,7 +55,7 @@ static const char *const known[] = {
     "MENU_CURSOR", "MENU_CURSOR_LOG", "MENU_TEST_DIR", "MENU_TEST_SET", "MINIMAL_LAYOUT", "MIRROR_GAP", "MODS_DIR", "MODS_DISABLED", "MODS_ORDER", "MODS_REBUILD", "MOTION", "PAD_FOLLOW", "PAD_DRIVER", "CURSOR_HIDE", "BG_MUTE", "MENU_SCRIPT", "KBM_OFF", "MENU_GUIDE", "SCREENSHOT_KEY", "SCREENSHOT_OVERLAY", "TEST_FAULT", "TEST_RAM_MB", "TEST_RESIZE", "PIPE_AUTOSAVE", "REPORT_NO_OPEN", "NO_CRASH_BOX", "MOUSE_MODE", "MOUSE_DIRECT_PATCH", "MOUSE_SENS", "MOUSE_SENS_Y", "MOUSE_INVERT_Y", "MOUSE_RAW", "MOVIE_HOST", "MOVIE_PACE",
     "MVOBJ_ALL", "MVOBJ_BANKS", "MVOBJ_EQUAL", "MVOBJ_EXACT", "MVOBJ_EXEC", "MVOBJ_NOC4", "MVOBJ_ONLY", "MVOBJ_TIMES", "MVPREV_CHECK", "MVPREV_GROW", "MVPREV_SKIP", "MVPREV_TRUST", "MV_CHECK",
     "MV_SURVEY",
-    "ONE_PER_CORE", "OPERATION_MODE", "OUTPUT_RES", "PAD_LAYOUT", "PASS_CRUMBS", "PATCH_OUTPUT", "PATCH_SCENE", "PCSS", "PCSS_K", "PERF_OVERLAY", "PERF_SLOW_MS", "PIPELINE_CACHE", "PIPELINE_CACHE_LOAD", "WARM_APP_CACHE", "WARM_FRESH_CACHE", "PIPE_SAVE_SAME", "PIPE_MEMO", "PIPE_PREBUILD", "PIPE_SKIP", "PIPE_SYNC", "PIPE_WAIT",
+    "ONE_PER_CORE", "OPERATION_MODE", "OUTPUT_RES", "PAD_LAYOUT", "PASS_CRUMBS", "PATCH_OUTPUT", "PATCH_SCENE", "PCSS", "PCSS_K", "PERF_OVERLAY", "VRAM_NOTICE", "PERF_SLOW_MS", "PIPELINE_CACHE", "PIPELINE_CACHE_LOAD", "WARM_APP_CACHE", "WARM_FRESH_CACHE", "WARM_STOP", "ENTRY_LIBRARIES", "ENTRY_TEXTURES", "SHADER_CACHE_FLUSH", "PIPELINE_CACHE_RESET_MB", "WARM_RECORD_STATE", "PIPE_SAVE_SAME", "PIPE_MEMO", "PIPE_PREBUILD", "PIPE_SKIP", "PIPE_SYNC", "PIPE_WAIT",
     "PREWARM_XLATE", "PREPARE_DRIVER", "PREPARE_TEXTURES_CHECK", "PREPARE_TEXTURES_LEVELS", "PREP_SCREEN", "PREP_SHOT", "PREP_SHOT_AT", "PROBE_MOVIE", "PROBE_MOVIE_SHOT", "PROFILE", "PROFILE_CHAINS", "PROFILE_DIR", "PROFILE_FRAMES",
     "PROFILE_MAIN", "PROFILE_RENDER", "PROMPTS", "PUSH_SKIP", "PUSH_STAGE", "RDOC", "RDOC_DIR", "RDOC_DLL", "REALTIME", "REC_END", "REEXEC",
     "RENDER_SCALE", "REPLAY_ASYNC",
@@ -66,7 +66,7 @@ static const char *const known[] = {
     "SWKBD_ANSWER",
     "FSR_VERSION", "CS_KEEP", "MOVIE_UNET", "MESH_INDICES", "MESH_TASK", "VRAM_BUDGET_MB", "VMA_DUMP", "SNAP_RING_MB", "TEX_EVICT_CLASS", "TPOOL_HIDE", "POOLTAB", "VMA_BLOCK_MB", "TEX_SUBALLOC_KB",
     "SWKBD_TEST", "TEST_PAD", "UPDATE_CHECK", "TEST_PREPARE_SHADERS", "TEST_STALL", "FIXED_SCENE", "FRAMEGEN", "REFLEX", "GAME_ASPECT", "GAME_RES", "SCENE_SCALE", "SHADOW_COMPARE", "TAA", "TEX_ALIAS", "TEX_MEMO", "TEX_QUALITY", "TEX_SAME_REG", "DLAA_WARM", "DLAA_SHARPEN", "TPOOL_PUMP_MS", "MOVIE_FPS", "TEX_VRAM_PRESSURE", "TIMER_1MS", "PROCESS_PRIORITY", "RENDER_CORE", "GPU_LOAD_ZERO", "GPU_PASSTIME", "OQLOG", "PRED_ZERO", "RES_GUARD", "TPOOL", "TPOOL_MS", "TPOOL_REGBITS", "PAR_UB_JOIN", "HEAP_CHECK", "EVICT_QUIET", "USNAP_HELD_LOCK", "TPOOL_OLD_MS", "EVICT_HOLD_MS", "PRESSURE_KEEP_USED", "TRACE", "TXD_TRANSPOSE", "UBO_SNAPSHOT", "UPSCALER", "VK_DYN_A2C", "VK_DYN_VERTEX", "VK_NO_FLOAT64",
-    "VK_PRESENT", "VK_RECORDER", "VK_SSBO_ALIGN", "VK_SUBGROUP", "VK_SUBGROUP_PIN", "VK_VALIDATION", "VOLUME", "VRAM_HEADROOM", "VS_OUTS",
+    "VK_PRESENT", "VK_RECORDER", "VK_SSBO_ALIGN", "VK_SUBGROUP", "VK_SUBGROUP_PIN", "VK_VALIDATION", "VOICE_LANG", "VOLUME", "VRAM_HEADROOM", "VS_OUTS",
     "WALK_KEY", "WALK_SCALE", "STICK_DASH", "DASH_KEY", "WB_EXACT", "WB_FENCE_LIMIT", "WB_MERGE", "WINDOW_SIZE", "XLATE", "XLATE_ID", "XLATE_KEEP", "XLATE_PROCS",
     "ZSTD_CHECK", "ZSTD_NATIVE",
 };
@@ -75,7 +75,7 @@ static const char *const known[] = {
 static const struct { const char *key, *section; } sections[] = {
     {"FPS_LIMIT", "frame rate"}, {"FPS60", "frame rate"},
     {"REALTIME", "frame rate"}, {"CLOTH_REALTIME", "frame rate"}, {"HIGHFPS_FIX", "frame rate"},
-    {"FULLSCREEN", "display"}, {"WINDOW_SIZE", "display"}, {"PERF_OVERLAY", "display"}, {"VK_PRESENT", "display"},
+    {"FULLSCREEN", "display"}, {"WINDOW_SIZE", "display"}, {"PERF_OVERLAY", "display"}, {"VRAM_NOTICE", "display"}, {"VK_PRESENT", "display"},
     {"GPU_INDEX", "display"}, {"OUTPUT_RES", "display"}, {"RENDER_SCALE", "display"}, {"UPSCALER", "display"},
     {"SHARPNESS", "display"}, {"ASPECT", "display"}, {"FOV", "display"}, {"ANISO", "display"},
     {"COLOR_PRESET", "display"},
@@ -89,7 +89,7 @@ static const struct { const char *key, *section; } sections[] = {
     {"SHADOW_SCALE", "display"}, {"SHADOW_RANGE", "display"}, {"CONTACT_SHADOWS", "display"},
     {"PCSS", "display"},
     {"MODS_DIR", "mods"}, {"MODS_ORDER", "mods"}, {"MODS_DISABLED", "mods"}, {"MODS_REBUILD", "mods"},
-    {"MENU_LANG", "language"}, {"LANG", "language"}, {"FAST_TEXT", "language"}, {"OPERATION_MODE", "language"},
+    {"MENU_LANG", "language"}, {"LANG", "language"}, {"VOICE_LANG", "language"}, {"FAST_TEXT", "language"}, {"OPERATION_MODE", "language"},
     {"VOLUME", "audio"}, {"AUDIO_CHANNELS", "audio"}, {"BG_MUTE", "audio"},
     {"MOTION", "input"}, {"RUMBLE_STRENGTH", "input"}, {"RUMBLE_CURVE", "input"}, {"RUMBLE_TRIGGERS", "input"},
     {"PAD_LAYOUT", "input"}, {"PROMPTS", "input"}, {"STICK_DEADZONE", "input"}, {"LSTICK_DEADZONE", "input"}, {"RSTICK_DEADZONE", "input"},
@@ -126,6 +126,7 @@ static const CfgMeta metas[] = {
     {"FULLSCREEN", "0", "0|1", LIVE}, {"WINDOW_SIZE", "1920x1080", NULL, LIVE},
     {"VK_PRESENT", "mailbox", "mailbox|fifo|immediate", LIVE}, {"GPU_INDEX", "", NULL, RESTART},
     {"PERF_OVERLAY", "off", "off|fps|full", LIVE},
+    {"VRAM_NOTICE", "0", "0|1", LIVE},   // the low video memory notice at the top of the picture (ui/menu.cpp)
 #ifdef GAME_OOT   // OoT: the scene's share of the picture is read on every present (frame_rate.c scene_share)
     {"OUTPUT_RES", "1920x1080", NULL, RESTART}, {"RENDER_SCALE", "100", "50|55|60|65|67|70|75|80|85|90|95|100", LIVE},
 #else
@@ -162,6 +163,7 @@ static const CfgMeta metas[] = {
     {"LANG", "", "ja|en-US|fr|de|it|es|zh-CN|ko|nl|pt|ru|zh-TW|en-GB|fr-CA|es-419|zh-Hans|zh-Hant|pt-BR|pl", RESTART},
     {"OPERATION_MODE", "docked", "docked|handheld", RESTART},
     {"FAST_TEXT", "0", "0|1", RESTART},   // OoT: romfs-patches-fasttext at start (romfs.c)
+    {"VOICE_LANG", "game", "game|en|ja|de|fr|it|es|es-419|pt-BR|fr-CA", RESTART},   // OoT: voice_lang.c
     {"ASSUME_FOCUS", "1", "0|1", LIVE},   // read on every focus change (ov_system.c)
     {"HEAP_CHECK", "0", NULL, LIVE},      // test runs: the process heap checked every n presents (perf.c heap_check)
     {"DLSSG_UNAVAILABLE", "0", "0|1", RESTART},   // test runs: DLSS-G counted missing, AMD's takes over (vk_dlssg.c)
@@ -179,7 +181,7 @@ static const CfgMeta metas[] = {
 #endif
     {"STICK_DEADZONE", "8", "0..50", LIVE}, {"STICK_SENS", "1", "0.1..3", RESTART},
     {"LSTICK_DEADZONE", "", "0..50", LIVE}, {"RSTICK_DEADZONE", "", "0..50", LIVE},
-    {"MOUSE_MODE", "direct", "stick|direct", LIVE},
+    {"MOUSE_MODE", "direct", "stick|direct|off", LIVE},
     {"MOUSE_SENS", "1", "0..10", LIVE}, {"MENU_CURSOR", "1", "0|1", LIVE},
     // the mouse camera's vertical counts: times MOUSE_SENS_Y, turned over by MOUSE_INVERT_Y (input.c mouse_take_camera);
     // MOUSE_RAW 0 takes the cursor's motion in place of raw input (input_win.c mouse_raw)

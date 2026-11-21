@@ -82,16 +82,21 @@ static volatile int32_t pad_layout_stale;   // the gamepad changed: pad_layout_g
 
 // The device the button prompts follow under REKARINA_PROMPTS = auto (input_pad_in_use, input_prompts_wanted): the one the
 // player pressed something on last. Only new presses count, so nothing held or resting decides: a gamepad button that
-// went down, or a stick that crossed PROMPT_STICK_ON after the dead zone (it counts again once back under
-// PROMPT_STICK_OFF, so a stick resting near the line does not count twice and a drifting one, inside its dead zone,
-// never); a key or mouse button the game binds (input_map.keys, mouse buttons only while captured) or Esc that went
-// down while the game window is in front and no text entry is open. Keys held when the window comes to the front are
-// taken as the start (the Tab of an Alt+Tab back). Mouse motion moves the camera and never shows a prompt, so it does
-// not count: a Steam Deck's trackpad set up as a mouse keeps the controller's prompts. The other device takes over
-// once its press has stayed the newest for PROMPT_SETTLE_NS, so a key brushed while playing on the pad (or a
-// handheld's extra button that sends one) does not flip the prompts back and forth. The prompts' own switch
-// (romfs.c romfs_prompts_live) then writes the new set into the game's font, each present.
-enum { PROMPT_STICK_ON = 19661, PROMPT_STICK_OFF = 8192 };   // 60 % and 25 % of full deflection
+// went down, or a stick moved past PROMPT_STICK_ON after the dead zone within PROMPT_STICK_FLICK_NS of resting under
+// PROMPT_STICK_OFF (it counts again once back under PROMPT_STICK_OFF, so a stick resting near the line does not count
+// twice; a drifting one, inside its dead zone or creeping past the line slowly, never); a key or mouse button the game
+// binds (input_map.keys, mouse buttons only while captured) or Esc that went down while the game window is in front and
+// no text entry is open. Keys held when the window comes to the front are taken as the start (the Tab of an Alt+Tab
+// back). Mouse motion moves the camera and never shows a prompt, so it does not count: a Steam Deck's trackpad set up
+// as a mouse keeps the controller's prompts. The other device takes over once its press has stayed the newest for
+// PROMPT_SETTLE_NS, so a key brushed while playing on the pad (or a handheld's extra button that sends one) does not
+// flip the prompts back and forth; while the pad is the device in use and still held (a button down, or a stick that
+// counted and has not come back), a key press does not start that wait at all: a key brushed while walking with the
+// stick never takes the prompts. The prompts' own switch (romfs.c romfs_prompts_live) then writes the new set into the
+// game's font, each present. A stick counted only past 60 % before, so picking the pad up and moving the hero a
+// little kept the keyboard's prompts (owner, 2026-11-20).
+enum { PROMPT_STICK_ON = 11469, PROMPT_STICK_OFF = 6554 };   // 35 % and 20 % of full deflection
+#define PROMPT_STICK_FLICK_NS 300000000ull
 #define PROMPT_SETTLE_NS 400000000ull
 enum { DEV_NONE = -1, DEV_KBM, DEV_PAD };
 static volatile int32_t prompt_dev = DEV_NONE;   // the device the prompts follow, DEV_NONE before the first press
@@ -367,6 +372,8 @@ void input_direct_mouse_sample(int enabled, int32_t *dx, int32_t *dy) {
 }
 
 static float mouse_sens = -1;              // REKARINA_MOUSE_SENS, 0 = mouse camera off; live (cfg_version)
+                                           // (0 too with REKARINA_MOUSE_MODE=off: a player on a pad who wants the
+                                           // mouse to leave the camera alone and the cursor free for the menus)
 static float mouse_vert = 1;               // REKARINA_MOUSE_SENS_Y, negative with REKARINA_MOUSE_INVERT_Y; read with mouse_sens
 static unsigned mouse_sens_seen;
 
@@ -377,6 +384,7 @@ static float mouse_sens_get(void) {
     double v = cfg_double("REKARINA_MOUSE_SENS"), y = cfg_double("REKARINA_MOUSE_SENS_Y");
     mouse_vert = (float)((y < 0.1 ? 0.1 : y > 3 ? 3 : y) * (cfg_bool("REKARINA_MOUSE_INVERT_Y") ? -1 : 1));
     mouse_sens = (float)(v < 0 ? 0 : v > 10 ? 10 : v);
+    if (!strcmp(cfg_value("REKARINA_MOUSE_MODE"), "off")) mouse_sens = 0;
     return mouse_sens;
 }
 
@@ -954,18 +962,26 @@ int input_pad_stick_percent(double pct[2]) {
 }
 
 // Under lock: a new press on the gamepad for prompt_dev, from its Switch buttons b and sticks (after the dead zone): a
-// button that was up at the last poll, or a stick past PROMPT_STICK_ON that fell under PROMPT_STICK_OFF since it last
-// counted.
-static int pad_pressed(uint64_t b, const int32_t sl[2], const int32_t sr[2]) {
-    static uint64_t was;
-    static int armed[2] = {1, 1};
+// button that was up at the last poll, or a stick that went past PROMPT_STICK_ON within PROMPT_STICK_FLICK_NS of its
+// last poll under PROMPT_STICK_OFF and fell back under PROMPT_STICK_OFF since it last counted. *held: a button is down
+// or a stick that counted has not come back under PROMPT_STICK_OFF (one that crept past the line does not hold).
+static int pad_pressed(uint64_t b, const int32_t sl[2], const int32_t sr[2], uint64_t now, int *held) {
+    static uint64_t was, rest_ns[2];
+    static int armed[2] = {1, 1}, counted[2];
     int press = (b & ~was) != 0;
     was = b;
+    *held = b != 0;
     const int32_t *st[2] = {sl, sr};
     for (int s = 0; s < 2; s++) {
         int32_t x = abs(st[s][0]), y = abs(st[s][1]), m = x > y ? x : y;
-        if (armed[s] && m > PROMPT_STICK_ON) press = 1, armed[s] = 0;
-        else if (!armed[s] && m < PROMPT_STICK_OFF) armed[s] = 1;
+        if (m < PROMPT_STICK_OFF) {
+            armed[s] = 1, counted[s] = 0, rest_ns[s] = now;
+        } else if (armed[s] && m > PROMPT_STICK_ON) {
+            armed[s] = 0;
+            counted[s] = now - rest_ns[s] <= PROMPT_STICK_FLICK_NS;   // slower than a thumb's push: drift, no press
+            press |= counted[s];
+        }
+        *held |= counted[s];
     }
     return press;
 }
@@ -987,12 +1003,14 @@ static int keys_pressed(const uint8_t down[KEY_COUNT], int esc, int fresh) {
 }
 
 // Under lock: dev (DEV_PAD, DEV_KBM; DEV_NONE: no press in this poll) pressed now; prompt_dev follows once the newest
-// press has kept its device for PROMPT_SETTLE_NS (the first press at once).
-static void prompt_track(int dev) {
+// press has kept its device for PROMPT_SETTLE_NS (the first press at once). pad_held (pad_pressed): the pad is still in
+// the player's hands, so while it is the device in use a key press does not count.
+static void prompt_track(int dev, int pad_held, uint64_t now) {
     static int logged;
-    uint64_t now = plat_now_ns();
-    if (dev != DEV_NONE && dev != prompt_newest) prompt_newest = dev, prompt_newest_ns = now;
     int cur = (int)__atomic_load_n(&prompt_dev, __ATOMIC_RELAXED);
+    if (dev == DEV_KBM && cur == DEV_PAD && pad_held) dev = DEV_NONE;
+    if (cur == DEV_PAD && pad_held) prompt_newest = DEV_PAD;   // a key pressed before it does not wait on
+    if (dev != DEV_NONE && dev != prompt_newest) prompt_newest = dev, prompt_newest_ns = now;
     if (prompt_newest == DEV_NONE || prompt_newest == cur) return;
     if (cur != DEV_NONE && now - prompt_newest_ns < PROMPT_SETTLE_NS) return;
     __atomic_store_n(&prompt_dev, prompt_newest, __ATOMIC_RELAXED);
@@ -1042,7 +1060,8 @@ static void poll_merged(uint64_t *buttons, int32_t *lx, int32_t *ly, int32_t *rx
         int pad_on = state == 1 && pad_read(&b, sl, sr, &l3);
         int pad_used = b || abs(sl[0]) > PAD_USED || abs(sl[1]) > PAD_USED || abs(sr[0]) > PAD_USED ||
                        abs(sr[1]) > PAD_USED, kbm_used = 0;
-        int pad_press = pad_pressed(b, sl, sr), key_press = 0;
+        uint64_t now_ns = plat_now_ns();
+        int pad_held, pad_press = pad_pressed(b, sl, sr, now_ns, &pad_held), key_press = 0;
         static int was_front;   // the game window was in front at the last poll
         int front = ikb_foreground();
         if (front) screenshot_key();
@@ -1090,7 +1109,7 @@ static void poll_merged(uint64_t *buttons, int32_t *lx, int32_t *ly, int32_t *rx
         if (pad_used) __atomic_store_n(&g_kbm_last, 0, __ATOMIC_RELAXED);
         else if (kbm_used) __atomic_store_n(&g_kbm_last, 1, __ATOMIC_RELAXED);
         was_front = front;
-        prompt_track(pad_press ? DEV_PAD : key_press ? DEV_KBM : DEV_NONE);
+        prompt_track(pad_press ? DEV_PAD : key_press ? DEV_KBM : DEV_NONE, pad_held, now_ns);
     }
     uint64_t before_script = b;
     script_apply(&b, sl, sr);

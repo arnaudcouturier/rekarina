@@ -435,6 +435,36 @@ conditions. 393 of the corpus's 42,851 programs have a VOTEU with a predicate ot
 with a tag (`gfx_shader.c build_code_hash`, `nvn_ctl.h nvn2_ctl_voteu_pred`), so they are translated anew and every
 other cache entry stays; the translator identity is kept (`tools/build_xlate.py SAME_AS`).
 
+## Warp collectives on subgroups wider than 32 lanes (patch 0044, 2026-11-20)
+
+An RX 570 (GCN 4, AMD's Windows driver 26.5.2 for Polaris) drew the great tree's rooms without walls, a jump
+platform, a fire, a spiked log in the water and the door frames, and its log shows that the game issued no mesh draw
+there in 5,300 frames, where the RTX 5070 issues 48 a frame: what the game draws there follows from what its GPU
+culling wrote.
+
+GCN runs compute 64 lanes wide and cannot be pinned to 32 (`subgroup size control 64-64`), so compute is translated for
+64 lanes there ("translator subgroup vs/fs/cs 64/64/64"); every other GPU the game has met pins compute to 32 (RDNA,
+Intel) or has 32 lanes (NVIDIA). Ryujinx's own warp instructions (VOTE, SHFL, the lane masks) emulate a 32-lane warp in
+a 64-lane subgroup by the lane id's bit 5. The Ampere instructions the Switch 2 front end added do not: REDUX, MATCH and
+the per-lane HMMA, LDSM and MOVM read other lanes with shuffles by lane number 0..31, and REDUX and MATCH take the
+active lanes as ballot component 0. A shuffle's index is a lane of the subgroup, so the second warp of each subgroup
+reduced and matched the first warp's values. In a build's 51,147 stored inputs REDUX is in 159 compute kernels, MATCH
+in 45, REDUX in 20 task and 64 mesh shaders, neither in a vertex or fragment shader.
+
+The patch gives those instructions in a compute shader the lanes of their own warp: the shuffle index is the lane id
+with its low five bits cleared plus the lane number (`AWarpFirst`, `AWarpLane`), and the active mask is `EmitBallot`'s,
+the warp's 32 bits (`AWarpActive`). The game's task and mesh workgroups are 32 threads, one warp to a subgroup, so those
+stages stay as they were (and an RDNA card's mesh pipelines are not built again for nothing). With 32 lanes, or in
+another stage, the patch emits nothing: those translations stay byte for byte the same, and the translator identity is
+kept (`tools/build_xlate.py SAME_AS`). `gfx_shader.c build_code_hash` ends the hash of a compute program with those
+instructions with a tag where compute is translated for more than 32 lanes (`xlate_lanes`, `nvn_ctl.h
+nvn2_ctl_warp_lanes`), so only a GCN card's kernels of that kind are translated anew.
+
+Checked on the RTX 5070: the same 70 s (the forest, then the great tree) with the translators before and after the
+patch, each into an empty shader cache: 992 SPIR-V modules in both, all byte for byte equal, among them 21 compute
+kernels with REDUX, 11 with HMMA, 10 with LDSM, one with MOVM and 10 task or mesh programs with REDUX (the files that
+differ are the run's own: provisional keys in `res.json`, the answers of stored inputs, the use masks).
+
 ## Warp-aggregated atomics (patches 0028 and 0030, 2026-11-07)
 
 The NVN2 compiler appends to GPU lists with warp-aggregated atomics, as ptxas does: inside the branch of the lanes that

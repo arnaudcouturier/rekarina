@@ -7,12 +7,14 @@ import contextlib
 import http.client
 import io
 import json
+import os
 import re
 import shutil
 import sys
 import tempfile
 import time
 import unittest
+import zipfile
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
@@ -729,6 +731,22 @@ class OotShaderStepsTest(unittest.TestCase):
             self.assertEqual((record, ctx.state.get('shaders')), ({'shaders': 'all'}, 'all'))
             self.assertEqual([n for n, _ in self.calls], ['oot_prepare_shaders.py', 'pack_shader_cache.py'])   # no folder
 
+    def test_the_setup_translates_and_leaves_the_driver_build_out(self):
+        """REKARINA_PREPARE_DRIVER=0 reaches the preparation through the environment (the runtime's
+        vk_pipeline_prepare_shaders then stops after the translation); the shader tools, and so the step's key, stay as
+        they were, so no folder translates again for it."""
+        seen = {}
+        run = self.oot.run_tool
+
+        def capture(ctx, step, script, args, parse=None, env=None):
+            seen.setdefault(script.name, env)
+            return run(ctx, step, script, args, parse, env)
+        self.oot.run_tool = capture
+        key = self.keys()[1]
+        self.oot.Prepare().run(self.ctx())
+        self.assertEqual(seen['oot_prepare_shaders.py'], {'REKARINA_PREPARE_DRIVER': '0'})
+        self.assertEqual(self.keys()[1], key)
+
     def test_a_folder_that_prepared_the_variants_play_met_prepares_the_rest_from_what_it_holds(self):
         """A folder of 1.2.1-1.2.3 recorded 'met': its next setup run prepares every variant, from a fresh temp folder
         or with the met run's output still in it, and what the game folder holds goes into the build folder first (its
@@ -740,7 +758,7 @@ class OotShaderStepsTest(unittest.TestCase):
             return {'format': 1, 'release': '1.2.3', 'inputs': {}, 'shaders': 'met', 'steps': {
                 'oot_extract': {'key': 'dump-1'},
                 'oot_prepare': {'key': self.oot.Prepare().key(self.ctx(), 'met'), 'release': '1.2.3', 'shaders': 'met'}}}
-        self.assertEqual(self.oot.shader_case(self.ctx(met())), 'all')
+        self.assertEqual(self.oot.shader_case(self.ctx(met())), 'translate')
         for leftover in (False, True):
             self.fresh_temp()
             if leftover:
@@ -782,7 +800,7 @@ class OotShaderStepsTest(unittest.TestCase):
         self.assertEqual(sorted(p.name for p in build.iterdir()), [])            # nothing for the package to copy
         for leftover in (self.oot.Prepare.PREPARING, self.oot.Prepare.JOURNAL):   # a run cut short
             (build / leftover).write_bytes(b'')
-            self.assertEqual(self.oot.shader_case(self.ctx(folder())), 'all')
+            self.assertEqual(self.oot.shader_case(self.ctx(folder())), 'translate')
             self.assertEqual(self.run_prepare(folder())[1], ['pack_shader_cache.py', 'oot_prepare_shaders.py',
                                                              'pack_shader_cache.py'])
             self.fresh_temp()
@@ -1106,7 +1124,7 @@ class ToolSteadyTest(unittest.TestCase):
         code, log = self.oot.tool_steady(self.ctx, 'step', script, [self.count])
         self.assertEqual(code, 0)
         first = log.with_name(log.stem + '.1.log').read_text(encoding='utf-8')
-        self.assertIn('access violation', first)
+        self.assertIn('access violation' if sys.platform == 'win32' else 'Segmentation fault', first)   # faulthandler's words
         self.assertIn('tool.py", line 8 in deep', first)
         said = (self.base / 'setup.log').read_text(encoding='utf-8')
         self.assertIn('crashed', said)
@@ -1219,14 +1237,14 @@ class OotMainTest(unittest.TestCase):
         cases = (
             ('a 1.2.0 folder, the translator that prepared it', old, 'output', 'rerun'),
             ('all, the inputs unchanged', unchanged, 'output', 'rerun'),
-            ('all, the inputs unchanged, a fresh temp folder', unchanged, '', 'all'),
+            ('all, the inputs unchanged, a fresh temp folder', unchanged, '', 'translate'),
             ('all, the inputs unchanged, a fresh temp folder, the pack in the game folder', unchanged, 'folder', 'rerun'),
-            ('all, the inputs unchanged, a run cut short', unchanged, 'output marker folder', 'all'),
+            ('all, the inputs unchanged, a run cut short', unchanged, 'output marker folder', 'translate'),
             ("all, the inputs unchanged, the driver's phase of an earlier setup cut short", unchanged,
-             'output journal folder', 'all'),
-            ('all, the inputs changed', prepared('all'), 'output folder', 'all'),
-            ('the variants play met', prepared('met'), 'output folder', 'all'),
-            ('a new folder', None, '', 'all'),
+             'output journal folder', 'translate'),
+            ('all, the inputs changed', prepared('all'), 'output folder', 'translate'),
+            ('the variants play met', prepared('met'), 'output folder', 'translate'),
+            ('a new folder', None, '', 'translate'),
         )
         files = {'output': 'shader-prepared.bin', 'marker': self.oot.Prepare.PREPARING, 'journal': self.oot.Prepare.JOURNAL}
         folder = {'rekarina_xlate.id': b'identity-1', 'shader-prepared.bin': b'p', 'shader-cache/shader-cache.pack': b'a pack'}
@@ -1251,19 +1269,19 @@ class OotMainTest(unittest.TestCase):
                     self.assertEqual(seen['mode'], 'all')
         (self.build / 'shader-prepared.bin').write_bytes(b'p')
         (self.build / 'rekarina_xlate.id').write_text('identity-0')   # another translator prepared the old folder
-        self.assertEqual(self.start(old)[1][1]['steps']['oot_prepare']['case'], 'all')
+        self.assertEqual(self.start(old)[1][1]['steps']['oot_prepare']['case'], 'translate')
 
     def test_all_shaders_prepares_all_whatever_the_temp_folder_holds(self):
         """--all-shaders (the launcher's flag after 1.2.3, and installer/shaderjob.py's): every variant, with the
         estimate of every variant unless the step has nothing to do."""
         met = {'format': 1, 'release': '1.2.1', 'inputs': {}, 'steps': {'oot_prepare': {'key': 'k', 'shaders': 'met'}}}
         code, events, seen = self.start(met, '--all-shaders')
-        self.assertEqual((code, seen['mode'], events[1]['steps']['oot_prepare']['case']), (0, 'all', 'all'))
+        self.assertEqual((code, seen['mode'], events[1]['steps']['oot_prepare']['case']), (0, 'all', 'translate'))
         done = {'format': 1, 'release': '1.2.1', 'inputs': {}, 'shaders': 'all',
                 'steps': {'oot_prepare': {'key': self.prepared_all_key(), 'shaders': 'all'}}}
         self.assertEqual(self.start(done, '--all-shaders')[1][1]['steps']['oot_prepare']['case'], 'rerun')
         (self.build / 'shader-prepared.bin').unlink()
-        self.assertEqual(self.start(done, '--all-shaders')[1][1]['steps']['oot_prepare']['case'], 'all')
+        self.assertEqual(self.start(done, '--all-shaders')[1][1]['steps']['oot_prepare']['case'], 'translate')
 
     def test_a_failure_before_the_steps_is_reported_with_its_traceback(self):
         with mock.patch.object(self.oot.eta, 'estimates', side_effect=RuntimeError('a broken estimate')):
@@ -1296,7 +1314,7 @@ n = int(open(f).read()) if os.path.exists(f) else 0
 e = lambda **k: print(json.dumps(k), flush=True)
 e(type='progress', step='oot_prepare', phase='libraries', done=n, total=100, unit='shaders')
 while n < 100:
-    time.sleep(0.02); n += 1; open(f, 'w').write(str(n))
+    time.sleep(0.02); n += 1; open(f + '.t', 'w').write(str(n)); os.replace(f + '.t', f)   # (a stop between is whole)
     if n % 10 == 0: e(type='progress', step='oot_prepare', phase='libraries', done=n, total=100, unit='shaders')
 e(type='end', result='ok')
 """
@@ -1308,6 +1326,13 @@ e(type='end', result='ok')
         self.built = self.dir / 'built.txt'
 
     def tearDown(self):
+        # the job's process may still be exiting after its last line (its folder is in use until it has): a moment
+        for _ in range(50):
+            try:
+                self.tmp.cleanup()
+                return
+            except PermissionError:
+                time.sleep(0.1)
         self.tmp.cleanup()
 
     def job(self):
@@ -1350,6 +1375,47 @@ e(type='end', result='ok')
         job.start()
         self.assertTrue(self.until(job, lambda: job.state == 'failed'))
         self.assertFalse(job.start())
+
+    def test_a_stop_asked_waits_for_the_child_without_blocking(self):
+        # Play and Pause: the stop file is written and the call returns; the child finishes what it has in hand and
+        # ends by itself, which stop_poll sees; nothing starts the job meanwhile
+        from installer import shaderjob
+        stop = self.dir / 'stop'
+        (self.dir / 'setup.py').write_text(
+            'import json, os, sys, time\n'
+            'print(json.dumps({"type": "progress", "step": "background", "phase": "libraries", "done": 1, '
+            '"total": 9}), flush=True)\n'
+            f'while not os.path.exists({str(stop)!r}): time.sleep(0.02)\n'
+            'time.sleep(0.4)\n')   # (the library in the driver's hands)
+        job = shaderjob.ShaderJob([sys.executable, str(self.dir / 'setup.py')], str(self.dir),
+                                  stopper=lambda proc: proc.wait(), asker=lambda: stop.write_text(''))
+        self.assertTrue(job.start())
+        self.assertTrue(self.until(job, lambda: job.done == 1))
+        t0 = time.monotonic()
+        job.stop_begin()
+        self.assertLess(time.monotonic() - t0, 0.2)                 # returns at once
+        self.assertTrue(job.stopping)
+        self.assertFalse(job.active)
+        self.assertFalse(job.start())                               # not a second child while the first ends
+        self.assertFalse(job.stop_poll(30))                         # still finishing
+        end = time.monotonic() + 10
+        while not job.stop_poll(30) and time.monotonic() < end:
+            time.sleep(0.02)
+        self.assertEqual(job.state, 'idle')
+        self.assertIsNotNone(job.proc.poll())                       # ended by itself, not killed
+
+    def test_a_stop_asked_of_a_child_that_does_not_end_is_forced(self):
+        from installer import shaderjob
+        (self.dir / 'setup.py').write_text('import time; time.sleep(60)')
+        killed = []
+        job = shaderjob.ShaderJob([sys.executable, str(self.dir / 'setup.py')], str(self.dir),
+                                  stopper=lambda proc: (killed.append(1), proc.kill(), proc.wait()), asker=lambda: None)
+        self.assertTrue(job.start())
+        job.stop_begin()
+        end = time.monotonic() + 10
+        while not job.stop_poll(0.3) and time.monotonic() < end:
+            time.sleep(0.02)
+        self.assertEqual((job.state, killed), ('idle', [1]))
 
     def test_games_are_the_processes_of_that_name_outside_the_job(self):
         from installer import shaderjob
@@ -1545,6 +1611,375 @@ class DumpPathTest(unittest.TestCase):
         self.assertFalse(self.oot.is_single_launcher(exe))
         package_oot.set_single_aside(exe)
         self.assertTrue(exe.exists())
+
+
+class BackgroundWorkTest(unittest.TestCase):
+    """installer/oot.py: what the package step leaves to the launcher (plan_background), the launcher's run of it
+    (background_main, background_child) and its stop (stop_background, the stop file)."""
+
+    def setUp(self):
+        from installer import oot
+        self.oot = oot
+        self.tmp = tempfile.TemporaryDirectory()
+        self.dest = Path(self.tmp.name) / 'game'
+        self.dest.mkdir()
+        (self.dest / oot.GAME_EXE).write_bytes(b'MZ')
+        (self.dest / 'shader-prepared.bin').write_bytes(b'prepared')
+        (self.dest / 'rekarina_xlate.id').write_text('identity-1')
+        root = Path(self.tmp.name) / 'root'
+        (root / 'tools').mkdir(parents=True)
+        (root / 'runtime').mkdir()
+        (root / 'tools' / 'oot_prepare_textures.py').write_text('tool 1')
+        (root / 'runtime' / 'tex_prepare.c').write_text('code 1')
+        self.nup = Path(self.tmp.name) / 'game.nup'
+        self.nup.write_bytes(b'dump')
+        self.layout = SimpleNamespace(root=root, tools=root / 'tools', python=Path(sys.executable), release='t')
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def ctx(self, no_textures=False):
+        return SimpleNamespace(dest=self.dest, layout=self.layout, nup=self.nup, reporter=Reporter(out=io.StringIO()),
+                               options=SimpleNamespace(no_textures=no_textures))
+
+    def test_the_package_step_leaves_the_rest_to_the_launcher(self):
+        oot = self.oot
+        oot.plan_background(self.ctx(), 'exe-1')
+        self.assertEqual(oot.background_pending(self.dest), ['warm', 'textures'])
+        data = oot.background_state(self.dest)
+        data['warm']['state'] = data['textures']['state'] = 'done'
+        oot.save_background(self.dest, data)
+        oot.plan_background(self.ctx(), 'exe-1')
+        self.assertEqual(oot.background_pending(self.dest), [])            # the same keys: done stays done
+        oot.plan_background(self.ctx(), 'exe-2')
+        self.assertEqual(oot.background_pending(self.dest), ['warm'])      # a new exe: the driver's build is checked again
+        data = oot.background_state(self.dest)
+        data['warm']['state'] = 'done'
+        oot.save_background(self.dest, data)
+        (self.layout.root / 'runtime' / 'tex_prepare.c').write_text('code 2')
+        oot.plan_background(self.ctx(), 'exe-2')
+        self.assertEqual(oot.background_pending(self.dest), ['textures'])  # other texture code: the cache is made again
+        oot.plan_background(self.ctx(no_textures=True), 'exe-2')
+        self.assertEqual(oot.background_pending(self.dest), [])            # --no-textures: none at all
+        (self.dest / oot.GAME_EXE).unlink()
+        self.assertEqual(oot.background_pending(self.dest), [])            # no game, no work
+
+    def run_background(self, outcomes):
+        """background_main with the two works stood in by outcomes {work: outcome or a function}."""
+        oot = self.oot
+        saved = oot.background_warm, oot.background_textures, oot.find_layout
+
+        def stand_in(work):
+            def f(*args):
+                o = outcomes[work]
+                return o() if callable(o) else o
+            return f
+        oot.background_warm, oot.background_textures = stand_in('warm'), stand_in('textures')
+        oot.find_layout = lambda root=None, toolchain=None, temp=None: self.layout
+        out = io.StringIO()
+        try:
+            with contextlib.redirect_stdout(out):
+                code = oot.main(['--dest', str(self.dest), '--background'])
+        finally:
+            oot.background_warm, oot.background_textures, oot.find_layout = saved
+        return code, [json.loads(line) for line in out.getvalue().splitlines() if line.startswith('{')]
+
+    def test_the_launcher_runs_what_is_pending_and_counts_failures(self):
+        oot = self.oot
+        oot.plan_background(self.ctx(), 'exe-1')
+        code, events = self.run_background({'warm': 'failed: exit code 5', 'textures': 'done'})
+        self.assertEqual((code, events[-1]['result']), (1, 'failed'))
+        data = oot.background_state(self.dest)
+        self.assertEqual((data['warm']['state'], data['warm']['fails'], data['textures']['state']), ('pending', 1, 'done'))
+        code, events = self.run_background({'warm': 'failed: exit code 5', 'textures': 'done'})
+        self.assertEqual(oot.background_state(self.dest)['warm']['state'], 'failed')   # twice under one key: left alone
+        self.assertEqual(oot.background_pending(self.dest), [])
+        oot.plan_background(self.ctx(), 'exe-2')
+        code, events = self.run_background({'warm': 'done', 'textures': 'done'})
+        self.assertEqual((code, oot.background_pending(self.dest)), (0, []))
+        self.assertTrue((self.dest / 'logs' / 'launcher-background.log').is_file())
+
+    def test_a_stop_leaves_the_work_pending(self):
+        oot = self.oot
+        oot.plan_background(self.ctx(), 'exe-1')
+        code, events = self.run_background({'warm': 'stopped', 'textures': 'done'})
+        self.assertEqual((code, events[-1]['result']), (3, 'cancelled'))
+        self.assertEqual(oot.background_pending(self.dest), ['warm', 'textures'])      # the textures did not start
+        self.assertFalse((self.dest / oot.BACKGROUND_STOP).exists())
+
+    CHILD = """import os, sys, time
+stop, mode = sys.argv[1], sys.argv[2]
+for n in range(1, 1000):
+    print(f'vk_pipeline: stage library prebuild preparation progress: {n * 100} of 56402 variants', flush=True)
+    time.sleep(0.05)
+    if os.path.exists(stop) and mode == 'polite':
+        sys.exit(3)
+"""
+
+    def child(self, mode, journal=None):
+        """background_child on a stand-in for the game exe: 'polite' ends with code 3 when the stop file appears (the
+        runtime's warm_stop_watch), 'deaf' never does."""
+        oot = self.oot
+        script = Path(self.tmp.name) / 'child.py'
+        script.write_text(self.CHILD)
+        stop = self.dest / oot.BACKGROUND_STOP
+        stop.parent.mkdir(exist_ok=True)
+        counts = []
+
+        def parse(line):
+            m = oot.LIBRARIES.search(line)
+            if m:
+                counts.append(int(m.group(1)))
+        rep = Reporter(out=io.StringIO())
+        env = dict(os.environ, REKARINA_WARM_STOP=str(stop))
+        import threading
+        threading.Timer(1.0, lambda: stop.write_bytes(b'')).start()
+        t0 = time.monotonic()
+        outcome = oot.background_child(rep, [sys.executable, str(script), str(stop), mode], self.dest, env, stop, parse,
+                                       journal=journal)
+        return outcome, time.monotonic() - t0, counts
+
+    def test_a_child_that_stops_by_itself(self):
+        outcome, took, counts = self.child('polite')
+        self.assertEqual(outcome, 'stopped')
+        self.assertLess(took, 3.0)
+        self.assertTrue(counts and counts == sorted(counts))
+
+    def test_a_child_that_does_not_stop_is_killed_and_its_journal_goes(self):
+        journal = self.dest / 'shader-prepare-journal.bin'
+        journal.write_bytes(b'innocent variants')
+        saved, self.oot.BACKGROUND_CHILD_WAIT = self.oot.BACKGROUND_CHILD_WAIT, 1.5   # (18 s in earnest)
+        try:
+            outcome, took, _ = self.child('deaf', journal=journal)
+        finally:
+            self.oot.BACKGROUND_CHILD_WAIT = saved
+        self.assertEqual(outcome, 'stopped')
+        self.assertLess(took, 1.0 + 1.5 + 3.0)
+        self.assertFalse(journal.exists())
+        self.assertGreater(self.oot.BACKGROUND_CHILD_WAIT, 10)   # Play's stop gives a build in hand its time
+
+    def test_stop_background_kills_a_job_that_does_not_end(self):
+        oot = self.oot
+        import subprocess
+        proc = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])
+        journal = self.dest / 'shader-prepare-journal.bin'
+        journal.write_bytes(b'x')
+        t0 = time.monotonic()
+        self.assertFalse(oot.stop_background(self.dest, proc, grace=0.5))
+        self.assertLess(time.monotonic() - t0, 5)
+        self.assertIsNotNone(proc.poll())
+        # the job gone, its stop file goes too: the game Play starts next runs the same modes as children
+        self.assertFalse((self.dest / oot.BACKGROUND_STOP).exists())
+        self.assertFalse(journal.exists())
+        self.assertTrue(oot.stop_background(self.dest) or True)   # no job given: the file stays for whoever runs it
+        self.assertTrue((self.dest / oot.BACKGROUND_STOP).exists())
+
+    def test_stop_background_returns_when_the_whole_tree_is_gone(self):
+        # a job whose child (the game's exe in the real job) ignores the stop: killed, and gone when the call returns,
+        # so that the game started next finds the driver's cache file free
+        import subprocess
+        from installer import shaderjob
+        oot = self.oot
+        child = self.dest / 'child.pid'
+        proc = subprocess.Popen([sys.executable, '-c', 'import subprocess, sys, time; '
+                                 'p = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"]); '
+                                 f'open({str(child)!r}, "w").write(str(p.pid)); time.sleep(60)'])
+        end = time.monotonic() + 20
+        while not (child.exists() and child.read_text()) and time.monotonic() < end:
+            time.sleep(0.05)
+        pid = int(child.read_text())
+        self.assertIn(pid, shaderjob.process_table())
+        self.assertFalse(oot.stop_background(self.dest, proc, grace=0.3))
+        self.assertNotIn(pid, shaderjob.process_table())
+        proc = subprocess.Popen([sys.executable, '-c', 'pass'])
+        proc.wait()
+        self.assertTrue(oot.stop_background(self.dest, proc))
+
+    def test_wait_child_hears_the_stop(self):
+        import subprocess
+        proc = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)'])
+        try:
+            t0 = time.monotonic()
+            calls = []
+            self.assertIsNone(self.oot.wait_child(proc, lambda: calls.append(1) or len(calls) > 3, poll=0.05))
+            self.assertLess(time.monotonic() - t0, 2)
+        finally:
+            proc.kill()
+            proc.wait()
+        proc = subprocess.Popen([sys.executable, '-c', 'raise SystemExit(7)'])
+        self.assertEqual(self.oot.wait_child(proc, lambda: False), 7)
+
+
+class SetupReportTest(unittest.TestCase):
+    """installer/setup_report.py: the problem report a player can make before the game exists."""
+
+    def test_report_without_a_game(self):
+        from installer import setup_report
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            root, dest, work = d / 'setup', d / 'game', d / 'work'
+            (work / 'logs').mkdir(parents=True)
+            root.mkdir()
+            home = os.environ.get('USERPROFILE') or os.environ.get('HOME') or 'C:/Users/somebody'
+            (work / 'logs' / 'install-20261120-095259.log').write_text(f'[ 5547.0] Translating the shaders 40029/72621\n'
+                                                                      f'[ 5547.1] run {home}/x.py\n')
+            (work / 'logs' / 'oot_prepare-oot_prepare_shaders.log').write_text('pairs\n')
+            layout = SimpleNamespace(root=root, release='9.9.9')
+            path = setup_report.make(layout, dest, work, ['[1:32:27] Translating the shaders  40029 of 72621'],
+                                     with_game=False)
+            self.assertEqual(path.parent, root / 'reports')                       # no game folder yet: the setup's
+            with zipfile.ZipFile(path) as z:
+                names = set(z.namelist())
+                self.assertTrue({'system.txt', 'window.log', 'README.txt', 'setup/logs/install-20261120-095259.log',
+                                 'setup/logs/oot_prepare-oot_prepare_shaders.log'} <= names, names)
+                log = z.read('setup/logs/install-20261120-095259.log').decode()
+                self.assertIn('40029/72621', log)
+                if len(home) >= 3:
+                    self.assertNotIn(home, log)
+                    self.assertIn('<home>', log)
+                self.assertIn('9.9.9', z.read('system.txt').decode())
+            dest.mkdir()
+            self.assertEqual(setup_report.make(layout, dest, work, with_game=False).parent, dest / 'reports')
+
+    def test_first_start_estimate(self):
+        from installer import oot
+        with tempfile.TemporaryDirectory() as d:
+            dest = Path(d)
+            self.assertEqual(oot.first_start_estimate(dest), 0.0)
+            (dest / oot.GAME_EXE).write_bytes(b'MZ')
+            (dest / 'shader-prepared.bin').write_bytes(bytes(16 + 36 * 56402))
+            oot.save_background(dest, {'format': 1, 'warm': {'key': 'k', 'state': 'pending', 'fails': 0},
+                                       'textures': {'key': 't', 'state': 'done', 'fails': 0}})
+            est = oot.first_start_estimate(dest, cores=16)
+            self.assertAlmostEqual(est, (oot.FIRST_START_RECORDS * oot.FIRST_START_PIPE_S + 56402 * oot.FIRST_START_LIB_S) / 16)
+            oot.save_background(dest, {'format': 1, 'warm': {'key': 'k', 'state': 'done', 'fails': 0},
+                                       'textures': {'key': 't', 'state': 'done', 'fails': 0}})
+            self.assertEqual(oot.first_start_estimate(dest), 0.0)
+
+
+class CodeKeyTest(unittest.TestCase):
+    """installer/oot.py code_stamp: the lift's and the prompts' keys follow what the files say as code, so an edited
+    comment or docstring makes no player lift the game code again."""
+
+    def test_comments_do_not_count(self):
+        from installer import oot
+        with tempfile.TemporaryDirectory() as d:
+            tree = Path(d)
+            (tree / 'gen.py').write_text('"""The lifter."""\nimport os\n\ndef f(x):\n    """Doc."""\n    return x + 1  # one\n')
+            (tree / 'patches-x.txt').write_text('# a patch\nset realtime REKARINA_REALTIME 1\nsite a main 6e6cc4 1e20  # x\n')
+            first = oot.code_stamp(tree)
+            (tree / 'gen.py').write_text('"""The lifter, said otherwise."""\nimport os\n\n\ndef f(x):\n    """Other."""\n'
+                                         '    # a new comment\n    return x + 1\n')
+            (tree / 'patches-x.txt').write_text('# another comment\n\nset   realtime REKARINA_REALTIME 1   # on\n'
+                                                'site a main 6e6cc4 1e20\n')
+            self.assertEqual(oot.code_stamp(tree), first)
+            (tree / 'gen.py').write_text('"""The lifter."""\nimport os\n\ndef f(x):\n    return x + 2\n')
+            self.assertNotEqual(oot.code_stamp(tree), first)                     # the code changed
+            (tree / 'gen.py').write_text('"""The lifter."""\nimport os\n\ndef f(x):\n    """Doc."""\n    return x + 1\n')
+            self.assertEqual(oot.code_stamp(tree), first)
+            (tree / 'patches-x.txt').write_text('set realtime REKARINA_REALTIME 0\nsite a main 6e6cc4 1e20\n')
+            self.assertNotEqual(oot.code_stamp(tree), first)                     # a value changed
+            (tree / 'data.bin').write_bytes(b'x')
+            self.assertNotEqual(oot.code_stamp(tree), oot.code_stamp(tree / 'gen.py'))
+
+    def test_records_of_the_old_key_forms_stand_while_the_bytes_do(self):
+        # 1.2.7 recorded the lift and the prompts under keys of the files' bytes ('oot-lift-2', 'oot-prompts-2'): an
+        # update whose lifter, patch file and drawing tools are those bytes lifts and draws nothing again
+        from types import SimpleNamespace
+        from installer import oot
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            (root / 'recomp').mkdir()
+            (root / 'tools').mkdir()
+            (root / 'game').mkdir()
+            (root / 'recomp' / 'gen.py').write_text('def f():\n    return 1\n')
+            patches = root / 'recomp' / 'patches-oot-v111.txt'
+            patches.write_text('set realtime REKARINA_REALTIME 1\n')
+            for n in oot.Prompts.TOOLS:
+                (root / 'tools' / n).write_text('x = 1\n')
+            ctx = SimpleNamespace(keys={'oot_extract': 'dump'}, dest=root / 'game',
+                                  layout=SimpleNamespace(patches=patches, recomp=root / 'recomp', tools=root / 'tools'))
+            lift_127 = oot.fingerprint('oot-lift-2', 'dump', patches, oot.tree_stamp(root / 'recomp'))
+            prompts_127 = oot.fingerprint('oot-prompts-2', 'dump',
+                                          oot.tree_stamp(*(root / 'tools' / n for n in oot.Prompts.TOOLS)))
+            self.assertNotEqual(oot.Lift().key(ctx), lift_127)                  # the key's form is new
+            self.assertTrue(oot.Lift().adopts(ctx, {'key': lift_127}))
+            self.assertTrue(oot.Prompts().adopts(ctx, {'key': prompts_127}))
+            patches.write_text('set realtime REKARINA_REALTIME 0\n')            # the patch file changed: lift again
+            (root / 'tools' / 'button_icons.py').write_text('x = 2\n')
+            self.assertFalse(oot.Lift().adopts(ctx, {'key': lift_127}))
+            self.assertFalse(oot.Prompts().adopts(ctx, {'key': prompts_127}))
+
+
+class PackageCopyTest(unittest.TestCase):
+    """tools/package_oot.py: the game folder's own records stay when the build folder's copies are older, identical
+    files are not copied again, the driver's cache goes only into a folder without one."""
+
+    def setUp(self):
+        sys.path.insert(0, str(ROOT / 'tools'))
+        import package_oot
+        self.pkg = package_oot
+        self.tmp = tempfile.TemporaryDirectory()
+        self.dir = Path(self.tmp.name)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_newer_and_same(self):
+        import os
+        a, b = self.dir / 'a', self.dir / 'b'
+        a.write_bytes(b'build')
+        self.assertTrue(self.pkg.newer(a, b))                    # missing in the game folder
+        b.write_bytes(b'game')
+        os.utime(a, (1000, 1000))
+        os.utime(b, (5000, 5000))
+        self.assertFalse(self.pkg.newer(a, b))                   # the game wrote its own later
+        os.utime(a, (9000, 9000))
+        self.assertTrue(self.pkg.newer(a, b))
+        shutil.copy2(a, b)
+        self.assertTrue(self.pkg.same_file(a, b))
+        b.write_bytes(b'other')
+        self.assertFalse(self.pkg.same_file(a, b))
+
+    def test_copy_tree_skips_what_is_there(self):
+        src, dst = self.dir / 'src', self.dir / 'dst'
+        (src / 'x').mkdir(parents=True)
+        (src / 'x' / 'pack').write_bytes(b'p' * 100)
+        self.assertEqual(self.pkg.copy_tree(src, dst), 1)
+        with mock.patch.object(self.pkg.shutil, 'copy2') as copy:
+            self.assertEqual(self.pkg.copy_tree(src, dst), 1)
+            copy.assert_not_called()
+
+
+class CancelTreeTest(unittest.TestCase):
+    """installer/guilogic.py Process: Cancel that is not heard within CANCEL_GRACE ends the run's whole tree."""
+
+    def test_kill_takes_the_children(self):
+        from installer import guilogic
+        script = Path(tempfile.mkdtemp()) / 'parent.py'
+        script.write_text('import subprocess, sys, time\n'
+                          'c = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])\n'
+                          'print(c.pid, flush=True)\n'
+                          'time.sleep(60)\n')
+        proc = guilogic.Process([sys.executable, str(script)])
+        child = int(proc.lines.get(timeout=20))
+        proc.kill()
+        proc.proc.wait(timeout=10)
+        from installer import shaderjob
+        deadline = time.monotonic() + 10
+        while child in shaderjob.process_table() and time.monotonic() < deadline:
+            time.sleep(0.1)
+        self.assertNotIn(child, shaderjob.process_table())
+
+    def test_a_cancel_not_heard_is_followed_by_the_kill(self):
+        from installer import guilogic
+        proc = guilogic.Process([sys.executable, '-c', 'import time; time.sleep(60)'])
+        with mock.patch.object(guilogic, 'send_break', lambda *a: True):   # a run that does not hear Ctrl+Break
+            proc.cancel()
+        proc.cancelled_at -= guilogic.CANCEL_GRACE + 1
+        proc.poll()
+        proc.proc.wait(timeout=10)
+        self.assertIsNotNone(proc.proc.poll())
 
 
 if __name__ == '__main__':

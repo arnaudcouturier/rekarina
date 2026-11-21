@@ -88,7 +88,7 @@ class PlanTest(unittest.TestCase):
 
     def test_no_giants(self):
         jobs, giants = bg.plan_jobs([bg.LIGHT_MEM] * 100, 12, 4 * GiB)
-        self.assertEqual((jobs, giants), (6, 0))
+        self.assertEqual((jobs, giants), (4 * GiB // bg.LIGHT_MEM, 0))   # 9 with 448 MiB a light compile
 
     def test_chunk_memory_from_the_manifest(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -132,6 +132,84 @@ class PlanTest(unittest.TestCase):
         self.assertIn('  pool = gen_giant', lines[gl + 1:gl + 3])
         self.assertIn('  pool = gen', lines[ll + 1:ll + 3])
         self.assertEqual([o.name for o in objs['main']], ['main_0000.o', 'main_0001.o'])   # the link order stays
+
+
+class ColdObjectsTest(unittest.TestCase):
+    def test_listed_objects_compile_at_o1_and_the_rest_as_before(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            gen, out = Path(tmp) / 'gen', Path(tmp) / 'out'
+            (gen / 'main').mkdir(parents=True)
+            a, b = gen / 'main' / 'main_0000.c', gen / 'main' / 'main_0001.c'
+            a.write_text('x'), b.write_text('x')
+            (Path(tmp) / 'cold.txt').write_text('main_0001.o  a giant the profile never entered\n')
+            saved_deps, saved_flags = bg.DEPS, list(bg.GEN_FLAGS)
+            bg.DEPS = Path(tmp) / 'deps'
+            bg.GEN_FLAGS[bg.GEN_FLAGS.index('-O1')] = '-O2'   # (a build with the full profile)
+            try:
+                plain = {}
+                bg.ninja_file(gen, out, {'main': [a, b]}, 4, edges=plain)
+                os.environ['REKARINA_COLD_OBJS'] = str(Path(tmp) / 'cold.txt')
+                edges = {}
+                text, _, _ = bg.ninja_file(gen, out, {'main': [a, b]}, 4, edges=edges)
+            finally:
+                os.environ.pop('REKARINA_COLD_OBJS', None)
+                bg.DEPS, bg.GEN_FLAGS[:] = saved_deps, saved_flags
+        oa, ob = out / 'obj' / 'main' / 'main_0000.o', out / 'obj' / 'main' / 'main_0001.o'
+        self.assertIn(' -O1 ', edges[ob][0] + ' ')
+        self.assertEqual(edges[oa][0], plain[oa][0])   # the others' commands unchanged: nothing compiled again
+        self.assertIn('-O2', edges[oa][0])
+
+
+class GateTest(unittest.TestCase):
+    """The memory gate's choice (gate_pick), and on Windows the gate itself on real processes."""
+    L, G = bg.LIGHT_MEM, 3 * GiB
+
+    def pick(self, waiting, growth, free, running, waited=0.0):
+        return bg.gate_pick(waiting, growth, free, running, waited, reserve=GiB, patience=30)
+
+    def test_starts_what_fits(self):
+        self.assertEqual(self.pick([self.L] * 4, 0, GiB + 2 * self.L, 1), [0, 1])
+        self.assertEqual(self.pick([self.L] * 4, self.L, GiB + 2 * self.L, 1), [0])    # a running one still grows
+        self.assertEqual(self.pick([self.L] * 4, 0, GiB // 2, 3), [])                  # memory gone: none starts
+
+    def test_never_none_running(self):
+        self.assertEqual(self.pick([self.G, self.L], 0, GiB // 2, 0), [0])
+
+    def test_lights_pass_a_giant_for_a_while(self):
+        free = GiB + 2 * self.L
+        self.assertEqual(self.pick([self.G, self.L, self.L], 0, free, 2, waited=5), [1, 2])
+        self.assertEqual(self.pick([self.G, self.L, self.L], 0, free, 2, waited=31), [])
+        self.assertEqual(self.pick([self.G, self.L], 0, GiB + self.G + self.L, 2, waited=31), [0, 1])
+
+    @unittest.skipUnless(sys.platform == 'win32', 'the gate holds compiles on Windows')
+    def test_holds_real_processes(self):
+        # A stand-in for Ninja starts four stand-in compiles at once ("-c a.c" in their command lines); with memory for
+        # one at a time the gate runs them one after another, with plenty all four together.
+        import time
+        with tempfile.TemporaryDirectory() as tmp:
+            log, driver = Path(tmp) / 'log.txt', Path(tmp) / 'driver.py'
+            child = ("import sys, time; open(sys.argv[3], 'a').write(f'{time.monotonic()}\\n'); time.sleep(0.4)")
+            driver.write_text('import subprocess, sys\n'
+                              f'ps = [subprocess.Popen([sys.executable, "-c", {child!r}, "-c", "a.c", {str(log)!r}]) '
+                              'for _ in range(4)]\n'
+                              'sys.exit(max(p.wait() for p in ps))\n')
+            saved = bg.MemoryGate.free
+            try:
+                for free, together in ((bg.GATE_RESERVE + GiB + GiB // 2, False), (64 * GiB, True)):
+                    log.write_text('')
+                    bg.MemoryGate.free = lambda self, f=free: f
+                    t0 = time.monotonic()
+                    code, dt, _, _ = bg.run_measured([sys.executable, str(driver)], dict(os.environ), {'a.c': GiB})
+                    starts = sorted(float(x) for x in log.read_text().split())
+                    self.assertEqual((code, len(starts)), (0, 4))
+                    spread = starts[-1] - starts[0]
+                    if together:
+                        self.assertLess(spread, 0.35, starts)
+                    else:   # one at a time: each starts after the one before has ended
+                        self.assertGreater(spread, 3 * 0.35, starts)
+                    self.assertLess(time.monotonic() - t0, 30)
+            finally:
+                bg.MemoryGate.free = saved
 
 
 if __name__ == '__main__':

@@ -2,7 +2,7 @@
 
 Copies tools/vendor/ryujinx to build/xlate/ryujinx, applies tools/xlate/patches/*.patch there (tools/vendor stays
 byte-identical; 0001-0004 are MNG's, 0005-0013, 0015 and 0016 are ours; 0017-0020, the Ampere / NVN2 frontend for
-Switch 2 games, are MNG's and seedds/nxnative's, 0021-0042 ours), then runs `dotnet publish`. Needs the .NET 10 SDK, the MSVC build
+Switch 2 games, are MNG's and seedds/nxnative's, 0021-0044 ours), then runs `dotnet publish`. Needs the .NET 10 SDK, the MSVC build
 tools and vswhere.exe (docs/building.md). Run with .venv. On Linux it builds build/xlate/totk_xlate for linux-x64, which
 NativeAOT links with the system's clang (no MSVC); NativeAOT builds for the OS it runs on only.
 
@@ -44,7 +44,7 @@ BUILD = ROOT / "build" / "xlate"
 WIN = os.name == "nt"
 EXE = "totk_xlate.exe" if WIN else "totk_xlate"
 VSWHERE_DIR = Path(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)")) / "Microsoft Visual Studio" / "Installer"
-PATCH_COUNT = 42   # tools/xlate/patches/*.patch: a missing or stray file stops the build
+PATCH_COUNT = 43   # tools/xlate/patches/*.patch: a missing or stray file stops the build
 
 
 def find_dotnet() -> str | None:
@@ -174,7 +174,9 @@ def prepare_sources() -> Path:
 # shader (seven of OoT's), and patch 0041 that of mesh shaders on the devices that ask for whole index
 # vectors, and patch 0042 that of programs whose VOTEU writes a uniform predicate other than UPT (OoT's eye
 # shaders); patch 0043 adds a translation only a job with "as_compute" asks for (a mesh emulation kernel, its own
-# stage GFX_STAGE_MSC in the program hash); runtime/gfx_shader.c build_code_hash gives exactly those a program hash of their own, so every other cache
+# stage GFX_STAGE_MSC in the program hash); patch 0044 changes programs with REDUX, MATCH or a per-lane HMMA, LDSM or
+# MOVM only in compute shaders translated for subgroups wider than 32 lanes (AMD GCN); runtime/gfx_shader.c
+# build_code_hash gives exactly those a program hash of their own, so every other cache
 # entry made under the earlier identity is what this build would write. A change to any source gives another left
 # side and the entry stops applying by itself; then it is removed, or made anew with the same care (translate a
 # corpus with both builds and compare the files). The sources' comments were reworded since (no game is named in
@@ -186,6 +188,8 @@ SAME_AS = {
     "509b66df57c65317b67426f91979f3c6aed7ed1fb375b5db785c523cf23067ff":
         "b9d1309569a87e96595514e3e1eccb56e907a0b67a1bac3577ae00acd9c8e726",
     "7db37617542e2afade37a4d45c19ba14f3b92fc24c89d22d403709289252c5d1":
+        "b9d1309569a87e96595514e3e1eccb56e907a0b67a1bac3577ae00acd9c8e726",
+    "b57096b248730a9d5a96a9cba4d295971b0717eb19a487b314ae561b5b799245":
         "b9d1309569a87e96595514e3e1eccb56e907a0b67a1bac3577ae00acd9c8e726",
 }   # same-as-end
 

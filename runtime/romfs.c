@@ -569,7 +569,9 @@ static void added_init(void) {
     rt_log("RomFS overlay: %zu files added to the RomFS", nadded);
 }
 
-// RomFS file `rel` as the game would read it: from an overlay that replaces it (*base), else from the image. malloc'd;
+static int game_read(uint64_t i, Entry e, void *buf, uint64_t n);
+
+// RomFS file `rel` as the game would read it: from an overlay that replaces it (*base), else from the RomFS. malloc'd;
 // NULL when it is missing, unreadable or 16 MiB or more (logged with `keeps`, what the game does without it).
 static void *read_served(const char *rel, Overlay **base, size_t *n, const char *keeps) {
     uint64_t i = lower(rel);
@@ -580,11 +582,12 @@ static void *read_served(const char *rel, Overlay **base, size_t *n, const char 
     }
     for (size_t k = 0; k < noverlay; k++)
         if (overlays[k].index == i) *base = &overlays[k];
-    PlatFile *f = *base ? open_read((*base)->path) : image;
-    uint64_t off = *base ? 0 : entry(i).offset, size = *base ? (*base)->size : entry(i).size;
-    void *in = size && size < (16u << 20) && f ? malloc((size_t)size) : NULL;
-    int ok = in && read_at(f, in, (uint32_t)size, off) == (int64_t)size;
-    if (*base && f) plat_file_close(f);
+    PlatFile *f = *base ? open_read((*base)->path) : NULL;
+    uint64_t size = *base ? (*base)->size : entry(i).size;
+    void *in = size && size < (16u << 20) && (f || !*base) ? malloc((size_t)size) : NULL;
+    // the game's own file as the game reads it (game_read: a .nup's zstd-stored file inflated)
+    int ok = in && (*base ? read_at(f, in, (uint32_t)size, 0) == (int64_t)size : game_read(i, entry(i), in, size));
+    if (f) plat_file_close(f);
     if (!ok) {
         free(in);
         rt_log("RomFS: cannot read %s; %s", rel, keeps);
@@ -603,7 +606,13 @@ static int serve_generated(const char *rel, Overlay *base, void *out, size_t out
     need(snprintf(dir, sizeof dir, "%s/%s", rt_config()->profile, sub) < (int)sizeof dir, "generated overlay path");
     need(snprintf(file, sizeof file, "%s/%s", dir, leaf) < (int)sizeof file, "generated overlay path");
     plat_file_mkdir_p(dir);
-    int ok = plat_file_write(file, out, out_n);
+    // A file that already holds these bytes stays as it is: the entry step's texture walk (--scan-textures, a child
+    // process) makes the same tables at its start, and a rewrite changed the file under the game, which
+    // checks each overlay's identity at every open (FATAL "missing or changed since the start check").
+    uint64_t have_n = 0;
+    uint8_t *have = plat_file_size(file) == (int64_t)out_n ? plat_file_read(file, &have_n) : NULL;
+    int ok = have && have_n == out_n && !memcmp(have, out, out_n) ? 1 : plat_file_write(file, out, out_n);
+    free(have);
     free(out);
     PlatFile *r = ok ? open_read(file) : NULL;
     if (!r) {
@@ -816,6 +825,31 @@ static void camera_overlay(void) {
     if (ok && serve_generated(CAMPACK, base, out, out_n, "camera", "camera speed", keeps)) cam_pack_served();
 }
 
+#ifdef GAME_OOT
+// A mod's Bootup pack with the port's scene scale (scene_pack.c): served from <profile>/mods/ in place of the mod's
+// own, which overlay_contest let win over the port's. The port's own pack, or none, is left as it is.
+#define BOOTUP "Pack/Bootup.Nin_Ounce_NVN2.pack.zs"
+static void scene_overlay(void) {
+    uint64_t i = lower(BOOTUP);
+    if (i >= file_count || strcmp(entry_name(entry(i)), BOOTUP)) return;
+    const Overlay *o = NULL;
+    for (size_t k = 0; k < noverlay; k++)
+        if (overlays[k].index == i) o = &overlays[k];
+    if (!o || (!o->mod && o->prio != 1)) return;
+    static const char keeps[] = "the scene keeps the mod pack's resolution, which drops while the GPU looks loaded";
+    Overlay *base, *dic_base;
+    size_t n, dn;
+    void *in = read_served(BOOTUP, &base, &n, keeps), *out = NULL;
+    void *dic = in ? read_served("Pack/ZsDic.pack.zs", &dic_base, &dn, keeps) : NULL;
+    size_t out_n = 0;
+    int set = in && dic ? scene_pack_build(in, n, dic, dn, &out, &out_n) : -1;
+    free(in);
+    free(dic);
+    if (set > 0) serve_generated(BOOTUP, base, out, out_n, "mods", "the port's scene scale on a mod's pack", keeps);
+    else if (set < 0) rt_log("RomFS: %s of a mod: %s", BOOTUP, keeps);
+}
+#endif
+
 // The button prompts' folders (input_prompts_folder) and whether each had a manifest next to romfs-index.bin at start;
 // the one the settings asked for at start, the one overlay_init loaded (NULL: the game's own prompts) and why the first
 // did not load (ROMFS_PROMPTS_*). The menu compares them with the settings in effect (ui/menu.cpp prompts_note).
@@ -994,6 +1028,92 @@ static const char *live_name(const char *folder) {   // "romfs-patches-xbox" -> 
     return !folder ? "nintendo" : !strncmp(folder, "romfs-patches-", 14) ? folder + 14 : "";
 }
 
+// ---- Texts laid out before a change (runtime/oot_fps.c set promptglyphs)
+// The game shapes a text when it lays it out and keeps, per character, the glyph the shaping gave (the text's glyph
+// buffer); the text's quads are built from that buffer, and the font's glyph cache keys a picture by character and
+// glyph. The swap of the table reaches a text only when the game shapes it again, which it does for a text it
+// changes: a text it set once kept the old set's buttons until the next start (with a pad switched on after the
+// start, the action hint kept the keyboard's key and the pause screen's Back its SHIFT; the owner's test of
+// 2026-11-20). Every set's glyphs are in the one font, and each keeps the advance of the game's own glyph of that
+// button (tools/button_icons.py), so a held glyph can be swapped for the new one in place, without a new layout.
+// romfs_prompt_glyph says which glyph a button character of such a text is to have; romfs_text_generation, counted
+// up at each change made in the running game (0 before the first), tells the host which texts to look at again.
+static struct {
+    uint16_t now[256];   // U+E000..U+E0FF -> its glyph in the table the game holds now, 0 none
+    uint8_t any[8192];   // a bit per glyph: a button glyph of some set's table or the glyph of a key (prompts-keys.bin)
+} PG;
+static volatile uint32_t text_gen;
+
+// The glyph of each button character U+E000..U+E0FF in a cmap table as prompts-live.bin holds it (the Unicode
+// subtable, format 4), 0 where it has none; returns how many it has.
+static int cmap_buttons(const uint8_t *t, uint32_t n, uint16_t gid_of[256]) {
+    memset(gid_of, 0, 256 * sizeof *gid_of);
+    if (n < 4) return 0;
+    uint32_t records = (uint32_t)(t[2] << 8 | t[3]), off = 0;
+    for (uint32_t r = 0; r < records && 4 + 8 * r + 8 <= n; r++) {
+        const uint8_t *q = t + 4 + 8 * r;
+        uint32_t plat = (uint32_t)(q[0] << 8 | q[1]), enc = (uint32_t)(q[2] << 8 | q[3]);
+        if ((plat == 3 && enc == 1) || plat == 0) off = (uint32_t)q[4] << 24 | (uint32_t)q[5] << 16 | (uint32_t)q[6] << 8 | q[7];
+    }
+    if (!off || off + 14 > n || (t[off] << 8 | t[off + 1]) != 4) return 0;
+    uint32_t segs = (uint32_t)(t[off + 6] << 8 | t[off + 7]) / 2, ends = off + 14, starts = ends + 2 * segs + 2,
+             deltas = starts + 2 * segs, ranges = deltas + 2 * segs;
+    if (ranges + 2 * segs > n) return 0;
+    int count = 0;
+    for (uint32_t i = 0; i < segs; i++) {
+        uint32_t end = (uint32_t)(t[ends + 2 * i] << 8 | t[ends + 2 * i + 1]),
+                 start = (uint32_t)(t[starts + 2 * i] << 8 | t[starts + 2 * i + 1]),
+                 delta = (uint32_t)(t[deltas + 2 * i] << 8 | t[deltas + 2 * i + 1]),
+                 range = (uint32_t)(t[ranges + 2 * i] << 8 | t[ranges + 2 * i + 1]);
+        for (uint32_t cp = start < 0xE000 ? 0xE000 : start; cp <= end && cp <= 0xE0FF; cp++) {
+            uint32_t g = cp;
+            if (range) {   // the glyph from the glyph array, the delta added to one that is there
+                uint32_t at = ranges + 2 * i + range + 2 * (cp - start);
+                g = at + 2 <= n ? (uint32_t)(t[at] << 8 | t[at + 1]) : 0;
+                if (!g) continue;
+            }
+            g = (g + delta) & 0xffff;
+            if (g) gid_of[cp & 0xFF] = (uint16_t)g, count++;
+        }
+    }
+    return count;
+}
+
+static void prompt_glyphs_now(void) {   // after LV.cur changed
+    uint16_t g[256];
+    if (!LV.cur || !cmap_buttons(LV.cur, LV.size, g)) memset(g, 0, sizeof g);
+    for (int k = 0; k < 256; k++) __atomic_store_n(&PG.now[k], g[k], __ATOMIC_RELAXED);
+    for (int i = 0; i < KP.nk; i++)   // the keys' glyphs, if prompts-keys.bin was read after prompt_glyphs_load
+        if (KP.k[i].gid && KP.k[i].gid <= 0xffff)
+            __atomic_or_fetch(&PG.any[KP.k[i].gid >> 3], (uint8_t)(1u << (KP.k[i].gid & 7)), __ATOMIC_RELAXED);
+}
+
+static void prompt_glyphs_load(void) {   // live_load
+    uint16_t g[256];
+    int buttons = 0;
+    for (int s = 0; s < LV.n; s++) {
+        cmap_buttons(LV.tbl[s], LV.size, g);
+        for (int k = 0; k < 256; k++)
+            if (g[k]) PG.any[g[k] >> 3] |= (uint8_t)(1u << (g[k] & 7));
+    }
+    if (!KP.tried) keys_load();
+    prompt_glyphs_now();
+    for (int i = 0; i < 8192; i++) buttons += __builtin_popcount(PG.any[i]);
+    rt_log("RomFS overlay: %d button glyphs of the prompt sets can be swapped in texts laid out before a change", buttons);
+}
+
+uint32_t romfs_text_generation(void) { return __atomic_load_n(&text_gen, __ATOMIC_ACQUIRE); }
+
+// The glyph a text's character cp is to be drawn with when it holds `glyph`: for a button character whose glyph is a
+// button glyph of another set, or 0 (the text is drawn by character, and the font's cache keeps the picture the
+// character had when it was first drawn), the glyph of the set the game shows now; otherwise glyph itself.
+uint32_t romfs_prompt_glyph(uint32_t cp, uint32_t glyph) {
+    if (cp - 0xE000u > 0xFFu || glyph > 0xffffu) return glyph;
+    uint32_t now = __atomic_load_n(&PG.now[cp & 0xFF], __ATOMIC_RELAXED);
+    if (!now || now == glyph || (glyph && !(PG.any[glyph >> 3] >> (glyph & 7) & 1))) return glyph;
+    return now;
+}
+
 static void live_load(void) {
     LV.tried = 1;
     char path[2200];
@@ -1014,6 +1134,7 @@ static void live_load(void) {
     LV.applied = live_set(live_name(prompts_loaded));
     if (LV.applied >= 0 && (LV.cur = malloc(LV.size))) memcpy(LV.cur, LV.tbl[LV.applied], LV.size);   // as the folder's font has it
     if (!LV.cur) LV.applied = -1;
+    if (LV.n && LV.cur) prompt_glyphs_load();
     if (LV.n) rt_log("RomFS overlay: prompts-live.bin: %d prompt sets can be switched while the game runs (in use: %s)", LV.n,
                      LV.applied >= 0 ? LV.name[LV.applied] : "none of them");
 }
@@ -1077,7 +1198,11 @@ static void hint_load(HintTable *T) {
     char path[2200];
     snprintf(path, sizeof path, "%s/%s", index_dir, T->file);
     FILE *f = fopen(path, "rb");
-    if (!f) return;
+    if (!f) {   // a folder whose prompt files are older than the table: the images stay the start's set's
+        rt_log("RomFS overlay: no %s next to the game: %s keeps the buttons of the set it started with (run the setup "
+               "again)", T->file, T->what);
+        return;
+    }
     uint32_t h[5];
     if (fread(h, 4, 5, f) == 5 && h[0] == 0x48504b52u && h[1] == 1 && h[2] && h[2] <= HINT_SETS && h[3] &&
         h[3] <= (1u << 20) && h[4] && h[4] <= HINT_IMAGES_MAX) {
@@ -1255,6 +1380,9 @@ static void live_main(void *arg) {
                (unsigned long long)at, (plat_now_ns() - t0) / 1e6);
         hint_apply(&HT, LV.name[to], at);   // and the action hint's images
         hint_apply(&OT, LV.name[to], at);   // and the song screen's
+        // and the texts laid out before: each takes the new buttons when it is next drawn (oot_fps.c set promptglyphs)
+        prompt_glyphs_now();
+        __atomic_add_fetch(&text_gen, 1, __ATOMIC_ACQ_REL);
     } else {
         // Before the game has loaded its fonts there is nothing to find: a few more tries, some seconds apart, so
         // keys bound in rekarina.ini show without a visit to the menu; then not again until the settings change.
@@ -1415,13 +1543,42 @@ int romfs_prompts_off(const char *folder) {
     return folder && prompts_wanted && !strcmp(folder, prompts_wanted) ? prompts_off : ROMFS_PROMPTS_OK;
 }
 
-// The first RomFS file that the overlays [a, b) and [c, d) both replace, or NULL.
-static const char *overlay_clash(size_t a, size_t b, size_t c, size_t d) {
+// The SHA-256 column of `rel` in dir/manifest.tsv, into sha; 0 when the folder does not list it.
+static int manifest_sha(const char *dir, const char *rel, char sha[65]) {
+    char path[2200], line[8192];
+    if (!dir || snprintf(path, sizeof path, "%s/manifest.tsv", dir) >= (int)sizeof path) return 0;
+    FILE *m = fopen(path, "rb");
+    if (!m) return 0;
+    size_t rn = strlen(rel);
+    int found = 0;
+    while (!found && fgets(line, sizeof line, m)) {
+        if (strncmp(line, rel, rn) || line[rn] != '\t') continue;
+        const char *s = strchr(line + rn + 1, '\t');   // past the size
+        if (s && strlen(s + 1) >= 64) {
+            memcpy(sha, s + 1, 64);
+            sha[64] = 0;
+            found = 1;
+        }
+    }
+    fclose(m);
+    return found;
+}
+
+// The first RomFS file that the overlays [a, b) (a prompt set's folder, pdir) and [c, d) (the mods) both replace, or
+// NULL. Not a clash: the resource size table (restbl_overlay merges both tables), and a file pdir carries with the same
+// bytes as fdir, the folder that loads in its place: with or without the prompts the mod's file is served there. Every
+// prompt folder's Bootup pack is romfs-patches' own (the scene scale, which scene_overlay keeps on a mod's pack), so a
+// model mod that ships Bootup no longer takes the Xbox prompts away (1.2.5 did).
+static const char *overlay_clash(size_t a, size_t b, size_t c, size_t d, const char *pdir, const char *fdir) {
     for (size_t i = a; i < b; i++)
-        for (size_t j = c; j < d; j++)
-            if (overlays[i].index != ADDED && overlays[i].index == overlays[j].index &&
-                strcmp(overlays[i].name, restbl_rel))   // restbl_overlay merges both tables
-                return overlays[i].name;
+        for (size_t j = c; j < d; j++) {
+            if (overlays[i].index == ADDED || overlays[i].index != overlays[j].index || !strcmp(overlays[i].name, restbl_rel))
+                continue;
+            char ps[65], fs[65];
+            if (manifest_sha(pdir, overlays[i].name, ps) && manifest_sha(fdir, overlays[i].name, fs) && !strcmp(ps, fs))
+                continue;
+            return overlays[i].name;
+        }
     return NULL;
 }
 
@@ -1436,6 +1593,7 @@ static void overlay_drop(size_t a, size_t b) {
 }
 
 static void overlay_init(void) {
+    voice_lang_init();   // read at start, as the overlays are (voice_lang.c)
     // REKARINA_ROMFS_PATCHES unset: romfs-patches next to romfs-index.bin if it has a manifest (tools/make_romfs_patches.py).
     // A game resolution that is not 16:9 takes romfs-patches-<w>x<h> instead when it is there: the same overlay with
     // the UI laid out for that shape (make_romfs_patches.py --aspect), when the game version has the camera aspect patch
@@ -1497,11 +1655,13 @@ static void overlay_init(void) {
                                                           : ROMFS_PROMPTS_OK;
     restbl_find();
     size_t first = noverlay;
+    char prompts_dir[2100] = "";   // the prompt set's folder, for overlay_clash
     if (prompts_wanted && prompts_off == ROMFS_PROMPTS_OK) {
         // fits: its manifest path did
         snprintf(path, sizeof path, "%s/%s", index_dir, shaped ? pc_dir : prompts_wanted);
         if (overlay_load(path, 1, 0)) {
             prompts_loaded = prompts_wanted;
+            snprintf(prompts_dir, sizeof prompts_dir, "%s", path);
             rt_log("RomFS overlay: %s button prompts (%s)", style, path);
             // By label (pad_layout xbox, or auto for any pad but a Switch one) the Switch's A is the button labelled A,
             // so the Xbox and Rekarina sets keep the game's own A B X Y glyphs: only the shoulders, triggers, Menu, View
@@ -1541,7 +1701,8 @@ static void overlay_init(void) {
     size_t mods_first = noverlay;
     if (mods && *mods && strcmp(mods, "0")) overlay_load(mods, 0, 1);
     mods_overlay_init();
-    const char *clash = prompts_loaded ? overlay_clash(first, prompts_end, mods_first, noverlay) : NULL;
+    const char *clash = prompts_loaded ? overlay_clash(first, prompts_end, mods_first, noverlay, prompts_dir,
+                                                       shaped ? def : plain_ok ? plain : NULL) : NULL;
     if (clash) {
         rt_log("RomFS overlay: a RomFS mod replaces %s, which the %s prompts change too; Switch prompts stay", clash,
                style);
@@ -1555,6 +1716,9 @@ static void overlay_init(void) {
     overlay_contest();
     mods_overlay_log();
     heapdef_overlay();
+#ifdef GAME_OOT
+    scene_overlay();
+#endif
     // A mod's resource size table is merged with the game's and the port's (restbl_overlay), for both games: served
     // as it came, a mod's table built from the game's own gave the port's larger button font (romfs-patches
     // Font2/Scalable/External, 117 KB against the game's entry of 14.5 KB) too small a buffer, the font did not load,
@@ -1725,6 +1889,28 @@ const char *romfs_entry(uint64_t i, uint64_t *offset, uint64_t *size) {
 
 const char *romfs_image_path(void) { return image_file; }
 
+// The whole of RomFS file i as the game reads it (game_read: its range of the image, or a .nup's inflated bytes),
+// malloc'd, for the runtime's own walks of the index (tex_prepare.c); NULL when it cannot be read. Not for the guest.
+uint8_t *romfs_entry_read(uint64_t i, uint64_t *size) {
+    if (i >= file_count) return NULL;
+    Entry e = entry(i);
+    uint8_t *buf = malloc(e.size ? (size_t)e.size : 1);
+    if (!buf || !game_read(i, e, buf, e.size)) {
+        free(buf);
+        return NULL;
+    }
+    *size = e.size;
+    return buf;
+}
+
+// The image's identity for a cache of what was made from it: its size and last write time (0: not known).
+int romfs_image_identity(uint64_t *size, uint64_t *write_time) {
+    PlatFileId id;
+    if (!image || !plat_file_id(image, &id)) return 0;
+    *size = id.size, *write_time = id.write_time;
+    return 1;
+}
+
 size_t romfs_overlay_count(void) { return noverlay; }
 
 int romfs_patches_loaded(void) { return patches_loaded; }
@@ -1777,6 +1963,14 @@ uint32_t romfs_open(uint64_t *out, const char *path, int mode) {
     const char *p = romfs_path_relative(mount_of(path), path, rel, sizeof rel);
     if (!p) return FS_R_PATH_NOT_FOUND;
     uint64_t i = file_index(p);
+    char vbuf[4096];   // a voice file in the voice language's place (voice_lang.c), when that language has it
+    const char *v = voice_lang_path(p, vbuf, sizeof vbuf);
+    uint64_t vi = v ? file_index(v) : UINT64_MAX;
+    if (vi != UINT64_MAX) {
+        static int told;
+        if (__atomic_fetch_add(&told, 1, __ATOMIC_RELAXED) < 3) rt_log("voice: %s served as %s", p, v);
+        i = vi;
+    }
     if (i == UINT64_MAX) return FS_R_PATH_NOT_FOUND;
     uint32_t ov = overlay_slot(i);
     PlatFile *f = NULL;
@@ -1907,7 +2101,9 @@ uint32_t romfs_entry_type(int *out, const char *path) {
     char rel[4096];
     const char *p = romfs_path_relative(mount_of(path), path, rel, sizeof rel);
     if (!p) return FS_R_PATH_NOT_FOUND;
-    if (file_index(p) != UINT64_MAX) {
+    char vbuf[4096];
+    const char *v = voice_lang_path(p, vbuf, sizeof vbuf);
+    if (file_index(p) != UINT64_MAX || (v && file_index(v) != UINT64_MAX)) {   // as romfs_open serves it
         *out = FS_ENTRY_FILE;
         return 0;
     }

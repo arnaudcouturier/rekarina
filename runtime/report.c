@@ -302,6 +302,13 @@ int report_make(char *path, size_t n) {
         snprintf(p, sizeof p, "%s/%s", dir, name);
         zip_add_file(&z, name, p, 1);
     }
+    // the logs of the preparation's other modes (main.c log_open): the launcher's libraries build, the texture walk
+    static const char *const child_logs[] = {"logs/" RT_FILE_STEM "-warm-libraries.log",
+                                             "logs/" RT_FILE_STEM "-scan-textures.log"};
+    for (int i = 0; i < 2; i++) {
+        snprintf(p, sizeof p, "%s/%s", dir, child_logs[i]);
+        zip_add_file(&z, child_logs[i], p, 1);
+    }
     snprintf(p, sizeof p, "%s/" RT_INI_FILE, dir);
     zip_add_file(&z, RT_INI_FILE, p, 0);
     snprintf(p, sizeof p, "%s/" RT_FILE_STEM "-install.json", dir);

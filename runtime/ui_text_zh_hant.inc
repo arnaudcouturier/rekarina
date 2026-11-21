@@ -52,8 +52,8 @@
     [UI_MENU_ANISO] = "材質過濾",
     [UI_MENU_ANISO_DESC] = "表面材質的非等向性過濾：以斜角觀看的地面、道路與牆壁到遠處仍保持清晰，不會模糊。「遊戲」：使用遊戲要求的等級，與 Switch 相同。",
     [UI_MENU_ANISO_GAME] = "遊戲",
-    [UI_MENU_SHARPNESS] = "FSR 銳利度",
-    [UI_MENU_SHARPNESS_DESC] = "FSR 縮放後的銳化；0 為關閉。",
+    [UI_MENU_SHARPNESS] = "銳利度",
+    [UI_MENU_SHARPNESS_DESC] = "FSR 或 DLSS 縮放後的銳化，以及低於 80% 時遊戲本身的紋理銳化。0 為全部關閉。",
     [UI_MENU_COLOR] = "色彩",
     [UI_MENU_COLOR_PRESET] = "色彩設定檔",
     [UI_MENU_COLOR_PRESET_DESC] = "設定下方四個數值。「鮮豔」：提高對比與飽和度，暗部稍微提亮（為 OLED 螢幕設計）。"
@@ -106,7 +106,7 @@
     [UI_MENU_TAA] = "升頻器",
     [UI_MENU_TAA_DESC] = "DLSS / DLAA 一列使用哪個升頻器：NVIDIA DLSS（RTX 顯示卡）、AMD FSR（任何顯示卡，時域）或 AMD FSR 1（任何顯示卡，空間：最輕量，適合舊顯示卡與掌機）。重新啟動後生效。",
     [UI_MENU_FRAMEGEN] = "幀生成",
-    [UI_MENU_FRAMEGEN_DESC] = "在遊戲繪製的每兩幀之間插入一幀生成的畫面，HUD 不參與生成：AMD FSR 適用於任何顯示卡，NVIDIA DLSS 適用於 RTX 40 與 50 系列。重新啟動後生效。",
+    [UI_MENU_FRAMEGEN_DESC] = "在遊戲繪製的每兩幀之間插入一幀生成的畫面，HUD 不參與生成：AMD FSR 適用於任何顯示卡，NVIDIA DLSS 適用於 RTX 40 與 50 系列。會同時開啟時間性升頻（DLSS / DLAA），並使用其動態向量；負載由 DLSS 模式決定：DLAA（原生）最重，品質與平衡較輕。重新啟動後生效。",
     [UI_MENU_FRAMEGEN_NEEDS] = "需要開啟 DLSS / DLAA：會用到它的動態向量。",
     [UI_MENU_DLAA] = "NVIDIA DLSS / DLAA",
     [UI_MENU_DLAA_DESC] = "對 3D 場景使用 NVIDIA DLSS（NVIDIA RTX 顯示卡；" DLSS_FILE " 需放在 " EXE_FILE " 旁邊）："
@@ -136,7 +136,8 @@
 
     [UI_MENU_FPS_LIMIT] = "幀率上限",
     [UI_MENU_FPS_LIMIT_DESC] = "遊戲每秒最多繪製的幀數。高於 60 屬實驗性功能，"
-                               "且需要開啟「遊戲速度跟隨時鐘」。",
+                               "且需要開啟「遊戲速度跟隨時鐘」。 "
+                               "使用 AMD 幀生成時，此值以畫面上看到的幀計算，遊戲本身只繪製一半；DLSS 幀生成則在此幀率之上再加入生成幀。",
     [UI_MENU_FPS_30] = "30 FPS", [UI_MENU_FPS_40] = "40 FPS", [UI_MENU_FPS_45] = "45 FPS",
     [UI_MENU_FPS_60] = "60 FPS", [UI_MENU_FPS_90] = "90 FPS", [UI_MENU_FPS_120] = "120 FPS", [UI_MENU_FPS_144] = "144 FPS",
     // the monitor's refresh rate; printf format with the rate in Hz when it is known
@@ -239,12 +240,13 @@
     [UI_MENU_STICK_DEADZONE_DESC] = "手把搖桿要移動多遠遊戲才會感應到。如果角色或鏡頭會自己移動，請調高：放開搖桿，查看「目前搖桿」的數值，再將死區設得比它高幾個百分點。",
     [UI_MENU_STICK_DEADZONE_NOW] = "目前搖桿：%.0f %%",
     [UI_MENU_MOUSE_MODE] = "滑鼠鏡頭",
-    [UI_MENU_MOUSE_MODE_DESC] = "「直接」：鏡頭依滑鼠移動的距離轉動，如同 PC 遊戲，沒有搖桿死區或曲線（遊戲 1.4.3；其他版本使用搖桿模擬）。「搖桿模擬」：滑鼠充當右搖桿。",
+    [UI_MENU_MOUSE_MODE_DESC] = "「直接」：鏡頭依滑鼠移動的距離轉動，如同 PC 遊戲，沒有搖桿死區或曲線（遊戲 1.4.3；其他版本使用搖桿模擬）。「搖桿模擬」：滑鼠充當右搖桿。「關閉」：滑鼠不轉動鏡頭，游標留給選單使用。",
     [UI_MENU_FAST_TEXT] = "更快的對話",
     [UI_MENU_FAST_TEXT_DESC] = "去除遊戲對話中句子之間的停頓，文字不再中途停下。",
-    [UI_MENU_MOUSE_MODE_DESC_OOT] = "直接：滑鼠移動多少，鏡頭就轉動多少，速度不限，沒有搖桿的死區、曲線與速度上限。搖桿模擬：滑鼠充當右搖桿，套用搖桿的曲線與最高速度。",
+    [UI_MENU_MOUSE_MODE_DESC_OOT] = "直接：滑鼠移動多少，鏡頭就轉動多少，速度不限，沒有搖桿的死區、曲線與速度上限。搖桿模擬：滑鼠充當右搖桿，套用搖桿的曲線與最高速度。「關閉」：滑鼠不轉動鏡頭，游標留給選單使用。",
     [UI_MENU_MOUSE_STICK] = "搖桿模擬",
     [UI_MENU_MOUSE_DIRECT] = "直接",
+    [UI_MENU_MOUSE_OFF] = "關閉",
     [UI_MENU_MENU_CURSOR] = "在遊戲選單中使用滑鼠",
     [UI_MENU_MENU_CURSOR_DESC] = "在遊戲本身的選單（標題、物品欄、商店、對話選項）中顯示游標：游標下的項目會被選取，左鍵確認，右鍵返回。僅在最後使用的是滑鼠或鍵盤時顯示，因此使用手把時選單不變（遊戲 1.4.3）。",
     [UI_MENU_MOUSE_SENS] = "滑鼠鏡頭靈敏度",

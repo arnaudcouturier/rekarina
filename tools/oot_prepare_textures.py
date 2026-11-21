@@ -148,6 +148,14 @@ def main():
     ex = ThreadPoolExecutor(max_workers=min(8, os.cpu_count() or 4))
     ahead = deque()
     it = iter(names)
+    archives = [0, time.monotonic()]
+
+    def counted():   # the launcher's background job reads the count (installer/oot.py TEXTURE_ARCHIVES)
+        archives[0] += 1
+        if archives[0] == len(names) or time.monotonic() - archives[1] >= 2:
+            archives[1] = time.monotonic()
+            print(f'textures: {archives[0]} of {len(names)} archives', flush=True)
+
     try:
         for name in it:
             ahead.append(ex.submit(read, name))
@@ -158,6 +166,7 @@ def main():
                 p.stdin.write(storage)
                 sent[0] += 1
                 sent[1] += len(storage)
+            counted()
             if not room_ok():
                 print('the disk is nearly full: the texture preparation stops here; the game fills the rest of the '
                       'cache in play', flush=True)
@@ -169,6 +178,7 @@ def main():
                 p.stdin.write(storage)
                 sent[0] += 1
                 sent[1] += len(storage)
+            counted()
     except BrokenPipeError:   # the exe stopped (no texture cache on this device, or an error): nothing more to send
         pass
     finally:

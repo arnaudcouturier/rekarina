@@ -100,9 +100,10 @@ const char *rt_log_path(void) {
     return __atomic_load_n(&g_log_state, __ATOMIC_ACQUIRE) == LOG_FILE ? g_log_path : NULL;
 }
 
-// Opens the log file for a game run (game = 1) and writes the buffered lines to it; anything else drops them. Runs on
-// the main thread before the boot starts other threads.
-static void log_open(int game) {
+// Opens the log file <stem>.log for a game run (RT_FILE_STEM) or the preparation's other modes (their own stems) and
+// writes the buffered lines to it; stem NULL drops them. Runs on the main thread before the boot starts other threads.
+static void log_open(const char *stem) {
+    int game = stem != NULL;
     char dir[PLAT_PATH_MAX * 3], from[PLAT_PATH_MAX * 3 + 16], to[PLAT_PATH_MAX * 3 + 16];
     char *cut = NULL;
     if (game && !plat_stderr_path(dir, sizeof dir) && plat_exe_path(dir, sizeof dir)) {
@@ -114,12 +115,12 @@ static void log_open(int game) {
         strcpy(cut, "/logs");
         plat_file_mkdir_p(dir);
         for (int i = LOG_KEEP - 1; i > 0; i--) {   // <stem>.3.log -> <stem>.4.log, ..., <stem>.log -> <stem>.1.log
-            if (i > 1) snprintf(from, sizeof from, "%s/" RT_FILE_STEM ".%d.log", dir, i - 1);
-            else snprintf(from, sizeof from, "%s/" RT_FILE_STEM ".log", dir);
-            snprintf(to, sizeof to, "%s/" RT_FILE_STEM ".%d.log", dir, i);
+            if (i > 1) snprintf(from, sizeof from, "%s/%s.%d.log", dir, stem, i - 1);
+            else snprintf(from, sizeof from, "%s/%s.log", dir, stem);
+            snprintf(to, sizeof to, "%s/%s.%d.log", dir, stem, i);
             if (plat_file_exists(from)) plat_file_replace(from, to);
         }
-        snprintf(g_log_path, sizeof g_log_path, "%s/" RT_FILE_STEM ".log", dir);
+        snprintf(g_log_path, sizeof g_log_path, "%s/%s.log", dir, stem);
         g_log_file = plat_append_open(g_log_path);
     }
     if (!g_log_file) {
@@ -360,7 +361,7 @@ static void check_modules(const RtModule *mods, int n) {
         uint64_t bad = 0, bad_neg = 0;
         for (uint64_t k = 0; k < m->count; k++) {
             uint64_t a = m->addrs[k];
-            if (rt_dispatch_lookup(a) != m->fns[k] && bad++ < 5)
+            if (rt_dispatch_lookup(a) != m->fns[k] && !rt_dispatch_replaced(a) && bad++ < 5)
                 printf("  FAIL: %s_fn_addrs[%llu] %#llx does not dispatch to its function\n", m->name,
                        (unsigned long long)k, (unsigned long long)a);
             int next_is_start = k + 1 < m->count && m->addrs[k + 1] == a + 4;
@@ -428,7 +429,9 @@ static void check_memory(void) {
     CHECK(q.state == 0 && q.base == g->alias.base && q.size == g->alias.size, "QueryMemory on the free alias region");
     CHECK(mem_map_physical(a, 0x1000) == 0 && LD64(a + 0x10) == 0 && mem_unmap_physical(a, 0x1000) == 0,
           "remapped physical memory is not zeroed");
-    CHECK(mem_map_physical(a, 0x100000000ull) == 0x10801, "MapPhysicalMemory beyond the pool is not LimitReached");
+    uint64_t pool = 0;
+    mem_info(6, &pool);   // the pool differs by game: map a little more than it holds
+    CHECK(mem_map_physical(a, (pool + 0x200000) & ~0xfffull) == 0x10801, "MapPhysicalMemory beyond the pool is not LimitReached");
     mem_query(RT_HOSTFN_BASE + 0x40, &q);
     CHECK(q.state == 0x10 && q.base == RT_HOSTFN_BASE, "QueryMemory on the host-function window");
     mem_query(g->alias.base + g->alias.size + 0x1000, &q);
@@ -498,7 +501,7 @@ static int usage(const char *argv0) {
                     "--probe-cfg | --probe-dpi | --probe-mods | --probe-kernel | --probe-ipc | --probe-services | --probe-fs | --probe-gfx-abi | "
                     "--probe-nvn | --probe-nvn-tex | --probe-window | --probe-shader | --probe-vkmem | "
                     "--probe-vkexec | --probe-astc | --probe-color | --probe-movie | --probe-codec FILE | --probe-crash-call | --probe-crash-null | --probe-discord | "
-                    "--prepare-shaders | --warm-shaders | --prepare-textures | --boot |--seconds S [--shot PNG]]\n", argv0);
+                    "--prepare-shaders | --warm-shaders | --warm-libraries | --prepare-textures | --scan-textures | --boot |--seconds S [--shot PNG]]\n", argv0);
     return 2;
 }
 
@@ -537,6 +540,17 @@ static void portable_paths(RtConfig *c) {
 int main(int argc, char **argv) {
     mem_init();   // first: claim the guest address space before anything else can land there; reads totk.ini
     extern void vk_nvidia_cache_beside_exe(void);
+    {   // The driver reads its cache settings once, when it loads. The texture walk (the entry step's child, tex_prepare.c)
+        // asks for no NVIDIA disk cache: it has a few encoders. (NVIDIA's Linux driver honours it; the Windows one gives
+        // the walk a small cache file of its own beside the game's, which costs nothing.)
+        for (int i = 1; i < argc; i++)
+            if (!strcmp(argv[i], "--scan-textures")) plat_setenv("__GL_SHADER_DISK_CACHE", "0");
+        // and the preparation's modes show no message box: they run behind the game's picture or the launcher, and a
+        // box nobody sees kept the game's entry step waiting for its child (report.c box_wanted)
+        for (int i = 1; i < argc; i++)
+            if (!strcmp(argv[i], "--scan-textures") || !strcmp(argv[i], "--warm-libraries"))
+                plat_setenv("REKARINA_NO_CRASH_BOX", "1");
+    }
     vk_nvidia_cache_beside_exe();   // before anything can load the graphics driver
     // The build that wrote the log, at its top: an attached log from another install or version shows at a glance.
     rt_log("version: " RT_PORT_NAME " %s, game %s", rt_port_version, rt_game_version_text());
@@ -592,7 +606,11 @@ int main(int argc, char **argv) {
     }
     if (cfg.shot && !cfg.seconds) return usage(argv[0]);
     if (cfg.seconds && mode) return usage(argv[0]);
-    log_open(!mode);
+    // the texture walk (the entry step's child, prep.c prep_child) and the launcher's libraries build write their own
+    // logs beside the game's: the walk's stderr goes nowhere
+    log_open(!mode ? RT_FILE_STEM
+             : !strcmp(mode, "--warm-libraries") ? RT_FILE_STEM "-warm-libraries"
+             : !strcmp(mode, "--scan-textures") ? RT_FILE_STEM "-scan-textures" : NULL);
     if (mode && !strcmp(mode, "--make-report")) return report_main();   // the launcher's "Problem report" (report.c)
     if (mode && !strcmp(mode, "--memory-test")) {   // Linux: can the GPU share the game's memory? (memtest.c)
         int memtest_main(void);
@@ -655,6 +673,8 @@ int main(int argc, char **argv) {
 #endif
     if (!strcmp(mode, "--prepare-shaders")) return vk_pipeline_prepare_shaders();
     if (!strcmp(mode, "--warm-shaders")) return vk_pipeline_warm_shaders();
+    if (!strcmp(mode, "--warm-libraries")) return vk_pipeline_warm_libraries();
+    if (!strcmp(mode, "--scan-textures")) return tex_prepare_scan_main();
     if (!strcmp(mode, "--prepare-textures")) return tex_prepare_main();
     if (!strcmp(mode, "--boot")) { cfg.boot = 1; rt_boot(); return 0; }
     return usage(argv[0]);

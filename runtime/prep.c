@@ -166,8 +166,100 @@ void prep_progress_begin(void) {
     __atomic_store_n(&G.phase, PREP_PHASE_SHADERS, __ATOMIC_RELEASE);
 }
 void prep_progress_end(void) { __atomic_store_n(&G.phase, PREP_PHASE_DONE, __ATOMIC_RELEASE); }
-void prep_progress_total(int64_t n) { __atomic_fetch_add(&G.total, n, __ATOMIC_RELAXED); }
-void prep_progress_step(int64_t n) { __atomic_fetch_add(&G.done, n, __ATOMIC_RELAXED); }
+
+// The step's parts (PREP_PART_*), for its time left (prep_progress_left): each part's count (what the picture shows),
+// its work (what its pace is taken on: the count, or the texture archives' bytes, which vary a thousandfold between
+// archives where the count would stall and race), the seconds a unit of work takes before its own pace is measured,
+// and the samples its pace is taken from.
+#define PART_RATE_S 20.0
+#define PART_SAMPLES 64
+static struct {
+    volatile int64_t done, total, work_done, work_total;
+    int own_work;              // the work is given apart from the count (prep_part_work)
+    double unit_s;
+    double st[PART_SAMPLES];   // (seconds, work done) samples while the part moves (prep_progress_left, under PL)
+    int64_t sd[PART_SAMPLES];
+    int sn, sh;
+} PT[PREP_PARTS];
+static PlatMutex PL = PLAT_MUTEX_INIT;
+
+void prep_part_total(int part, int64_t n, double unit_s) {
+    if (part < 0 || part >= PREP_PARTS) return;
+    __atomic_fetch_add(&PT[part].total, n, __ATOMIC_RELAXED);
+    if (!PT[part].own_work) __atomic_fetch_add(&PT[part].work_total, n, __ATOMIC_RELAXED);
+    if (unit_s > 0) PT[part].unit_s = unit_s;
+    __atomic_fetch_add(&G.total, n, __ATOMIC_RELAXED);
+}
+void prep_part_work(int part, int64_t total, double unit_s) {   // before any prep_part_total of the part
+    if (part < 0 || part >= PREP_PARTS) return;
+    PT[part].own_work = 1;
+    __atomic_fetch_add(&PT[part].work_total, total, __ATOMIC_RELAXED);
+    if (unit_s > 0) PT[part].unit_s = unit_s;
+}
+void prep_part_step_work(int part, int64_t n, int64_t work) {
+    if (part >= 0 && part < PREP_PARTS) {
+        __atomic_fetch_add(&PT[part].done, n, __ATOMIC_RELAXED);
+        __atomic_fetch_add(&PT[part].work_done, PT[part].own_work ? work : n, __ATOMIC_RELAXED);
+    }
+    __atomic_fetch_add(&G.done, n, __ATOMIC_RELAXED);
+}
+void prep_part_step(int part, int64_t n) { prep_part_step_work(part, n, 0); }
+void prep_progress_total(int64_t n) { prep_part_total(PREP_PART_PIPES, n, 0); }
+void prep_progress_step(int64_t n) { prep_part_step(PREP_PART_PIPES, n); }
+
+// Seconds a part has left: its work left at the pace it kept over the last PART_RATE_S seconds, else at its unit
+// time; 0 when it is done. steady 0: no pace is taken (the pipelines' first phase, a few mesh pipelines of up to 22 s
+// each, says nothing of the rest) and the samples start again. Under PL.
+static double part_left(int p, double now, int steady) {
+    int64_t d = __atomic_load_n(&PT[p].work_done, __ATOMIC_RELAXED), t = __atomic_load_n(&PT[p].work_total, __ATOMIC_RELAXED);
+    if (__atomic_load_n(&PT[p].done, __ATOMIC_RELAXED) >= __atomic_load_n(&PT[p].total, __ATOMIC_RELAXED) || d >= t) return 0;
+    if (!steady) {
+        PT[p].sn = 0;
+        return (double)(t - d) * PT[p].unit_s;
+    }
+    int last = (PT[p].sh + PART_SAMPLES - 1) % PART_SAMPLES;
+    if (!PT[p].sn || now - PT[p].st[last] >= 0.5) {
+        PT[p].st[PT[p].sh] = now, PT[p].sd[PT[p].sh] = d, PT[p].sh = (PT[p].sh + 1) % PART_SAMPLES;
+        if (PT[p].sn < PART_SAMPLES) PT[p].sn++;
+    }
+    int o = (PT[p].sh + PART_SAMPLES - PT[p].sn) % PART_SAMPLES;
+    while (PT[p].sn > 2 && now - PT[p].st[(o + 1) % PART_SAMPLES] >= PART_RATE_S) o = (o + 1) % PART_SAMPLES, PT[p].sn--;
+    double dt = now - PT[p].st[o];
+    int64_t dd = d - PT[p].sd[o];
+    if (dt >= 8.0 && dd > 0) return (double)(t - d) * dt / (double)dd;   // (to now: a part that stops slows its pace)
+    return (double)(t - d) * PT[p].unit_s;
+}
+
+void prep_part(int part, int64_t *done, int64_t *total) {
+    int ok = part >= 0 && part < PREP_PARTS;
+    *done = ok ? __atomic_load_n(&PT[part].done, __ATOMIC_RELAXED) : 0;
+    *total = ok ? __atomic_load_n(&PT[part].total, __ATOMIC_RELAXED) : 0;
+}
+
+// The step's time left: the parts that run on the processor one after the other (the recorded pipelines, then the
+// prepared variants' stage libraries) summed, or the part beside them on the graphics card (the textures), whichever
+// is longer. The figure moves towards that at a bounded speed (as the setup's estimates do, installer/eta.py SMOOTH):
+// down at most 4 s or 2 % of itself a second, up at most 2 s or 1 %, so a pace that varies does not throw it around.
+// -1 before the step has a count.
+double prep_progress_left(void) {
+    if (!__atomic_load_n(&G.total, __ATOMIC_RELAXED)) return -1;
+    double now = G.t0 ? (double)(plat_now_ns() - G.t0) / 1e9 : 0;
+    int phase = __atomic_load_n(&G.phase, __ATOMIC_ACQUIRE);
+    static double shown = -1, shown_at;
+    plat_mutex_lock(&PL);
+    double cpu = part_left(PREP_PART_PIPES, now, phase != PREP_PHASE_MESH && phase != PREP_PHASE_SHADERS) +
+                 part_left(PREP_PART_LIBS, now, 1),
+           gpu = part_left(PREP_PART_TEX, now, 1);
+    double target = cpu > gpu ? cpu : gpu;
+    if (shown >= 0) {
+        double dt = now - shown_at, fall = (shown * 0.02 > 4 ? shown * 0.02 : 4) * dt,
+               rise = (shown * 0.01 > 2 ? shown * 0.01 : 2) * dt;
+        target = target < shown - fall ? shown - fall : target > shown + rise ? shown + rise : target;
+    }
+    shown = target, shown_at = now;
+    plat_mutex_unlock(&PL);
+    return target;
+}
 void prep_progress_phase(int phase) { __atomic_store_n(&G.phase, phase, __ATOMIC_RELEASE); }
 
 static volatile int64_t longest_us;
@@ -188,3 +280,54 @@ int prep_progress(int64_t *done, int64_t *total, double *seconds) {
 static volatile int32_t screen_on;
 int prep_screen_active(void) { return __atomic_load_n(&screen_on, __ATOMIC_ACQUIRE); }
 void prep_screen_set(int on) { __atomic_store_n(&screen_on, on, __ATOMIC_RELEASE); }
+
+// ---- the entry step's child: this exe in another mode (tex_prepare.c --scan-textures)
+// The texture walk runs in a process of its own: in the game's process its buffers and the driver's memory for it
+// stayed (a cold first start that walked in the game reached 68 GB of commit and failed in play). What play needs from
+// the driver is built in the game's own process (vk_pipeline.c vk_pipeline_prewarm says why). The child's stdin stays
+// open while this process lives (plat_child_start's pipe): it stops when that closes, so a game closed during the
+// step leaves no child behind.
+// The child reads the game's data where the game does: the game may have its paths from its command line (--romfs
+// <container> in a shortcut), which the child's does not carry, so they go to it through the environment
+// (REKARINA_EXEFS, REKARINA_ROMFS, REKARINA_PROFILE_DIR, which come before rekarina.ini), made absolute: a relative
+// one is read against the exe's folder there (main.c portable_path). Without this a game started with its container
+// on the command line got a child with "this build has no RomFS".
+void prep_child_paths(void) {
+    const RtConfig *c = rt_config();
+    const char *val[3] = {c->exefs, c->romfs, c->profile};
+    static const char *const var[3] = {"REKARINA_EXEFS", "REKARINA_ROMFS", "REKARINA_PROFILE_DIR"};
+    for (int i = 0; i < 3; i++) {
+        char full[PLAT_PATH_MAX * 2];
+        if (val[i] && *val[i] && plat_full_path(val[i], full, sizeof full)) plat_setenv(var[i], full);
+    }
+}
+
+int prep_child(const char *mode, void (*on_line)(const char *line, void *ctx), void *ctx) {
+    char exe[PLAT_PATH_MAX * 2];
+    if (!plat_exe_path(exe, sizeof exe)) return 0;
+    prep_child_paths();
+    uint32_t err = 0;
+    PlatChild *c = plat_child_start(exe, mode, &err);
+    if (!c) {
+        rt_log("prep: %s %s did not start (error %lu)", exe, mode, (unsigned long)err);
+        return 0;
+    }
+    char buf[8192], line[1024];
+    size_t used = 0;
+    long got;
+    while ((got = plat_child_read(c, buf, sizeof buf)) > 0) {
+        for (long i = 0; i < got; i++) {
+            char ch = buf[i];
+            if (ch == '\n' || ch == '\r' || used == sizeof line - 1) {
+                line[used] = 0;
+                if (used && on_line) on_line(line, ctx);
+                used = 0;
+                if (ch == '\n' || ch == '\r') continue;
+            }
+            line[used++] = ch;
+        }
+    }
+    if (used && on_line) line[used] = 0, on_line(line, ctx);
+    plat_child_stop(c);   // (it has ended: its output closed)
+    return 1;
+}

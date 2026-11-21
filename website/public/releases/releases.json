@@ -175,6 +175,28 @@
      "sha256": "7877f641173303f26f5309be5189d1d4697b9799661728d2453a06e9fc29696a"
     }
    ]
+  },
+  {
+   "version": "1.2.8",
+   "date": "2026-11-21",
+   "notes": "## Rekarina 1.2.8: less flicker, a shorter setup\n\nFlicker\n- Distant trees, bushes, their shadows and far lights no longer blink while the camera turns, and the doors around the Market fountain hold still (thanks matthieugo and OmniiOMEGA).\n- The light in the candle cave and the light shafts falling from above no longer blink.\n- Frame generation (DLSS and FSR) is off in the pause screens, so tabs and turning items no longer ghost into each other, and it starts fresh when you go back to play.\n- With DLSS frame generation on, opening and closing the Rekarina menu no longer stalls the picture for up to a quarter of a second.\n\nSetup and launcher\n- The setup no longer builds the graphics driver's shaders or prepares the textures. That work moved to the game's first start, which shows one count and the time left, and pressing Play while it runs no longer cuts it off halfway.\n- Shader translation in the setup is two to sixteen times faster (on a hard drive 211 s became 13 s).\n- Cancel and closing the setup window stop everything within two seconds (thanks Dr Dyaddae, TheSeed and MusicGoat).\n- The compile starts each compiler only when there is free memory for it at that moment, so the programs you have open count.\n- With several dumps in one folder, the setup takes this game's .nup by its title id instead of the largest file (thanks Cellrat).\n- A problem report can be made from the setup and the launcher before the game is installed.\n- The update from 1.2.7 does not translate the shaders again. It does build the game's code again: about ten minutes on a fast PC, up to an hour on a laptop with 16 GB.\n\nSettings\n- Sharpness below its default also takes back the game's own texture sharpening, all of it at 0 % (thanks SuperTouch).\n- The mouse camera row has a third choice, Off: the mouse leaves the camera alone (thanks OmniiOMEGA).\n- voice_lang in rekarina.ini sets the spoken language apart from the text language (thanks Boomer).\n- Mods that ship the Bootup pack keep the port's scene resolution and the Xbox button prompts (thanks OmniiOMEGA).\n- Cards with 8 GB or less use about 256 MB less video memory (thanks Alejandro Sanz II).\n- The low video memory notice at the top of the picture is off by default; vram_notice = 1 in rekarina.ini brings it back (thanks JohSuE20).\n- The frame rate limit and frame generation say in the menu how they count and what they cost, in every menu language.\n\nCrashes and older cards\n- A crash when one of the game's internal queues filled up is gone (thanks Nehalem).\n- Older Radeon cards (RX 400 and 500 series, Vega): a translation error in compute shaders is fixed. It may be behind the missing walls on an RX 570 (thanks AHMEDII); that is not confirmed yet.\n\nNot ready yet\n- Flicker that still needs checking with this update: the light on water, parts of the frozen domain (OmniiOMEGA) and the ghost portraits (Sable). If you still see it, a short clip in #bug-reports helps a lot.\n- Memory: crashes on handhelds with shared memory like the Ally X (k4k4shi) and on some 16 GB PCs in long sessions (huchi001).\n- Cards without mesh shaders (RX 400, 500 and 5000 series): missing walls and crashes are still being worked on; Radeon cards can also show a band in the shadows (zelldincht).\n- Older processors are held back by recording each frame on the CPU; that is the next performance work.\n- V-Sync modes other than Mailbox can flash the screen and change alt-tab (Arrant).\n- Depth of field still looks coarse at 1440p (Valentyn_L).\n- After switching between keyboard and pad in the running game, some texts already on screen keep the old buttons until they are shown again.\n- Linux and Steam Deck: not ready yet.\n\nSomething broken? Esc, Advanced, Make a problem report, and post the zip in #bug-reports.\n",
+   "files": [
+    {
+     "name": "Rekarina.exe",
+     "size": 155423646,
+     "sha256": "b4ba665eb5173fff48ade8319c064249553677beeab9c3c65ffd3cf897be2b0e"
+    },
+    {
+     "name": "Rekarina-Setup-1.2.8-windows.zip",
+     "size": 154990090,
+     "sha256": "0370bfe988ec0b94a5abfcb70a0a3449d3f429e74967433b4e14f737228a2bfd"
+    },
+    {
+     "name": "SHA256SUMS",
+     "size": 178,
+     "sha256": "f846e988664031364358319a849152ac31238535a3fd24e04311701c620cbbb9"
+    }
+   ]
   }
  ]
 }

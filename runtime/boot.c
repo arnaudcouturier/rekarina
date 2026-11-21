@@ -446,6 +446,16 @@ static void prep_wait(PlatThread *warm) {
             gfx_present_prep_frame();
             frames++;
         }
+        static uint64_t said;   // what the picture says, in the log every 30 s (a player's log shows the step's pace)
+        if (phase != PREP_PHASE_NONE && phase != PREP_PHASE_DONE && now - t0 >= 5000 && now - said >= 30000) {
+            said = now;
+            int64_t pd, pt, ld, lt, td, tt;
+            prep_part(PREP_PART_PIPES, &pd, &pt), prep_part(PREP_PART_LIBS, &ld, &lt), prep_part(PREP_PART_TEX, &td, &tt);
+            rt_log("boot: entry step at %.0f s: %lld of %lld (pipelines %lld/%lld, prepared variants %lld/%lld, texture "
+                   "archives %lld/%lld), about %.0f s left", (now - t0) / 1000.0, (long long)done, (long long)total,
+                   (long long)pd, (long long)pt, (long long)ld, (long long)lt, (long long)td, (long long)tt,
+                   prep_progress_left());
+        }
     }
     prep_screen_set(0);
     if (frames) rt_log("boot: progress picture shown for %.1f s (%llu frames)", (plat_now_ms() - t0) / 1000.0,

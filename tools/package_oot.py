@@ -96,6 +96,16 @@ def set_single_aside(exe):
     print(f'package_oot: {exe.name} was the downloaded launcher, not the game: moved to {aside.name}')
 
 
+def same_file(src, dst):
+    """dst is a copy of src as copy2 makes it: the same size and modification time (a second's slack for file systems
+    that keep less). An update then copies nothing again of a shader pack of 2 GB that did not change."""
+    try:
+        a, b = os.stat(src), os.stat(dst)
+    except OSError:
+        return False
+    return a.st_size == b.st_size and abs(a.st_mtime - b.st_mtime) < 1.0
+
+
 def copy_tree(src, dst):
     n = 0
     if Path(src).resolve() == Path(dst).resolve():   # in place already: the installer extracts the ExeFS into the folder
@@ -105,9 +115,20 @@ def copy_tree(src, dst):
         (dst / rel).mkdir(parents=True, exist_ok=True)
         for f in files:
             if not f.endswith('.tmp'):
-                shutil.copy2(Path(dirpath) / f, dst / rel / f)
+                if not same_file(Path(dirpath) / f, dst / rel / f):
+                    shutil.copy2(Path(dirpath) / f, dst / rel / f)
                 n += 1
     return n
+
+
+def newer(src, dst):
+    """src should replace dst: dst is missing, or src was written later. The build folder's copies of the game's records
+    (STATE) came from the game folder before the shader preparation (installer/oot.py seed_from_folder); what the game
+    wrote into its own since (pipelines met in play, the cache it saved at its exit) must not be put back to that."""
+    try:
+        return not dst.exists() or os.stat(src).st_mtime > os.stat(dst).st_mtime + 1.0
+    except OSError:
+        return True
 
 
 def keep_pack_entries(build_cache, folder_cache, folder_id, xlate_id):
@@ -222,7 +243,7 @@ def main():
         if (out / old).is_file():
             (out / old).unlink()
     for f in STATE:
-        if (build / f).exists():
+        if (build / f).exists() and newer(build / f, out / f):
             copy(build / f, out / f)
     for f in PROMPT_FILES:
         copy(build / f, out / f)
@@ -238,7 +259,10 @@ def main():
     for d in FOLDERS + tuple(d for d in OPTIONAL_FOLDERS if (build / d / 'manifest.tsv').is_file()):
         n += copy_tree(build / d, out / d)
     n += copy_tree(a.exefs, out / 'exefs')
-    if (build / 'nv-cache').is_dir():   # the driver's pipelines of the shader preparation (runtime/vk_device.c)
+    # The driver's cache of the shader preparation (runtime/vk_device.c), into a folder that has none: since 1.2.8 the
+    # preparation only translates, and the game folder's own cache (what the game and the launcher's background work
+    # built there) is newer than anything the build folder holds; its .bin and .toc go together, never one of them.
+    if (build / 'nv-cache').is_dir() and not (out / 'nv-cache').exists():
         n += copy_tree(build / 'nv-cache', out / 'nv-cache')
     if (build / 'shader-cache').is_dir():
         keep_pack_entries(build / 'shader-cache', out / 'shader-cache', folder_id, a.xlate.with_suffix('.id'))

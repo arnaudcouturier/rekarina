@@ -100,10 +100,13 @@ of them.
    .venv\Scripts\python tools\build_game.py --version <ver>
    ```
 
-   `build_game.py` sizes its compile jobs from the memory available when it starts, less 3.5 GiB for the rest of the
-   PC (`REKARINA_BUILD_MEM_GB=<n>` sets the budget; `--jobs N` the job count). The chunks that are one giant function
-   need up to about 3 GiB each at -O2 with a profile and run in a pool of their own, largest first; every compile runs
-   below normal priority. The first line of its output says the plan.
+   On Windows `build_game.py` starts each compile when the memory free at that moment holds its estimate (the
+   smaller of the physical memory available and the commit headroom, less 1.5 GiB): Ninja runs a job per thread and
+   the compilers it starts wait suspended until they fit, so a program opened or closed mid-compile lowers or raises
+   the number running, and one always runs. Elsewhere, or with `REKARINA_BUILD_MEM_GB=<n>`, the jobs share a budget
+   fixed at the start: the memory available then less 3 GiB (`--jobs N` sets the job count). The chunks that are one
+   giant function need up to about 3 GiB each at -O2 with a profile and run in a pool of their own, largest first;
+   every compile runs below normal priority. The first line of its output says the plan, the gate's lines what runs.
 
    `--cpu v2` targets x86-64-v2 (SSE4.2, no AVX2/FMA) for older CPUs; the default `v3` needs AVX2. The v2 build links
    `runtime/fma.c`, a correctly rounded software fma the FP lowering needs, and runs slower. Inline assembly,
@@ -272,8 +275,35 @@ native or under Proton. What is known from the code and from runs on Windows tha
 - The video memory counter the texture quality rule reads comes from PDH on Windows (`platform/win32.c`); under Wine and
   on Linux the Vulkan memory budget is all there is, so `tex_quality` may have to be set by hand on small cards.
 
+`REKARINA_LINUX_GUEST_MEMORY=driver` runs the driver-memory way instead (docs/oot-notes.md, "Guest memory from the GPU driver on Linux"); `tests/mem_backed_check.c` checks its platform part without game files or a GPU (the build line is in its header).
+
 Order for a first Linux or Proton session: the selftest and probes, `--warm-shaders`, the forest standing still with
 `REKARINA_FLIGHT=1`, then the Market at a run with a frame-by-frame clip (docs/recomp-playbook.md, section 8).
+
+### OoT on a Linux desktop: a first run on a real GPU (2026-11-20)
+
+Nobara 44 (Fedora 44), kernel 7.2, Ryzen 5 4500, GeForce RTX 4060 Ti 8 GiB, NVIDIA 595.99.02. Built with the system
+clang against the system libraries, as `tools/build_linux_local.sh` does it (extract, lift, compile, translator, prompts,
+shaders, package; Fedora packages in the script's header; `libstdc++-static` for the release link line). Results:
+
+- `Rekarina --memory-test`: placed maps, an exported dma-buf and a host-pointer import all work, a protection change
+  costs the next submission nothing for the first two, and userfaultfd write protection does not apply to either
+  (`Invalid argument`), so driver memory needs the platform's dirty bits (`plat_mem_back`).
+- The game starts, the title scene draws at 65 fps (3,393 frames in 52 s on shadow storage, 3,462 on driver memory, both with
+  a 1 % low of 58 fps). With `REKARINA_LINUX_GUEST_MEMORY=driver` 2,130 pools were backed and none refused. The first start builds
+  the driver's pipeline cache (minutes, mesh pipelines about 40 s each); the second start's entry step took seconds.
+- `--selftest` passes (0 failures) since the dispatch check skips functions a host job replaces and the physical memory
+  check takes the pool size from GetInfo. Probes that fail on this OoT build the same way with and without the
+  driver-memory change: `--probe-loader`, `-ipc`, `-services` (written for the other game), `-nvn` (6 of 1,038 checks, among
+  them the stub `nvnTextureGetNvRmSurfaceNVX`), `-vkmem` (one swizzle case) , `-shader`, `-vkexec`. `--probe-kernel`'s
+  virtual-cores check depends on the machine's load and failed once in seven runs. `tests/excl_mt.py` fails its ABA case on
+  any host: the exclusive monitor in `runtime/cpu.h` compares values.
+- Not measured: a save, a map change, the Market, a long session, any frame-rate figure beside the title scene. The
+  benchmark of `docs/performance.md` needs a save and an input script.
+
+CI (`.github/workflows/linux.yml`) runs the content guard, the platform audit, `tests/mem_backed_check.c` and the
+installer's unit tests in a Fedora container. `.github/workflows/release-linux.yml` (manual) builds the setup folder, the
+AppImage and, with `tools/pack_linux_release.sh`, `Rekarina-Setup-<version>-linux-x86_64.tar.gz` and `SHA256SUMS`.
 
 ## Checks
 
@@ -300,7 +330,7 @@ change passes these, all run with `.venv`:
 | `tests\excl_mt.py` | the exclusive monitor helpers under contention and ABA, on several threads | no |
 | `tests\jumptables_check.py` | `recomp/jumptables.py` against a Unicorn oracle; must report 0 disagreements, on 1.4.3 too | yes |
 | `tests\build_content_test.py` | `tools/build_game.py`'s content stamps: an output whose source, header, flags or compiler changed is made again whatever the file times say; a build folder without the record makes its runtime objects again | no |
-| `tests\build_jobs_test.py` | `tools/build_game.py`'s compile job plan: the budget from the available memory, the giant chunks' estimates, and plans that stay within the budget for 8, 16 and 32 GB with 4, 6 and 12 threads | no |
+| `tests\build_jobs_test.py` | `tools/build_game.py`'s compile job plan: the budget from the available memory, the giant chunks' estimates, and plans that stay within the budget for 8, 16 and 32 GB with 4, 6 and 12 threads; the memory gate's choice, and on Windows the gate holding real processes (one at a time with memory for one, all together with plenty) | no |
 
 A `--cpu v2` build passes the same differential tests with `--cflags=-march=x86-64-v2`; they compile `runtime/fma.c`
 too, so they check the software fma the v2 build links rather than the C runtime's.

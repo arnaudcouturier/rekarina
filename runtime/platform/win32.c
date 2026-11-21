@@ -628,6 +628,29 @@ int plat_file_replace(const char *from, const char *to) {
     return MoveFileExW(a, b, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != 0;
 }
 
+int plat_file_replace_lazy(const char *from, const char *to) {
+    wchar_t a[WPATH], b[WPATH];
+    if (!widen(from, a, WPATH) || !widen(to, b, WPATH)) return 0;
+    return MoveFileExW(a, b, MOVEFILE_REPLACE_EXISTING) != 0;
+}
+
+// plat_file_write_atomic without its FlushFileBuffers and write-through rename: the file appears whole to every
+// reader, but a power cut may leave it zero-filled, so only for files whose readers check them (the shader cache).
+int plat_file_write_lazy(const char *path, const void *data, size_t n) {
+    char tmp[WPATH + 48];
+    wchar_t a[WPATH], b[WPATH];
+    int len = snprintf(tmp, sizeof tmp, "%s.%u.%u.tmp", path, (unsigned)GetCurrentProcessId(), (unsigned)GetCurrentThreadId());
+    if (len < 0 || len >= (int)sizeof tmp || !widen(tmp, a, WPATH) || !widen(path, b, WPATH)) return 0;
+    HANDLE h = CreateFileW(a, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (h == INVALID_HANDLE_VALUE) return 0;
+    DWORD put = 0;
+    int ok = WriteFile(h, data, (DWORD)n, &put, NULL) && put == n;
+    CloseHandle(h);
+    if (ok && MoveFileExW(a, b, MOVEFILE_REPLACE_EXISTING)) return 1;
+    DeleteFileW(a);
+    return 0;
+}
+
 int plat_file_write_atomic(const char *path, const void *data, size_t n) {
     char tmp[WPATH + 48];
     wchar_t a[WPATH], b[WPATH];
@@ -813,6 +836,17 @@ int plat_mem_state_walk(uint64_t addr, uint64_t limit, uint64_t *end) {
     if (fast < 0) { const char *e = cfg_env("REKARINA_MEMSTATE_FAST"); fast = !e || *e != '0'; }
     int st = fast && limit > addr ? mem_state_resident(addr, limit, end) : -1;
     return st >= 0 ? st : plat_mem_state(addr, limit, end);
+}
+
+// Windows imports guest memory into the GPU and watches it with GetWriteWatch: there is nothing to back.
+int plat_mem_back(uint64_t addr, uint64_t n, int (*place)(void *ctx), void *ctx) {
+    (void)addr, (void)n, (void)place, (void)ctx;
+    return 0;
+}
+
+int plat_mem_unback(uint64_t addr, uint64_t n, int (*release)(void *ctx), void *ctx) {
+    (void)addr, (void)n, (void)release, (void)ctx;
+    return 0;
 }
 
 // Adapted from LAS Recomp runtime/platform/windows.c:40-63 @ da35b83 (MIT, Copyright (c) 2026 Peiikai): GetWriteWatch
@@ -1985,6 +2019,13 @@ PlatChild *plat_child_start(const char *exe, const char *arg, uint32_t *err) {
     }
     c->proc = pi.hProcess, c->in = in_w, c->out = out_r;
     return c;
+}
+
+long plat_stdin_read(void *buf, size_t cap) {
+    DWORD got = 0;
+    HANDLE in = GetStdHandle(STD_INPUT_HANDLE);
+    if (!in || in == INVALID_HANDLE_VALUE || !ReadFile(in, buf, (DWORD)cap, &got, NULL)) return -1;
+    return (long)got;
 }
 
 void plat_child_stop(PlatChild *c) {

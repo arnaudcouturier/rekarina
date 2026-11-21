@@ -1165,6 +1165,13 @@ static void wb_early(VkExec *ex) {
         min_bytes = (uint64_t)(e && atoi(e) > 0 ? atoi(e) : 1024) << 10;
     }
     if (!on || vk_exec_ac_value) return;
+    // The small results shaders wrote after the results point go back first, on their own and at once (vk_memory.c
+    // vk_mem_early_results): the game reads them early in its next frame.
+    if (vk_mem_early_pending()) {
+        int bound = 0;
+        ex->recorded += (uint64_t)vk_mem_early_results(ex->cb, &bound);
+        if (bound) ex->dirty = VK_EXEC_DIRTY_ALL, vk_exec_draw_new_cb();   // the merge bound a pipeline and sets of its own
+    }
     uint64_t p, m;
     vk_mem_wb_pending(&p, &m);
     if (ex->fence != last_fence) last_fence = ex->fence, last_p = last_m = UINT64_MAX;

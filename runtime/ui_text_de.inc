@@ -58,8 +58,8 @@
     [UI_MENU_ANISO] = "Texturfilterung",
     [UI_MENU_ANISO_DESC] = "Anisotrope Filterung von Oberflächentexturen: Boden, Wege und Wände, die man in flachem Winkel sieht, bleiben bis in die Ferne scharf, statt zu verschwimmen. Spiel: die Stufe, die das Spiel anfordert, wie auf der Switch.",
     [UI_MENU_ANISO_GAME] = "Spiel",
-    [UI_MENU_SHARPNESS] = "FSR-Schärfe",
-    [UI_MENU_SHARPNESS_DESC] = "Nachschärfen nach der FSR-Skalierung; 0 schaltet es aus.",
+    [UI_MENU_SHARPNESS] = "Schärfe",
+    [UI_MENU_SHARPNESS_DESC] = "Das Nachschärfen nach der FSR- oder DLSS-Skalierung und unter 80 % auch die eigene Texturschärfe des Spiels. 0 schaltet alles aus.",
     [UI_MENU_COLOR] = "Farbe",
     [UI_MENU_COLOR_PRESET] = "Farbprofil",
     [UI_MENU_COLOR_PRESET_DESC] = "Stellt die vier Werte darunter ein. Lebendig: mehr Kontrast und Sättigung, Schatten "
@@ -116,7 +116,7 @@
     [UI_MENU_TAA] = "Upscaler",
     [UI_MENU_TAA_DESC] = "Welchen Upscaler die Zeile DLSS / DLAA verwendet: NVIDIA DLSS (RTX-GPUs), AMD FSR (jede GPU, temporal) oder AMD FSR 1 (jede GPU, räumlich: der leichteste, für ältere Karten und Handhelds). Nach einem Neustart.",
     [UI_MENU_FRAMEGEN] = "Frame Generation",
-    [UI_MENU_FRAMEGEN_DESC] = "Ein erzeugtes Bild zwischen je zwei Bildern, die das Spiel zeichnet; das HUD bleibt davon ausgenommen: AMD FSR auf jeder GPU, NVIDIA DLSS auf den Serien RTX 40 und 50. Nach einem Neustart.",
+    [UI_MENU_FRAMEGEN_DESC] = "Ein erzeugtes Bild zwischen je zwei Bildern, die das Spiel zeichnet; das HUD bleibt davon ausgenommen: AMD FSR auf jeder GPU, NVIDIA DLSS auf den Serien RTX 40 und 50. Sie schaltet den zeitlichen Upscaler (DLSS / DLAA) ein, dessen Bewegungsvektoren sie nutzt; der DLSS-Modus bestimmt die Last: DLAA (nativ) ist am schwersten, Qualität und Ausgewogen sind leichter. Nach einem Neustart.",
     [UI_MENU_FRAMEGEN_NEEDS] = "Braucht eingeschaltetes DLSS / DLAA: Es nutzt dessen Bewegungsvektoren.",
     [UI_MENU_DLAA] = "NVIDIA DLSS / DLAA",
     [UI_MENU_DLAA_DESC] = "NVIDIA DLSS für die 3D-Szene (NVIDIA-RTX-GPUs; " DLSS_FILE " neben " EXE_FILE "): glattere "
@@ -146,7 +146,8 @@
 
     [UI_MENU_FPS_LIMIT] = "Bildratenlimit",
     [UI_MENU_FPS_LIMIT_DESC] = "So viele Bilder pro Sekunde zeichnet das Spiel höchstens. Über 60 ist experimentell und "
-                               "braucht „Spieltempo folgt der Uhr“.",
+                               "braucht „Spieltempo folgt der Uhr“. "
+                               "Mit AMD Frame Generation zählt er die Bilder, die du siehst; das Spiel selbst zeichnet dann halb so viele. DLSS Frame Generation fügt ihre Bilder zu diesem Wert hinzu.",
     [UI_MENU_FPS_30] = "30 FPS", [UI_MENU_FPS_40] = "40 FPS", [UI_MENU_FPS_45] = "45 FPS",
     [UI_MENU_FPS_60] = "60 FPS", [UI_MENU_FPS_90] = "90 FPS", [UI_MENU_FPS_120] = "120 FPS", [UI_MENU_FPS_144] = "144 FPS",
     // the monitor's refresh rate; printf format with the rate in Hz when it is known
@@ -253,12 +254,13 @@
     [UI_MENU_STICK_DEADZONE_DESC] = "Wie weit sich ein Stick des Gamepads bewegen muss, bevor das Spiel es bemerkt. Erhöhe den Wert, wenn sich die Figur oder die Kamera von selbst bewegt: Lass den Stick los, lies „Stick jetzt“ ab und stelle die Totzone ein paar Prozent darüber ein.",
     [UI_MENU_STICK_DEADZONE_NOW] = "Stick jetzt: %.0f %%",
     [UI_MENU_MOUSE_MODE] = "Mauskamera",
-    [UI_MENU_MOUSE_MODE_DESC] = "Direkt: Die Kamera dreht sich so weit, wie sich die Maus bewegt, wie in einem PC-Spiel, ohne Totzone oder Kurve des Sticks (Spiel 1.4.3; andere Versionen nutzen die Stick-Emulation). Stick-Emulation: Die Maus wirkt als rechter Stick.",
+    [UI_MENU_MOUSE_MODE_DESC] = "Direkt: Die Kamera dreht sich so weit, wie sich die Maus bewegt, wie in einem PC-Spiel, ohne Totzone oder Kurve des Sticks (Spiel 1.4.3; andere Versionen nutzen die Stick-Emulation). Stick-Emulation: Die Maus wirkt als rechter Stick. Aus: Die Maus dreht die Kamera nie, der Mauszeiger bleibt für die Menüs frei.",
     [UI_MENU_FAST_TEXT] = "Schnellere Dialoge",
     [UI_MENU_FAST_TEXT_DESC] = "Lässt die Pausen weg, die die Texte des Spiels zwischen den Sätzen machen, sodass der Text ohne Halt durchläuft.",
-    [UI_MENU_MOUSE_MODE_DESC_OOT] = "Direkt: Die Kamera dreht sich genau so weit, wie die Maus bewegt wird, bei jeder Geschwindigkeit, ohne Totzone, Kurve oder Höchstgeschwindigkeit des Sticks. Stick-Emulation: Die Maus wirkt wie der rechte Stick, mit dessen Kurve und Höchstgeschwindigkeit.",
+    [UI_MENU_MOUSE_MODE_DESC_OOT] = "Direkt: Die Kamera dreht sich genau so weit, wie die Maus bewegt wird, bei jeder Geschwindigkeit, ohne Totzone, Kurve oder Höchstgeschwindigkeit des Sticks. Stick-Emulation: Die Maus wirkt wie der rechte Stick, mit dessen Kurve und Höchstgeschwindigkeit. Aus: Die Maus dreht die Kamera nie, der Mauszeiger bleibt für die Menüs frei.",
     [UI_MENU_MOUSE_STICK] = "Stick-Emulation",
     [UI_MENU_MOUSE_DIRECT] = "Direkt",
+    [UI_MENU_MOUSE_OFF] = "Aus",
     [UI_MENU_MENU_CURSOR] = "Maus in den Spielmenüs",
     [UI_MENU_MENU_CURSOR_DESC] = "In den Menüs des Spiels (Titel, Inventar, Läden, Dialogauswahl) erscheint der Mauszeiger: Der Eintrag darunter wird ausgewählt, Linksklick bestätigt, Rechtsklick geht zurück. Nur wenn zuletzt die Maus oder eine Taste benutzt wurde, mit einem Gamepad bleiben die Menüs also unverändert (Spiel 1.4.3).",
     [UI_MENU_MOUSE_SENS] = "Mausempfindlichkeit (Kamera)",

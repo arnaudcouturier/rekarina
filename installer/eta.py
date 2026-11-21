@@ -13,12 +13,16 @@ Where an estimate comes from, in rising order of trust:
 
         {"format": 1, "cores": 16, "steps": {"oot_compile": {"first": 702.4, "rerun": 163.0}, ...}}
 
- 3. While a step runs, its own counter (objects compiled, shaders built, bytes downloaded): the time it took so far
-    divided by the share done. A step with several phases gives each a share of its time (PHASES). The remaining
-    time moves towards that figure at a bounded speed (SMOOTH), so a counter that starts slowly or jumps does not
-    throw the estimate around; until a quarter of the step is done the figure is mixed with the step's estimate.
-    Without a counter, the clock: the estimate minus the time taken, and past the estimate a share of the time taken
-    (OVERRUN), so a step that takes longer than estimated shows a figure that grows instead of one that stands still.
+ 3. While a step runs, the phase it is in by its own measured pace: a phase with a counter (objects compiled, shaders
+    translated, bytes downloaded) takes what its counter has left at the rate the counter moved over the last
+    RATE_WINDOW seconds (Rate; up to now, so a counter that stops makes the figure grow), once it has moved for
+    RATE_SPAN seconds; the phases after it take their shares of the step's estimate (PHASES). Until then, and in a
+    phase without a counter, the clock: the phase's share of the estimate minus the time it has taken, and past that a
+    share of the time taken (OVERRUN), so a phase that takes longer than estimated shows a figure that grows instead of
+    one that stands still. The shown remaining time moves towards that figure at a bounded speed (SMOOTH).
+    Until 1.2.7 the whole step was put at its time so far divided by the share done by the phase table: a translation
+    that ran at a steady 8.9 shaders a second for 48 minutes more (a slow disk) was shown as 3.7 to 4.3 hours, rising,
+    because the table gave it 15 % of the step and the driver's phase 78 %.
 
 Events (events.py) carry it between the two processes: after "start" the command line emits
 
@@ -38,6 +42,7 @@ and Tracker folds "start", "eta", "plan", "step" and "progress" into what a wind
 step_text() and total_text() put a view into words through a text catalog ("eta.*" ids); a window that draws the
 table itself uses the view and clock_text() alone.
 """
+import collections
 import json
 import os
 import time
@@ -53,16 +58,18 @@ DEFAULTS = {
     'oot_components':        (60, 10),
     'oot_prompts':           (60, 60),      # the button prompts and fonts, drawn again when their tools change
     'oot_prepare':           (420, 60),     # (the variants play met, 1.2.1-1.2.3; every run since prepares all: ALL_SHADERS)
-    'oot_package':           (360, 90),     # the copy, then the prepared shaders warmed in the game folder
+    'oot_package':           (90, 30),      # the copy (the driver's build and the textures are the launcher's since 1.2.8)
+    'background':            (2400, 600),   # the launcher's work after the setup (installer/oot.py background_main)
     # the launcher's own update (update.py): the download depends on the line, so its counter soon takes over
     'update_download':       (90, 90),
     'update_unpack':         (40, 40),
     'update_restart':        (5, 5),
 }
 UNKNOWN_STEP = (30, 30)
-# The case 'all' of oot_prepare, every variant of every shader, on the reference machine: 35 minutes from nothing (2116 s
-# measured on 16 threads). Since 2026-11-19 every setup run prepares all, and that case's time is recorded too.
-ALL_SHADERS = 2100
+# The case 'translate' of oot_prepare: every variant of every shader translated, on the reference machine from nothing.
+# (Its case 'all' until 1.2.7 also built every variant in the driver: 2116 s on 16 threads; a timing recorded under
+# that case is not this step's any more.)
+ALL_SHADERS = 900
 SCALED = ('oot_lift', 'oot_compile', 'oot_prepare')   # limited by the processor: times 16 / logical cores
 SCALE_RANGE = (0.5, 4.0)
 # The share of a step's time each of its phases takes, in the order they run. A phase that is not listed (or a step
@@ -73,22 +80,27 @@ PHASES = {
     'oot_compile': (('compile', 0.95), ('link', 0.05)),
     'oot_components': (('detect', 0.05), ('fsr', 0.95), ('dlss', 0.95), ('dlssg', 0.95)),   # one byte counter over the three
     'oot_prompts': (('prompts', 1.0),),
-    'oot_prepare': (('seed', 0.05), ('translate', 0.15), ('libraries', 0.78), ('pack', 0.02)),
-    'oot_package': (('copy', 0.15), ('warm', 0.85)),
+    'oot_prepare': (('seed', 0.05), ('translate', 0.9), ('pack', 0.05)),
+    'oot_package': (('pack', 0.2), ('copy', 0.8)),
+    'background': (('libraries', 0.85), ('textures', 0.15)),
     'update_download': (('download', 1.0),),
     'update_unpack': (('unpack', 1.0),),
 }
 SHARED_COUNTER = {'oot_components': ('fsr', 'dlss', 'dlssg')}   # phases that continue one counter
-TRUST_AT = 0.25        # the share of a step after which its counter alone decides
+RATE_WINDOW = 120.0    # seconds of a counter's history its rate is taken over
+RATE_SPAN = 20.0       # a counter's rate counts once it has moved over this many seconds
 # Per second of clock the shown remaining time falls at most 4 s and rises at most 2 s, or 2 % and 1 % of itself when
 # that is more (half an hour may lose 36 s a second: a wrong first guess is gone within a minute, never in one jump).
 SMOOTH = ((4.0, 0.02), (2.0, 0.01))
-FLOOR = 0.05           # a running step never shows less than this share of its estimate (and 5 s)
+FLOOR = 5.0            # seconds: a running step never shows less
 # A step past its estimate that no counter speaks for: the estimate was wrong, and the clock is all there is. The rest
 # is put at this share of the time the step has taken so far, which grows while it runs: a fixed floor showed the same
 # couple of minutes for an hour (a shader step estimated as a rerun that prepared every variant).
 OVERRUN = 0.25
-FORMAT = 1
+FORMAT = 2
+# Steps whose work changed in timings.json's format 2 (1.2.8): the setup no longer builds the driver's shaders, so their
+# times recorded before (an hour and more on some PCs) are not taken.
+FORMAT_2_STEPS = ('oot_prepare', 'oot_package')
 
 
 def cores():
@@ -105,15 +117,17 @@ def load_timings(path=None):
     try:
         data = json.loads(Path(path or timings_path()).read_text(encoding='utf-8'))
         steps = data.get('steps') if isinstance(data, dict) else None
+        old = isinstance(data, dict) and not (isinstance(data.get('format'), int) and data['format'] >= 2)
         return {s: {c: float(v) for c, v in cases.items() if isinstance(v, (int, float)) and v > 0}
-                for s, cases in steps.items() if isinstance(cases, dict)} if isinstance(steps, dict) else {}
+                for s, cases in steps.items() if isinstance(cases, dict) and not (old and s in FORMAT_2_STEPS)} \
+            if isinstance(steps, dict) else {}
     except (OSError, ValueError, AttributeError):
         return {}
 
 
 def record(step, case, seconds, path=None):
     """Keep a finished step's duration for the next estimate. A profile that cannot be written costs only that."""
-    if case not in ('first', 'rerun', 'all') or not seconds or seconds <= 0:
+    if case not in ('first', 'rerun', 'all', 'translate') or not seconds or seconds <= 0:
         return
     path = Path(path or timings_path())
     steps = load_timings(path)
@@ -139,7 +153,8 @@ def estimate(step, case, n_cores=None, timings=None):
     if measured:
         return float(measured), 'measured'
     first, rerun = DEFAULTS.get(step, UNKNOWN_STEP)
-    seconds = float(ALL_SHADERS if step == 'oot_prepare' and case == 'all' else first if case == 'first' else rerun)
+    seconds = float(ALL_SHADERS if step == 'oot_prepare' and case in ('all', 'translate') else
+                    first if case == 'first' else rerun)
     if step in SCALED:
         seconds *= scale(n_cores or cores())
     return seconds, 'default'
@@ -181,6 +196,56 @@ def step_fraction(step, phase, done, total, seen):
     return min(1.0, before + share * inside)
 
 
+class Rate:
+    """A counter's pace: units per second over its last RATE_WINDOW seconds, measured to now (a counter that stops
+    slows it down); None until the counter has moved over RATE_SPAN seconds. A counter that goes back (a phase that
+    counts again from zero) starts a new history."""
+
+    def __init__(self):
+        self.samples = collections.deque()
+
+    def reset(self):
+        self.samples.clear()
+
+    def feed(self, now, done):
+        if done is None:
+            return
+        if self.samples and done < self.samples[-1][1]:
+            self.samples.clear()
+        self.samples.append((now, done))
+        while len(self.samples) > 2 and self.samples[1][0] <= now - RATE_WINDOW:
+            self.samples.popleft()
+
+    def rate(self, now):
+        if len(self.samples) < 2:
+            return None
+        (t0, d0), (t1, d1) = self.samples[0], self.samples[-1]
+        if t1 - t0 < RATE_SPAN or d1 <= d0:
+            return None
+        return (d1 - d0) / max(now - t0, t1 - t0)
+
+
+def phase_left(step, phase, done, total, rate, estimate, phase_elapsed):
+    """Seconds left of the phase a step is in (the module text, 3) and of the phases after it: (this phase, after it).
+    None for this phase when the step has a phase table that does not know the phase."""
+    table = PHASES.get(step) or ((phase, 1.0),)
+    names = [n for n, _ in table]
+    if phase not in names:
+        return None, 0.0
+    at = names.index(phase)
+    shared = SHARED_COUNTER.get(step, ())
+    after = sum(share for name, share in table[at + 1:] if not (name in shared and phase in shared))
+    mine = estimate * table[at][1]
+    if total and done is not None:
+        left = max(0, total - done)
+        if rate:
+            return left / rate, estimate * after
+        by_share = mine * left / total
+    else:
+        by_share = mine - phase_elapsed
+    return max(by_share, OVERRUN * phase_elapsed, 0.0), estimate * after
+
+
 class Tracker:
     """Folds the setup's events into the step table with times (the module text). clock: seconds, monotonic."""
 
@@ -199,7 +264,7 @@ class Tracker:
     def blank(self, step):
         return {'state': 'pending', 'estimate': estimate(step, 'first', self.cores)[0], 'started': None, 'taken': None,
                 'phase': None, 'phase_at': None, 'done': None, 'total': None, 'unit': None, 'seen': [], 'shown': None,
-                'shown_at': None}
+                'shown_at': None, 'rate': Rate()}
 
     def step(self, step):
         if step not in self.info:
@@ -229,6 +294,7 @@ class Tracker:
             if state == 'started':
                 i.update(state='running', started=now, phase=None, phase_at=None, done=None, total=None, unit=None, seen=[],
                          shown=None)
+                i['rate'].reset()
             elif state == 'done':
                 taken = event.get('seconds')
                 i.update(state='done', taken=float(taken) if isinstance(taken, (int, float))
@@ -242,9 +308,12 @@ class Tracker:
             phase = event.get('phase')
             if phase and phase not in i['seen']:
                 i['seen'].append(phase)
-            if phase != i['phase']:
+            if phase != i['phase'] or event.get('total') != i['total']:
                 i['phase_at'] = now
+                i['rate'].reset()
             i.update(phase=phase, done=event.get('done'), total=event.get('total'), unit=event.get('unit'))
+            if i['total']:
+                i['rate'].feed(now, i['done'])
         elif kind == 'error':
             if event.get('step') in self.info:
                 self.info[event['step']]['state'] = 'failed'
@@ -255,25 +324,19 @@ class Tracker:
                     i['state'] = 'failed' if event.get('result') == 'failed' else 'pending'
 
     def running_remaining(self, i, step, now):
-        """Seconds left of the running step (the module text, 3)."""
+        """Seconds left of the running step (the module text, 3), and the share of it that is done (for the bar)."""
         elapsed = max(0.0, now - i['started'])
         est = i['estimate']
-        floor = max(5.0, FLOOR * est)
         fraction = step_fraction(step, i['phase'], i['done'], i['total'], i['seen'])
-        by_clock = max(est - elapsed, floor, OVERRUN * elapsed)
-        if fraction is None or fraction <= 0 or elapsed < 3:
-            target = by_clock
+        mine, after = (None, 0.0)
+        if i['phase'] is not None and elapsed >= 3:
+            phase_elapsed = max(0.0, now - (i['phase_at'] if i['phase_at'] is not None else i['started']))
+            mine, after = phase_left(step, i['phase'], i['done'], i['total'], i['rate'].rate(now), est, phase_elapsed)
+        if mine is None:   # no phase yet, or one the table does not know: the step's clock
+            target = max(est - elapsed, OVERRUN * elapsed)
         else:
-            if fraction >= 1:
-                by_counter = 0.0
-            else:
-                by_counter = elapsed * (1 - fraction) / fraction
-            trust = min(1.0, fraction / TRUST_AT)
-            target = max(trust * by_counter + (1 - trust) * max(est * (1 - fraction), floor), 0.0)
-            # a phase without a counter of its own is put at its share of the step, which says nothing once it runs
-            # long (the pack of every shader on a slow disk): its own clock then, as the whole step's above
-            if not i['total'] and i['phase_at'] is not None:
-                target = max(target, OVERRUN * (now - i['phase_at']))
+            target = mine + after
+        target = max(target, FLOOR)
         if i['shown'] is not None:
             dt = max(0.0, now - i['shown_at'])
             fall = max(SMOOTH[0][0], SMOOTH[0][1] * i['shown']) * dt

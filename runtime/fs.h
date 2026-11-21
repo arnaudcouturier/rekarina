@@ -39,6 +39,8 @@ uint32_t romfs_list(const char *path, int (*add)(const char *name, int kind, uin
 uint64_t romfs_file_count(void);                           // files in the index (fs_init first)
 const char *romfs_entry(uint64_t i, uint64_t *offset, uint64_t *size);   // path, image offset and size of index row i
 const char *romfs_image_path(void);                        // the romfs.bin path fs_init opened
+uint8_t *romfs_entry_read(uint64_t i, uint64_t *size);     // the whole of index row i, malloc'd (host walks of the index)
+int romfs_image_identity(uint64_t *size, uint64_t *write_time);   // 0: no image open
 size_t romfs_overlay_count(void);
 int romfs_patches_loaded(void);                            // a romfs-patches manifest gave at least one file
 // The button prompts (input_prompts_folder): the folder loaded at start, NULL for the game's own prompts; whether a
@@ -48,6 +50,10 @@ int romfs_patches_loaded(void);                            // a romfs-patches ma
 enum { ROMFS_PROMPTS_OK, ROMFS_PROMPTS_MISSING, ROMFS_PROMPTS_FAILED, ROMFS_PROMPTS_SHAPE, ROMFS_PROMPTS_MODS,
        ROMFS_PROMPTS_PATCHES };
 const char *romfs_prompts(void);
+// The voice language apart from the text language (voice_lang.c, REKARINA_VOICE_LANG): read at start; a voice file's
+// path with the chosen language's code into buf, NULL when the setting is off or path is not a voice file.
+void voice_lang_init(void);
+const char *voice_lang_path(const char *path, char *buf, size_t n);
 int romfs_prompts_live(void);   // each present: applies a changed prompts setting to the running game where it can
 void romfs_hint_pad_layout(int layout);   // input.c: the open gamepad's layout (PAD_LAYOUT_*), for the action hint's places
 int romfs_prompts_can_change(void);            // 1: the sets change in the running game (prompts-live.bin)

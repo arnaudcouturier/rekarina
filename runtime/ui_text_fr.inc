@@ -57,8 +57,8 @@
     [UI_MENU_ANISO] = "Filtrage des textures",
     [UI_MENU_ANISO_DESC] = "Filtrage anisotrope des textures de surface : le sol, les routes et les murs vus sous un angle rasant restent nets au loin au lieu de devenir flous. Jeu : le niveau demandé par le jeu, comme sur la Switch.",
     [UI_MENU_ANISO_GAME] = "Jeu",
-    [UI_MENU_SHARPNESS] = "Netteté FSR",
-    [UI_MENU_SHARPNESS_DESC] = "Accentuation après la mise à l'échelle FSR ; 0 la désactive.",
+    [UI_MENU_SHARPNESS] = "Netteté",
+    [UI_MENU_SHARPNESS_DESC] = "L'accentuation après la mise à l'échelle FSR ou DLSS et, sous 80 %, la netteté propre des textures du jeu. 0 désactive le tout.",
     [UI_MENU_COLOR] = "Couleur",
     [UI_MENU_COLOR_PRESET] = "Profil de couleur",
     [UI_MENU_COLOR_PRESET_DESC] = "Règle les quatre valeurs ci-dessous. Vif : plus de contraste et de saturation, ombres "
@@ -116,7 +116,7 @@
     [UI_MENU_TAA] = "Upscaler",
     [UI_MENU_TAA_DESC] = "L'upscaler utilisé par la ligne DLSS / DLAA : NVIDIA DLSS (GPU RTX), AMD FSR (tout GPU, temporel) ou AMD FSR 1 (tout GPU, spatial : le plus léger, pour les cartes anciennes et les PC portables de jeu). Après un redémarrage.",
     [UI_MENU_FRAMEGEN] = "Génération d'images",
-    [UI_MENU_FRAMEGEN_DESC] = "Une image générée entre deux images dessinées par le jeu, sans toucher au HUD : AMD FSR sur tout GPU, NVIDIA DLSS sur les séries RTX 40 et 50. Après un redémarrage.",
+    [UI_MENU_FRAMEGEN_DESC] = "Une image générée entre deux images dessinées par le jeu, sans toucher au HUD : AMD FSR sur tout GPU, NVIDIA DLSS sur les séries RTX 40 et 50. Elle active l'upscaler temporel (DLSS / DLAA), dont elle utilise les vecteurs de mouvement ; le mode DLSS en fixe le coût : DLAA (natif) est le plus lourd, Qualité et Équilibré sont plus légers. Après un redémarrage.",
     [UI_MENU_FRAMEGEN_NEEDS] = "Nécessite DLSS / DLAA activé : elle utilise ses vecteurs de mouvement.",
     [UI_MENU_DLAA] = "NVIDIA DLSS / DLAA",
     [UI_MENU_DLAA_DESC] = "NVIDIA DLSS pour la scène 3D (GPU NVIDIA RTX ; " DLSS_FILE " à côté de " EXE_FILE ") : bords "
@@ -147,7 +147,8 @@
 
     [UI_MENU_FPS_LIMIT] = "Limite de FPS",
     [UI_MENU_FPS_LIMIT_DESC] = "Le nombre maximal d'images par seconde que dessine le jeu. Au-delà de 60, c'est expérimental "
-                               "et il faut activer Vitesse du jeu selon l'horloge.",
+                               "et il faut activer Vitesse du jeu selon l'horloge. "
+                               "Avec la génération d'images AMD, il compte les images affichées : le jeu lui-même en dessine la moitié ; celle de DLSS ajoute ses images au-delà de cette valeur.",
     [UI_MENU_FPS_30] = "30 FPS", [UI_MENU_FPS_40] = "40 FPS", [UI_MENU_FPS_45] = "45 FPS",
     [UI_MENU_FPS_60] = "60 FPS", [UI_MENU_FPS_90] = "90 FPS", [UI_MENU_FPS_120] = "120 FPS", [UI_MENU_FPS_144] = "144 FPS",
     // the monitor's refresh rate; printf format with the rate in Hz when it is known
@@ -253,12 +254,13 @@
     [UI_MENU_STICK_DEADZONE_DESC] = "La distance dont un stick de manette doit bouger avant que le jeu le perçoive. Augmentez-la si le personnage ou la caméra bouge tout seul : lâchez le stick, lisez « stick actuel » et réglez la zone morte quelques pour cent au-dessus.",
     [UI_MENU_STICK_DEADZONE_NOW] = "stick actuel : %.0f %%",
     [UI_MENU_MOUSE_MODE] = "Caméra à la souris",
-    [UI_MENU_MOUSE_MODE_DESC] = "Direct : la caméra tourne selon le déplacement de la souris, comme dans un jeu PC, sans zone morte ni courbe de stick (jeu 1.4.3 ; les autres versions utilisent l'émulation du stick). Émulation du stick : la souris agit comme le stick droit.",
+    [UI_MENU_MOUSE_MODE_DESC] = "Direct : la caméra tourne selon le déplacement de la souris, comme dans un jeu PC, sans zone morte ni courbe de stick (jeu 1.4.3 ; les autres versions utilisent l'émulation du stick). Émulation du stick : la souris agit comme le stick droit. Désactivée : la souris ne tourne jamais la caméra et le curseur reste libre pour les menus.",
     [UI_MENU_FAST_TEXT] = "Dialogues plus rapides",
     [UI_MENU_FAST_TEXT_DESC] = "Supprime les pauses que les messages du jeu marquent entre les phrases : le texte défile sans s'arrêter.",
-    [UI_MENU_MOUSE_MODE_DESC_OOT] = "Direct : la caméra tourne exactement autant que la souris se déplace, à toute vitesse, sans zone morte, courbe ni vitesse maximale du stick. Émulation du stick : la souris agit comme le stick droit, avec sa courbe et sa vitesse maximale.",
+    [UI_MENU_MOUSE_MODE_DESC_OOT] = "Direct : la caméra tourne exactement autant que la souris se déplace, à toute vitesse, sans zone morte, courbe ni vitesse maximale du stick. Émulation du stick : la souris agit comme le stick droit, avec sa courbe et sa vitesse maximale. Désactivée : la souris ne tourne jamais la caméra et le curseur reste libre pour les menus.",
     [UI_MENU_MOUSE_STICK] = "Émulation du stick",
     [UI_MENU_MOUSE_DIRECT] = "Direct",
+    [UI_MENU_MOUSE_OFF] = "Désactivée",
     [UI_MENU_MENU_CURSOR] = "Souris dans les menus du jeu",
     [UI_MENU_MENU_CURSOR_DESC] = "Dans les menus du jeu (titre, inventaire, boutiques, choix de dialogue), le pointeur s'affiche : l'élément survolé est sélectionné, le clic gauche confirme, le clic droit revient en arrière. Seulement quand la souris ou une touche a été utilisée en dernier : avec une manette, les menus restent inchangés (jeu 1.4.3).",
     [UI_MENU_MOUSE_SENS] = "Sensibilité caméra (souris)",

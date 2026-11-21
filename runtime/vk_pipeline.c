@@ -183,12 +183,13 @@ static void cache_path_init(void) {
 // DEBUG-PCLOAD: REKARINA_PIPELINE_CACHE_LOAD=0 starts with an empty cache and never writes the file (the pipelines come
 // from the driver's own disk cache or are compiled), to see what the driver keeps of ours.
 // The log says how large the file was and how long the driver took to take it in (a refused one starts empty).
+static int warm_libraries;   // --warm-libraries (vk_pipeline_warm_libraries): pipeline-cache.bin is neither read nor written
 static void cache_load(VkCtx *c) {
     cache_path_init();
     const void *data = NULL;
     uint64_t len = 0;
     size_t size = 0;
-    P.cache_unloaded = !rt_knob("PIPELINE_CACHE_LOAD", "1");
+    P.cache_unloaded = !rt_knob("PIPELINE_CACHE_LOAD", "1") || warm_libraries;
     if (P.cache_unloaded) rt_log("vk_pipeline: %s not loaded and not saved (REKARINA_PIPELINE_CACHE_LOAD=0)", P.cache_path);
     if (P.cache_fresh && c->props.vendorID != 0x10de) P.cache_fresh = 0;
     if (P.cache_fresh)
@@ -4647,13 +4648,98 @@ static void lb_stop(void) {
     if (LB.watch) plat_thread_join(LB.watch), LB.watch = NULL;
 }
 
+// ---- which prepared variants this driver has: <dir>/shader-warm-done.bin
+// "RKWARM01", u32 1, u32 count, a 32-byte key, then one bit per variant of shader-prepared.bin (in its order) whose
+// stage library or compute pipeline was handed to the driver (built into its disk cache, failed, or skipped for a
+// driver crash). The key is the device, the driver's version and cache identity, the library state they were built with
+// (records_hist: the one most recorded pipelines use), the exe's path (NVIDIA keys its disk cache to the exe's file name,
+// AMD to its path) and shader-prepared.bin's bytes: another driver, state, folder or list starts from nothing. lb_warm_prepared writes it every 2 s and at its end, so a run that is stopped or
+// closed keeps what it built: the launcher's background build (--warm-shaders) and the game's entry step
+// (vk_pipeline_prewarm) each build only what the other has not.
+#define WD_HEAD 48
+static struct {
+    uint8_t key[32];
+    uint8_t *bits;
+    size_t n;
+    char path[PLAT_PATH_MAX * 2 + 48];
+    PlatMutex lock;
+    double flushed;
+    int dirty;
+} WD = {.lock = PLAT_MUTEX_INIT};
+
+static void wd_open(const char *dir, const uint8_t *list, uint64_t list_size, size_t n) {
+    VkCtx *c = vk_ctx();
+    struct {
+        uint32_t vendor, device, driver;
+        uint8_t uuid[VK_UUID_SIZE];
+        uint8_t clamp, poly, minus_w, samples;   // the library state they are built with (lb_state)
+    } id = {c->props.vendorID, c->props.deviceID, c->props.driverVersion, {0}, LB.clamp, LB.poly, LB.minus_w, LB.samples};
+    memcpy(id.uuid, c->props.pipelineCacheUUID, VK_UUID_SIZE);
+    char exe[PLAT_PATH_MAX * 2] = "";
+    plat_exe_path(exe, sizeof exe);
+    size_t el = strlen(exe), kn = sizeof id + el + 32;
+    uint8_t *buf = malloc(kn);
+    if (!buf) return;
+    memcpy(buf, &id, sizeof id), memcpy(buf + sizeof id, exe, el);
+    rt_sha256(list, (size_t)list_size, buf + sizeof id + el);
+    rt_sha256(buf, kn, WD.key);
+    free(buf);
+    snprintf(WD.path, sizeof WD.path, "%s/shader-warm-done.bin", dir);
+    WD.n = n, WD.dirty = 0, WD.flushed = now_ms();
+    WD.bits = calloc((n + 7) / 8 + 1, 1);
+    uint64_t size = 0;
+    uint8_t *f = WD.bits ? plat_file_read(WD.path, &size) : NULL;
+    uint32_t ver = 0, cnt = 0;
+    if (f && size == WD_HEAD + (n + 7) / 8) memcpy(&ver, f + 8, 4), memcpy(&cnt, f + 12, 4);
+    if (f && size == WD_HEAD + (n + 7) / 8 && !memcmp(f, "RKWARM01", 8) && ver == 1 && cnt == n && !memcmp(f + 16, WD.key, 32))
+        memcpy(WD.bits, f + WD_HEAD, (n + 7) / 8);
+    free(f);
+}
+
+static int wd_has(size_t i) { return WD.bits && i < WD.n && (WD.bits[i >> 3] >> (i & 7) & 1); }
+
+static void wd_flush(int force) {
+    plat_mutex_lock(&WD.lock);
+    if (WD.bits && WD.dirty && (force || now_ms() - WD.flushed >= 2000)) {
+        size_t nb = (WD.n + 7) / 8;
+        uint8_t *out = malloc(WD_HEAD + nb);
+        if (out) {
+            uint32_t ver = 1, cnt = (uint32_t)WD.n;
+            memcpy(out, "RKWARM01", 8), memcpy(out + 8, &ver, 4), memcpy(out + 12, &cnt, 4), memcpy(out + 16, WD.key, 32);
+            memcpy(out + WD_HEAD, WD.bits, nb);
+            if (!plat_file_write_atomic(WD.path, out, WD_HEAD + nb)) rt_log("vk_pipeline: cannot write %s", WD.path);
+            free(out);
+        }
+        WD.dirty = 0, WD.flushed = now_ms();
+    }
+    plat_mutex_unlock(&WD.lock);
+}
+
+static void wd_set(size_t i) {
+    if (!WD.bits || i >= WD.n) return;
+    plat_mutex_lock(&WD.lock);
+    WD.bits[i >> 3] |= (uint8_t)(1u << (i & 7)), WD.dirty = 1;
+    plat_mutex_unlock(&WD.lock);
+    wd_flush(0);
+}
+
+static void wd_close(void) {
+    wd_flush(1);
+    plat_mutex_lock(&WD.lock);
+    free(WD.bits), WD.bits = NULL, WD.n = 0;
+    plat_mutex_unlock(&WD.lock);
+}
+
 // Preparation: one prepared variant at a time into the driver's disk cache (private shader copy, nothing kept). arg is
 // the worker's journal slot.
 static int warm_no_app_cache;   // lb_warm_prepared: the builds below go past P.cache (build_cache)
+static uint32_t *lb_ord;        // lb_warm_prepared: each entry's place in shader-prepared.bin (WD's bits)
+static int lb_entry;            // lb_warm_prepared runs in the entry step: its count is the step's (PREP_PART_LIBS)
 static void lb_warm_worker(void *arg) {
     int slot = (int)(intptr_t)arg;
     build_no_app_cache = warm_no_app_cache;
     for (;;) {
+        if (__atomic_load_n(&LB.stop, __ATOMIC_ACQUIRE)) break;   // warm_stop_watch: the launcher wants the PC back
         size_t i = (size_t)plat_inc64(&LB.next) - 1;
         if (i >= LB.n) break;
         int owned = 0, skip = skip_listed(LB.e[i].iid);
@@ -4685,37 +4771,91 @@ static void lb_warm_worker(void *arg) {
 #endif
         if (sh) journal_mark(slot, NULL);
         if (owned) gfx_shader_release_private(sh);
+        wd_set(lb_ord ? lb_ord[i] : i);
+        if (lb_entry) prep_part_step(PREP_PART_LIBS, 1);
         plat_mutex_lock(&LB.stat);
         uint64_t d = ++LB.done;
         plat_mutex_unlock(&LB.stat);
         if (d % 4000 == 0) lb_report("preparation progress");
+        static volatile int64_t said;   // the count every 2 s on stdout, for the launcher's row (installer/oot.py LIBRARIES)
+        int64_t now = (int64_t)now_ms(), was = __atomic_load_n(&said, __ATOMIC_RELAXED);
+        if (now - was >= 2000 && __atomic_compare_exchange_n(&said, &was, now, 0, __ATOMIC_RELAXED, __ATOMIC_RELAXED)) {
+            printf("vk_pipeline: stage library prebuild preparation progress: %llu of %zu variants\n", (unsigned long long)d,
+                   LB.n);
+            fflush(stdout);
+        }
     }
     build_no_app_cache = 0;   // the calling thread may build for play afterwards (the suspects run on the caller)
 }
 
-// Preparation: every variant of <dir>/shader-prepared.bin on every core at normal priority.
-static void lb_warm_prepared(const char *dir) {
+// The library state of the recorded graphics pipelines (K.file), as lb_state counts it: the clamp, polygon mode and
+// depth mode of the pre-rasterization side, the samples of the fragment side. Read from the records' state alone, so
+// that the launcher's background build and the entry step take the same state (and their done lists one key).
+static void records_hist(uint32_t pr_hist[16], uint32_t fs_hist[4]) {
+    memset(pr_hist, 0, 16 * sizeof *pr_hist), memset(fs_hist, 0, 4 * sizeof *fs_hist);
+    plat_mutex_lock(&P.lock);
+    const KeyRec *r = (const KeyRec *)K.file;
+    for (size_t i = 0; r && i < K.file_n; i++) {
+        const VkPipeState *st = &r[i].s;
+        unsigned clamp = !P.dyn_clamp && st->depth_clamp && P.f_depth_clamp;
+        unsigned poly = !P.dyn_poly ? (unsigned)polygon_mode(st->poly.mode) : 0;
+        unsigned mw = st->depth_minus_w != 0, smp = st->samples > 1 ? st->samples : 1;
+        pr_hist[(clamp & 1) | (poly & 3) << 1 | (mw & 1) << 3]++;
+        fs_hist[smp >= 8 ? 3 : smp >= 4 ? 2 : smp >= 2 ? 1 : 0]++;
+    }
+    plat_mutex_unlock(&P.lock);
+}
+
+// The variants of <dir>/shader-prepared.bin this driver does not have yet (WD), into LB.e with their places in the file
+// (lb_ord); their count. Taken once: the entry step counts them for its picture, lb_warm_prepared builds them.
+static size_t lb_list_load(const char *dir, const uint32_t *pr_hist, const uint32_t *fs_hist) {
+    if (LB.e) return LB.n;
+    static const uint32_t no_pr[16], no_fs[4];
+    lb_state(pr_hist ? pr_hist : no_pr, fs_hist ? fs_hist : no_fs);   // (the done list's key holds it)
     char path[PLAT_PATH_MAX * 2 + 32];
     snprintf(path, sizeof path, "%s/shader-prepared.bin", dir);
     uint64_t size = 0;
     uint8_t *f = plat_file_read(path, &size);
-    size_t n = f && size >= 16 ? (size_t)(size - 16) / 36 : 0;
+    size_t n = f && size >= 16 ? (size_t)(size - 16) / 36 : 0, m = 0;
+    if (n) wd_open(dir, f, size, n);
     LB.e = n ? calloc(n, sizeof *LB.e) : NULL;
-    for (size_t i = 0; LB.e && i < n; i++)
-        memcpy(LB.e[i].iid, f + 16 + 36 * i + 4, 32), LB.e[i].stage = f[16 + 36 * i], LB.e[i].prio = f[16 + 36 * i + 1];
+    lb_ord = n ? calloc(n, sizeof *lb_ord) : NULL;
+    for (size_t i = 0; LB.e && lb_ord && i < n; i++)
+        if (!wd_has(i)) {
+            memcpy(LB.e[m].iid, f + 16 + 36 * i + 4, 32), LB.e[m].stage = f[16 + 36 * i], LB.e[m].prio = f[16 + 36 * i + 1];
+            lb_ord[m++] = (uint32_t)i;
+        }
     free(f);
-    if (!LB.e) return;
+    if (n) rt_log("vk_pipeline: %zu of %zu prepared variants have not been handed to this driver yet (shader-warm-done.bin)",
+                  m, n);
+    if (!m) free(LB.e), LB.e = NULL, free(lb_ord), lb_ord = NULL;
+    LB.n = m;
+    return m;
+}
+
+// Preparation: every variant of <dir>/shader-prepared.bin this driver does not have yet, on every core at normal
+// priority. pr_hist, fs_hist: the library state of the recorded pipelines (the entry step's), NULL for the defaults.
+static void lb_warm_prepared(const char *dir, const uint32_t *pr_hist, const uint32_t *fs_hist) {
+    size_t n = lb_list_load(dir, pr_hist, fs_hist);
+    if (!n) {
+        wd_close();
+        printf("vk_pipeline: stage library prebuild preparation done: 0 of 0 variants\n");   // (installer/oot.py)
+        fflush(stdout);
+        return;
+    }
     skip_init(dir);
     char jp[PLAT_PATH_MAX * 2 + 48];
     snprintf(jp, sizeof jp, "%s/shader-prepare-journal.bin", dir);
     SK.journal = plat_fs_create(jp, NULL);   // skip_init removed a leftover one
     if (!SK.journal) rt_log("vk_pipeline: cannot create %s: a driver crash in this run will not be recorded", jp);
     LB.n = n, LB.idle = 0, LB.t0 = now_ms();
-    warm_no_app_cache = vk_ctx()->props.vendorID == 0x10de && !rt_knob("WARM_APP_CACHE", "0");
+    // (the entry step's go past pipeline-cache.bin on every card: a file of the libraries filled the AMD driver's
+    // limit of about 850 MiB, and the entry step's own pipelines no longer fit in it)
+    warm_no_app_cache = lb_entry || (vk_ctx()->props.vendorID == 0x10de && !rt_knob("WARM_APP_CACHE", "0"));
     rt_log("vk_pipeline: the prepared variants go %s", warm_no_app_cache ? "into the driver's disk cache only (build_cache)"
                                                                             : "into the driver's disk cache and pipeline-cache.bin");
     static const uint32_t no_pr[16], no_fs[4];
-    lb_state(no_pr, no_fs);
+    lb_state(pr_hist ? pr_hist : no_pr, fs_hist ? fs_hist : no_fs);
 #ifdef GAME_NS2
     lm_init();
 #endif
@@ -4725,6 +4865,8 @@ static void lb_warm_prepared(const char *dir) {
     for (size_t i = 0; SK.nsus && i < n; i++)
         if (skip_suspect(LB.e[i].iid)) {
             GfxWarmEnt t = LB.e[m];
+            uint32_t o = lb_ord[m];
+            lb_ord[m] = lb_ord[i], lb_ord[i] = o;
             LB.e[m++] = LB.e[i], LB.e[i] = t;
         }
     if (m) {
@@ -4741,8 +4883,13 @@ static void lb_warm_prepared(const char *dir) {
     if (!k) lb_warm_worker((void *)(intptr_t)0);
     for (int i = 0; i < k; i++) plat_thread_join(t[i]);
     if (SK.journal) plat_file_close(SK.journal), SK.journal = NULL, plat_file_delete(jp);   // every build returned
-    skip_clear_suspects(dir);
-    lb_report("preparation done");
+    int stopped = __atomic_load_n(&LB.stop, __ATOMIC_ACQUIRE) != 0;
+    if (!stopped) skip_clear_suspects(dir);   // (a stopped run did not build them all)
+    lb_report(stopped ? "preparation stopped" : "preparation done");
+    // (the last count on stdout too: the launcher reads it there, installer/oot.py LIBRARIES)
+    printf("vk_pipeline: stage library prebuild preparation %s: %llu of %zu variants\n", stopped ? "stopped" : "done",
+           (unsigned long long)LB.done, n);
+    fflush(stdout);
 #ifdef GAME_NS2
     if (LM.on)
         rt_log("vk_pipeline: task and mesh libraries of the prepared mesh variants: %llu built into the driver cache (avg "
@@ -4754,7 +4901,10 @@ static void lb_warm_prepared(const char *dir) {
     // with gpl off only compute variants are built: say so, rather than count the skipped ones as built
     unsigned long long skipped = LB.skipped;
     size_t tried = n - (size_t)skipped;
-    if (LB.nolib)
+    if (stopped)
+        printf("prepare-shaders: stopped after %llu of %zu variants on %d threads in %.0f ms\n",
+               (unsigned long long)LB.done, n, k, now_ms() - LB.t0);
+    else if (LB.nolib)
         printf("prepare-shaders: %zu variants on %d threads in %.0f ms, %llu vertex/fragment variants skipped (graphics "
                "pipeline library off, they build at their first draw)\n", tried, k, now_ms() - LB.t0,
                (unsigned long long)LB.nolib);
@@ -4765,6 +4915,8 @@ static void lb_warm_prepared(const char *dir) {
         printf("prepare-shaders: %llu variants skipped: the graphics driver crashed while building them in an earlier "
                "run (shader-prepare-skip.txt); they build at their first draw\n", skipped);
     free(LB.e), LB.e = NULL, LB.n = 0, LB.next = 0, LB.done = 0, LB.skipped = 0;
+    free(lb_ord), lb_ord = NULL;
+    wd_close();
 }
 
 // rekarina.exe --prepare-shaders (tools/prepare_shaders.py): the device sets the translator's host answers (they are in every
@@ -4782,8 +4934,11 @@ int vk_pipeline_prepare_shaders(void) {
     int cpus = (int)plat_cpu_usable();
     const char *pe = cfg_get("REKARINA_PREWARM_XLATE");   // no fixed default: half the CPUs, at most 16, when unset
     int procs = pe && *pe ? atoi(pe) : cpus / 2 > 16 ? 16 : cpus / 2;
+    // The setup packs what this writes and checks every file as it does (tools/pack_shader_cache.py, gfx_shader.c
+    // disk_load_from): no flush per file. REKARINA_SHADER_CACHE_FLUSH=1 flushes as play does.
+    gfx_shader_cache_flush(rt_knob("SHADER_CACHE_FLUSH", "0"));
     int rc = gfx_shader_prepare_seed(dir, cpus, procs < 1 ? 1 : procs);
-    if (!rc && cfg_bool("REKARINA_PREPARE_DRIVER")) lb_warm_prepared(dir);
+    if (!rc && cfg_bool("REKARINA_PREPARE_DRIVER")) lb_warm_prepared(dir, NULL, NULL);
     else if (!rc) printf("prepare-shaders: translated only (REKARINA_PREPARE_DRIVER=0)\n");
     return rc;
 }
@@ -4799,13 +4954,59 @@ int vk_pipeline_prepare_shaders(void) {
 // On NVIDIA the file is not loaded first (P.cache_fresh, cache_load): what it is written with is what the entry step builds,
 // and a file a setup of 1.2.4 filled with every prepared library (build_cache) is written small again at the next
 // setup. REKARINA_WARM_FRESH_CACHE=0 loads it as before.
+// REKARINA_WARM_STOP=<file>: the launcher's background run (installer/oot.py background_main, with
+// REKARINA_PIPE_PREBUILD=0: the libraries alone, the game's own start does the entry step). When the file appears
+// (Play was pressed), every worker finishes the library it has handed to the driver and takes no other, and the
+// process ends the normal way within a moment, so the driver keeps on disk what it built and the journal holds no
+// innocent variants (a killed process leaves both to chance). Exit code 3 then.
+static volatile int32_t warm_watch_end;
+static void warm_stop_watch(void *arg) {
+    const char *path = arg;
+    while (!__atomic_load_n(&warm_watch_end, __ATOMIC_ACQUIRE)) {
+        if (plat_file_exists(path)) {
+            rt_log("vk_pipeline: %s appeared: the build stops", path);
+            plat_xchg32(&LB.stop, 1);
+            return;
+        }
+        plat_sleep_ms(100);
+    }
+}
+
+// --warm-libraries as the launcher's background job (installer/oot.py background_warm): its stdin is a pipe the
+// launcher holds; its end (the launcher gone) stops the build as the stop file does.
+static void warm_stdin_watch(void *arg) {
+    (void)arg;
+    char b[64];   // (the descriptor, not stdio: a stdio read would hold stdin's lock against the exit's flush)
+    while (plat_stdin_read(b, sizeof b) > 0) {}
+    if (!__atomic_load_n(&warm_watch_end, __ATOMIC_ACQUIRE)) {
+        rt_log("vk_pipeline: the starter closed this process's input: the build stops");
+        plat_xchg32(&LB.stop, 1);
+    }
+}
+
 static int pw_no_lb;   // --warm-shaders: the entry step starts no boot prebuild after it (the process ends)
+int vk_pipeline_warm_shaders(void);
+// rekarina.exe --warm-libraries: the prepared variants' libraries this driver lacks, as the game's entry step would build
+// them (the records' shaders and unions first), and nothing else; stops on the stop file or when its input closes.
+// The launcher's background work runs it while no game runs (the game's entry step builds them in its own process).
+int vk_pipeline_warm_libraries(void) {
+    warm_libraries = 1;
+    return vk_pipeline_warm_shaders();
+}
+static int pw_libs_only;   // --warm-libraries: the entry step builds no pipeline, only libraries
 int vk_pipeline_warm_shaders(void) {
-    int pipes = cfg_bool("REKARINA_PIPE_PREBUILD");
+    // --warm-libraries (the launcher's background build): the entry step without its
+    // pipelines: the records' shaders loaded and their vertex output unions taken, so that each prepared variant's
+    // library is the one the game's own entry step and play build (with the union, in the records' state); then only
+    // the prepared variants' libraries, into the driver's disk cache.
+    int libs_only = warm_libraries;
+    int pipes = cfg_bool("REKARINA_PIPE_PREBUILD") && !libs_only;
     // (only when the entry step runs below: without it nothing would fill the file again)
     P.cache_fresh = pipes && rt_knob("WARM_FRESH_CACHE", "1");
-    if (pipes) {   // before ensure_init: keys_open reads the key files with A.on only, and prebuild_start must leave
-        vk_pipeline_async_enable();   // them to the entry step below
+    // The launcher's background build (no entry step) still reads the records, for their library state (records_hist):
+    // the entry step builds with it, and the two share the done list only under one state.
+    if (pipes || libs_only || rt_knob("WARM_RECORD_STATE", "1")) {   // before ensure_init: keys_open reads the key files with A.on
+        vk_pipeline_async_enable();                      // only, and prebuild_start must leave them to the entry step
         K.warm = 1;
     }
     if (!ensure_init()) {
@@ -4820,7 +5021,21 @@ int vk_pipeline_warm_shaders(void) {
         fprintf(stderr, "warm-shaders: no %s (tools/prepare_shaders.py writes it)\n", prp);
         return 1;
     }
-    lb_warm_prepared(dir);
+    // REKARINA_WARM_STOP alone names a stop file (the launcher's background job sets it). Not the launcher's file by
+    // default: Play leaves it behind, and the game's entry step starts this mode as its child right after.
+    const char *stop = cfg_get("REKARINA_WARM_STOP");
+    PlatThread *watch = stop && *stop ? plat_thread_new(warm_stop_watch, (void *)stop, "warm stop") : NULL;
+    if (warm_libraries) plat_thread_new(warm_stdin_watch, NULL, "warm input");   // (not joined: it ends with stdin)
+    if (libs_only) {
+        pw_libs_only = 1, pw_no_lb = 1;
+        vk_pipeline_prewarm();   // (its library part is lb_warm_prepared, with the stop above)
+    } else {
+        uint32_t lib_pr[16], lib_fs[4];
+        records_hist(lib_pr, lib_fs);
+        lb_warm_prepared(dir, lib_pr, lib_fs);
+    }
+    if (watch) plat_xchg32(&warm_watch_end, 1), plat_thread_join(watch);
+    if (__atomic_load_n(&LB.stop, __ATOMIC_ACQUIRE)) return 3;   // stopped: no entry step, nothing saved
     if (pipes) {
         double t0 = now_ms();
         pw_no_lb = 1;   // the boot prebuild is for a game that runs on
@@ -5055,10 +5270,25 @@ void vk_pipeline_prewarm(void) {
     size_t u = 0;
     for (size_t i = 0; i < m; i++)
         if (!u || memcmp(ids[u - 1], ids[i], 32)) memcpy(ids[u++], ids[i], 32);
+    // The prepared variants' stage libraries and compute pipelines this driver does not have yet (lb_list_load, WD), built
+    // in this step after the records: a pairing play has not recorded then links from libraries the driver has (0.1 ms)
+    // instead of building them in a frame (5-180 ms cold). The setup no longer builds them (1.2.8); the launcher's
+    // background build (installer/oot.py background_main) may have built some or all; a start that finds none missing
+    // costs a file read. REKARINA_ENTRY_LIBRARIES=0 leaves them out (each then builds at its first draw).
+    uint32_t lib_pr[16], lib_fs[4];   // the library state of the records (records_hist), for them and their done list
+    records_hist(lib_pr, lib_fs);
+    size_t nlib = have_dir && rt_knob("ENTRY_LIBRARIES", "1") ? lb_list_load(dir, lib_pr, lib_fs) : 0;
+    // the textures the texture cache lacks: walked by a child from now, beside the builds (tex_prepare.c); not in
+    // --warm-libraries, whose launcher runs the walk after it
+    if (!pw_libs_only) tex_prepare_entry_start();
     // the picture's count: the records. Their shaders load in under a second when the setup translated them, and
     // counted too they filled half the bar at once on a cold driver cache, before minutes of pipeline builds.
     prep_progress_total((int64_t)(n + mn + cn));
     int cpus = (int)plat_cpu_usable();
+    prep_part_total(PREP_PART_PIPES, 0, 0.6 / (cpus > 0 ? cpus : 1));   // a graphics job takes 0.6 s cold on average
+    // (0.47 s of a thread a library with a cold cache: the setup's driver phase built 56,402 in 1,650 s on 16 threads)
+    if (nlib) prep_part_total(PREP_PART_LIBS, (int64_t)nlib, 0.47 / (cpus > 0 ? cpus : 1));
+    else wd_close();   // (none missing: the list read is all)
     const char *pe = cfg_get("REKARINA_PREWARM_XLATE");   // no fixed default: half the CPUs, at most 16, when unset
     int procs = pe && *pe ? atoi(pe) : cpus / 2 > 16 ? 16 : cpus / 2;
     gfx_shader_prewarm((const uint8_t(*)[32])ids, u, sh, cpus, procs < 1 ? 1 : procs);
@@ -5102,17 +5332,19 @@ void vk_pipeline_prewarm(void) {
             fs_hist[k.samples >= 8 ? 3 : k.samples >= 4 ? 2 : k.samples >= 2 ? 1 : 0]++;
             uint64_t h = key_hash(&k, sizeof k);
             if (pipe_find(&k, sizeof k, h)) known++;
-            else pipe_miss(&s, &k, h, 2, &q), queued += (uint32_t)q;
+            else if (!pw_libs_only) pipe_miss(&s, &k, h, 2, &q), queued += (uint32_t)q;
         }
         if (!q) prep_progress_step(1);
     }
     K.loading = 0;
     plat_mutex_unlock(&P.lock);
     uint32_t mk_known = 0, mk_dropped = 0, mk_skipped = 0;
-    uint32_t mk_queued = mk_queue((const uint8_t(*)[32])ids, u, sh, &mk_known, &mk_dropped, &mk_skipped);
+    uint32_t mk_queued = 0;
+    if (pw_libs_only) mk_drop();
+    else mk_queued = mk_queue((const uint8_t(*)[32])ids, u, sh, &mk_known, &mk_dropped, &mk_skipped);
     // the compute shaders: one progress step each now for those not built here
     PW.ncs = 0, PW.cs_next = 0;
-    PW.cs = cn ? calloc(cn, sizeof *PW.cs) : NULL;
+    PW.cs = cn && !pw_libs_only ? calloc(cn, sizeof *PW.cs) : NULL;
     uint32_t cs_dropped = 0;
     plat_mutex_lock(&P.lock);
     for (size_t i = 0; i < cn; i++) {
@@ -5181,6 +5413,25 @@ void vk_pipeline_prewarm(void) {
                PW.lib_worst);
 #endif
     free(PW.cs), PW.cs = NULL, PW.ncs = 0;
+    // In this process, also in the game's: the drivers give each process a disk cache file of its own (NVIDIA's
+    // GLCache: the first process takes the folder's file, one started while it runs a new empty one, and none reads
+    // another's; AMD's VkCache keeps "_1" files beside its own the same way), so a child of the running game built
+    // every library into a file the game never read (2026-11-20: 11,000 libraries from nothing at 480 ms each while
+    // the game held a file with all of them). Their memory is small: the driver's footprint stayed at 297-322 MiB over
+    // 8,000 builds in a process of their own and did not move over 48,000 in the game's (the 43 GiB of that run were
+    // the texture walk's, which runs in a child: tex_prepare.c). The launcher's background build (--warm-libraries)
+    // runs while no game does, so it fills the folder's file.
+    if (nlib) {
+        double tl = now_ms();
+        lb_entry = 1;
+        lb_warm_prepared(dir, lib_pr, lib_fs);
+        lb_entry = 0;
+        if (!pw_libs_only)
+            rt_log("vk_pipeline: entry step: %zu prepared variants handed to the driver in %.0f ms", nlib, now_ms() - tl);
+    }
+    double tj = now_ms();
+    tex_prepare_entry_join();   // play reads the texture cache: every texture the step walks is there before it
+    if (now_ms() - tj > 100) rt_log("vk_pipeline: entry step: waited %.0f ms for the textures", now_ms() - tj);
     prep_progress_end();
     vk_mem_footprint_log("after the entry step");
     if (!pw_no_lb) lb_start(pr_hist, fs_hist);

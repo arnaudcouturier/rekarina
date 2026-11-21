@@ -157,6 +157,12 @@ on a Deck):
    five runs, the settings, the system's details and `memory-test.txt`; no saves, your user name taken out). Send the
    zip, with the device (LCD or OLED Deck, or the PC's GPU and distribution) and what you saw.
 
+Or all of it at once: `tools/linux_test_run.sh <game folder> [seconds]` runs the memory test, the selftest, then the
+game twice (shadow storage, then driver memory, `REKARINA_LINUX_GUEST_MEMORY=driver`) and writes `linux-test-<date>.txt`
+beside the game with the system, the frame-time summary and the memory lines of each run, then makes the report zip.
+Send the text file and the zip. Driver memory is off by default until it has been played on a Deck; the script is what
+shows whether it is safe to turn on.
+
 What the developers look for in the log (`logs/rekarina.log`), if you want to check first: the line starting
 `mem: guest memory:` (which way the game keeps its memory and what the device offers), `mem: shadow at frame` (what
 shadow storage copies), and `frametime: exit` (frame rate and the slow frames). If the game crashes with an access

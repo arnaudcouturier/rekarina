@@ -31,7 +31,13 @@ void prep_screen_draw(float w, float h, float scale) {
     static int64_t sd[RATE_N];
     static int sn, sh;
     char left[96] = "";
-    if (phase == PREP_PHASE_PIPELINES) {
+    // the step's own estimate (prep.c prep_progress_left: each part at its own pace, the textures beside the builds);
+    // the count's rate below only when it has none
+    double whole = phase != PREP_PHASE_DONE && phase != PREP_PHASE_NONE ? prep_progress_left() : -1;
+    if (whole >= 0 && secs >= 3.0) {
+        if (whole >= 60) snprintf(left, sizeof left, menu_text(UI_PREP_LEFT_MIN), (int)(whole / 60 + 0.5));
+        else if (whole >= 5) snprintf(left, sizeof left, "%s", menu_text(UI_PREP_LEFT_LT1));
+    } else if (phase == PREP_PHASE_PIPELINES) {
         if (!sn || secs - st[(sh + RATE_N - 1) % RATE_N] >= 0.5) {
             st[sh] = secs, sd[sh] = done, sh = (sh + 1) % RATE_N;
             if (sn < RATE_N) sn++;

@@ -53,6 +53,14 @@ with the game's and the port's own (the port's button font is larger than the ga
 a mod made larger or added. A separate RESTBL mod is not needed. (Before 1.2.6 a mod that shipped a table replaced the
 port's, and the game stopped at its start: the button font no longer fit its entry.)
 
+A mod that ships `Pack/Bootup.Nin_Ounce_NVN2.pack.zs` (model mods carry it for their actor data) gets the port's scene
+scale on its pack: the port serves the game's Bootup pack with every `ResolutionReduceScale` of
+`ModelSceneExtensionParam` at 1.0, so the scene does not drop below the full picture while the GPU looks loaded, and at
+start `runtime/scene_pack.c` sets the same values in the mod's pack (written to `profile/mods/`, the log says
+`scene scale: the mod's Bootup pack gets the port's scene scale`). The button prompts stay too: every prompt set carries
+the same Bootup pack as `romfs-patches`, so a mod's Bootup is no reason to fall back to the Switch prompts (only a mod
+that replaces a file a prompt set really changes, such as the button font, is).
+
 ## Code patches (ExeFS)
 
 A mod with `.ips` or `.pchtxt` files patches the game's code. A patch is for one game update: an `.ips` file is named

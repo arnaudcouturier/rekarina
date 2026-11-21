@@ -32,6 +32,7 @@ void rt_register_host(uint64_t addr, GuestFn fn);
 // An indirect branch to the lifted function at addr calls fn instead (direct calls inside the lifted code still reach
 // the lifted one, which fn may call itself). Only before rt_dispatch_init; addr must be a lifted function start.
 void rt_dispatch_replace(uint64_t addr, GuestFn fn);
+int rt_dispatch_replaced(uint64_t addr);   // 1 when a host function takes the place of the lifted one at addr
 
 // Build the table from the modules (kept by pointer; they must outlive the process). Call it once, before any guest
 // thread starts: thread creation publishes the table to the threads. Fatal on a malformed table:

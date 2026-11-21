@@ -39,6 +39,7 @@ typedef struct VkCtx {
         has_astc_ldr,                       // textureCompressionASTC_LDR (enabled when reported)
         has_calibrated,                     // VK_KHR/EXT_calibrated_timestamps (GPU idle split in the perf line)
         has_hdr_metadata,                   // VK_EXT_hdr_metadata (vk_hdr.c vk_hdr_metadata)
+        has_map_placed,                     // VK_EXT_map_memory_placed with memoryMapPlaced and memoryUnmapReserve (Linux: driver-backed guest memory)
         has_atomic_float,                   // VK_EXT_shader_atomic_float with shaderBufferFloat32AtomicAdd
         has_present_timing,                 // DEBUG-PRESENTTIMING: VK_EXT_present_timing + VK_KHR_present_id2 (REKARINA_PRESENT_TIMING=1)
         fsr4_ready;                         // VK_KHR_cooperative_matrix + VK_EXT_shader_float8 on: FSR 4 can run (vk_ffx.cpp)
@@ -53,6 +54,7 @@ typedef struct VkCtx {
     // VK_FEEDBACK_RESTART (the pass ends and restarts behind the full barrier).
     int feedback;                           // VK_FEEDBACK_*
     uint32_t min_imported_host_alignment;   // VK_EXT_external_memory_host
+    uint32_t map_placed_align;              // VK_EXT_map_memory_placed: minPlacedMemoryMapAlignment
     int device_index;                       // index in vkEnumeratePhysicalDevices
 } VkCtx;
 enum { VK_FEEDBACK_OFF, VK_FEEDBACK_RESTART, VK_FEEDBACK_LAYOUT };
@@ -374,6 +376,7 @@ void vk_pipeline_dynamic_forget(void);   // vk_pipeline.c: the dynamic state the
 void vk_mem_shadow_sync(void);
 void vk_mem_gpu_pending(uint64_t addr, uint64_t size);
 int vk_mem_shadow_on(void);
+void vk_mem_driver_memory(int placed);   // Linux (vk_device.c create_device): driver-backed guest memory, if asked for
 // Global-memory writes (vk_exec_draw.c gmem_*): a submission that binds a write log records the pieces such writes
 // reached before as pending (replay thread); its fence reports each piece its log shows written, then the rest goes.
 void vk_mem_shadow_gmem_record(uint64_t fence);
@@ -405,6 +408,8 @@ void vk_headroom_stop(void);   // before vmaDestroyAllocator
 void vk_mem_late_apply(uint64_t before);   // late sums of the submissions before that value, into guest memory
 int vk_mem_mirror_flush(VkCommandBuffer cb, uint64_t fence);   // the write-back collected so far, mid-submission
 void vk_mem_wb_pending(uint64_t *plain, uint64_t *merge);   // bytes of write-back the submission being recorded has collected
+int vk_mem_early_pending(void);   // small results written after the results point, still to go back
+int vk_mem_early_results(VkCommandBuffer cb, int *bound);   // REKARINA_WB_EARLY_RESULTS: they go back now
 void vk_completion_add_result(uint64_t fence, void (*fn)(void *), void *arg);   // a CPU-visible side effect (vk_sync.c)
 int vk_sync_results_sent(void);          // the submission being recorded has issued its results point
 VkCommandBuffer vk_sync_chain(int n, VkCommandBuffer *cbs);   // the part goes on in n command buffers for other threads and a new one
@@ -499,6 +504,7 @@ void vk_astc_time_summary(void);        // logs the totals
 void vk_astc_release(void);             // vk_device.c, before the device goes: frees the decoder's objects
 void vk_mem_note_submit(uint64_t timeline_value);  // vk_sync.c: after each submit that signals ctx->timeline with this value
 void vk_mem_collect(void);                         // frees what has completed
+void vk_mem_collect_idle(void);                    // a process without frames: every deferral its finished uploads left
 typedef struct { uint64_t imported_pools, physical_pools, virtual_pools, import_failures, upload_batches; } VkMemStats;
 void vk_mem_stats(VkMemStats *s);
 void vk_mem_shutdown(void);                        // before vk_shutdown: waits idle, frees every memory and texture object
@@ -583,6 +589,7 @@ uint32_t vk_texture_slots_gen(void);
 // guards (a lookup may create an entry). 0 when the slot was never registered: nothing is kept under 0.
 uint64_t vk_texture_slot_token(int id);
 void vk_sampler_dlss_bias(float bias);           // texture LOD bias added for DLSS upscaling (material samplers)
+void vk_sampler_sharpness(float b);              // the game's negative material texture biases moved b towards 0
 uint32_t vk_sampler_gen(void);                      // changes whenever a sampler slot is registered
 void vk_texture_gpu_written(const tex_t *t);        // rendered or copied into by the GPU: no re-upload from storage
 #ifdef GAME_NS2

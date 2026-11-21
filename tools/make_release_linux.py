@@ -494,6 +494,12 @@ def build_entry(out):
 
 
 def write_appimage(out, path):
+    # The folders a setup run leaves in the setup folder (its temp folder holds generated game code, which the content
+    # check of tools/make_rekarina_release.py leaves alone because a player's own copy keeps them): never packed.
+    leftovers = [n for n in ('temp', 'update-staging') if (out / n).exists() and any((out / n).iterdir())]
+    if leftovers:
+        sys.exit(f'write_appimage: {out} holds {", ".join(leftovers)} from running the setup there: remove it before packing '
+                 '(it can hold files derived from the game)')
     tool = mr.fetch('appimagetool')
     tool.chmod(0o755)
     runtime = mr.fetch('appimage-runtime')
