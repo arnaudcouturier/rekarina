@@ -46,7 +46,7 @@ byte offsets from its start (magic `0x98761234`, version `0xc9` at +4; `runtime/
 | `nvn2_cs` | array of 5 or 7 ints | Compute only: `[control[0xb1] uniform buffer entries, control[0xb2] storage buffer entries, control[0xb3] texture entries, u16 at 0xba (c[0] layout size in bytes), control[0xa9] * 4 (push constant bytes)]`, optionally followed by `control[0xb4]` separate texture entries and `control[0xb5]` separate sampler entries (seedds/nxnative sends all seven; OoT's 4,123 compute shaders have 0 in both, so the five-entry form the runtime sends is equivalent for OoT). Without it a compute shader's c[0] reads are taken as NVN's fixed layout. |
 | `mesh` | object | Task and mesh only, as `ns2_request` sends it: `payload` (u16 +0x5a, bytes), `task` (byte +0x5e: a mesh shader launched by a task), `max_vertices` (u16 +0x60), `max_primitives` (u16 +0x62), `primitive_sph` (u32 +0x64 when +0x68 bit 7, else 0: the offset in the code area of a mesh shader's per-primitive SPH). Optional, for a per-primitive SPH outside the c1 segment's start: `c1_offset` (u32 +0x40) or `primitive_sph_hex` (its 0x80 bytes). |
 | `gmem_map` | bool | `true`: the host binds the memory pool table and its write log (below), and a global memory access the translator traces to no storage buffer goes through it. Absent or `false`: such an access is dropped as in Ryujinx (a load reads 0, a store or atomic does nothing) and the module needs no physical pointers. OoT: 2,130 of its 42,331 vertex, pixel and compute shaders have such accesses (2,111 loads among them). |
-| `mvprev` | bool | Ignored with `sm86`: the previous-position banks (bank + 15) would overlap NVN2's push constants in c[24]. |
+| `mvprev` | bool | Vertex shaders: also write last frame's position, from last frame's blocks at slot bank + 15 (patch 0015). With `sm86`, a position whose banks need a slot the shader reads itself gets none: NVN2 shaders read their push constants as c[24], c9's last-frame slot ("Last frame's position" below). |
 
 The NVN2 compute c[0] layout (`nvn2_cs`, `InstEmitAmpere.AMapC0`): from c[0] + 0x10 the push constants
 (`push` bytes, rounded up to 16), then a 0x10-byte entry per uniform buffer slot, one per storage buffer slot, then
@@ -434,6 +434,28 @@ dump's `sh_<hash>.spv` edited by a script; the pass target read back as floats w
 conditions. 393 of the corpus's 42,851 programs have a VOTEU with a predicate other than UPT. Their program hash ends
 with a tag (`gfx_shader.c build_code_hash`, `nvn_ctl.h nvn2_ctl_voteu_pred`), so they are translated anew and every
 other cache entry stays; the translator identity is kept (`tools/build_xlate.py SAME_AS`).
+
+## Last frame's position (patch 0045, 2026-11-21)
+
+Per-object motion vectors draw a model a second time with its vertex shader's last-frame variant (patch 0015,
+`Transforms/MotionPrevious.cs`): every operation the position depends on that reads a user bank c3..c16 is repeated
+reading slot bank + 15, where the runtime binds that bank's block of last frame (`vk_exec_draw.c` `ubo_info`,
+`vk_skin_motion.inc`). Program.cs answered `mvprev` with false for every Ampere job, because NVN2 shaders read their
+push constants as c[24], which is c9's last-frame slot. Without the variant every skinned draw of OoT kept the camera's
+motion: the runtime's model motion summary counted all of them as "position reads other blocks".
+
+The transform now collects the constant slots the whole shader reads (`ConstantSlotsRead`) and declines only a
+position whose banks need one of them; it reports the banks with location -1, so the shader's `.res.json` shows why
+(`mvprev` -1 with `mvprev_banks` set), and the runtime, which takes a variant only when it adds an output, leaves that
+draw to the camera. The bindings of the last-frame slots are made after that check, in the same order as before, so a
+Maxwell translation (whose slots stop at c17) is byte for byte the same, and so is every job without `mvprev`. The
+translator identity is kept (`tools/build_xlate.py SAME_AS`); the keys of NVN2 last-frame variants carry a tag
+(`gfx_shader.c put_mvprev_tag`), so the plain translations the cache holds under their old keys are never found.
+
+Checked on the RTX 4090 at 4K DLAA, booting a save in the hero's house (`--load-save latest --seconds 100`): of 292,940
+skinned draws, 113,294 were drawn with their own motion (39 %), 179,170 were carried by another draw of the same mesh,
+and none was refused for "position reads other blocks" (all of them before the patch). The 48 variants translated
+there all wrote the position (banks c3 c4 c6, or c3 to c7); none depended on c9. No shader failed.
 
 ## Warp collectives on subgroups wider than 32 lanes (patch 0044, 2026-11-20)
 

@@ -159,9 +159,9 @@ static class SwshXlate
         public int QueryHostSubgroupSize() => _job["subgroup"] is JsonNode n ? (int)n : 32;
         // "mvprev": true: the vertex shader also writes last frame's position, computed from slots bank + 15 in place of
         // the user banks c3-c16 (patch 0015, runtime/vk_mvprev.c); res.json's "mvprev" names the output location (-1:
-        // none) and "mvprev_banks" the banks the position depends on (bit n: cn).
-        // Not with Ampere code: the previous-position banks (bank + 15) overlap NVN2's push constants in c[24].
-        public bool QueryMotionPrevious() => !Ampere && _job["mvprev"] is JsonValue v && v.TryGetValue<bool>(out bool b) && b;
+        // none) and "mvprev_banks" the banks the position depends on (bit n: cn). With Ampere code a position whose
+        // banks' last-frame slots the shader reads itself (c9's is c[24], NVN2's push constants) gets none (patch 0045).
+        public bool QueryMotionPrevious() => _job["mvprev"] is JsonValue v && v.TryGetValue<bool>(out bool b) && b;
         // "zero_locals": true: function-local variables start at 0 (patch 0016, runtime/vk_caps.c decides per driver).
         public bool QueryZeroLocals() => _job["zero_locals"] is JsonValue v && v.TryGetValue<bool>(out bool b) && b;
         // "float_atomics": true: the device enabled shaderBufferFloat32AtomicAdd (runtime/vk_device.c), so float add reductions are one atomic (patch 0031).

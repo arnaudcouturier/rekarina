@@ -1,0 +1,112 @@
+TOTK: last frame's position (patch 0015) for NVN2 (Ampere) vertex shaders. Program.cs turned it off for every Ampere
+job because a bank's last-frame slot, bank + 15, can be a slot the shader reads itself: NVN2 shaders read their push
+constants as c[24], which is c9's last-frame slot. Without the variant no skinned draw of OoT got its own motion
+vectors (the runtime's "position reads other blocks" for all of them). MotionPrevious now looks at the slots the whole
+shader reads and declines only a position whose banks need one of them, reporting the banks with location -1 so the
+shader's .res.json shows why; every other position gets its copy as on Maxwell. Its bindings are allocated after that
+check, in the same order as before, so Maxwell translations stay byte for byte the same.
+
+--- a/src/Ryujinx.Graphics.Shader/Translation/Transforms/MotionPrevious.cs
++++ b/src/Ryujinx.Graphics.Shader/Translation/Transforms/MotionPrevious.cs
+@@ -18,8 +18,8 @@
+ 
+         private static int Remap(int slot) => slot >= 3 && slot <= 16 ? slot + SlotOffset : -1;
+ 
+-        // The output location written (-1: none free, or no position store), and in banks the mask of the banks (bit
+-        // n: cn) the position depends on.
++        // The output location written (-1: none free, no position store, or a last-frame slot the shader reads itself),
++        // and in banks the mask of the banks (bit n: cn) the position depends on.
+         public static int Run(BasicBlock[] blocks, ResourceManager resourceManager, AttributeUsage attributeUsage, out int banks)
+         {
+             banks = 0;
+@@ -77,22 +77,16 @@
+                 }
+             }
+ 
+-            // 2. The banks the slice reads, and the bindings of those it loads with a computed offset to their
+-            // last-frame slot's (only these get one: a binding is declared in the SPIR-V whether used or not, and the
+-            // host's layout comes from the used ones). Direct operands (c[slot][offset]) get theirs when the
+-            // structured program is made.
+-            Dictionary<int, int> bindings = new();
++            // 2. The banks the slice reads: through a load with a computed offset (loads: its binding, the bank) or as
++            // a direct operand (c[slot][offset]).
++            Dictionary<int, int> loads = new();
+ 
+             foreach (INode n in slice)
+             {
+                 if (n is Operation op && IsBankLoad(op, resourceManager, out int slot))
+                 {
+                     banks |= 1 << slot;
+-
+-                    if (!bindings.ContainsKey(op.GetSource(0).Value))
+-                    {
+-                        bindings[op.GetSource(0).Value] = resourceManager.GetConstantBufferBinding(Remap(slot));
+-                    }
++                    loads[op.GetSource(0).Value] = slot;
+                 }
+ 
+                 for (int s = 0; s < n.SourcesCount; s++)
+@@ -111,6 +105,25 @@
+                 return -1;
+             }
+ 
++            // Each of those banks gets last frame's block at slot bank + 15, which must be free in this shader: an NVN2
++            // (Ampere) shader reads its push constants as c[24], which is c9's slot. A position that depends on a bank
++            // whose slot the shader reads itself gets no last-frame copy, and its draws keep the camera's motion. The
++            // banks are still reported, so the shader's .res.json shows why (mvprev -1 with mvprev_banks set).
++            if ((ConstantSlotsRead(blocks, resourceManager) & (banks << SlotOffset)) != 0)
++            {
++                return -1;
++            }
++
++            // The loads' bindings for the last-frame slots (only these get one: a binding is declared in the SPIR-V
++            // whether used or not, and the host's layout comes from the used ones). Direct operands get theirs when
++            // the structured program is made.
++            Dictionary<int, int> bindings = new();
++
++            foreach ((int binding, int slot) in loads)
++            {
++                bindings[binding] = resourceManager.GetConstantBufferBinding(Remap(slot));
++            }
++
+             // 3. Which of the slice's values depend on those banks, to a fixed point (phis carry it around loops).
+             HashSet<Operand> tainted = new();
+             bool changed = true;
+@@ -278,6 +291,37 @@
+                    resourceManager.TryGetConstantBufferSlot(op.GetSource(0).Value, out slot) && Remap(slot) >= 0;
+         }
+ 
++        // The constant buffer slots (bit n: slot n) the whole shader reads, through a load or as a direct operand.
++        private static int ConstantSlotsRead(BasicBlock[] blocks, ResourceManager resourceManager)
++        {
++            int slots = 0;
++
++            foreach (BasicBlock block in blocks)
++            {
++                foreach (INode n in block.Operations)
++                {
++                    if (n is Operation op && op.Inst == Instruction.Load && op.StorageKind == StorageKind.ConstantBuffer &&
++                        op.GetSource(0).Type == OperandType.Constant &&
++                        resourceManager.TryGetConstantBufferSlot(op.GetSource(0).Value, out int slot))
++                    {
++                        slots |= 1 << slot;
++                    }
++
++                    for (int s = 0; s < n.SourcesCount; s++)
++                    {
++                        Operand src = n.GetSource(s);
++
++                        if (src != null && src.Type == OperandType.ConstantBuffer)
++                        {
++                            slots |= 1 << src.GetCbufSlot();
++                        }
++                    }
++                }
++            }
++
++            return slots;
++        }
++
+         private static Operand Prev(Operand src, Dictionary<Operand, Operand> prev)
+         {
+             return src != null && prev.TryGetValue(src, out Operand p) ? p : src;

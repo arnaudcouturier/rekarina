@@ -2174,6 +2174,22 @@ static void key_of_input(const uint8_t iid[32], uint8_t key[32]) {
     rt_sha256(buf, (size_t)(p - buf), key);
 }
 
+// An NVN2 vertex program's last-frame variant (answers mvprev) is another translation since translator patch 0045:
+// before it the translator ignored mvprev for Ampere code (Program.cs QueryMotionPrevious) and gave the plain
+// translation, which the cache holds under the variant's key. The patch changes no other translation and keeps the
+// translator identity (tools/build_xlate.py SAME_AS), so every player's cache stays valid; this tag, in the keys of
+// those variants only (build_key), gives them new keys, and what the cache holds for them from before is never found.
+// Returns the bytes written at p.
+static size_t put_mvprev_tag(uint8_t *p, const GfxShaderAnswers *a) {
+#ifdef GAME_NS2
+    static const char tag_mvprev[8] = "TKMV\1";
+    if (a && a->mvprev) return memcpy(p, tag_mvprev, sizeof tag_mvprev), sizeof tag_mvprev;
+#else
+    (void)p, (void)a;
+#endif
+    return 0;
+}
+
 // The input id and cache key (m given), or the provisional key (m NULL: full answers; iid untouched).
 static void build_key(const uint8_t code_hash[32], const GfxShaderAnswers *a, const UseMask *m, uint8_t key[32],
                       uint8_t iid[32]) {
@@ -2185,6 +2201,7 @@ static void build_key(const uint8_t code_hash[32], const GfxShaderAnswers *a, co
         memcpy(p, code_hash, 32), p += 32;
         mask_answers(a, m, &masked);
         p += pack_answers(p, &masked);
+        p += put_mvprev_tag(p, &masked);
         rt_sha256(buf, (size_t)(p - buf), iid);
         key_of_input(iid, key);
         return;
@@ -2194,6 +2211,7 @@ static void build_key(const uint8_t code_hash[32], const GfxShaderAnswers *a, co
     memcpy(p, xlate_id, 32), p += 32;
     memcpy(p, code_hash, 32), p += 32;
     p += pack_answers(p, a);
+    p += put_mvprev_tag(p, a);
     rt_sha256(buf, (size_t)(p - buf), key);
 }
 

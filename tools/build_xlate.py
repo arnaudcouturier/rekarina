@@ -2,7 +2,7 @@
 
 Copies tools/vendor/ryujinx to build/xlate/ryujinx, applies tools/xlate/patches/*.patch there (tools/vendor stays
 byte-identical; 0001-0004 are MNG's, 0005-0013, 0015 and 0016 are ours; 0017-0020, the Ampere / NVN2 frontend for
-Switch 2 games, are MNG's and seedds/nxnative's, 0021-0044 ours), then runs `dotnet publish`. Needs the .NET 10 SDK, the MSVC build
+Switch 2 games, are MNG's and seedds/nxnative's, 0021-0045 ours), then runs `dotnet publish`. Needs the .NET 10 SDK, the MSVC build
 tools and vswhere.exe (docs/building.md). Run with .venv. On Linux it builds build/xlate/totk_xlate for linux-x64, which
 NativeAOT links with the system's clang (no MSVC); NativeAOT builds for the OS it runs on only.
 
@@ -44,7 +44,7 @@ BUILD = ROOT / "build" / "xlate"
 WIN = os.name == "nt"
 EXE = "totk_xlate.exe" if WIN else "totk_xlate"
 VSWHERE_DIR = Path(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)")) / "Microsoft Visual Studio" / "Installer"
-PATCH_COUNT = 43   # tools/xlate/patches/*.patch: a missing or stray file stops the build
+PATCH_COUNT = 44   # tools/xlate/patches/*.patch: a missing or stray file stops the build
 
 
 def find_dotnet() -> str | None:
@@ -190,6 +190,8 @@ SAME_AS = {
     "7db37617542e2afade37a4d45c19ba14f3b92fc24c89d22d403709289252c5d1":
         "b9d1309569a87e96595514e3e1eccb56e907a0b67a1bac3577ae00acd9c8e726",
     "b57096b248730a9d5a96a9cba4d295971b0717eb19a487b314ae561b5b799245":
+        "b9d1309569a87e96595514e3e1eccb56e907a0b67a1bac3577ae00acd9c8e726",
+    "f94d04cd9c4823db5a94b7a2fc0e0e0a21c50b5037202184561551c72d63ec79":
         "b9d1309569a87e96595514e3e1eccb56e907a0b67a1bac3577ae00acd9c8e726",
 }   # same-as-end
 
