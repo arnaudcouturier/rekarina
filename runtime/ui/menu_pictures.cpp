@@ -58,7 +58,7 @@ static bool key_is(const char *key, const char *const *list) {
 
 static const char *const kPipeScene[] = {"REKARINA_RENDER_SCALE", nullptr};
 static const char *const kPipeUpscale[] = {"REKARINA_DLAA", "REKARINA_TAA", "REKARINA_DLSS", "REKARINA_DLSS_PRESET",
-                                           "REKARINA_FSR_VERSION", "REKARINA_FRAMEGEN", "REKARINA_DLSS_CHAR_MASK", nullptr};
+                                           "REKARINA_FSR_VERSION", "REKARINA_FRAMEGEN", nullptr};
 static const char *const kPipePicture[] = {"REKARINA_GAME_RES", "REKARINA_GAME_ASPECT", nullptr};
 static const char *const kPipeWindow[] = {"REKARINA_UPSCALER", "REKARINA_SHARPNESS", "REKARINA_ASPECT",
                                           "REKARINA_WINDOW_SIZE", "REKARINA_FULLSCREEN", nullptr};

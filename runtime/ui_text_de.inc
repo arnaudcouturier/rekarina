@@ -129,12 +129,6 @@
                                  "jedem Modus. Gilt sofort.",
     [UI_MENU_DLSS_PRESET_DEFAULT] = "Automatisch", [UI_MENU_DLSS_PRESET_K] = "K (am schärfsten)",
     [UI_MENU_DLSS_PRESET_J] = "J (weniger Ghosting)",
-    [UI_MENU_DLSS_CHARS] = "DLSS-Schlieren an Figuren",
-    [UI_MENU_DLSS_CHARS_DESC] = "Verringert die schwachen Schlieren hinter bewegten Figuren, Tieren und dem, was sie "
-                                "halten: DLSS übernimmt dort weniger aus den vorigen Bildern. Stärker entfernt mehr von "
-                                "den Schlieren und lässt diese Kanten etwas weniger glatt. Gilt sofort.",
-    [UI_MENU_DLSS_CHARS_OFF] = "Aus", [UI_MENU_DLSS_CHARS_LIGHT] = "Leicht", [UI_MENU_DLSS_CHARS_MEDIUM] = "Mittel",
-    [UI_MENU_DLSS_CHARS_FULL] = "Voll",
     [UI_MENU_DLSS] = "DLSS-Modus",
     [UI_MENU_DLSS_DESC] = "DLAA zeichnet die 3D-Szene in voller Auflösung. Qualität, Ausgewogen, Leistung und "
                           "Ultra-Leistung zeichnen sie mit 67, 58, 50 und 33 % und lassen DLSS sie hochskalieren, was "

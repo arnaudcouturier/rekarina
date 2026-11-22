@@ -119,12 +119,6 @@
                                  "立即生效。",
     [UI_MENU_DLSS_PRESET_DEFAULT] = "自動", [UI_MENU_DLSS_PRESET_K] = "K（最銳利）",
     [UI_MENU_DLSS_PRESET_J] = "J（殘影較少）",
-    [UI_MENU_DLSS_CHARS] = "DLSS 角色殘影",
-    [UI_MENU_DLSS_CHARS_DESC] = "減少移動中的角色、動物及其手持物品後方的淡淡殘影：DLSS 在這些地方會少取用先前的幀。"
-                                "強度越高，殘影消除得越多，但這些邊緣會稍微不那麼平滑。"
-                                "立即生效。",
-    [UI_MENU_DLSS_CHARS_OFF] = "關", [UI_MENU_DLSS_CHARS_LIGHT] = "輕度", [UI_MENU_DLSS_CHARS_MEDIUM] = "中度",
-    [UI_MENU_DLSS_CHARS_FULL] = "完全",
     [UI_MENU_DLSS] = "DLSS 模式",
     [UI_MENU_DLSS_DESC] = "DLAA 以完整解析度繪製 3D 場景。「品質」、「平衡」、「效能」與「超高效能」"
                           "分別以 67%、58%、50% 與 33% 繪製，再由 DLSS 放大，可節省 GPU 時間；"

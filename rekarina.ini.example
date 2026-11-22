@@ -239,11 +239,6 @@
 # camera's, so DLSS keeps their history instead of smearing or rejecting it. Costs some CPU time each frame (about 1-2 ms
 # on a laptop CPU); 0 leaves camera-only motion. Read at start.
 # dlaa_objmv = 1
-# Characters' trails: where a character, animal or held item moves without motion vectors of its own (all of them with
-# dlaa_objmv = 0), DLSS can drag a faint copy of it. The G-buffer marks those objects; on them and where they were the
-# frame before, DLSS is told to favour the current frame by this percentage (0, 35, 65 or 100; 0 off). Higher removes
-# more of the trails and leaves those edges a little less smooth. Changes while the game runs take effect at once.
-# dlss_char_mask = 65
 # TotK only: the game's own FXAA after the post effects (fxaa = 0 leaves it out). OoT's own anti-aliasing is another
 # pass that this setting does not reach, so the settings menu has no such row there.
 # fxaa = 1

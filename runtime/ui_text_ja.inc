@@ -122,12 +122,6 @@
                                  "です。すぐに反映されます。",
     [UI_MENU_DLSS_PRESET_DEFAULT] = "自動", [UI_MENU_DLSS_PRESET_K] = "K (最もシャープ)",
     [UI_MENU_DLSS_PRESET_J] = "J (残像が少ない)",
-    [UI_MENU_DLSS_CHARS] = "DLSSキャラクター残像",
-    [UI_MENU_DLSS_CHARS_DESC] = "動くキャラクターや動物、その手に持った物の後ろに出る薄い残像を減らします。その部分では、DLSSが"
-                                "前のフレームを使う割合を下げます。強くするほど残像は減りますが、その輪郭のなめらかさは少し"
-                                "落ちます。すぐに反映されます。",
-    [UI_MENU_DLSS_CHARS_OFF] = "オフ", [UI_MENU_DLSS_CHARS_LIGHT] = "弱", [UI_MENU_DLSS_CHARS_MEDIUM] = "中",
-    [UI_MENU_DLSS_CHARS_FULL] = "強",
     [UI_MENU_DLSS] = "DLSSモード",
     [UI_MENU_DLSS_DESC] = "DLAAは3Dシーンをフル解像度で描きます。「クオリティ」「バランス」「パフォーマンス」「ウルトラ"
                           "パフォーマンス」は、それぞれ67、58、50、33%で描いてDLSSで拡大するため、GPU時間を節約できます。"

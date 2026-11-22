@@ -168,12 +168,6 @@ static const char *const text_en[UI_TEXT_COUNT] = {
                                  "older CNN model, the lightest. Applies at once.",
     [UI_MENU_DLSS_PRESET_DEFAULT] = "Automatic", [UI_MENU_DLSS_PRESET_K] = "K (sharpest)",
     [UI_MENU_DLSS_PRESET_J] = "J (less ghosting)",
-    [UI_MENU_DLSS_CHARS] = "DLSS character trails",
-    [UI_MENU_DLSS_CHARS_DESC] = "Reduces the faint trails behind moving characters, animals and what they hold: DLSS takes "
-                                "less of the previous frames there. Stronger removes more of the trails and leaves those "
-                                "edges a little less smooth. Applies at once.",
-    [UI_MENU_DLSS_CHARS_OFF] = "Off", [UI_MENU_DLSS_CHARS_LIGHT] = "Light", [UI_MENU_DLSS_CHARS_MEDIUM] = "Medium",
-    [UI_MENU_DLSS_CHARS_FULL] = "Full",
     [UI_MENU_DLSS] = "DLSS mode",
     [UI_MENU_DLSS_DESC] = "DLAA draws the 3D scene at full resolution. Quality, Balanced, Performance and Ultra "
                           "Performance draw it at 67, 58, 50 and 33 % and let DLSS scale it up, which saves GPU time; "
@@ -784,12 +778,6 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
                                  "самая лёгкая. Применяется сразу.",
     [UI_MENU_DLSS_PRESET_DEFAULT] = "Автоматически", [UI_MENU_DLSS_PRESET_K] = "K (самая чёткая)",
     [UI_MENU_DLSS_PRESET_J] = "J (меньше шлейфов)",
-    [UI_MENU_DLSS_CHARS] = "Шлейфы персонажей в DLSS",
-    [UI_MENU_DLSS_CHARS_DESC] = "Убирает слабые шлейфы за движущимися персонажами, животными и тем, что они держат: DLSS "
-                                "берёт там меньше от прошлых кадров. Чем сильнее, тем меньше шлейфов и тем чуть менее "
-                                "гладкие края. Действует сразу.",
-    [UI_MENU_DLSS_CHARS_OFF] = "Выкл.", [UI_MENU_DLSS_CHARS_LIGHT] = "Слабо", [UI_MENU_DLSS_CHARS_MEDIUM] = "Средне",
-    [UI_MENU_DLSS_CHARS_FULL] = "Полностью",
     [UI_MENU_DLSS] = "Режим DLSS",
     [UI_MENU_DLSS_DESC] = "DLAA рисует 3D-сцену в полном разрешении. «Качество», «Баланс», «Производительность» и "
                           "«Макс. производительность» рисуют её в 67, 58, 50 и 33 % и масштабируют через DLSS, что "
@@ -1786,12 +1774,6 @@ static const char *const text_pt_br[UI_TEXT_COUNT] = {
                                  "o modelo mais nítido em todos os modos. Vale na hora.",
     [UI_MENU_DLSS_PRESET_DEFAULT] = "Automático", [UI_MENU_DLSS_PRESET_K] = "K (mais nítido)",
     [UI_MENU_DLSS_PRESET_J] = "J (menos rastro)",
-    [UI_MENU_DLSS_CHARS] = "Rastros de personagens no DLSS",
-    [UI_MENU_DLSS_CHARS_DESC] = "Reduz os rastros fracos atrás de personagens, animais e do que eles seguram em movimento: "
-                                "ali o DLSS usa menos dos quadros anteriores. Mais forte remove mais rastros e deixa essas "
-                                "bordas um pouco menos suaves. Vale na hora.",
-    [UI_MENU_DLSS_CHARS_OFF] = "Desligado", [UI_MENU_DLSS_CHARS_LIGHT] = "Leve", [UI_MENU_DLSS_CHARS_MEDIUM] = "Médio",
-    [UI_MENU_DLSS_CHARS_FULL] = "Total",
     [UI_MENU_FXAA] = "Antisserrilhado do jogo (FXAA)",
     [UI_MENU_FXAA_DESC] = "A suavização de bordas FXAA do próprio jogo. Borra um pouco os detalhes finos; com o DLAA "
                           "ligado não é necessária.",
@@ -2520,11 +2502,6 @@ static const char *const text_zh_hans[UI_TEXT_COUNT] = {
                                  "J：移动角色身后的拖影略少，闪烁略多。K：所有模式都用最清晰的模型。立即生效。",
     [UI_MENU_DLSS_PRESET_DEFAULT] = "自动", [UI_MENU_DLSS_PRESET_K] = "K（最清晰）",
     [UI_MENU_DLSS_PRESET_J] = "J（拖影更少）",
-    [UI_MENU_DLSS_CHARS] = "DLSS 角色拖影",
-    [UI_MENU_DLSS_CHARS_DESC] = "减少移动中的角色、动物及其手持物品身后的淡淡拖影：DLSS 在这些位置少用之前的帧。越强拖影越少，"
-                                "这些边缘也略欠平滑。立即生效。",
-    [UI_MENU_DLSS_CHARS_OFF] = "关", [UI_MENU_DLSS_CHARS_LIGHT] = "弱", [UI_MENU_DLSS_CHARS_MEDIUM] = "中",
-    [UI_MENU_DLSS_CHARS_FULL] = "强",
     [UI_MENU_FXAA] = "游戏抗锯齿（FXAA）",
     [UI_MENU_FXAA_DESC] = "游戏自身的 FXAA 边缘平滑。会让细节略微模糊；开启 DLAA 时不需要。",
     [UI_MENU_TAB_CHEATS] = "金手指",

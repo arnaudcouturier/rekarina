@@ -130,12 +130,6 @@
                                  "el modelo más nítido en todos los modos. Se aplica al instante.",
     [UI_MENU_DLSS_PRESET_DEFAULT] = "Automático", [UI_MENU_DLSS_PRESET_K] = "K (el más nítido)",
     [UI_MENU_DLSS_PRESET_J] = "J (menos estela)",
-    [UI_MENU_DLSS_CHARS] = "Estelas de personajes (DLSS)",
-    [UI_MENU_DLSS_CHARS_DESC] = "Reduce las estelas tenues tras los personajes y animales en movimiento y lo que llevan: "
-                                "ahí DLSS toma menos de los fotogramas anteriores. Un nivel más fuerte elimina más "
-                                "estelas y deja esos bordes algo menos suaves. Se aplica al instante.",
-    [UI_MENU_DLSS_CHARS_OFF] = "Desactivado", [UI_MENU_DLSS_CHARS_LIGHT] = "Leve", [UI_MENU_DLSS_CHARS_MEDIUM] = "Medio",
-    [UI_MENU_DLSS_CHARS_FULL] = "Completo",
     [UI_MENU_DLSS] = "Modo de DLSS",
     [UI_MENU_DLSS_DESC] = "DLAA dibuja la escena 3D a resolución completa. Calidad, Equilibrado, Rendimiento y "
                           "Ultrarrendimiento la dibujan al 67, 58, 50 y 33 % y dejan que DLSS la amplíe, lo que ahorra "

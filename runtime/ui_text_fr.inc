@@ -129,13 +129,6 @@
                                  "K : le modèle le plus net dans tous les modes. S'applique immédiatement.",
     [UI_MENU_DLSS_PRESET_DEFAULT] = "Automatique", [UI_MENU_DLSS_PRESET_K] = "K (le plus net)",
     [UI_MENU_DLSS_PRESET_J] = "J (moins de ghosting)",
-    [UI_MENU_DLSS_CHARS] = "Traînées DLSS (personnages)",
-    [UI_MENU_DLSS_CHARS_DESC] = "Réduit les légères traînées derrière les personnages, les animaux et ce qu'ils tiennent "
-                                "quand ils bougent : DLSS y reprend moins les images précédentes. Un réglage plus fort "
-                                "retire davantage de traînées et laisse ces bords un peu moins lisses. S'applique "
-                                "immédiatement.",
-    [UI_MENU_DLSS_CHARS_OFF] = "Désactivé", [UI_MENU_DLSS_CHARS_LIGHT] = "Léger", [UI_MENU_DLSS_CHARS_MEDIUM] = "Moyen",
-    [UI_MENU_DLSS_CHARS_FULL] = "Complet",
     [UI_MENU_DLSS] = "Mode DLSS",
     [UI_MENU_DLSS_DESC] = "DLAA dessine la scène 3D en pleine résolution. Qualité, Équilibré, Performance et Ultra "
                           "performance la dessinent à 67, 58, 50 et 33 % et laissent DLSS l'agrandir, ce qui économise "

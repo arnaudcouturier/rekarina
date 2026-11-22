@@ -128,12 +128,6 @@
                                  "nitido in ogni modalità. Vale subito.",
     [UI_MENU_DLSS_PRESET_DEFAULT] = "Automatico", [UI_MENU_DLSS_PRESET_K] = "K (il più nitido)",
     [UI_MENU_DLSS_PRESET_J] = "J (meno ghosting)",
-    [UI_MENU_DLSS_CHARS] = "Scie personaggi DLSS",
-    [UI_MENU_DLSS_CHARS_DESC] = "Riduce le scie leggere dietro personaggi e animali in movimento e ciò che tengono in mano: "
-                                "lì il DLSS usa meno i fotogrammi precedenti. Un livello più alto elimina più scie e lascia "
-                                "quei bordi un po' meno morbidi. Vale subito.",
-    [UI_MENU_DLSS_CHARS_OFF] = "Disattivato", [UI_MENU_DLSS_CHARS_LIGHT] = "Leggero", [UI_MENU_DLSS_CHARS_MEDIUM] = "Medio",
-    [UI_MENU_DLSS_CHARS_FULL] = "Completo",
     [UI_MENU_DLSS] = "Modalità DLSS",
     [UI_MENU_DLSS_DESC] = "DLAA disegna la scena 3D a piena risoluzione. Qualità, Bilanciata, Prestazioni e Ultra "
                           "prestazioni la disegnano al 67, 58, 50 e 33 % e lasciano che il DLSS la ingrandisca, "

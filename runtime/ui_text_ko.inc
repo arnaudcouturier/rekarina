@@ -123,12 +123,6 @@
                                  "즉시 적용됩니다.",
     [UI_MENU_DLSS_PRESET_DEFAULT] = "자동", [UI_MENU_DLSS_PRESET_K] = "K (가장 선명)",
     [UI_MENU_DLSS_PRESET_J] = "J (잔상 감소)",
-    [UI_MENU_DLSS_CHARS] = "DLSS 캐릭터 잔상",
-    [UI_MENU_DLSS_CHARS_DESC] = "움직이는 캐릭터, 동물, 손에 든 물건 뒤에 남는 옅은 잔상을 줄입니다. 그 부분에서 DLSS가 "
-                                "이전 프레임을 덜 사용합니다. 강할수록 잔상이 더 줄어들지만 해당 윤곽이 조금 덜 "
-                                "매끄러워집니다. 즉시 적용됩니다.",
-    [UI_MENU_DLSS_CHARS_OFF] = "끔", [UI_MENU_DLSS_CHARS_LIGHT] = "약", [UI_MENU_DLSS_CHARS_MEDIUM] = "중",
-    [UI_MENU_DLSS_CHARS_FULL] = "강",
     [UI_MENU_DLSS] = "DLSS 모드",
     [UI_MENU_DLSS_DESC] = "DLAA는 3D 장면을 전체 해상도로 그립니다. 품질, 균형, 성능, 울트라 성능은 각각 67, 58, 50, "
                           "33%로 그린 뒤 DLSS로 확대하여 GPU 시간을 절약하며, 3D 렌더 스케일을 대신합니다. "

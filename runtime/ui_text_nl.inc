@@ -129,12 +129,6 @@
                                  "elke modus. Werkt meteen.",
     [UI_MENU_DLSS_PRESET_DEFAULT] = "Automatisch", [UI_MENU_DLSS_PRESET_K] = "K (scherpst)",
     [UI_MENU_DLSS_PRESET_J] = "J (minder ghosting)",
-    [UI_MENU_DLSS_CHARS] = "DLSS-sporen bij personages",
-    [UI_MENU_DLSS_CHARS_DESC] = "Vermindert de vage sporen achter bewegende personages, dieren en wat ze vasthouden: DLSS "
-                                "gebruikt daar minder van de vorige frames. Sterker haalt meer van de sporen weg en "
-                                "maakt die randen iets minder glad. Werkt meteen.",
-    [UI_MENU_DLSS_CHARS_OFF] = "Uit", [UI_MENU_DLSS_CHARS_LIGHT] = "Licht", [UI_MENU_DLSS_CHARS_MEDIUM] = "Middel",
-    [UI_MENU_DLSS_CHARS_FULL] = "Volledig",
     [UI_MENU_DLSS] = "DLSS-modus",
     [UI_MENU_DLSS_DESC] = "DLAA tekent de 3D-scène op volle resolutie. Kwaliteit, Gebalanceerd, Prestaties en "
                           "Ultraprestaties tekenen de scène op 67, 58, 50 en 33 % en laten DLSS die opschalen, wat "

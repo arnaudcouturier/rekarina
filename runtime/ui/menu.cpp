@@ -1181,7 +1181,7 @@ static void tab_screen(float scale) {
         const char *why_dlss = nullptr, *why_fsr = nullptr;
         int dlss_ok = vk_dlssg_offered(&why_dlss), fsr_ok = vk_fg_offered(&why_fsr), n = 0;
         const char *values[3], *names[3];
-        values[n] = "off", names[n++] = menu_text(UI_MENU_DLSS_CHARS_OFF);
+        values[n] = "off", names[n++] = menu_text(UI_MENU_OFF);
         if (dlss_ok) values[n] = "dlss", names[n++] = "NVIDIA DLSS";
         if (fsr_ok) values[n] = "fsr3", names[n++] = "AMD FSR 3.1";
         const char *why = !strcmp(fg_now, "dlss") ? vk_dlssg_off_why() : !strcmp(fg_now, "fsr3") ? vk_fg_off_why() : nullptr;
@@ -1216,9 +1216,6 @@ static void tab_screen(float scale) {
         opt_choice_list("REKARINA_FSR_VERSION", UI_MENU_FSR_VERSION, fsr, fsr_names, 3, UI_MENU_FSR_VERSION_DESC, -1,
                         *have ? have : nullptr);
     }
-    static const UiTextId chars[] = {UI_MENU_DLSS_CHARS_OFF, UI_MENU_DLSS_CHARS_LIGHT, UI_MENU_DLSS_CHARS_MEDIUM,
-                                     UI_MENU_DLSS_CHARS_FULL};
-    opt_choice("REKARINA_DLSS_CHAR_MASK", UI_MENU_DLSS_CHARS, chars, 4, UI_MENU_DLSS_CHARS_DESC);
 #ifndef GAME_OOT
     opt_toggle("REKARINA_FXAA", UI_MENU_FXAA, UI_MENU_FXAA_DESC);
 #endif

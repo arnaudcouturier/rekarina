@@ -128,12 +128,6 @@
                                  "K: o modelo mais nítido em todos os modos. Aplica-se de imediato.",
     [UI_MENU_DLSS_PRESET_DEFAULT] = "Automático", [UI_MENU_DLSS_PRESET_K] = "K (mais nítido)",
     [UI_MENU_DLSS_PRESET_J] = "J (menos ghosting)",
-    [UI_MENU_DLSS_CHARS] = "Rastos de personagens (DLSS)",
-    [UI_MENU_DLSS_CHARS_DESC] = "Reduz os rastos ténues atrás de personagens e animais em movimento e do que seguram: o "
-                                "DLSS aproveita aí menos dos fotogramas anteriores. Mais forte remove mais rastos e deixa "
-                                "esses contornos um pouco menos suaves. Aplica-se de imediato.",
-    [UI_MENU_DLSS_CHARS_OFF] = "Desligado", [UI_MENU_DLSS_CHARS_LIGHT] = "Leve", [UI_MENU_DLSS_CHARS_MEDIUM] = "Médio",
-    [UI_MENU_DLSS_CHARS_FULL] = "Total",
     [UI_MENU_DLSS] = "Modo DLSS",
     [UI_MENU_DLSS_DESC] = "DLAA desenha a cena 3D na resolução total. Qualidade, Equilibrado, Desempenho e Ultra "
                           "Desempenho desenham-na a 67, 58, 50 e 33 % e deixam o DLSS ampliá-la, o que poupa tempo de "
