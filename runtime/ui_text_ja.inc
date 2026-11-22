@@ -590,6 +590,9 @@
     [UI_MENU_HDR_BLOWOUT_DESC] = "RenoDRT で強いハイライトを白に近づけます。0 % でオフ。",
     [UI_MENU_HDR_FLARE] = "HDR フレア補正",
     [UI_MENU_HDR_FLARE_DESC] = "RenoDRT で黒付近を引き締めます。0 でオフ。",
+    [UI_MENU_HDR_BLOOM] = "ブルーム",
+    [UI_MENU_HDR_BLOOM_DESC] = "明るい光のまわりのにじみです。50 がゲーム本来の強さで、0 でオフ、100 で 2 倍になります"
+                               "。",
     [UI_MENU_HDR_GRADE] = "バニラ調色強度",
     [UI_MENU_HDR_GRADE_DESC] = "RenoDRT でゲーム本来の SDR 調色を復元する強さです。",
     [UI_PREP_LEFT_LT1] = "残り1分未満",

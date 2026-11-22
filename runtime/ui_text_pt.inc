@@ -609,6 +609,8 @@
     [UI_MENU_HDR_BLOWOUT_DESC] = "Dessatura realces intensos em direção ao branco no RenoDRT; 0 % desligado.",
     [UI_MENU_HDR_FLARE] = "Reflexo HDR",
     [UI_MENU_HDR_FLARE_DESC] = "Escurece tons próximos do preto no RenoDRT; 0 desligado.",
+    [UI_MENU_HDR_BLOOM] = "Bloom",
+    [UI_MENU_HDR_BLOOM_DESC] = "O brilho à volta das luzes fortes. 50 é o do próprio jogo; 0 desliga-o, 100 duplica-o.",
     [UI_MENU_HDR_GRADE] = "Força da paleta original",
     [UI_MENU_HDR_GRADE_DESC] = "Intensidade do aspeto SDR original restaurado no RenoDRT.",
     [UI_PREP_LEFT_LT1] = "falta menos de um minuto",

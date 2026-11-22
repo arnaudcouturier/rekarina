@@ -611,6 +611,9 @@
     [UI_MENU_HDR_BLOWOUT_DESC] = "Désature les hautes lumières intenses vers le blanc dans RenoDRT ; 0 % désactivé.",
     [UI_MENU_HDR_FLARE] = "Compensation de voile HDR",
     [UI_MENU_HDR_FLARE_DESC] = "Assombrit les tons très sombres dans RenoDRT ; 0 désactivé.",
+    [UI_MENU_HDR_BLOOM] = "Halo lumineux",
+    [UI_MENU_HDR_BLOOM_DESC] = "La lueur autour des lumières vives. 50 est celle du jeu ; 0 la supprime, 100 la "
+                               "double.",
     [UI_MENU_HDR_GRADE] = "Force de l'étalonnage d'origine",
     [UI_MENU_HDR_GRADE_DESC] = "Intensité du rendu SDR d'origine restauré dans RenoDRT.",
     [UI_PREP_LEFT_LT1] = "moins d'une minute restante",

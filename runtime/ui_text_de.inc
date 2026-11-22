@@ -610,6 +610,9 @@
     [UI_MENU_HDR_BLOWOUT_DESC] = "Entsättigt sehr helle Lichter Richtung Weiß in RenoDRT; 0 % aus.",
     [UI_MENU_HDR_FLARE] = "HDR-Schwarzwert / Flare",
     [UI_MENU_HDR_FLARE_DESC] = "Dunkelt tiefste Töne zur Streulicht-Kompensation in RenoDRT ab; 0 aus.",
+    [UI_MENU_HDR_BLOOM] = "Bloom",
+    [UI_MENU_HDR_BLOOM_DESC] = "Das Leuchten um helle Lichter. 50 ist das des Spiels; 0 schaltet es aus, 100 "
+                               "verdoppelt es.",
     [UI_MENU_HDR_GRADE] = "Original-Grading-Stärke",
     [UI_MENU_HDR_GRADE_DESC] = "Stärke des wiederhergestellten SDR-Looks des Spiels in RenoDRT.",
     [UI_PREP_LEFT_LT1] = "noch unter einer Minute",

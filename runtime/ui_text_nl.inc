@@ -609,6 +609,9 @@
     [UI_MENU_HDR_BLOWOUT_DESC] = "Ontzadigt intense hooglichten richting wit in RenoDRT; 0 % is uit.",
     [UI_MENU_HDR_FLARE] = "HDR-flare",
     [UI_MENU_HDR_FLARE_DESC] = "Verduistert tinten bij zwart in RenoDRT; 0 is uit.",
+    [UI_MENU_HDR_BLOOM] = "Bloom",
+    [UI_MENU_HDR_BLOOM_DESC] = "De gloed rond felle lichten. 50 is die van de game zelf; 0 zet hem uit, 100 "
+                               "verdubbelt hem.",
     [UI_MENU_HDR_GRADE] = "Sterkte originele grading",
     [UI_MENU_HDR_GRADE_DESC] = "Sterkte waarmee de SDR-look van het spel in RenoDRT wordt hersteld.",
     [UI_PREP_LEFT_LT1] = "nog minder dan een minuut",

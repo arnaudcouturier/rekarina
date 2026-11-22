@@ -104,7 +104,7 @@ typedef struct {
     float peak, game, ui;   // nits
     float gamma;            // 0 off, 1: 2.2, 2: 2.4
     float p3;               // 1: the picture's primaries are read as Display P3 (REKARINA_HDR_COLOR_SPACE)
-    float tm[20];           // support buffer parameters (bytes 1440..1519)
+    float tm[4 * VK_HDR_PARAMS];   // support buffer parameters (from byte VK_HDR_PARAMS_AT)
 } Nits;
 static struct { unsigned seen; int cur; Nits snap[2]; PlatMutex lock; } N = {.seen = ~0u, .lock = PLAT_MUTEX_INIT};
 
@@ -145,6 +145,7 @@ static Nits nits(void) {
             t[16] = pct[9] / 100.0f;
             t[17] = !strcmp(cfg_value("REKARINA_HDR_MIDGRAY"), "render") ? 0.0f : 1.0f;
             t[18] = cfg_bool("REKARINA_HDR_MATCH_SLOPE") ? 1.0f : 0.0f, t[19] = 0.0f;
+            t[20] = clampf((float)cfg_double("REKARINA_HDR_BLOOM"), 0.0f, 100.0f) / 50.0f;   // 50: the game's bloom
 #else
             n->tm[0] = n->game / n->ui;
             n->tm[1] = n->peak > n->game ? n->peak / n->game : 1.0f;
@@ -159,11 +160,11 @@ static Nits nits(void) {
     return N.snap[__atomic_load_n(&N.cur, __ATOMIC_ACQUIRE)];
 }
 
-void vk_hdr_support(float out[20]) {
+void vk_hdr_support(float out[4 * VK_HDR_PARAMS]) {
     Nits n = nits();
     memcpy(out, n.tm, sizeof n.tm);
 #ifdef GAME_OOT
-    if (!vk_hdr_active()) out[3] = -1.0f;   // SDR swapchain: vanilla passthrough
+    if (!vk_hdr_active()) out[3] = -1.0f, out[20] = 1.0f;   // SDR swapchain: vanilla passthrough, the game's bloom
 #endif
 }
 
@@ -205,6 +206,7 @@ enum {
     SPV_OP_COMPOSITE_CONSTRUCT = 80,
     SPV_OP_COMPOSITE_EXTRACT = 81,
     SPV_OP_COMPOSITE_INSERT = 82,
+    SPV_OP_FNEGATE = 127,
     SPV_OP_FADD = 129,
     SPV_OP_FMUL = 133,
     SPV_OP_FDIV = 136,
@@ -224,9 +226,14 @@ enum {
     SPV_SC_OUTPUT = 3,
     SPV_SC_FUNCTION = 7,
     SPV_EXEC_FRAGMENT = 4,
+    GLSL_FABS = 4,
+    GLSL_EXP2 = 29,
+    GLSL_LOG2 = 30,
+    GLSL_FMIN = 37,
     GLSL_FMAX = 40,
     GLSL_FCLAMP = 43,
     GLSL_FMA = 50,
+    GLSL_NMIN = 79,
     GLSL_NMAX = 80,
     GLSL_NCLAMP = 81
 };
@@ -528,32 +535,122 @@ static int common_fma_factor(const HostSpv *h, const uint32_t val[3], uint32_t a
     return 0;
 }
 
+// What the 3 ACES input channels are made of (extract_exposure).
+typedef struct {
+    uint32_t gain;         // the uniform exposure gain
+    uint32_t exposed[3];   // scene * gain, before local exposure
+    uint32_t add[3];       // a colour added after local exposure (0: none)
+    uint32_t scene[3];     // the scene before the gain, where the game has added its bloom (0: not traced)
+} Exposure;
+
 // Extract the uniform exposure gain and pre-local-exposure scene from the 3 ACES input channels:
 // 1. x = scene * gain                          -> exposed = x, add = 0
 // 2. x = (scene * gain) * local_exposure       -> exposed = scene * gain, add = 0
 // 3. x = fma(scene, gain, color)               -> exposed = x, add = 0
 // 4. x = fma(scene * gain, local_exp, color)   -> exposed = scene * gain, add = color
-static int extract_exposure(const HostSpv *h, const uint32_t x[3], uint32_t exposed[3], uint32_t add[3], uint32_t *gain) {
+static int extract_exposure(const HostSpv *h, const uint32_t x[3], Exposure *e) {
     uint32_t val[3], inner[3], rest[3], a[3], t[3], f;
-    for (int c = 0; c < 3; c++) val[c] = unwrap_func_var(h, x[c]), exposed[c] = x[c], add[c] = 0;
-    if (common_mul_factor(h, val, rest, gain)) {
-        if (is_uniform_load(h, *gain)) return 1;
+    memset(e, 0, sizeof *e);
+    for (int c = 0; c < 3; c++) val[c] = unwrap_func_var(h, x[c]), e->exposed[c] = x[c];
+    if (common_mul_factor(h, val, rest, &e->gain)) {
+        if (is_uniform_load(h, e->gain)) {
+            memcpy(e->scene, rest, sizeof rest);
+            return 1;
+        }
         for (int c = 0; c < 3; c++) inner[c] = unwrap_func_var(h, rest[c]);
         if (common_mul_factor(h, inner, rest, &f) && is_uniform_load(h, f)) {
-            memcpy(exposed, inner, sizeof inner);
-            *gain = f;
+            memcpy(e->exposed, inner, sizeof inner);
+            memcpy(e->scene, rest, sizeof rest);
+            e->gain = f;
         }
         return 1;
     }
-    if (!common_fma_factor(h, val, a, t, gain)) return 0;
-    if (is_uniform_load(h, *gain)) return 1;
-    for (int c = 0; c < 3; c++) inner[c] = unwrap_func_var(h, a[c]);
-    if (common_mul_factor(h, inner, rest, &f) && is_uniform_load(h, f)) {
-        memcpy(exposed, inner, sizeof inner);
-        memcpy(add, t, sizeof t);
-        *gain = f;
+    if (!common_fma_factor(h, val, a, t, &e->gain)) return 0;
+    if (is_uniform_load(h, e->gain)) {
+        memcpy(e->scene, a, sizeof a);
         return 1;
     }
+    for (int c = 0; c < 3; c++) inner[c] = unwrap_func_var(h, a[c]);
+    if (common_mul_factor(h, inner, rest, &f) && is_uniform_load(h, f)) {
+        memcpy(e->exposed, inner, sizeof inner);
+        memcpy(e->add, t, sizeof t);
+        memcpy(e->scene, rest, sizeof rest);
+        e->gain = f;
+        return 1;
+    }
+    return 0;
+}
+
+// The definition of id (through a Function variable stored once) if it is the GLSL.std.450 instruction inst.
+static const uint32_t *glsl_def(const HostSpv *h, uint32_t id, uint32_t inst) {
+    id = unwrap_func_var(h, id);
+    if (id >= h->bound || !h->def[id]) return NULL;
+    const uint32_t *ins = h->w + h->def[id];
+    return (ins[0] & 0xffff) == SPV_OP_EXT_INST && (ins[0] >> 16) >= 6 && ins[3] == h->glsl && ins[4] == inst ? ins : NULL;
+}
+
+// exp2(log2(|b|) * power) with a uniform power: how the composite decodes one channel of its bloom texture (the
+// power is its c4[13]).
+static int is_bloom_term(const HostSpv *h, uint32_t id) {
+    const uint32_t *e = glsl_def(h, id, GLSL_EXP2);
+    if (!e) return 0;
+    uint32_t m = unwrap_func_var(h, e[5]);
+    if (m >= h->bound || !h->def[m]) return 0;
+    const uint32_t *mul = h->w + h->def[m];
+    if ((mul[0] & 0xffff) != SPV_OP_FMUL || (mul[0] >> 16) != 5) return 0;
+    for (int k = 3; k <= 4; k++) {
+        const uint32_t *l = glsl_def(h, mul[k], GLSL_LOG2);
+        if (l && glsl_def(h, l[5], GLSL_FABS) && is_uniform_load(h, mul[7 - k])) return 1;
+    }
+    return 0;
+}
+
+// min(max(0, v), 10000): one channel of the composite's colour-graded scene, which its bloom is added to. Other ACES
+// passes decode textures with the same exp2(log2(|b|) * power) and add them to other things.
+static int is_scene_clamp(const HostSpv *h, uint32_t id) {
+    const uint32_t *mn = glsl_def(h, id, GLSL_FMIN);
+    if (!mn) mn = glsl_def(h, id, GLSL_NMIN);
+    if (!mn || (mn[0] >> 16) != 7) return 0;
+    for (int k = 5; k <= 6; k++) {
+        if (!is_fnear(h, mn[11 - k], 10000.0f, 0.0f)) continue;
+        const uint32_t *mx = glsl_def(h, mn[k], GLSL_FMAX);
+        if (!mx) mx = glsl_def(h, mn[k], GLSL_NMAX);
+        if (mx && (mx[0] >> 16) == 7 && (is_fnear(h, mx[5], 0.0f, 0.0f) || is_fnear(h, mx[6], 0.0f, 0.0f))) return 1;
+    }
+    return 0;
+}
+
+// What a composite adds its bloom to: one channel of its colour-graded scene (is_scene_clamp), or that channel faded
+// towards black by a factor, fma(-scene, f, scene) (the composites with fog).
+static int is_scene_base(const HostSpv *h, uint32_t id) {
+    if (is_scene_clamp(h, id)) return 1;
+    const uint32_t *f = glsl_def(h, id, GLSL_FMA);
+    if (!f || (f[0] >> 16) != 8 || !is_scene_clamp(h, f[7])) return 0;
+    for (int k = 5; k <= 6; k++) {
+        uint32_t n = unwrap_func_var(h, f[k]);
+        const uint32_t *neg = n < h->bound && h->def[n] ? h->w + h->def[n] : NULL;
+        if (neg && (neg[0] & 0xffff) == SPV_OP_FNEGATE && same_load_source(h, neg[3], f[7])) return 1;
+    }
+    return 0;
+}
+
+// Where one scene channel adds the game's bloom: scene + bloom (FAdd) or fma(bloom, k, scene), the scene as
+// is_scene_base takes it. *at: the instruction's word offset in main(), *word: the word index of its bloom operand. 0
+// when the channel is not built that way.
+static int bloom_operand(const HostSpv *h, uint32_t scene, uint64_t *at, uint32_t *word) {
+    scene = unwrap_func_var(h, scene);
+    if (scene >= h->bound || !h->def[scene] || h->def_blk[scene] < 0) return 0;
+    const uint32_t *ins = h->w + h->def[scene];
+    uint32_t op = ins[0] & 0xffff, len = ins[0] >> 16;
+    int fadd = op == SPV_OP_FADD && len == 5;
+    int fma = op == SPV_OP_EXT_INST && len == 8 && ins[3] == h->glsl && ins[4] == GLSL_FMA;
+    if (!fadd && !fma) return 0;
+    uint32_t first = fadd ? 3 : 5, last = first + 1;
+    for (uint32_t k = first; k <= last; k++)
+        if (is_bloom_term(h, ins[k]) && is_scene_base(h, fadd ? ins[7 - k] : ins[7])) {
+            *at = h->def[scene], *word = k;
+            return 1;
+        }
     return 0;
 }
 
@@ -670,9 +767,21 @@ static uint32_t find_host_type(const uint32_t *w, uint64_t end, const uint32_t *
     return 0;
 }
 
+// The parameters nx_tonemap takes, p0..p4; the support buffer holds VK_HDR_PARAMS, and the others are read where they
+// act (p5.x by the game's bloom term).
+#define NX_TONEMAP_PARAMS 5u
+
+// What tonemap_splice traced beside the tone mapper, for the log (vk_hdr_shader_swap) and tests/hdr_splice_check.c.
+typedef struct {
+    int exposure;   // the uniform gain and the pre-local-exposure scene
+    int bloom;      // the game's bloom term in each channel (REKARINA_HDR_BLOOM acts there)
+} SpliceTrace;
+
 // Splice nx_tonemap from hdr_tonemap_spv into a translated OoT ACES tonemap fragment shader.
-// Returns 1 if spliced, 0 if the shader is not an ACES tonemap shader, -1 on splice failure.
-static int tonemap_splice(uint32_t **spirv, uint64_t *words) {
+// Returns 1 if spliced, 0 if the shader is not an ACES tonemap shader, -1 on splice failure; *trace (may be NULL) says
+// what else was found.
+static int tonemap_splice(uint32_t **spirv, uint64_t *words, SpliceTrace *trace) {
+    if (trace) memset(trace, 0, sizeof *trace);
     const uint32_t *w = *spirv;
     uint64_t n = *words;
     if (n < 5 || w[0] != SPV_MAGIC) return 0;
@@ -750,7 +859,7 @@ static int tonemap_splice(uint32_t **spirv, uint64_t *words) {
     if (!seen_251 || !seen_003 || !h.glsl || !f32_ty || !vec4_ty || !main_start || !main_end || !first_func)
         goto fail_0;
 
-    // Locate SupportBuffer struct type and verify it ends at or before byte 1440.
+    // Locate SupportBuffer struct type and verify it ends at or before byte VK_HDR_PARAMS_AT.
     if (!sup_var || !sup_ptr_ty || !h.def[sup_ptr_ty]) goto fail_0;
     {
         const uint32_t *pt = w + h.def[sup_ptr_ty];
@@ -767,7 +876,7 @@ static int tonemap_splice(uint32_t **spirv, uint64_t *words) {
             w[i + 1] == sup_struct && w[i + 3] == SPV_DEC_OFFSET && w[i + 4] > max_off)
             max_off = w[i + 4];
     }
-    if (max_off >= 1440u) goto fail_0;   // already extended or unexpected layout
+    if (max_off >= VK_HDR_PARAMS_AT) goto fail_0;   // already extended or unexpected layout
 
     if (!build_dominators(&h, main_start, main_end)) goto fail_0;
 
@@ -928,15 +1037,27 @@ static int tonemap_splice(uint32_t **spirv, uint64_t *words) {
     }
 
     // Extract uniform exposure gain and pre-local-exposure scene; fall back to vec4(x, 1.0) if not dominating.
-    uint32_t exp_ch[3] = {0}, add_ch[3] = {0}, gain_id = 0;
-    int has_exp = extract_exposure(&h, x_in, exp_ch, add_ch, &gain_id);
+    Exposure ex;
+    int has_exp = extract_exposure(&h, x_in, &ex);
     if (has_exp) {
-        if (!dominates(&h, gain_id, ins_blk, ins_pos)) has_exp = 0;
+        if (!dominates(&h, ex.gain, ins_blk, ins_pos)) has_exp = 0;
         for (int c = 0; c < 3 && has_exp; c++) {
-            if (!dominates(&h, exp_ch[c], ins_blk, ins_pos)) has_exp = 0;
-            if (add_ch[c] && !dominates(&h, add_ch[c], ins_blk, ins_pos)) has_exp = 0;
+            if (!dominates(&h, ex.exposed[c], ins_blk, ins_pos)) has_exp = 0;
+            if (ex.add[c] && !dominates(&h, ex.add[c], ins_blk, ins_pos)) has_exp = 0;
         }
     }
+
+    // The game's bloom, in each channel where it is added to the scene: its term is multiplied there by p5.x
+    // (REKARINA_HDR_BLOOM), before the gain, so everything after it (the local exposure's metering, both tone mappers)
+    // sees the same bloom. Used only when all three channels are found, in three different instructions.
+    uint64_t bloom_at[3] = {0};
+    uint32_t bloom_word[3] = {0};
+    int has_bloom = has_exp;
+    for (int c = 0; c < 3 && has_bloom; c++)
+        has_bloom = ex.scene[c] && bloom_operand(&h, ex.scene[c], &bloom_at[c], &bloom_word[c]);
+    if (has_bloom && (bloom_at[0] == bloom_at[1] || bloom_at[1] == bloom_at[2] || bloom_at[0] == bloom_at[2]))
+        has_bloom = 0;
+    if (trace) trace->exposure = has_exp, trace->bloom = has_bloom;
 
     // Inspect the tone mapper library (hdr_tonemap_spv) and map/deduplicate its IDs.
     const uint32_t *lw = hdr_tonemap_spv;
@@ -985,7 +1106,7 @@ static int tonemap_splice(uint32_t **spirv, uint64_t *words) {
     spv_emit(&out, w, 5);
 
     // 1. Copy host instructions up to the end of Annotations (appending sup_var to OpEntryPoint if needed for SPIR-V
-    //    1.4+), then append the 5 SupportBuffer MemberDecorates.
+    //    1.4+), then append the VK_HDR_PARAMS SupportBuffer MemberDecorates.
     for (uint64_t i = 5; i < annot_end;) {
         uint32_t len = w[i] >> 16;
         if (i == ep_pos && ep_pos) {
@@ -1011,19 +1132,18 @@ static int tonemap_splice(uint32_t **spirv, uint64_t *words) {
         }
         i += len;
     }
-    for (uint32_t k = 0; k < 5; k++)
-        SPV_INS(&out, SPV_OP_MEMBER_DECORATE, sup_struct, sup_members + k, SPV_DEC_OFFSET, 1440u + 16u * k);
+    for (uint32_t k = 0; k < VK_HDR_PARAMS; k++)
+        SPV_INS(&out, SPV_OP_MEMBER_DECORATE, sup_struct, sup_members + k, SPV_DEC_OFFSET, VK_HDR_PARAMS_AT + 16u * k);
 
     // 2. Copy host Types / Constants / Global Variables up to first_func, extending SupportBuffer OpTypeStruct.
     for (uint64_t i = annot_end; i < first_func;) {
         uint32_t len = w[i] >> 16;
         if (i == sup_struct_pos) {
-            uint32_t nlen = len + 5u;
+            uint32_t nlen = len + VK_HDR_PARAMS;
             uint32_t hdr = (nlen << 16) | SPV_OP_TYPE_STRUCT;
             spv_emit(&out, &hdr, 1);
             spv_emit(&out, w + i + 1, len - 1);
-            uint32_t extra[5] = {vec4_ty, vec4_ty, vec4_ty, vec4_ty, vec4_ty};
-            spv_emit(&out, extra, 5);
+            for (uint32_t k = 0; k < VK_HDR_PARAMS; k++) spv_emit(&out, &vec4_ty, 1);
         } else {
             spv_emit(&out, w + i, len);
         }
@@ -1083,8 +1203,8 @@ static int tonemap_splice(uint32_t **spirv, uint64_t *words) {
             SPV_INS(&out, SPV_OP_TYPE_INT, idx_ty, 32u, 1u);
         }
     }
-    uint32_t c_idx[5];
-    for (uint32_t k = 0; k < 5; k++) {
+    uint32_t c_idx[VK_HDR_PARAMS];
+    for (uint32_t k = 0; k < VK_HDR_PARAMS; k++) {
         c_idx[k] = next_id++;
         SPV_INS(&out, SPV_OP_CONSTANT, idx_ty, c_idx[k], sup_members + k);
     }
@@ -1114,8 +1234,8 @@ static int tonemap_splice(uint32_t **spirv, uint64_t *words) {
     // 4. Copy host functions, patching main():
     //    - declare 7 local Function variables after main's entry OpLabel
     //    - emit the nx_tonemap call at ins_pos and store its RGB result into the 3 output channels.
-    uint32_t var_x = next_id++, var_sc = next_id++, var_p[5];
-    for (int k = 0; k < 5; k++) var_p[k] = next_id++;
+    uint32_t var_x = next_id++, var_sc = next_id++, var_p[NX_TONEMAP_PARAMS];
+    for (uint32_t k = 0; k < NX_TONEMAP_PARAMS; k++) var_p[k] = next_id++;
     uint32_t out_ch[3] = {0};
     int entry_patched = 0;
     for (uint64_t i = first_func; i < n;) {
@@ -1124,7 +1244,8 @@ static int tonemap_splice(uint32_t **spirv, uint64_t *words) {
             spv_emit(&out, w + i, len);
             SPV_INS(&out, SPV_OP_VARIABLE, m_pfunc_v3, var_x, SPV_SC_FUNCTION);
             SPV_INS(&out, SPV_OP_VARIABLE, m_pfunc_v4, var_sc, SPV_SC_FUNCTION);
-            for (int k = 0; k < 5; k++) SPV_INS(&out, SPV_OP_VARIABLE, m_pfunc_v4, var_p[k], SPV_SC_FUNCTION);
+            for (uint32_t k = 0; k < NX_TONEMAP_PARAMS; k++)
+                SPV_INS(&out, SPV_OP_VARIABLE, m_pfunc_v4, var_p[k], SPV_SC_FUNCTION);
             entry_patched = 1;
             i += len;
             continue;
@@ -1142,11 +1263,11 @@ static int tonemap_splice(uint32_t **spirv, uint64_t *words) {
             uint32_t sc_ch[3];
             if (has_exp) {
                 for (int c = 0; c < 3; c++) {
-                    if (add_ch[c]) {
+                    if (ex.add[c]) {
                         sc_ch[c] = next_id++;
-                        SPV_INS(&out, SPV_OP_FADD, f32_ty, sc_ch[c], exp_ch[c], add_ch[c]);
+                        SPV_INS(&out, SPV_OP_FADD, f32_ty, sc_ch[c], ex.exposed[c], ex.add[c]);
                     } else {
-                        sc_ch[c] = exp_ch[c];
+                        sc_ch[c] = ex.exposed[c];
                     }
                 }
             } else {
@@ -1154,10 +1275,10 @@ static int tonemap_splice(uint32_t **spirv, uint64_t *words) {
             }
             uint32_t sc_vec = next_id++;
             SPV_INS(&out, SPV_OP_COMPOSITE_CONSTRUCT, vec4_ty, sc_vec, sc_ch[0], sc_ch[1], sc_ch[2],
-                    has_exp ? gain_id : c_one);
+                    has_exp ? ex.gain : c_one);
             SPV_INS(&out, SPV_OP_STORE, var_sc, sc_vec);
 
-            for (int k = 0; k < 5; k++) {
+            for (uint32_t k = 0; k < NX_TONEMAP_PARAMS; k++) {
                 uint32_t ptr_k = next_id++, val_k = next_id++;
                 SPV_INS(&out, SPV_OP_ACCESS_CHAIN, ptr_u_vec4, ptr_k, sup_var, c_idx[k]);
                 SPV_INS(&out, SPV_OP_LOAD, vec4_ty, val_k, ptr_k);
@@ -1189,6 +1310,19 @@ static int tonemap_splice(uint32_t **spirv, uint64_t *words) {
                 i += len;
                 continue;
             }
+        }
+        int bloom_ch = !has_bloom ? -1 : i == bloom_at[0] ? 0 : i == bloom_at[1] ? 1 : i == bloom_at[2] ? 2 : -1;
+        if (bloom_ch >= 0 && len <= 8) {   // the bloom term times p5.x, then the instruction that adds it
+            uint32_t ptr = next_id++, p5 = next_id++, strength = next_id++, scaled = next_id++, ins[8];
+            SPV_INS(&out, SPV_OP_ACCESS_CHAIN, ptr_u_vec4, ptr, sup_var, c_idx[5]);
+            SPV_INS(&out, SPV_OP_LOAD, vec4_ty, p5, ptr);
+            SPV_INS(&out, SPV_OP_COMPOSITE_EXTRACT, f32_ty, strength, p5, 0u);
+            SPV_INS(&out, SPV_OP_FMUL, f32_ty, scaled, w[i + bloom_word[bloom_ch]], strength);
+            memcpy(ins, w + i, len * sizeof *ins);
+            ins[bloom_word[bloom_ch]] = scaled;
+            spv_emit(&out, ins, len);
+            i += len;
+            continue;
         }
         spv_emit(&out, w + i, len);
         i += len;
@@ -1244,11 +1378,13 @@ void vk_hdr_shader_swap(uint32_t **spirv, uint64_t *words) {
             rt_log("hdr: the game's FSR pass was found but no clamp of its output; it still clips HDR highlights");
         return;
     }
-    int spliced = tonemap_splice(spirv, words);
+    SpliceTrace trace;
+    int spliced = tonemap_splice(spirv, words, &trace);
     if (spliced > 0) {
         static volatile int32_t swaps;
-        rt_log("hdr: spliced RenoDX tonemap into ACES shader (%s; %d so far)",
-               spliced == 2 ? "exposure traced" : "fallback exposure", plat_inc32(&swaps));
+        rt_log("hdr: spliced RenoDX tonemap into ACES shader (%s, %s; %d so far)",
+               trace.exposure ? "exposure traced" : "fallback exposure",
+               trace.bloom ? "bloom traced" : "no bloom term", plat_inc32(&swaps));
     } else if (spliced < 0) {
         static volatile int32_t errs;
         if (plat_inc32(&errs) <= 4)

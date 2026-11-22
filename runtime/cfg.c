@@ -48,7 +48,7 @@ static const char *const known[] = {
     "DAYTIME", "DEFER_GRACE", "POOL_QUARANTINE", "DESC_TEMPLATE", "DEVICE_PROFILE", "DISCORD_APP_ID", "DISCORD_IMAGE", "DISCORD_RPC", "DLAA", "DLAA_JITTER", "DLAA_JITTER_TEST", "DLAA_MV", "DLAA_MASKDEBUG", "DLAA_MVDEBUG", "DLAA_OBJMV", "DLAA_PJITTER", "DLAA_PJ_YS", "DLAA_REVERSE_ONLY", "DLAA_SURVEY", "DLAA_TARGET_KEEP", "DLAA_TIMES", "DLSS", "DLSSG_UNAVAILABLE", "DLSS_PRESET", "DLSS_REACTIVE", "DUMP", "DUMP_BUF", "DUMP_DIR",
     "DUMP_LOG", "DUMP_RETURN", "EXEFS", "FEEDBACK", "FIX_C0", "FIX_ZERO", "FLIGHT", "FLIGHT_AT", "FLIGHT_DIR", "FLIGHT_FRAMES",
     "FLIGHT_SPIKE_MS", "FLIGHT_THUMB", "FLIGHT_THUMBS", "FLUSH_SPAN", "FLUSH_UPLOAD", "TEX_EVICT", "FOLIAGE_SHADOW_CULL", "FOLIAGE_SHADOW_VRS", "FOV", "FOV_PATCH", "FPS60", "FPS_LIMIT", "FRAMETIMES", "FREEZE_IDLE", "FREEZE_WHOLE", "FREE_CORES",
-    "FAST_TEXT", "FULLSCREEN", "FXAA", "GPL", "GPL_DRAW_BUILD", "GPU", "GPU_INDEX", "GPU_NAME", "HDR", "HDR_BLOWOUT",
+    "FAST_TEXT", "FULLSCREEN", "FXAA", "GPL", "GPL_DRAW_BUILD", "GPU", "GPU_INDEX", "GPU_NAME", "HDR", "HDR_BLOOM", "HDR_BLOWOUT",
     "HDR_COLOR_SPACE", "HDR_CONTRAST", "HDR_EXPOSURE", "HDR_FLARE", "HDR_GAME_NITS", "HDR_GAMMA", "HDR_GRADE", "HDR_HIGHLIGHT_SAT",
     "HDR_HIGHLIGHTS", "HDR_HUE", "HDR_HUE_CLIP", "HDR_LIVE", "HDR_MATCH_SLOPE", "HDR_MIDGRAY", "HDR_PEAK_NITS",
     "HDR_SATURATION", "HDR_SHADOWS", "HDR_TONEMAP", "HDR_TONE_SLOPE", "HDR_UI_NITS", "HIGHFPS_FIX", "INPUT", "INPUT_RECORD", "INPUT_SCRIPT", "LANG", "LIB_PREBUILD",
@@ -88,7 +88,7 @@ static const struct { const char *key, *section; } sections[] = {
     {"HDR_MIDGRAY", "display"}, {"HDR_MATCH_SLOPE", "display"}, {"HDR_TONE_SLOPE", "display"}, {"HDR_HUE_CLIP", "display"},
     {"HDR_EXPOSURE", "display"}, {"HDR_HIGHLIGHTS", "display"}, {"HDR_SHADOWS", "display"}, {"HDR_CONTRAST", "display"},
     {"HDR_SATURATION", "display"}, {"HDR_HIGHLIGHT_SAT", "display"}, {"HDR_BLOWOUT", "display"}, {"HDR_FLARE", "display"},
-    {"HDR_HUE", "display"}, {"HDR_GRADE", "display"}, {"SHADOW_RES", "display"},
+    {"HDR_HUE", "display"}, {"HDR_GRADE", "display"}, {"HDR_BLOOM", "display"}, {"SHADOW_RES", "display"},
     {"DLAA", "display"}, {"DLSS", "display"}, {"DLSS_PRESET", "display"}, {"FSR_VERSION", "display"}, {"FXAA", "display"},
     {"TAA", "display"}, {"FRAMEGEN", "display"}, {"SKIN_MOTION", "display"}, {"REFLEX", "display"}, {"GAME_ASPECT", "display"}, {"GAME_RES", "display"},
     {"DEVICE_PROFILE", "display"}, {"ASSUME_FOCUS", "display"},
@@ -167,6 +167,7 @@ static const CfgMeta metas[] = {
     {"HDR_SATURATION", "50", "0..100", LIVE}, {"HDR_HIGHLIGHT_SAT", "50", "0..100", LIVE},
     {"HDR_BLOWOUT", "0", "0..100", LIVE}, {"HDR_FLARE", "0", "0..100", LIVE},
     {"HDR_HUE", "100", "0..100", LIVE}, {"HDR_GRADE", "100", "0..100", LIVE},
+    {"HDR_BLOOM", "50", "0..100", LIVE},   // vk_hdr.c tonemap_splice: the game's bloom term times value / 50
 #else
     {"HDR", "0", "0|1", RESTART}, {"HDR_PEAK_NITS", "1000", "400..10000", LIVE}, {"HDR_GAME_NITS", "203", "80..500", LIVE},
     {"HDR_UI_NITS", "203", "80..500", LIVE}, {"HDR_GAMMA", "off", "off|2.2|2.4", LIVE}, {"HDR_HUE", "80", "0..100", LIVE},

@@ -589,6 +589,8 @@
     [UI_MENU_HDR_BLOWOUT_DESC] = "在 RenoDRT 中使極亮高光趨向白色；0 % 為關閉。",
     [UI_MENU_HDR_FLARE] = "HDR 眩光補償",
     [UI_MENU_HDR_FLARE_DESC] = "在 RenoDRT 中壓暗近黑階以補償眩光；0 為關閉。",
+    [UI_MENU_HDR_BLOOM] = "泛光",
+    [UI_MENU_HDR_BLOOM_DESC] = "明亮光源周圍的光暈。50 為遊戲原本的效果；0 關閉，100 加倍。",
     [UI_MENU_HDR_GRADE] = "原版調色強度",
     [UI_MENU_HDR_GRADE_DESC] = "在 RenoDRT 中還原遊戲原版 SDR 色調風格的強度。",
     [UI_PREP_LEFT_LT1] = "剩餘不到一分鐘",

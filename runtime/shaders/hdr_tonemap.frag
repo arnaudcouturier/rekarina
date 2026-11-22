@@ -23,13 +23,15 @@
 // color/srgb.hlsl and the OoT scene mapper). runtime/vk_hdr.c (tonemap_splice) links nx_tonemap into the game's
 // translated ACES tonemap fragment shaders in memory and replaces the three clamped output channel stores.
 //
-// Parameters (vk_hdr.c vk_hdr_support, support_buffer bytes 1440..1519):
+// Parameters (vk_hdr.c vk_hdr_support, support_buffer from byte 1440, VK_HDR_PARAMS_AT):
 //   p0: peak nits, game nits (paper white), HUD nits, tone mapper (-1: vanilla SDR passthrough, 0: vanilla, 3: RenoDRT,
 //       9: PsychoV35)
 //   p1: exposure [1], highlights [1], shadows [1], contrast [1]
 //   p2: saturation [1], highlight saturation [1], blowout [0], flare [0]
 //   p3: hue correction [1], grade strength [1], gamma correction (0 off, 1: 2.2, 2: 2.4) [1], tone slope [1]
 //   p4: hue clip emulation [0.5], mid grey (0 render, 1 vanilla) [1], match tone slope (0 or 1) [1], unused
+//   p5: bloom strength [1] (not nx_tonemap's: tonemap_splice multiplies the game's bloom term by it where the scene
+//       adds it), three unused
 // main only keeps the entry point alive for glslc; tonemap_splice drops main and splices the helper functions.
 layout(location = 0) in vec4 a0;
 layout(location = 1) in vec4 a1;

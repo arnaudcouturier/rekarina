@@ -596,6 +596,8 @@
     [UI_MENU_HDR_BLOWOUT_DESC] = "RenoDRT에서 강한 하이라이트를 흰색으로 탈색합니다. 0 %는 끄기입니다.",
     [UI_MENU_HDR_FLARE] = "HDR 플레어",
     [UI_MENU_HDR_FLARE_DESC] = "RenoDRT에서 검은색 근처 톤을 어둡게 보정합니다. 0은 끄기입니다.",
+    [UI_MENU_HDR_BLOOM] = "블룸",
+    [UI_MENU_HDR_BLOOM_DESC] = "밝은 빛 주위의 번짐입니다. 50은 게임 원래의 세기이며, 0은 끄고 100은 두 배로 합니다.",
     [UI_MENU_HDR_GRADE] = "바닐라 색보정 강도",
     [UI_MENU_HDR_GRADE_DESC] = "RenoDRT에서 게임 원본 SDR 색감을 복원하는 강도입니다.",
     [UI_PREP_LEFT_LT1] = "1분 미만 남음",

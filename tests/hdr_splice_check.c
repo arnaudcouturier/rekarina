@@ -56,6 +56,7 @@ const char *cfg_value(const char *name) {
     if (!strcmp(name, "REKARINA_HDR_FLARE")) return "0";
     if (!strcmp(name, "REKARINA_HDR_HUE")) return "100";
     if (!strcmp(name, "REKARINA_HDR_GRADE")) return "100";
+    if (!strcmp(name, "REKARINA_HDR_BLOOM")) return "50";
     return "0";
 }
 double cfg_double(const char *name) { return strtod(cfg_value(name), NULL); }
@@ -266,7 +267,8 @@ static void write_spv(const char *path, const uint32_t *w, uint64_t n) {
 }
 
 int main(int argc, char **argv) {
-    // Optional external-file mode: hdr_splice_check --file <in.spv> <out.spv>
+    // Optional external-file mode: hdr_splice_check --file <in.spv> <out.spv> prints the result (2: exposure traced) and
+    // "bloom" when the game's bloom term was found
     if (argc == 4 && !strcmp(argv[1], "--file")) {
         FILE *f = fopen(argv[2], "rb");
         if (!f) return 2;
@@ -277,10 +279,11 @@ int main(int argc, char **argv) {
         if (!buf || fread(buf, 1, (size_t)sz, f) != (size_t)sz) { fclose(f); free(buf); return 2; }
         fclose(f);
         uint64_t words = (uint64_t)sz / 4;
-        int r = tonemap_splice(&buf, &words);
+        SpliceTrace trace;
+        int r = tonemap_splice(&buf, &words, &trace);
         if (r > 0) write_spv(argv[3], buf, words);
         free(buf);
-        printf("%d\n", r);
+        printf("%d%s\n", r, r > 0 && trace.bloom ? " bloom" : "");   // the result, and what else was traced
         return r < 0 ? 1 : 0;
     }
     const char *out_dir = argc > 1 ? argv[1] : NULL;
@@ -289,7 +292,7 @@ int main(int argc, char **argv) {
         uint64_t n = 0;
         uint32_t *spv = make_aces_spv(shape, &n);
         uint64_t orig_n = n;
-        int r = tonemap_splice(&spv, &n);
+        int r = tonemap_splice(&spv, &n, NULL);
         if (shape <= 4 || shape == 6) CHECK(r == 2 && n > orig_n, "exposure-traced ACES shape spliced");
         else if (shape == 5) CHECK(r == 1 && n > orig_n, "fallback vector-store ACES shape spliced");
         else CHECK(r == 0 && n == orig_n, "non-ACES shader untouched");
@@ -303,15 +306,20 @@ int main(int argc, char **argv) {
 
     // 2. Test vk_hdr_support parameter packing and SDR passthrough
     test_cfg_reset();
-    float sup[20];
+    float sup[4 * VK_HDR_PARAMS];
     vk_hdr_set_active(0);
     vk_hdr_support(sup);
     CHECK(sup[3] == -1.0f, "SDR swapchain sets p0.w = -1 (vanilla passthrough)");
+    CHECK(sup[20] == 1.0f, "SDR swapchain keeps the game's bloom (p5.x = 1)");
     vk_hdr_set_active(1);
     vk_hdr_support(sup);
     CHECK(sup[0] == 1000.0f && sup[1] == 203.0f && sup[2] == 203.0f && sup[3] == 9.0f, "PsychoV35 defaults");
     CHECK(sup[4] == 1.0f && sup[5] == 1.0f && sup[6] == 1.0f && sup[7] == 1.0f && sup[8] == 1.0f, "neutral grading");
     CHECK(sup[14] == 1.0f && sup[15] == 1.0f && sup[16] == 0.5f && sup[17] == 1.0f && sup[18] == 1.0f, "PsychoV35 flags");
+    CHECK(sup[20] == 1.0f, "bloom 50 is the game's (p5.x = 1)");
+    test_cfg_set("REKARINA_HDR_BLOOM", "25");
+    vk_hdr_support(sup);
+    CHECK(sup[20] == 0.5f, "bloom 25 halves the game's (p5.x = 0.5)");
 
     test_cfg_set("REKARINA_HDR_TONEMAP", "renodrt");
     test_cfg_set("REKARINA_HDR_GAMMA", "2.4");

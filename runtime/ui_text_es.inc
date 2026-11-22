@@ -607,6 +607,9 @@
     [UI_MENU_HDR_BLOWOUT_DESC] = "Desatura las luces muy intensas hacia el blanco en RenoDRT; 0 % desactivado.",
     [UI_MENU_HDR_FLARE] = "Compensación de destello HDR",
     [UI_MENU_HDR_FLARE_DESC] = "Oscurece los tonos cercanos al negro en RenoDRT; 0 desactivado.",
+    [UI_MENU_HDR_BLOOM] = "Resplandor",
+    [UI_MENU_HDR_BLOOM_DESC] = "El brillo alrededor de las luces intensas. 50 es el del propio juego; 0 lo desactiva "
+                               "y 100 lo duplica.",
     [UI_MENU_HDR_GRADE] = "Intensidad de etalonaje original",
     [UI_MENU_HDR_GRADE_DESC] = "Intensidad del aspecto SDR original restaurado en RenoDRT.",
     [UI_PREP_LEFT_LT1] = "queda menos de un minuto",

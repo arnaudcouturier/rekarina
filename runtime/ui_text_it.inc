@@ -608,6 +608,9 @@
     [UI_MENU_HDR_BLOWOUT_DESC] = "Desatura le alte luci intense verso il bianco in RenoDRT; 0 % spento.",
     [UI_MENU_HDR_FLARE] = "Compensazione bagliore HDR",
     [UI_MENU_HDR_FLARE_DESC] = "Scurisce i toni quasi neri in RenoDRT; 0 spento.",
+    [UI_MENU_HDR_BLOOM] = "Bloom",
+    [UI_MENU_HDR_BLOOM_DESC] = "Il bagliore attorno alle luci intense. 50 è quello del gioco; 0 lo disattiva, 100 lo "
+                               "raddoppia.",
     [UI_MENU_HDR_GRADE] = "Forza grading originale",
     [UI_MENU_HDR_GRADE_DESC] = "Intensità del look SDR originale ripristinato in RenoDRT.",
     [UI_PREP_LEFT_LT1] = "meno di un minuto rimanente",

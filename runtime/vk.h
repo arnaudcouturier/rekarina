@@ -203,8 +203,12 @@ void vk_hdr_ui_compose(VkCommandBuffer cb, VkImageView dst_view, VkFormat fmt, u
 void vk_hdr_to_srgb8(const uint8_t *in, uint8_t *out, size_t px, int a2r);
 void vk_hdr_images_release(void);   // swapchain moved to SDR: drop transient HDR images
 void vk_hdr_release(void);   // before the device goes away
-// The support buffer's HDR parameters (vk_exec_draw.c support_fill, read by shaders/hdr_tonemap.frag).
-void vk_hdr_support(float out[20]);
+// The HDR tone mapper's parameters: VK_HDR_PARAMS vec4 after the translator's own support buffer fields, from byte
+// VK_HDR_PARAMS_AT (vk_exec_draw.c support_fill writes them; the spliced tone mapper and the game's bloom term read
+// them, shaders/hdr_tonemap.frag lists them).
+#define VK_HDR_PARAMS_AT 1440u
+#define VK_HDR_PARAMS 6u
+void vk_hdr_support(float out[4 * VK_HDR_PARAMS]);
 // vk_contact.c: screen-space contact shadows on the game's composed scene colour (REKARINA_CONTACT_SHADOWS)
 int vk_contact_strength(void);   // percent, 0 = off
 void vk_contact_release(void);   // before the device goes away
