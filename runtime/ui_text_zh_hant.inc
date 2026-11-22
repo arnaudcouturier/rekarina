@@ -351,7 +351,7 @@
     [UI_MENU_MENU_LANG] = "選單語言", [UI_MENU_MENU_LANG_DESC] = "本選單與效能顯示的語言。",
     [UI_MENU_MENU_LANG_AUTO] = "自動（依 Windows）",
     [UI_MENU_UPDATE_CHECK] = "檢查更新",
-    [UI_MENU_UPDATE_CHECK_DESC] = "遊戲啟動時會向 rekarina.dev 查詢一次最新的 " RT_PORT_NAME " 版本，有新版本時"
+    [UI_MENU_UPDATE_CHECK_DESC] = "遊戲啟動時會向 GitHub 查詢一次最新的 " RT_PORT_NAME " 版本，有新版本時"
                                   "顯示通知。該請求只帶有移植版的版本號，不含任何與你有關的資訊。"
                                   "更新由啟動器安裝。",
     [UI_MENU_PREVIEW] = "即時畫面",

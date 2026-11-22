@@ -13,7 +13,7 @@ body:
     attributes:
       label: Existing issues
       options:
-        - label: I read the pinned issues and [searched open and closed issues](https://github.com/hooxielooxie/Rekarina/issues?q=is%3Aissue) for this bug.
+        - label: I read the pinned issues and [searched open and closed issues](https://github.com/arnaudcouturier/rekarina/issues?q=is%3Aissue) for this bug.
           required: true
   - type: dropdown
     id: area

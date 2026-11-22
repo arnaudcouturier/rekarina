@@ -368,7 +368,7 @@
     [UI_MENU_MENU_LANG] = "Idioma do menu", [UI_MENU_MENU_LANG_DESC] = "Idioma deste menu e do indicador de desempenho.",
     [UI_MENU_MENU_LANG_AUTO] = "Automático (do Windows)",
     [UI_MENU_UPDATE_CHECK] = "Procurar atualizações",
-    [UI_MENU_UPDATE_CHECK_DESC] = "Ao arrancar, o jogo pergunta uma vez ao rekarina.dev pela versão mais recente do " RT_PORT_NAME " e mostra um "
+    [UI_MENU_UPDATE_CHECK_DESC] = "Ao arrancar, o jogo pergunta uma vez ao GitHub pela versão mais recente do " RT_PORT_NAME " e mostra um "
                                   "aviso quando há uma. O pedido leva a versão do port e nada sobre ti. "
                                   "O launcher instala a atualização.",
     [UI_MENU_PREVIEW] = "Imagem em direto",

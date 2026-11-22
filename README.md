@@ -4,18 +4,19 @@
 
 <p align="center">
   <b>A native PC port</b> made by static recompilation, not emulation.<br>
-  Built on your own PC from your own copy of the game.
+  Built on your own PC from your own copy of the game.<br>
+  <i>Fork of <a href="https://git.rekarina.dev/rekarina/rekarina">Rekarina</a> adding Streamline DLSS/DLAA/FG with projection jitter &amp; tracked motion vectors, RenoDX HDR tone mapping, and direct save boot.</i>
 </p>
 
 <p align="center">
-  <a href="../../releases/latest"><img src="https://img.shields.io/github/v/release/hooxielooxie/Rekarina?label=release&color=d9951f" alt="Latest release"></a>
+  <a href="../../releases/latest"><img src="https://img.shields.io/github/v/release/arnaudcouturier/rekarina?label=release&color=d9951f" alt="Latest release"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-GPL--3.0-6f5a35" alt="GPL-3.0 license"></a>
   <img src="https://img.shields.io/badge/platform-Windows%2010%20%2F%2011%20x64-6f5a35" alt="Windows 10 / 11 x64">
 </p>
 
 <p align="center">
-  <a href="https://rekarina.dev">Website</a> ·
-  <a href="https://discord.gg/6N8PKr9zZA">Discord</a> ·
+  <a href="https://rekarina.dev">Upstream</a> ·
+  <a href="https://discord.gg/6N8PKr9zZA">Upstream Discord</a> ·
   <a href="#install">Install</a> ·
   <a href="#performance">Performance</a> ·
   <a href="#features">Features</a> ·
@@ -157,11 +158,11 @@ key is also in `rekarina.ini` beside the game ([the key list](rekarina.ini.examp
 
 ## Updates
 
-The launcher asks [rekarina.dev](https://rekarina.dev) for the newest release when it starts (GitHub when the site does
-not answer), and the game asks the site's release feed once at its own start (one request that carries the port's
-version and nothing else; *Menu > Check for updates* turns it off). When a release is out, the game shows a notice and the launcher
-offers *Update*: it downloads the new setup, checks its signature against the project's release keys, rebuilds only
-what changed and re-prepares the shaders, so the first minutes after an update do not stutter.
+The launcher and the game ask this fork's [GitHub Releases](../../releases/latest) (`arnaudcouturier/rekarina`) for the
+newest release when they start (one request that carries the port's version and nothing else; *Menu > Check for updates*
+turns it off in-game). When a release is out, the game shows a notice and the launcher offers *Update*: it downloads the
+new setup, checks its SHA-256 checksum, rebuilds only what changed and re-prepares the shaders, so the first minutes
+after an update do not stutter.
 
 ## Known issues
 

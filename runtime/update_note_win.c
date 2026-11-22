@@ -1,6 +1,6 @@
-// The update notice's request on Windows: GET https://rekarina.dev/releases/latest.json (update_note.h) through
-// WinHTTP, loaded at run time so a system without it only loses the notice. Timeouts of five seconds each; the answer
-// is read up to 64 KiB (the release's notes may be long, tag_name comes first or early).
+// The update notice's request on Windows: GET https://api.github.com/repos/arnaudcouturier/rekarina/releases/latest
+// (update_note.h) through WinHTTP, loaded at run time so a system without it only loses the notice. Timeouts of five
+// seconds each; the answer is read up to 64 KiB (the release's notes may be long, tag_name comes first or early).
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>

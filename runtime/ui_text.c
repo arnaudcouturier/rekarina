@@ -411,7 +411,7 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_MENU_LANG] = "Menu language", [UI_MENU_MENU_LANG_DESC] = "Language of this menu and the overlay.",
     [UI_MENU_MENU_LANG_AUTO] = "Automatic (from Windows)",
     [UI_MENU_UPDATE_CHECK] = "Check for updates",
-    [UI_MENU_UPDATE_CHECK_DESC] = "When the game starts it asks rekarina.dev once for the newest " RT_PORT_NAME " release and shows a "
+    [UI_MENU_UPDATE_CHECK_DESC] = "When the game starts it asks GitHub once for the newest " RT_PORT_NAME " release and shows a "
                                   "notice when there is one. The request carries the port's version and nothing about you. "
                                   "The launcher installs the update.",
     [UI_MENU_PREVIEW] = "Live picture",
@@ -1028,7 +1028,7 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_MENU_MENU_LANG] = "Язык меню", [UI_MENU_MENU_LANG_DESC] = "Язык этого меню и индикатора.",
     [UI_MENU_MENU_LANG_AUTO] = "Автоматически (из Windows)",
     [UI_MENU_UPDATE_CHECK] = "Проверять обновления",
-    [UI_MENU_UPDATE_CHECK_DESC] = "При запуске игра один раз спрашивает у rekarina.dev о новом выпуске " RT_PORT_NAME " и показывает "
+    [UI_MENU_UPDATE_CHECK_DESC] = "При запуске игра один раз спрашивает на GitHub о новом выпуске " RT_PORT_NAME " и показывает "
                                   "уведомление, если он есть. В запросе только версия порта, ничего о вас. "
                                   "Обновление ставит лаунчер.",
     [UI_MENU_PREVIEW] = "Живой просмотр",
@@ -1502,7 +1502,7 @@ static const char *const text_pt_br[UI_TEXT_COUNT] = {
     [UI_MENU_MENU_LANG] = "Idioma do menu", [UI_MENU_MENU_LANG_DESC] = "Idioma deste menu e do indicador.",
     [UI_MENU_MENU_LANG_AUTO] = "Automático (do Windows)",
     [UI_MENU_UPDATE_CHECK] = "Verificar atualizações",
-    [UI_MENU_UPDATE_CHECK_DESC] = "Ao iniciar, o jogo pergunta uma vez ao rekarina.dev pela versão mais recente do " RT_PORT_NAME " e mostra "
+    [UI_MENU_UPDATE_CHECK_DESC] = "Ao iniciar, o jogo pergunta uma vez ao GitHub pela versão mais recente do " RT_PORT_NAME " e mostra "
                                   "um aviso quando há uma. O pedido leva a versão do port e nada sobre você. "
                                   "O launcher instala a atualização.",
     [UI_UPDATE_AVAILABLE] = RT_PORT_NAME " %s está disponível",
@@ -2242,7 +2242,7 @@ static const char *const text_zh_hans[UI_TEXT_COUNT] = {
     [UI_MENU_MENU_LANG_DESC] = "本菜单和性能浮层的语言。",
     [UI_MENU_MENU_LANG_AUTO] = "自动（跟随 Windows）",
     [UI_MENU_UPDATE_CHECK] = "检查更新",
-    [UI_MENU_UPDATE_CHECK_DESC] = "游戏启动时向 rekarina.dev 查询一次最新的 " RT_PORT_NAME " 版本，有新版本时显示通知。请求只包含移植版的版本号，"
+    [UI_MENU_UPDATE_CHECK_DESC] = "游戏启动时向 GitHub 查询一次最新的 " RT_PORT_NAME " 版本，有新版本时显示通知。请求只包含移植版的版本号，"
                                   "不含任何与你有关的信息。更新由启动器安装。",
     [UI_UPDATE_AVAILABLE] = RT_PORT_NAME " %s 已发布",
     [UI_UPDATE_HINT] = "请打开启动器进行更新：它会自行重新构建着色器。",

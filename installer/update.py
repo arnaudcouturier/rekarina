@@ -85,13 +85,11 @@ from pathlib import Path
 
 from . import ed25519, net
 
-REPO = 'hooxielooxie/Rekarina'
+REPO = 'arnaudcouturier/rekarina'
 API = 'https://api.github.com'
-FEED = 'https://rekarina.dev/releases/latest.json'   # the site's release record; '' leaves GitHub as the only source
-# hex Ed25519 public keys of tools/release_sign.py keygen; () takes unsigned releases. The first signs the releases;
-# the second is the spare whose private half is kept offline, for a release after the first is lost or leaked.
-SIGNING_KEYS = ('3d2c5774c8f60fc0067af2a9f51480a7ca11f29f01c71bfdca15abbc5426a2e5',
-                'e69d2622597a0ceb2cd48cf44b1db3f424518329f67e7a2bcdb7b4656858c646')
+FEED = ''   # optional custom release feed; '' leaves GitHub Releases as the only source
+# hex Ed25519 public keys of tools/release_sign.py keygen; () verifies downloads against GitHub's asset digest or SHA256SUMS.
+SIGNING_KEYS = ()
 CACHE_SECONDS = 6 * 3600
 CHECK_TIMEOUT = 6
 NOTES_CHARS = 4000

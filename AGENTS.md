@@ -2,6 +2,15 @@
 
 Static recompilation of a Switch 2 game (ARM64) into a native Windows x86-64 exe with a Vulkan renderer. The code and the notes call the game `OoT` (`GAME_OOT`; `GAME_NS2` is what any Switch 2 game needs). It is built on the TotK Recomp lifter and runtime, and the same tree still builds that project's Switch game, `TotK`. Design: [docs/architecture.md](docs/architecture.md) and, for what OoT adds, [docs/oot-architecture.md](docs/oot-architecture.md). Toolchain, build commands and tests: [docs/building.md](docs/building.md). Working notes on OoT: [docs/oot-notes.md](docs/oot-notes.md). The launcher and the release flow: [docs/installer.md](docs/installer.md), [docs/distribution.md](docs/distribution.md).
 
+## This fork
+
+This repository is a public fork of Rekarina (`origin`: `https://github.com/arnaudcouturier/rekarina.git`; `upstream`: `https://git.rekarina.dev/rekarina/rekarina.git`). On top of upstream releases, it maintains:
+
+- **Streamline DLSS / DLAA / DLSS Frame Generation**: Streamline integration (`runtime/dlssg/nx2_sl.cpp`, `runtime/vk_dlssg.c`, `runtime/vk_dlaa.c`), 16-phase Halton CPU projection jitter (`runtime/scene_projection.h`, `runtime/scene_projection_impl.h`, `runtime/scene_motion_projection.h`), tracked model motion vectors (`runtime/tracked_model.h`, `runtime/tracked_model_cpu_impl.h`, `runtime/skin_pair.h`, `runtime/vk_skin_motion.inc`, `runtime/shaders/model_motion.frag`), scaling-dispatch replacement in both DLAA and DLSS modes with jitter texture LOD bias (`log2(render_share) - 1.0`), and no redundant 1:1 present RCAS when projection jitter is active.
+- **RenoDX HDR**: SPIR-V splicing of the game's ACES tonemap pass (`runtime/vk_hdr.c`, `runtime/shaders/hdr_tonemap.frag`, `runtime/shaders/hdr_tonemap_totk.frag`, `runtime/shaders/hdr_encode.comp`, `runtime/shaders/hdr_ui.frag`, `tests/hdr_splice_check.c`), matching translator NaN-sanitized output stores, with live F1 toggling/tuning and native HDR10 output.
+- **Direct save boot**: `--load-save` boot path (`runtime/main.c`, `runtime/fs_host.c`, `runtime/romfs.c`, `recomp/patches-oot-v111.txt`).
+- **Fork release & update targets**: `installer/update.py` (`REPO = 'arnaudcouturier/rekarina'`, `FEED = ''`, `SIGNING_KEYS = ()`), `runtime/update_note.h` (`api.github.com/repos/arnaudcouturier/rekarina/releases/latest`), `installer/uninstall.py`, `.github/ISSUE_TEMPLATE/`, and `README.md` point to this fork rather than upstream `rekarina.dev` / `hooxielooxie/Rekarina`. Keep them pointed at this fork when syncing from `upstream`.
+
 ## No game is named
 
 - No game, franchise, character or place is named anywhere in this repository: not in code, comments, docs, issue
@@ -11,7 +20,7 @@ Static recompilation of a Switch 2 game (ARM64) into a native Windows x86-64 exe
   `runtime/oot_warp.c`) are the one exception.
 - No pictures taken from a game: no screenshots, no frames of a video, no textures. Pictures of the launcher and charts
   are fine.
-- The public history is one commit per release of the sources; the working history stays in the local repository.
+- Keep commits clean and atomic on `origin/main` on top of upstream's release commits (`upstream/main`); sync new upstream releases with `git fetch upstream` and rebase or merge.
 
 ## Names
 
@@ -34,18 +43,25 @@ This repository is public. Game data lives outside it and every derived file sta
 The project is under the GNU General Public License, version 3 (`LICENSE`); the recompiler it is built on is MIT, and
 its notice is kept in `THIRD_PARTY_NOTICES.md`.
 
-`refs/` holds the upstream checkouts (`tools/fetch_refs.sh` recreates it). Read-only.
+`refs/` holds the upstream checkouts (`tools/fetch_refs.sh` recreates it) when present. Read-only.
 
 - Copy only MIT, BSD, ISC, zlib or Apache-2.0 code, keep its header, and add a row to `THIRD_PARTY_NOTICES.md`.
+- This fork draws on MIT-licensed code from `RenoDX` (`clshortfuse/renodx`) and ShortFuse's MIT-licensed commits in `NX2navi`. Never copy all-rights-reserved (`chrg6`) files from `NX2navi`.
 - yuzu, suyu, OpenSmash-Ultimate and other GPL code: read for behaviour, write our own.
 - `tools/vendor/` stays byte-identical to upstream; Windows changes go in `tools/extract.py`.
 
 ## Code
 
-- Build C with MSYS2 UCRT64 Clang (`C:\msys64\ucrt64\bin`). Generated C uses GNU extensions, so `cl.exe` is out. Call Ninja from that directory by full path or put it first on PATH.
-- Two Python environments: `.venv` (3.12) for the lifter and the build, `.venv-py314` for the extraction and shader scripts, which need `compression.zstd`.
+- Build C with MSYS2 UCRT64 Clang (`C:\msys64\ucrt64\bin`). Generated C uses GNU extensions, so `cl.exe` is out. Call Ninja from that directory by full path (`C:\msys64\ucrt64\bin\ninja.exe -f build\oot\build.ninja`) or put it first on PATH.
+- Python 3.14 on PATH runs the build, extraction and shader scripts (`compression.zstd` is built in); upstream's split `.venv` (3.12) / `.venv-py314` layout is also supported.
+- Rebuild generated shader headers with `python tools/build_shaders.py` after editing `runtime/shaders/*`, and `rekarina_dlssg.dll` with `python tools/build_dlssg.py` after editing `runtime/dlssg/nx2_sl.cpp`.
 - Generated C is never edited by hand: change the generator (`recomp/`).
-- Every lifter change passes the differential tests against Unicorn ([docs/building.md](docs/building.md), "Checks"). After changing `recomp/jumptables.py`, `tests\jumptables_check.py` reports 0 disagreements on 1.2.1 and 1.4.3.
+- Checks to run after changes:
+  - `python tools/check_platform.py` and `python tools/check_content.py --staged`
+  - `build\oot\rekarina.exe --selftest`, `--probe-cfg`, `--probe-color`
+  - `python -m installer.launcher_test` for launcher/updater changes
+  - Fork C unit checks (`tests/hdr_splice_check.c`, `tests/scene_motion_projection_check.c`, `tests/skin_pair_check.c`, `tests/tracked_model_cpu_check.c`) when touching those modules
+  - Every lifter change passes the differential tests against Unicorn ([docs/building.md](docs/building.md), "Checks"). After changing `recomp/jumptables.py`, `tests\jumptables_check.py` reports 0 disagreements on 1.2.1 and 1.4.3.
 - `recomp/layout.py` alone decides module bases.
 - Graphics bugs: [docs/maxwell.md](docs/maxwell.md) lists the Maxwell behaviour the Vulkan path must match and the TotK bugs other ports fixed.
 - Comments say what the code does and why, in words that stand on their own. Cite our code by file plus function (a line number may follow as a hint) and upstream code by project, file and function: `refs/` moves, so its line numbers rot. Commit hashes belong to the attribution of copied code.

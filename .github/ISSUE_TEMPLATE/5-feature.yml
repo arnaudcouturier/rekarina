@@ -7,7 +7,7 @@ body:
     attributes:
       label: Existing issues
       options:
-        - label: I [searched open and closed issues](https://github.com/hooxielooxie/Rekarina/issues?q=is%3Aissue) and the Planned section of the README for this request.
+        - label: I [searched open and closed issues](https://github.com/arnaudcouturier/rekarina/issues?q=is%3Aissue) and the Planned section of the README for this request.
           required: true
   - type: textarea
     id: request

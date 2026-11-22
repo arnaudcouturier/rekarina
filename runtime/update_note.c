@@ -4,9 +4,9 @@
 // The answer is kept in <app data>/Rekarina/update.json, which the launcher (installer/update.py) writes too:
 //   {"latest": "1.0.1", "checked": 1731326400}
 // latest: the newest release's version without its "v"; checked: Unix seconds of the check. Other members are left to
-// the launcher and not read here. A file younger than CHECK_EVERY_S is trusted; else one HTTPS request asks the site's
-// release feed for the newest release (update_http_latest, update_note_win.c, update_note.h) and the file is written
-// again. The request carries no
+// the launcher and not read here. A file younger than CHECK_EVERY_S is trusted; else one HTTPS request asks GitHub's
+// latest release endpoint for the newest release (update_http_latest, update_note_win.c, update_note.h) and the file
+// is written again. The request carries no
 // more than the port's name and version as its User-Agent. UPDATE_CHECK=0 (menu: Interface) stops both the request and
 // the notice. All of it runs on a thread of its own at idle priority: a slow or absent network costs the game nothing.
 #include <stdatomic.h>

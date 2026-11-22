@@ -368,7 +368,7 @@
     [UI_MENU_MENU_LANG] = "Menutaal", [UI_MENU_MENU_LANG_DESC] = "Taal van dit menu en de overlay.",
     [UI_MENU_MENU_LANG_AUTO] = "Automatisch (van Windows)",
     [UI_MENU_UPDATE_CHECK] = "Op updates controleren",
-    [UI_MENU_UPDATE_CHECK_DESC] = "Bij het starten vraagt het spel één keer aan rekarina.dev naar de nieuwste release van " RT_PORT_NAME " en toont "
+    [UI_MENU_UPDATE_CHECK_DESC] = "Bij het starten vraagt het spel één keer aan GitHub naar de nieuwste release van " RT_PORT_NAME " en toont "
                                   "een melding als die er is. Het verzoek bevat de versie van de port en niets over jou. "
                                   "De launcher installeert de update.",
     [UI_MENU_PREVIEW] = "Livebeeld",

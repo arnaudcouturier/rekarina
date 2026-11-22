@@ -351,7 +351,7 @@
     [UI_MENU_MENU_LANG] = "メニューの言語", [UI_MENU_MENU_LANG_DESC] = "このメニューとパフォーマンス表示の言語です。",
     [UI_MENU_MENU_LANG_AUTO] = "自動 (Windowsの言語)",
     [UI_MENU_UPDATE_CHECK] = "アップデートを確認",
-    [UI_MENU_UPDATE_CHECK_DESC] = "ゲームの起動時に一度だけ、rekarina.devに " RT_PORT_NAME " の最新リリースを問い合わせ、新しいものがあれば"
+    [UI_MENU_UPDATE_CHECK_DESC] = "ゲームの起動時に一度だけ、GitHubに " RT_PORT_NAME " の最新リリースを問い合わせ、新しいものがあれば"
                                   "通知を表示します。送信されるのは移植版のバージョンだけで、あなたに関する情報は含まれません。"
                                   "アップデートのインストールはランチャーが行います。",
     [UI_MENU_PREVIEW] = "ライブ映像",

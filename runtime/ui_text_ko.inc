@@ -358,7 +358,7 @@
     [UI_MENU_MENU_LANG] = "메뉴 언어", [UI_MENU_MENU_LANG_DESC] = "이 메뉴와 오버레이의 언어입니다.",
     [UI_MENU_MENU_LANG_AUTO] = "자동 (Windows 설정)",
     [UI_MENU_UPDATE_CHECK] = "업데이트 확인",
-    [UI_MENU_UPDATE_CHECK_DESC] = "게임을 시작할 때 rekarina.dev에 최신 " RT_PORT_NAME " 릴리스를 한 번 문의하고, 새 릴리스가 있으면 "
+    [UI_MENU_UPDATE_CHECK_DESC] = "게임을 시작할 때 GitHub에 최신 " RT_PORT_NAME " 릴리스를 한 번 문의하고, 새 릴리스가 있으면 "
                                   "알림을 표시합니다. 요청에는 포트의 버전만 담기며 사용자에 관한 정보는 담기지 않습니다. "
                                   "업데이트는 런처가 설치합니다.",
     [UI_MENU_PREVIEW] = "실시간 화면",

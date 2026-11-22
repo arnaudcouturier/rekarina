@@ -370,7 +370,7 @@
     [UI_MENU_MENU_LANG] = "Langue du menu", [UI_MENU_MENU_LANG_DESC] = "Langue de ce menu et de l'indicateur de performances.",
     [UI_MENU_MENU_LANG_AUTO] = "Automatique (selon Windows)",
     [UI_MENU_UPDATE_CHECK] = "Rechercher les mises à jour",
-    [UI_MENU_UPDATE_CHECK_DESC] = "Au démarrage, le jeu demande une fois à rekarina.dev la dernière version de " RT_PORT_NAME " et affiche "
+    [UI_MENU_UPDATE_CHECK_DESC] = "Au démarrage, le jeu demande une fois à GitHub la dernière version de " RT_PORT_NAME " et affiche "
                                   "un avis s'il y en a une nouvelle. La requête contient la version du portage et rien sur "
                                   "vous. Le lanceur installe la mise à jour.",
     [UI_MENU_PREVIEW] = "Image en direct",

@@ -369,7 +369,7 @@
     [UI_MENU_MENU_LANG] = "Menüsprache", [UI_MENU_MENU_LANG_DESC] = "Sprache dieses Menüs und der Leistungsanzeige.",
     [UI_MENU_MENU_LANG_AUTO] = "Automatisch (von Windows)",
     [UI_MENU_UPDATE_CHECK] = "Nach Updates suchen",
-    [UI_MENU_UPDATE_CHECK_DESC] = "Beim Start fragt das Spiel einmal bei rekarina.dev nach der neuesten Version von " RT_PORT_NAME " und zeigt "
+    [UI_MENU_UPDATE_CHECK_DESC] = "Beim Start fragt das Spiel einmal bei GitHub nach der neuesten Version von " RT_PORT_NAME " und zeigt "
                                   "einen Hinweis, wenn es eine gibt. Die Anfrage enthält die Version des Ports und nichts "
                                   "über dich. Der Launcher installiert das Update.",
     [UI_MENU_PREVIEW] = "Live-Bild",

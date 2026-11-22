@@ -79,7 +79,7 @@ def register(game, version, setup=None, key=REG_PATH):
         'DisplayIcon': str(game / 'Rekarina.exe'),
         'InstallLocation': str(game),
         'UninstallString': command_line(game / GAME_SCRIPT),
-        'URLInfoAbout': 'https://rekarina.dev/',
+        'URLInfoAbout': 'https://github.com/arnaudcouturier/rekarina',
     }
     dwords = {'NoModify': 1, 'NoRepair': 1,
               'EstimatedSize': min(folder_kib(*[f for f in (game, setup) if f]), 0xFFFFFFFF)}
