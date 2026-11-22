@@ -317,10 +317,9 @@ folder; the steps are those of `installer/oot.py`:
    what it follows from (`plan_background`).
 
 **Shortcuts to the launcher.** `Rekarina.exe` in the game folder is the game alone, and players looking there for the
-launcher (to update) did not find it: it lives in `<home>\setup\<version>\Rekarina-Launcher.exe`
-(`%LOCALAPPDATA%\Rekarina\setup\<version>` for a 1.2.0 install). Every Windows run that leaves a game in the folder
-writes "Rekarina Launcher" into the game folder, "Rekarina" into the player's own Start menu (no administrator) and,
-unless the form's **Desktop shortcut** row says No (`--no-desktop-shortcut`), "Rekarina Launcher" on the desktop
+launcher (to update) did not find it. It lives in `<home>\setup\<version>\Rekarina-Launcher.exe`.
+Every Windows run that leaves a game in the folder writes "Rekarina Launcher" into the game folder,
+"Rekarina (fork)" into the player's own Start menu and, when enabled, "Rekarina Launcher (fork)" on the desktop
 (`installer/oot.py` `launcher_shortcuts`). They point at the launcher of the setup that ran, in its own folder, with
 its icon, and are written again at every run, so a setup downloaded anew moves them to its launcher. The shell writes
 them (WScript.Shell through PowerShell, the paths passed in its environment); one that cannot be written is logged
@@ -335,14 +334,13 @@ through these shortcuts.
 **Uninstalling.** `installer/uninstall.ps1` removes everything Rekarina put on the PC, for a clean reinstall, and is
 the one implementation for every way in: the launcher's **Uninstall Rekarina** plate (home screen; its page lists the
 folders with their sizes and the space freed, from the script's `-List`), the "Uninstall Rekarina" shortcut in the game
-folder, and the per-user "Apps & features" entry (`HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\Rekarina`,
+folder, and the per-user "Apps & features" entry (`HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\RekarinaFork`,
 no administrator). Every setup run that leaves a game in the folder copies the script there as
 `rekarina-uninstall.ps1`, writes that shortcut and the entry (`installer/uninstall.py install`, from
 `launcher_shortcuts`). What goes: the game folder, the `<home>\setup\<version>` folders with their working files, the
-launcher's files in `%LOCALAPPDATA%\Rekarina` and `%APPDATA%\Rekarina`, the Start menu and desktop shortcuts that point
-into those folders, and the entry. Each folder only when it carries our marks (`rekarina-install.json` with
-`Rekarina.exe` or `rekarina.ini` for a game folder; `unpacked.txt`, or `Rekarina-Launcher.exe` with `installer\oot.py`,
-for a setup folder); a drive's root and the system's and the user's own folders never; a dump or keys file
+launcher's files in `%LOCALAPPDATA%\RekarinaFork` and `%APPDATA%\RekarinaFork`, the Start menu and desktop shortcuts that point
+into those folders, and the entry. Game and setup folders must carry the fork marker and their expected installation
+files. The script protects drive roots, system folders, and user folders. A dump or keys file
 (`.nup .nsp .xci .nsz .xcz .keys`) stays wherever it lies, and a link or junction goes as a link, never what it points to.
 The player chooses with two buttons: **Keep my saves** (the default, with the cursor) leaves the game folder's
 `profile\` where it is, so a new install into the same folder finds it; **Delete everything** asks a second time,
@@ -416,7 +414,7 @@ it in place of its usual line:
   trailer), saved over the game: Play then opened the launcher again. Play offers to put the game back: a setup run
   whose package step copies the game from its build again, after `tools/package_oot.py` has renamed the download to
   `Rekarina-download.exe`. The one-file launcher itself, started as `Rekarina.exe` in a folder that holds
-  `rekarina-install.json`, says so and opens the launcher on that folder.
+  the fork marker and `rekarina-install.json`, says so and opens the launcher on that folder.
 
 After Play the window hides and watches the game for a few seconds (`watch_game`): a game that ends in that time with
 an error brings it back, with the log's last FATAL line (or the exit code) on the home screen. A game that runs on, or

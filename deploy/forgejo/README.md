@@ -1,8 +1,8 @@
-# The project's Forgejo server: git.rekarina.dev
+# Upstream's Forgejo server at git.rekarina.dev
 
-The source repository's home is a Forgejo instance of the project's own at https://git.rekarina.dev, run with Docker on
-one small VPS. GitHub may stay as a push mirror of it. The site and the release files are elsewhere (Cloudflare:
-`rekarina.dev`, `dl.rekarina.dev`; [docs/distribution.md](../../docs/distribution.md)) and do not depend on this server.
+Upstream hosts its source on this Forgejo instance and its site and downloads on Cloudflare. The Rekarina fork
+uses [GitHub Releases](https://github.com/arnaudcouturier/rekarina/releases). Its release process is in the
+[distribution guide](../../docs/distribution.md).
 
 A public instance (Codeberg) was considered and not used: its terms of use, voted on 2026-07-23, make projects written
 and maintained with heavy use of LLM assistants unwelcome, and this one is.

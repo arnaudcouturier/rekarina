@@ -5,18 +5,19 @@
 <p align="center">
   <b>A native PC port</b> made by static recompilation, not emulation.<br>
   Built on your own PC from your own copy of the game.<br>
-  <i>Fork of <a href="https://git.rekarina.dev/rekarina/rekarina">Rekarina</a> adding Streamline DLSS/DLAA/FG with projection jitter &amp; tracked motion vectors, RenoDX HDR tone mapping, and direct save boot.</i>
+  <i>An actively maintained Rekarina fork focused on NVIDIA DLSS, DLAA, and DLSS Frame Generation through Streamline,
+  RenoDX tone mapping with HDR10 output, and ongoing performance fixes and tuning.</i>
 </p>
 
 <p align="center">
-  <a href="../../releases/latest"><img src="https://img.shields.io/github/v/release/arnaudcouturier/rekarina?label=release&color=d9951f" alt="Latest release"></a>
+  <a href="https://github.com/arnaudcouturier/rekarina/releases"><img src="https://img.shields.io/github/v/release/arnaudcouturier/rekarina?label=release&color=d9951f" alt="Latest release"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-GPL--3.0-6f5a35" alt="GPL-3.0 license"></a>
   <img src="https://img.shields.io/badge/platform-Windows%2010%20%2F%2011%20x64-6f5a35" alt="Windows 10 / 11 x64">
 </p>
 
 <p align="center">
-  <a href="https://rekarina.dev">Upstream</a> ·
-  <a href="https://discord.gg/6N8PKr9zZA">Upstream Discord</a> ·
+  <a href="https://github.com/arnaudcouturier/rekarina/releases">Releases</a> ·
+  <a href="https://github.com/arnaudcouturier/rekarina/issues">Support</a> ·
   <a href="#install">Install</a> ·
   <a href="#performance">Performance</a> ·
   <a href="#features">Features</a> ·
@@ -39,6 +40,9 @@ and the system services the game expects (files, audio, input, video decoding) a
 CPU emulator and no JIT at run time, which is where the frame rate comes from.
 
 ## Performance
+
+The chart below records the upstream Rekarina 1.0.0 build. The fork's performance and image quality changes
+are described in its release notes as they ship.
 
 Measured in the game itself, on one machine, with the tools in this repository (`tools/bench_oot.py`); every number is
 the mean of a one-minute run, with the 1 % low beside it. "Native" is the sharp base picture at the monitor's
@@ -67,6 +71,12 @@ Numbers from another machine are welcome: [docs/performance.md](docs/performance
 
 ## Features
 
+- **NVIDIA DLSS, DLAA, and DLSS Frame Generation** through Streamline. Projection jitter and tracked motion
+  vectors give DLSS subpixel samples and motion for moving objects, including skinned characters.
+- **RenoDX HDR** tone maps the scene before presentation and outputs HDR10. With HDR enabled on the display,
+  select RenoDX in the F1 Screen tab for live paper-white, peak brightness, colour space, and bloom controls.
+  Vanilla and RenoDRT expose local exposure, and PsychoV35 offers eye adaptation with adjustable limits.
+- **Performance fixes and tuning** focus on the Vulkan renderer and frame pacing.
 - **Native code, not emulation**: 100+ fps where the console runs at 60, a frame limit up to 240 or the monitor's rate
 - **Smooth above 60 fps**: the game's own clock follows real time, and the places where it counted frames are
   corrected (water ripples, the pick-up counter, physics steps on moving platforms, movie cutscenes)
@@ -74,7 +84,7 @@ Numbers from another machine are welcome: [docs/performance.md](docs/performance
   beside the game (up to 14 GB), so ground you have crossed before streams in without hitches
 - **Voice acting, music and movies** as on the console: Opus voice lines in nine languages, AV1 cutscenes
 - **Sharp native picture** at any 16:9 resolution, plus 21:9 and 32:9 with the camera and the interface in that shape
-- **NVIDIA DLSS / DLAA and DLSS Frame Generation**, **AMD FSR 4.1** on the Radeon cards that run it and **FSR 3.1** on any GPU, upscaling and frame generation. The
+- **AMD FSR 4.1** on the Radeon cards that run it and **FSR 3.1** on supported GPUs. The
   launcher fetches each vendor's library from its official repository for the GPU it finds; nothing of theirs is
   bundled here
 - **Settings that apply while you play**: the in-game menu (Esc or F1) is drawn in the game's own menu style, with a
@@ -106,7 +116,7 @@ Numbers from another machine are welcome: [docs/performance.md](docs/performance
 - **A problem report in one press**: the menu (Advanced) or the launcher writes one zip with the logs, the settings
   and the computer's details (no saves, your user name taken out of every path) to attach to a report; nothing is
   sent anywhere. After a crash the game says so and points to it.
-- Mods with a manager (the launcher's Mods page and the game's Mods tab), HDR10 output (experimental), a performance
+- Mods with a manager (the launcher's Mods page and the game's Mods tab), a performance
   overlay (F10), a screenshot key (F12, PNG files in `screenshots`), mute in the background, Discord Rich Presence
   (off by default)
 
@@ -129,7 +139,8 @@ listed under [Known issues](#known-issues).
 
 ## Install
 
-1. Download **`Rekarina.exe`** from [Releases](../../releases/latest) and start it. It is the whole launcher in one
+1. Download **`Rekarina.exe`** from [this fork's GitHub Releases](https://github.com/arnaudcouturier/rekarina/releases)
+   and start it. It is the whole launcher in one
    file: at its first start it unpacks its tools (about a minute, once) and opens.
 2. Point it at the folder with your `.nup` dump and choose where the game goes.
 3. Press *Start*. The launcher checks the dump, recompiles the game's code, builds the executable, fetches the
@@ -149,8 +160,9 @@ listed under [Known issues](#known-issues).
   <img src="docs/media/launcher-install.jpg" alt="The launcher building the game" width="49%">
 </p>
 
-The same launcher as a folder is `Rekarina-Setup-<version>-windows.zip`, for those who would rather unpack it
-themselves; start `Rekarina-Launcher.exe` in it.
+If you have upstream Rekarina installed, choose a separate folder for this launcher and its game. Use the launcher's
+**Saves** page to import your save. The fork's Windows shortcuts are labelled **Rekarina (fork)** in Start and
+**Rekarina Launcher (fork)** on the desktop.
 
 Saves and settings live in the game folder and survive updates and rebuilds. Settings are in the in-game menu; every
 key is also in `rekarina.ini` beside the game ([the key list](rekarina.ini.example) explains each). Controls:
@@ -158,7 +170,8 @@ key is also in `rekarina.ini` beside the game ([the key list](rekarina.ini.examp
 
 ## Updates
 
-The launcher and the game ask this fork's [GitHub Releases](../../releases/latest) (`arnaudcouturier/rekarina`) for the
+The launcher and the game ask this fork's [GitHub Releases](https://github.com/arnaudcouturier/rekarina/releases)
+(`arnaudcouturier/rekarina`) for the
 newest release when they start (one request that carries the port's version and nothing else; *Menu > Check for updates*
 turns it off in-game). When a release is out, the game shows a notice and the launcher offers *Update*: it downloads the
 new setup, checks its SHA-256 checksum, rebuilds only what changed and re-prepares the shaders, so the first minutes
@@ -176,7 +189,7 @@ after an update do not stutter.
   with its mesh shaders turned off, not yet on such a GPU.
 - A processor without AVX2 gets a slower build of the game, chosen by the launcher; that path has not been run on such
   a machine.
-- HDR10 output is experimental and off by default.
+- HDR is off by default and requires HDR10 support from the display and operating system.
 - In the first dungeon's entrance room, in the base picture without DLSS, a light shaft can flicker.
 - With another program holding most of the video memory (a video editor, a second game) the frame rate collapses; the
   game says so at the top of the screen.
@@ -199,7 +212,7 @@ after an update do not stutter.
   checklist for them.
 
 Found something else? Make a problem report (Esc, Advanced, Make a problem report; or the launcher's Problem report
-button) and attach the zip to an issue or a post on the [Discord server](https://discord.gg/6N8PKr9zZA).
+button) and attach the zip to a [fork issue](https://github.com/arnaudcouturier/rekarina/issues/new/choose).
 
 ## Building from source
 
@@ -208,6 +221,9 @@ launcher's own flow. Everything a build writes stays under `build\` and `generat
 `python tools/check_content.py` before a commit. Pull requests are welcome: [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Credits
+
+This fork is based on [upstream Rekarina](https://git.rekarina.dev/rekarina/rekarina). ShortFuse's [NX2navi](https://github.com/clshortfuse/NX2navi) work
+informed the Streamline integration, and [RenoDX](https://github.com/clshortfuse/renodx) supplies the HDR algorithms.
 
 Rekarina stands on **[the recompiler](https://github.com/valentderah/totk-pc-recomp)** by Valiantsin Dzerakh: its
 lifter, runtime, shader translator patches and Vulkan renderer are the foundation of this port. Thank you.

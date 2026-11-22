@@ -1,4 +1,4 @@
-name: Linux release
+name: Linux packaging check
 
 # Builds the Linux setup (the folder, the tar.gz and the AppImage) by hand: run it from the Actions tab. It needs
 # the pinned downloads of tools/make_release_linux.py, the .NET 10 SDK and about 60 GB; a runner without them stops at

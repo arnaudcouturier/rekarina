@@ -9,7 +9,9 @@ This repository is a public fork of Rekarina (`origin`: `https://github.com/arna
 - **Streamline DLSS / DLAA / DLSS Frame Generation**: Streamline integration (`runtime/dlssg/nx2_sl.cpp`, `runtime/vk_dlssg.c`, `runtime/vk_dlaa.c`), 16-phase Halton CPU projection jitter (`runtime/scene_projection.h`, `runtime/scene_projection_impl.h`, `runtime/scene_motion_projection.h`), tracked model motion vectors (`runtime/tracked_model.h`, `runtime/tracked_model_cpu_impl.h`, `runtime/skin_pair.h`, `runtime/vk_skin_motion.inc`, `runtime/shaders/model_motion.frag`; their NVN2 last-frame vertex variants: translator patch `0045-motion-previous-on-ampere` and the `gfx_shader.c` `put_mvprev_tag` key tag), scaling-dispatch replacement in both DLAA and DLSS modes with jitter texture LOD bias (`log2(render_share) - 1.0`), and no redundant 1:1 present RCAS when projection jitter is active.
 - **RenoDX HDR**: SPIR-V splicing of the game's ACES tonemap pass (`runtime/vk_hdr.c`, `runtime/shaders/hdr_tonemap.frag`, `runtime/shaders/hdr_tonemap_totk.frag`, `runtime/shaders/hdr_encode.comp`, `runtime/shaders/hdr_ui.frag`, `tests/hdr_splice_check.c`), matching translator NaN-sanitized output stores, with live F1 toggling/tuning and native HDR10 output.
 - **Direct save boot**: `--load-save` boot path (`runtime/main.c`, `runtime/fs_host.c`, `runtime/romfs.c`, `recomp/patches-oot-v111.txt`).
-- **Fork release & update targets**: `installer/update.py` (`REPO = 'arnaudcouturier/rekarina'`, `FEED = ''`, `SIGNING_KEYS = ()`), `runtime/update_note.h` (`api.github.com/repos/arnaudcouturier/rekarina/releases/latest`), `installer/uninstall.py`, `.github/ISSUE_TEMPLATE/`, and `README.md` point to this fork rather than upstream `rekarina.dev` / `hooxielooxie/Rekarina`. Keep them pointed at this fork when syncing from `upstream`.
+- **Performance**: Vulkan renderer fixes and tuning for frame pacing and temporal image stability.
+- **Releases and support** use this fork's GitHub Releases and Issues. Keep Windows launcher identity and update state separate from upstream (`installer/fork.py`, `runtime/update_note.h`). For packaging, upgrade tests, or drafting a release, read [docs/distribution.md](docs/distribution.md). The maintainer publishes locally built Windows launcher releases.
+- **Upstream imports** start with a maintainer request naming the change to bring over. Keep the original `upstream` remote and review the requested change against the fork before merging it.
 
 ## No game is named
 
@@ -20,7 +22,7 @@ This repository is a public fork of Rekarina (`origin`: `https://github.com/arna
   `runtime/oot_warp.c`) are the one exception.
 - No pictures taken from a game: no screenshots, no frames of a video, no textures. Pictures of the launcher and charts
   are fine.
-- Keep commits clean and atomic on `origin/main` on top of upstream's release commits (`upstream/main`); sync new upstream releases with `git fetch upstream` and rebase or merge.
+- Keep changes in focused commits so the maintainer can review each upstream import and fork change.
 
 ## Names
 
