@@ -3128,6 +3128,7 @@ static const RsList *rs_list(const VkExec *ex, const VkPipeInfo *info) {
 #endif
                 }   // slot 1: the program (bind_sig); others: the zero buffer
             } else if (b->kind == GFX_RES_SSBO) {   // every descriptor of the binding is the same range
+                if (r->cbuf_slot == GFX_CB_HDR_METER) { ok = 0; break; }   // a separate readback slot per draw
                 int ubo, slot = ssbo_slot(r, st, &ubo);
                 if (slot >= 0 && slot < 16) {
                     rs_add(tmp, &n, ex, ubo ? &ex->ubo[st][slot] : &ex->ssbo[st][slot], sizeof(p_bind_buf));
@@ -3352,6 +3353,11 @@ static void bind_resources_(VkExec *ex, const VkPipeInfo *info) {
                 RS.volatile_ |= vol;
                 SC.misses++;
             }
+#ifdef GAME_OOT
+        } else if (b->kind == GFX_RES_SSBO && r->cbuf_slot == GFX_CB_HDR_METER) {
+            o->buffer = vk_hdr_meter_bind(ex);
+            if (!o->buffer.buffer) o->buffer = zero_info(VK_WHOLE_SIZE);
+#endif
         } else if (b->kind == GFX_RES_SSBO) {
             {   // DEBUG-POOLTAB
                 static int tab = -1;

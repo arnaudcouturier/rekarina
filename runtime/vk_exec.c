@@ -895,6 +895,9 @@ void vk_exec_pass_end(VkExec *ex) {
     }
     ex->in_pass = 0;
     int end_at = ex->recorded;
+#ifdef GAME_OOT
+    if (ex->hdr_meter_written) vk_hdr_meter_end_pass(ex);
+#endif
 #ifdef GAME_NS2
     vk_exec_oq_after_pass(ex);   // the predicate words of the samples-passed reports of the pass
 #endif
@@ -1263,6 +1266,14 @@ static void bind_ubo_op(VkExec *ex, const op_hdr *h) {
     if (!b->stage && !b->index) {
         const p_projection_bind *p = h->size >= sizeof *h + sizeof(p_projection_bind) ? a : NULL;
         ex->scene_projection = p ? p->scene : (p_scene_projection){0};
+#ifdef GAME_OOT
+        if (ex->scene_projection.sample.token) {
+            const float *projection = ex->scene_projection.sample.unjittered;
+            ex->hdr_meter_projection[0] = projection[0];
+            ex->hdr_meter_projection[1] = projection[5];
+            ex->hdr_meter_projection_frame = __atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED) + 1;
+        }
+#endif
     }
     vk_exec_op_draw(ex, OP_BIND_UBO, a);
 }
@@ -1471,6 +1482,9 @@ static void par_run(ParJob *j) {
 done:
     vk_exec_oq_worker_close(ex);
     vkCmdEndRendering(ex->cb);
+#ifdef GAME_OOT
+    if (ex->hdr_meter_written) vk_hdr_meter_end_pass(ex);
+#endif
     if (j->crumb) vk_crumb(ex->cb, VK_CRUMB_CHUNK_END, j->crumb);   // DEBUG-PARCRUMB
     vkEndCommandBuffer(ex->cb);
     vk_exec_oq_worker(0);

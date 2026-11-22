@@ -668,7 +668,16 @@ static GfxShader *disk_load_from(const uint8_t key[32], const uint8_t *iid, int 
     s->reflection = (char *)res;
     s->reflection_size = res_size;
     reflect(s);
-    if (s->stage == GFX_STAGE_FS) vk_hdr_shader_swap(&s->spirv, &s->words);   // the in-memory copy; the cache keeps its own
+    // Patch only the in-memory copy. The shader cache keeps the original module and reflection.
+    int binding = s->stage == GFX_STAGE_FS ? vk_hdr_shader_swap(&s->spirv, &s->words) : 0;
+    if (binding) {
+        int n = s->nres[GFX_RES_SSBO];
+        GfxShaderRes *res = realloc(s->res[GFX_RES_SSBO], (n + 1) * sizeof *res);
+        if (!res) rt_fatal("gfx_shader: out of memory adding the HDR eye adaptation binding");
+        res[n] = (GfxShaderRes){.binding = (uint16_t)binding, .slot = -1, .flags = 1, .cbuf_slot = GFX_CB_HDR_METER};
+        s->res[GFX_RES_SSBO] = res;
+        s->nres[GFX_RES_SSBO] = n + 1;
+    }
     return s;
 }
 

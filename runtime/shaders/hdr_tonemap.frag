@@ -29,7 +29,7 @@
 //   p1: exposure [1], highlights [1], shadows [1], contrast [1]
 //   p2: saturation [1], highlight saturation [1], blowout [0], flare [0]
 //   p3: hue correction [1], grade strength [1], gamma correction (0 off, 1: 2.2, 2: 2.4) [1], tone slope [1]
-//   p4: hue clip emulation [0.5], mid grey (0 render, 1 vanilla) [1], match tone slope (0 or 1) [1], unused
+//   p4: hue clip emulation [0.5], mid grey (0 render, 1 vanilla, 2 eye adaptation) [1], match tone slope [1], unused
 //   p5: bloom scale [1], local exposure scale in stops [1], two unused. The splicer reads p5 in the game's shader.
 // main only keeps the entry point alive for glslc; tonemap_splice drops main and splices the helper functions.
 layout(location = 0) in vec4 a0;
@@ -40,6 +40,29 @@ layout(location = 4) in vec4 a4;
 layout(location = 5) in vec4 a5;
 layout(location = 6) in vec4 a6;
 layout(location = 0) out vec4 o;
+
+// The splice binds the replay's meter only on devices with fragment storage writes.
+layout(std430, set = 0, binding = 1) buffer HdrAdaptationMeter {
+    vec4 viewport;   // xy origin and zw size in framebuffer pixels
+    vec4 anchor;     // previous scene average, output target, minimum and maximum output relative to target
+    uint samples[];
+} hdr_meter;
+
+vec4 hdr_measure(vec4 scene, vec4 frag, vec4 p4) {
+    if (p4.y != 2.0) return vec4(0.0);
+    vec2 size = hdr_meter.viewport.zw;
+    const ivec2 grid = ivec2(32, 18);
+    if (any(lessThan(size, vec2(grid)))) return hdr_meter.anchor;
+    vec2 pixel = floor(frag.xy - hdr_meter.viewport.xy);
+    ivec2 cell = ivec2(floor((pixel + 0.5) * vec2(grid) / size));
+    if (any(lessThan(cell, ivec2(0))) || any(greaterThanEqual(cell, grid))) return hdr_meter.anchor;
+    if (all(equal(pixel, floor((vec2(cell) + 0.5) * size / vec2(grid)))) && scene.a > 0.0) {
+        float luma = dot(scene.rgb / scene.a, vec3(0.2126, 0.7152, 0.0722));
+        if (!isnan(luma) && !isinf(luma))
+            atomicExchange(hdr_meter.samples[cell.y * grid.x + cell.x], floatBitsToUint(max(luma, 1e-6)));
+    }
+    return hdr_meter.anchor;
+}
 
 // Row-major matrix-vector multiply (matrices below are written row by row).
 vec3 mulm(mat3 m, vec3 v) { return v * m; }
@@ -338,23 +361,29 @@ vec3 hue_clip(vec3 untonemapped, float amount) {
     return untonemapped;
 }
 
-vec3 scene_tonemap(vec3 untonemapped, float gain, float peak, vec4 p1, vec4 p2, vec4 p3, vec4 p4) {
+vec3 scene_tonemap(vec3 untonemapped, float gain, float peak, vec4 p1, vec4 p2, vec4 p3, vec4 p4, vec4 adaptation) {
     if (p1.x == 0.0) return vec3(0.0);
     if (p4.x > 0.0) untonemapped = hue_clip(untonemapped, p4.x);
     // Analytic log-slope x*V'(x)/V(x) at V''(x)=0 (x=0.120305925) of the game's ACES fit.
     float cone = p4.z != 0.0 ? 1.3355037565264822 : 1.0;
-    float anchor_out = (p4.y == 1.0 ? aces_fitted(vec3(0.18)).x : 0.18) * gain * p1.x;
-    return psycho35(untonemapped, peak, p1.y, p1.z, p1.w, p2.x, cone * p3.w, 0.18, anchor_out);
+    float anchor_in = 0.18;
+    float anchor_out = (p4.y == 0.0 ? 0.18 : aces_fitted(vec3(0.18)).x) * gain * p1.x;
+    if (adaptation.x > 0.0) {
+        anchor_in = adaptation.x;
+        anchor_out = clamp(adaptation.y * anchor_in / 0.18, adaptation.y * adaptation.z, adaptation.y * adaptation.w);
+        anchor_out = min(anchor_out * p1.x, 0.95 * peak);
+    }
+    return psycho35(untonemapped, peak, p1.y, p1.z, p1.w, p2.x, cone * p3.w, anchor_in, anchor_out);
 }
 
-vec3 nx_tonemap(vec3 x, vec4 scene, vec4 p0, vec4 p1, vec4 p2, vec4 p3, vec4 p4) {
+vec3 nx_tonemap(vec3 x, vec4 scene, vec4 p0, vec4 p1, vec4 p2, vec4 p3, vec4 p4, vec4 adaptation) {
     vec3 vanilla = aces_fitted(x);
     if (p0.w < 0.0) return vanilla;   // SDR swapchain: the game's own SDR result
     vec3 color = vanilla;             // tone mapper 0: vanilla curve scaled to picture white
     if (p0.w == 9.0) {
         if (!(scene.a > 0.0)) return vec3(0.0);
         float peak = peak_before_gamma(max(p0.x, p0.y) / p0.y, p3.z);
-        color = scene_tonemap(scene.rgb / scene.a, scene.a, peak, p1, p2, p3, p4);
+        color = scene_tonemap(scene.rgb / scene.a, scene.a, peak, p1, p2, p3, p4, adaptation);
     } else if (p0.w > 0.0) {
         vec3 graded = p3.y == 0.0 ? x : upgrade(x, neutral_sdr(x), vanilla, p3.y);
         float peak = peak_before_gamma(p0.x / p0.y, p3.z);
@@ -366,4 +395,4 @@ vec3 nx_tonemap(vec3 x, vec4 scene, vec4 p0, vec4 p1, vec4 p2, vec4 p3, vec4 p4)
     return mix(color, vec3(0.0), isnan(color));
 }
 
-void main() { o = vec4(nx_tonemap(a0.xyz, a1, a2, a3, a4, a5, a6), 1.0); }
+void main() { o = vec4(nx_tonemap(a0.xyz, a1, a2, a3, a4, a5, a6, hdr_measure(a1, gl_FragCoord, a6)), 1.0); }

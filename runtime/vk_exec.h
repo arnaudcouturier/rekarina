@@ -98,6 +98,11 @@ typedef struct VkExec {
     p_bind_buf ubo[6][18], ssbo[6][16];  // OP_BIND_UBO / OP_BIND_SSBO per stage and index
     uint64_t tex[6][128], samp[6][128], img[6][32];   // OP_BIND_TEX / OP_BIND_SAMP / OP_BIND_IMG handles per stage
     p_scene_projection scene_projection; // scene projection bound with stage 0 slot 0 (OP_BIND_UBO tail)
+#ifdef GAME_OOT
+    int hdr_meter_written;              // the pass records eye adaptation samples for host readback
+    float hdr_meter_projection[2];      // horizontal and vertical perspective scales from the scene camera
+    uint64_t hdr_meter_projection_frame;
+#endif
     TrackedModelSample tracked_model;    // active tracked model sample for the current draw
     const p_model_scope *work_scope;     // active OP_MODEL_SCOPE record, NULL outside one
     uintptr_t work_scope_end;            // byte address where work_scope expires

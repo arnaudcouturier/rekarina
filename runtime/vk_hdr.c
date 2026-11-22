@@ -81,6 +81,11 @@ int vk_hdr_needs_restart(void) {
     return (!strcmp(cfg_value("REKARINA_HDR"), "native")) != g_native || (!g_armed && cfg_bool("REKARINA_HDR"));
 }
 
+int vk_hdr_adaptation_supported(void) {
+    VkCtx *ctx = vk_ctx();
+    return ctx && ctx->has_fragment_stores;
+}
+
 void vk_hdr_off(void) { g_native = 0, g_armed = 0; }
 #else
 static int g_wanted = -1;
@@ -104,6 +109,9 @@ typedef struct {
     float peak, game, ui;   // nits
     float gamma;            // 0 off, 1: 2.2, 2: 2.4
     float p3;               // 1: the picture's primaries are read as Display P3 (REKARINA_HDR_COLOR_SPACE)
+#ifdef GAME_OOT
+    float adaptation_target, adaptation_min, adaptation_max;
+#endif
     float tm[4 * VK_HDR_PARAMS];   // support buffer parameters (from byte VK_HDR_PARAMS_AT)
 } Nits;
 static struct { unsigned seen; int cur; Nits snap[2]; PlatMutex lock; } N = {.seen = ~0u, .lock = PLAT_MUTEX_INIT};
@@ -143,7 +151,11 @@ static Nits nits(void) {
             t[13] = clampf((float)cfg_double("REKARINA_HDR_GRADE"), 0.0f, 100.0f) / 100.0f;
             t[14] = n->gamma, t[15] = pct[8] / 50.0f;
             t[16] = pct[9] / 100.0f;
-            t[17] = !strcmp(cfg_value("REKARINA_HDR_MIDGRAY"), "render") ? 0.0f : 1.0f;
+            const char *midgray = cfg_value("REKARINA_HDR_MIDGRAY");
+            t[17] = !strcmp(midgray, "render") ? 0.0f : mapper == 9.0f && !strcmp(midgray, "adaptation") ? 2.0f : 1.0f;
+            n->adaptation_target = clampf((float)cfg_double("REKARINA_HDR_ADAPTATION_TARGET"), 1.0f, 100.0f) / 100.0f;
+            n->adaptation_min = exp2f(clampf((float)cfg_double("REKARINA_HDR_ADAPTATION_MIN_STOPS"), -8.0f, 0.0f));
+            n->adaptation_max = exp2f(clampf((float)cfg_double("REKARINA_HDR_ADAPTATION_MAX_STOPS"), 0.0f, 8.0f));
             t[18] = cfg_bool("REKARINA_HDR_MATCH_SLOPE") ? 1.0f : 0.0f, t[19] = 0.0f;
             t[20] = clampf((float)cfg_double("REKARINA_HDR_BLOOM"), 0.0f, 100.0f) / 50.0f;   // 50: the game's bloom
             t[21] = mapper == 9.0f ? 1.0f
@@ -168,6 +180,7 @@ void vk_hdr_support(float out[4 * VK_HDR_PARAMS]) {
 #ifdef GAME_OOT
     if (!vk_hdr_active()) {
         out[3] = -1.0f;   // SDR swapchain: vanilla passthrough with the game's bloom and local exposure
+        out[17] = 1.0f;
         out[20] = out[21] = 1.0f;
     }
 #endif
@@ -217,6 +230,7 @@ enum {
     SPV_OP_FDIV = 136,
     SPV_OP_SELECT = 169,
     SPV_OP_FORD_EQUAL = 180,
+    SPV_OP_ATOMIC_EXCHANGE = 229,
     SPV_OP_PHI = 245,
     SPV_OP_LOOP_MERGE = 246,
     SPV_OP_SELECTION_MERGE = 247,
@@ -352,6 +366,7 @@ static uint32_t spv_res_word(uint32_t op, uint32_t len) {
         op == SPV_OP_VECTOR_SHUFFLE || op == SPV_OP_COMPOSITE_CONSTRUCT || op == SPV_OP_COMPOSITE_EXTRACT ||
         op == SPV_OP_COMPOSITE_INSERT || op == SPV_OP_PHI || (op >= 109 && op <= 207))
         return len >= 3 ? 2 : 0;
+    if (op == SPV_OP_ATOMIC_EXCHANGE) return len >= 3 ? 2 : 0;
     return 0;
 }
 
@@ -806,12 +821,14 @@ typedef struct {
     int exposure;   // the uniform gain and the pre-local-exposure scene
     int bloom;      // the game's bloom term in each channel (REKARINA_HDR_BLOOM acts there)
     int local_exposure;
+    int meter_binding;   // fragment storage buffer for eye adaptation, 0 when unavailable
 } SpliceTrace;
 
 // Splice nx_tonemap from hdr_tonemap_spv into a translated OoT ACES tonemap fragment shader.
 // Returns 1 if spliced, 0 if the shader is not an ACES tonemap shader, -1 on splice failure; *trace (may be NULL) says
 // what else was found.
-static int tonemap_splice(uint32_t **spirv, uint64_t *words, SpliceTrace *trace) {
+static int tonemap_splice(uint32_t **spirv, uint64_t *words, int meter_binding, SpliceTrace *trace) {
+    enum { DEC_BUILTIN = 11, BUILTIN_FRAG_COORD = 15, SC_STORAGE_BUFFER = 12 };
     if (trace) memset(trace, 0, sizeof *trace);
     const uint32_t *w = *spirv;
     uint64_t n = *words;
@@ -838,7 +855,7 @@ static int tonemap_splice(uint32_t **spirv, uint64_t *words, SpliceTrace *trace)
     for (uint32_t i = 0; i < bound; i++) h.def_blk[i] = -1;
 
     uint32_t f32_ty = 0, vec4_ty = 0, i32_ty = 0, u32_ty = 0, ptr_u_vec4 = 0;
-    uint32_t main_id = 0, sup_var = 0, sup_ptr_ty = 0, sup_struct = 0;
+    uint32_t main_id = 0, sup_var = 0, sup_ptr_ty = 0, sup_struct = 0, frag_coord = 0;
     uint64_t first_func = 0, main_start = 0, main_end = 0, annot_end = 5, ep_pos = 0;
     uint64_t vec4_pos = 0, sup_struct_pos = 0;
     int seen_251 = 0, seen_003 = 0;
@@ -852,7 +869,13 @@ static int tonemap_splice(uint32_t **spirv, uint64_t *words, SpliceTrace *trace)
         if (op == SPV_OP_EXT_INST_IMPORT && len >= 3 && name_is(a, len, "GLSL.std.450")) h.glsl = a[0];
         else if (op == SPV_OP_ENTRY_POINT && len >= 4 && a[0] == SPV_EXEC_FRAGMENT) main_id = a[1], ep_pos = i;
         else if (op == SPV_OP_NAME && len >= 3 && name_is(a, len, "support_buffer")) sup_var = a[0];
-        else if (op == SPV_OP_DECORATE || op == SPV_OP_MEMBER_DECORATE) annot_end = i + len;
+        else if (op == SPV_OP_DECORATE || op == SPV_OP_MEMBER_DECORATE) {
+            annot_end = i + len;
+            if (op == SPV_OP_DECORATE && len == 4 && a[1] == DEC_BUILTIN && a[2] == BUILTIN_FRAG_COORD)
+                frag_coord = a[0];
+            if (meter_binding && op == SPV_OP_DECORATE && len == 4 && a[1] == SPV_DEC_BINDING && a[2] >= (uint32_t)meter_binding)
+                meter_binding = a[2] < UINT16_MAX ? (int)a[2] + 1 : 0;
+        }
         else if (op == SPV_OP_TYPE_FLOAT && len == 3 && a[1] == 32) f32_ty = a[0];
         else if (op == SPV_OP_TYPE_INT && len == 4 && a[1] == 32) {
             if (a[2] == 1) i32_ty = a[0]; else u32_ty = a[0];
@@ -1092,7 +1115,8 @@ static int tonemap_splice(uint32_t **spirv, uint64_t *words, SpliceTrace *trace)
     for (int c = 0; c < 3 && has_local; c++)
         has_local = h.def[ex.local] < ex.local_at[c] &&
                     dominates(&h, ex.local, h.def_blk[w[ex.local_at[c] + 2]], ex.local_at[c]);
-    if (trace) *trace = (SpliceTrace){has_exp, has_bloom, has_local};
+    if (!has_exp || !ex.scene[0] || !ex.scene[1] || !ex.scene[2]) meter_binding = 0;
+    if (trace) *trace = (SpliceTrace){has_exp, has_bloom, has_local, meter_binding};
 
     // Inspect the tone mapper library (hdr_tonemap_spv) and map/deduplicate its IDs.
     const uint32_t *lw = hdr_tonemap_spv;
@@ -1103,7 +1127,7 @@ static int tonemap_splice(uint32_t **spirv, uint64_t *words, SpliceTrace *trace)
     uint8_t *lskip = calloc(lbound, 1);   // library type/var IDs belonging only to main()
     if (!lmap || !lskip) { free(lmap); free(lskip); goto fail_err; }
 
-    uint32_t lmain = 0, lnx = 0, lnx_ftype = 0;
+    uint32_t lmain = 0, lnx = 0, lnx_ftype = 0, lmeasure = 0, lmeter = 0, lmeter_struct = 0, lmeter_array = 0;
     uint64_t lfirst_func = 0;
     for (uint64_t i = 5; i < ln;) {
         uint32_t op = lw[i] & 0xffff, len = lw[i] >> 16;
@@ -1112,6 +1136,10 @@ static int tonemap_splice(uint32_t **spirv, uint64_t *words, SpliceTrace *trace)
         if (op == SPV_OP_EXT_INST_IMPORT && len >= 3 && name_is(a, len, "GLSL.std.450")) lmap[a[0]] = h.glsl;
         else if (op == SPV_OP_ENTRY_POINT && len >= 4) lmain = a[1];
         else if (op == SPV_OP_NAME && len >= 3 && name_prefix(a, len, "nx_tonemap(")) lnx = a[0];
+        else if (op == SPV_OP_NAME && len >= 3 && name_prefix(a, len, "hdr_measure(")) lmeasure = a[0];
+        else if (op == SPV_OP_NAME && len >= 3 && name_is(a, len, "hdr_meter")) lmeter = a[0];
+        else if (op == SPV_OP_NAME && len >= 3 && name_is(a, len, "HdrAdaptationMeter")) lmeter_struct = a[0];
+        else if (op == SPV_OP_TYPE_STRUCT && len == 5 && a[0] == lmeter_struct) lmeter_array = a[3];
         else if (op == SPV_OP_TYPE_POINTER && len == 4 && (a[1] == SPV_SC_INPUT || a[1] == SPV_SC_OUTPUT))
             lskip[a[0]] = 1;
         else if (op == SPV_OP_VARIABLE && len >= 4 && a[2] != SPV_SC_FUNCTION)
@@ -1121,11 +1149,12 @@ static int tonemap_splice(uint32_t **spirv, uint64_t *words, SpliceTrace *trace)
         i += len;
     }
     if (!lnx || !lnx_ftype || !lfirst_func) { free(lmap); free(lskip); goto fail_err; }
+    if (!lmeasure || !lmeter || !lmeter_struct || !lmeter_array) { free(lmap); free(lskip); goto fail_err; }
 
-    // Read nx_tonemap's parameter types from its OpTypeFunction (vec3 ret, ptr_func_vec3, 6 x ptr_func_vec4).
+    // Read nx_tonemap's parameter types (vec3 return, pointer to vec3, then pointers to vec4).
     uint32_t l_vec3 = 0, l_pfunc_v3 = 0, l_pfunc_v4 = 0;
     for (uint64_t i = 5; i < lfirst_func; i += lw[i] >> 16) {
-        if ((lw[i] & 0xffff) == SPV_OP_TYPE_FUNCTION && lw[i + 1] == lnx_ftype && (lw[i] >> 16) == 10) {
+        if ((lw[i] & 0xffff) == SPV_OP_TYPE_FUNCTION && lw[i + 1] == lnx_ftype && (lw[i] >> 16) == 11) {
             l_vec3 = lw[i + 2];
             l_pfunc_v3 = lw[i + 3];
             l_pfunc_v4 = lw[i + 4];
@@ -1136,6 +1165,15 @@ static int tonemap_splice(uint32_t **spirv, uint64_t *words, SpliceTrace *trace)
 
     // Build the spliced module.
     uint32_t next_id = bound;
+    int add_frag_coord = meter_binding && !frag_coord;
+    if (add_frag_coord) frag_coord = next_id++;
+    if (meter_binding) {
+        lmap[lmeter] = next_id++;
+        lmap[lmeter_struct] = next_id++;
+        lmap[lmeter_array] = next_id++;
+    } else {
+        lskip[lmeter_struct] = lskip[lmeter_array] = 1;
+    }
     SpvBuf out = {0};
     // Header (word 3 = bound, patched at the end).
     spv_emit(&out, w, 5);
@@ -1154,11 +1192,17 @@ static int tonemap_splice(uint32_t **spirv, uint64_t *words, SpliceTrace *trace)
             int listed = 0;
             for (uint32_t k = j; k < len; k++)
                 if (w[i + k] == sup_var) listed = 1;
-            if (!listed && (w[1] >= 0x00010400u)) {
-                uint32_t nh = ((len + 1u) << 16) | SPV_OP_ENTRY_POINT;
+            uint32_t extra[3], n_extra = 0;
+            if (w[1] >= 0x00010400u) {
+                if (!listed) extra[n_extra++] = sup_var;
+                if (meter_binding) extra[n_extra++] = lmap[lmeter];
+            }
+            if (add_frag_coord) extra[n_extra++] = frag_coord;
+            if (n_extra) {
+                uint32_t nh = ((len + n_extra) << 16) | SPV_OP_ENTRY_POINT;
                 spv_emit(&out, &nh, 1);
                 spv_emit(&out, w + i + 1, len - 1);
-                spv_emit(&out, &sup_var, 1);
+                spv_emit(&out, extra, n_extra);
             } else {
                 spv_emit(&out, w + i, len);
             }
@@ -1169,6 +1213,21 @@ static int tonemap_splice(uint32_t **spirv, uint64_t *words, SpliceTrace *trace)
     }
     for (uint32_t k = 0; k < VK_HDR_PARAMS; k++)
         SPV_INS(&out, SPV_OP_MEMBER_DECORATE, sup_struct, sup_members + k, SPV_DEC_OFFSET, VK_HDR_PARAMS_AT + 16u * k);
+    if (meter_binding) {
+        for (uint64_t i = 5; i < lfirst_func; i += lw[i] >> 16) {
+            uint32_t len = lw[i] >> 16, op = lw[i] & 0xffff;
+            uint32_t id = lw[i + 1];
+            if ((op == SPV_OP_DECORATE || op == SPV_OP_MEMBER_DECORATE) &&
+                (id == lmeter_struct || id == lmeter_array)) {
+                spv_emit(&out, lw + i, 1);
+                spv_emit(&out, &lmap[id], 1);
+                spv_emit(&out, lw + i + 2, len - 2);
+            }
+        }
+        SPV_INS(&out, SPV_OP_DECORATE, lmap[lmeter], SPV_DEC_SET, 0u);
+        SPV_INS(&out, SPV_OP_DECORATE, lmap[lmeter], SPV_DEC_BINDING, (uint32_t)meter_binding);
+        if (add_frag_coord) SPV_INS(&out, SPV_OP_DECORATE, frag_coord, DEC_BUILTIN, BUILTIN_FRAG_COORD);
+    }
 
     // 2. Copy host Types / Constants / Global Variables up to first_func, extending SupportBuffer OpTypeStruct.
     for (uint64_t i = annot_end; i < first_func;) {
@@ -1201,16 +1260,19 @@ static int tonemap_splice(uint32_t **spirv, uint64_t *words, SpliceTrace *trace)
                 else ok = 0;
             }
             if (ok) {
-                uint32_t exist = find_host_type(out.w, out.n, tmp, len);
+                uint32_t reserved = lmap[lw[i + 1]];
+                uint32_t exist = reserved ? 0 : find_host_type(out.w, out.n, tmp, len);
                 if (exist) {
                     lmap[lw[i + 1]] = exist;
                 } else {
-                    uint32_t nid = next_id++;
+                    uint32_t nid = reserved ? reserved : next_id++;
                     lmap[lw[i + 1]] = nid;
                     tmp[1] = nid;
                     spv_emit(&out, tmp, len);
                 }
             }
+        } else if (op == SPV_OP_VARIABLE && meter_binding && lw[i + 2] == lmeter) {
+            SPV_INS(&out, SPV_OP_VARIABLE, lmap[lw[i + 1]], lmap[lmeter], SC_STORAGE_BUFFER);
         } else if (spv_is_const(op) && len >= 3 && lw[i + 2] < lbound) {
             uint32_t nid = next_id++;
             lmap[lw[i + 2]] = nid;
@@ -1228,6 +1290,17 @@ static int tonemap_splice(uint32_t **spirv, uint64_t *words, SpliceTrace *trace)
         ptr_u_vec4 = next_id++;
         SPV_INS(&out, SPV_OP_TYPE_POINTER, ptr_u_vec4, SPV_SC_UNIFORM, vec4_ty);
     }
+    if (add_frag_coord) {
+        uint32_t probe[] = {4u << 16 | SPV_OP_TYPE_POINTER, 0, SPV_SC_INPUT, vec4_ty};
+        uint32_t ptr = find_host_type(out.w, out.n, probe, 4);
+        if (!ptr) {
+            ptr = next_id++;
+            SPV_INS(&out, SPV_OP_TYPE_POINTER, ptr, SPV_SC_INPUT, vec4_ty);
+        }
+        SPV_INS(&out, SPV_OP_VARIABLE, ptr, frag_coord, SPV_SC_INPUT);
+    }
+    uint32_t empty_adaptation = next_id++;
+    SPV_INS(&out, SPV_OP_CONSTANT_NULL, vec4_ty, empty_adaptation);
     uint32_t idx_ty = i32_ty ? i32_ty : u32_ty;
     if (!idx_ty) {
         // Check if type merging added signed 32-bit int.
@@ -1264,7 +1337,8 @@ static int tonemap_splice(uint32_t **spirv, uint64_t *words, SpliceTrace *trace)
         int in_main = 0;
         for (uint64_t i = lfirst_func; i < ln;) {
             uint32_t op = lw[i] & 0xffff, len = lw[i] >> 16;
-            if (op == SPV_OP_FUNCTION && len >= 5) in_main = (lw[i + 2] == lmain);
+            if (op == SPV_OP_FUNCTION && len >= 5)
+                in_main = lw[i + 2] == lmain || (!meter_binding && lw[i + 2] == lmeasure);
             if (!in_main) {
                 uint32_t rw = spv_res_word(op, len);
                 if (rw && lw[i + rw] < lbound && !lmap[lw[i + rw]]) lmap[lw[i + rw]] = next_id++;
@@ -1280,6 +1354,7 @@ static int tonemap_splice(uint32_t **spirv, uint64_t *words, SpliceTrace *trace)
     //    - declare 7 local Function variables after main's entry OpLabel
     //    - emit the nx_tonemap call at ins_pos and store its RGB result into the 3 output channels.
     uint32_t var_x = next_id++, var_sc = next_id++, var_p[NX_TONEMAP_PARAMS];
+    uint32_t var_adapt = next_id++, var_frag = meter_binding ? next_id++ : 0;
     for (uint32_t k = 0; k < NX_TONEMAP_PARAMS; k++) var_p[k] = next_id++;
     uint32_t out_ch[3] = {0}, local_factor = 0;
     int entry_patched = 0;
@@ -1289,6 +1364,8 @@ static int tonemap_splice(uint32_t **spirv, uint64_t *words, SpliceTrace *trace)
             spv_emit(&out, w + i, len);
             SPV_INS(&out, SPV_OP_VARIABLE, m_pfunc_v3, var_x, SPV_SC_FUNCTION);
             SPV_INS(&out, SPV_OP_VARIABLE, m_pfunc_v4, var_sc, SPV_SC_FUNCTION);
+            SPV_INS(&out, SPV_OP_VARIABLE, m_pfunc_v4, var_adapt, SPV_SC_FUNCTION);
+            if (meter_binding) SPV_INS(&out, SPV_OP_VARIABLE, m_pfunc_v4, var_frag, SPV_SC_FUNCTION);
             for (uint32_t k = 0; k < NX_TONEMAP_PARAMS; k++)
                 SPV_INS(&out, SPV_OP_VARIABLE, m_pfunc_v4, var_p[k], SPV_SC_FUNCTION);
             entry_patched = 1;
@@ -1329,9 +1406,18 @@ static int tonemap_splice(uint32_t **spirv, uint64_t *words, SpliceTrace *trace)
                 SPV_INS(&out, SPV_OP_LOAD, vec4_ty, val_k, ptr_k);
                 SPV_INS(&out, SPV_OP_STORE, var_p[k], val_k);
             }
+            uint32_t adaptation = empty_adaptation;
+            if (meter_binding) {
+                uint32_t coord = next_id++;
+                SPV_INS(&out, SPV_OP_LOAD, vec4_ty, coord, frag_coord);
+                SPV_INS(&out, SPV_OP_STORE, var_frag, coord);
+                adaptation = next_id++;
+                SPV_INS(&out, SPV_OP_FUNCTION_CALL, vec4_ty, adaptation, lmap[lmeasure], var_sc, var_frag, var_p[4]);
+            }
+            SPV_INS(&out, SPV_OP_STORE, var_adapt, adaptation);
             uint32_t res = next_id++;
             SPV_INS(&out, SPV_OP_FUNCTION_CALL, m_vec3, res, m_nx, var_x, var_sc,
-                    var_p[0], var_p[1], var_p[2], var_p[3], var_p[4]);
+                    var_p[0], var_p[1], var_p[2], var_p[3], var_p[4], var_adapt);
             for (int c = 0; c < 3; c++) {
                 out_ch[c] = next_id++;
                 SPV_INS(&out, SPV_OP_COMPOSITE_EXTRACT, f32_ty, out_ch[c], res, (uint32_t)c);
@@ -1405,7 +1491,8 @@ static int tonemap_splice(uint32_t **spirv, uint64_t *words, SpliceTrace *trace)
         int in_main = 0;
         for (uint64_t i = lfirst_func; i < ln;) {
             uint32_t op = lw[i] & 0xffff, len = lw[i] >> 16;
-            if (op == SPV_OP_FUNCTION && len >= 5) in_main = (lw[i + 2] == lmain);
+            if (op == SPV_OP_FUNCTION && len >= 5)
+                in_main = lw[i + 2] == lmain || (!meter_binding && lw[i + 2] == lmeasure);
             if (!in_main && !spv_emit_mapped(&out, lw + i, lmap, lbound)) {
                 free(lmap); free(lskip); free(out.w); goto fail_err;
             }
@@ -1435,34 +1522,37 @@ fail_0:
     return 0;
 }
 
-void vk_hdr_shader_swap(uint32_t **spirv, uint64_t *words) {
-    if (!vk_hdr_armed() || vk_hdr_native() || !*spirv || *words < 5) return;
+int vk_hdr_shader_swap(uint32_t **spirv, uint64_t *words) {
+    if (!vk_hdr_armed() || vk_hdr_native() || !*spirv || *words < 5) return 0;
     int unclamped = fsr_unclamp(*spirv, words);
     if (unclamped > 0) {
         static volatile int32_t fsrs;
         rt_log("hdr: the game's FSR pass keeps values above 1 (%d output clamps; %d so far)", unclamped,
                plat_inc32(&fsrs));
-        return;
+        return 0;
     }
     if (unclamped < 0) {
         static volatile int32_t missed;
         if (plat_inc32(&missed) == 1)
             rt_log("hdr: the game's FSR pass was found but no clamp of its output; it still clips HDR highlights");
-        return;
+        return 0;
     }
     SpliceTrace trace;
-    int spliced = tonemap_splice(spirv, words, &trace);
+    int spliced = tonemap_splice(spirv, words, vk_hdr_adaptation_supported(), &trace);
     if (spliced > 0) {
         static volatile int32_t swaps;
-        rt_log("hdr: spliced RenoDX tonemap into ACES shader (%s, %s, %s; %d so far)",
+        rt_log("hdr: spliced RenoDX tonemap into ACES shader (%s, %s, %s, %s; %d so far)",
                trace.exposure ? "exposure traced" : "fallback exposure",
                trace.bloom ? "bloom traced" : "no bloom term",
-               trace.local_exposure ? "local exposure traced" : "no local exposure term", plat_inc32(&swaps));
+               trace.local_exposure ? "local exposure traced" : "no local exposure term",
+               trace.meter_binding ? "eye adaptation meter" : "no eye adaptation meter", plat_inc32(&swaps));
+        return trace.meter_binding;
     } else if (spliced < 0) {
         static volatile int32_t errs;
         if (plat_inc32(&errs) <= 4)
             rt_log("hdr: ACES tonemap shader could not be spliced; leaving game shader unchanged");
     }
+    return 0;
 }
 
 #else
@@ -1470,20 +1560,20 @@ void vk_hdr_shader_swap(uint32_t **spirv, uint64_t *words) {
 // TotK (!GAME_OOT): replace the game's 1 - e^-x tonemap shader wholesale with hdr_tonemap_totk_spv.
 static const char *const tm_names[5] = {"support_buffer", "fp_t_tcb_8", "fp_t_tcb_A", "fp_c1", "fp_c3"};
 
-void vk_hdr_shader_swap(uint32_t **spirv, uint64_t *words) {
-    if (!vk_hdr_wanted() || !*spirv || *words < 5) return;
+int vk_hdr_shader_swap(uint32_t **spirv, uint64_t *words) {
+    if (!vk_hdr_wanted() || !*spirv || *words < 5) return 0;
     int unclamped = fsr_unclamp(*spirv, words);
     if (unclamped > 0) {
         static volatile int32_t fsrs;
         rt_log("hdr: the game's FSR pass keeps values above 1 (%d output clamps; %d so far)", unclamped,
                plat_inc32(&fsrs));
-        return;
+        return 0;
     }
     if (unclamped < 0) {
         static volatile int32_t missed;
         if (plat_inc32(&missed) == 1)
             rt_log("hdr: the game's FSR pass was found but no clamp of its output; it still clips HDR highlights");
-        return;
+        return 0;
     }
     const uint32_t *w = *spirv;
     uint64_t n = *words;
@@ -1492,7 +1582,7 @@ void vk_hdr_shader_swap(uint32_t **spirv, uint64_t *words) {
     int has_bind[5] = {0};
     for (uint64_t i = 5; i < n;) {
         uint32_t op = w[i] & 0xffff, len = w[i] >> 16;
-        if (!len || i + len > n) return;
+        if (!len || i + len > n) return 0;
         const uint32_t *a = w + i + 1;
         if (op == SPV_OP_TYPE_FLOAT && len == 3 && a[1] == 32) float_type = a[0];
         else if (op == SPV_OP_CONSTANT && len == 4 && a[0] == float_type && float_type)
@@ -1506,9 +1596,9 @@ void vk_hdr_shader_swap(uint32_t **spirv, uint64_t *words) {
                 if (name_is(a, len, tm_names[k])) ids[k] = a[0];
         i += len;
     }
-    if (found != 15) return;
+    if (found != 15) return 0;
     for (int k = 0; k < 5; k++)
-        if (!ids[k]) return;
+        if (!ids[k]) return 0;
     for (uint64_t i = 5; i < n;) {
         uint32_t op = w[i] & 0xffff, len = w[i] >> 16;
         const uint32_t *a = w + i + 1;
@@ -1521,13 +1611,13 @@ void vk_hdr_shader_swap(uint32_t **spirv, uint64_t *words) {
         i += len;
     }
     for (int k = 0; k < 5; k++)
-        if (has_bind[k] != 3) return;
+        if (has_bind[k] != 3) return 0;
     uint64_t m = sizeof hdr_tonemap_totk_spv / 4;
     uint32_t *out = malloc(sizeof hdr_tonemap_totk_spv);
-    if (!out) return;
+    if (!out) return 0;
     memcpy(out, hdr_tonemap_totk_spv, sizeof hdr_tonemap_totk_spv);
     uint32_t bound = out[3], *ours = calloc(bound ? bound : 1, sizeof *ours);
-    if (!ours) { free(out); return; }
+    if (!ours) { free(out); return 0; }
     for (uint64_t i = 5; i < m;) {
         uint32_t op = out[i] & 0xffff, len = out[i] >> 16;
         uint32_t *a = out + i + 1;
@@ -1550,6 +1640,7 @@ void vk_hdr_shader_swap(uint32_t **spirv, uint64_t *words) {
     *words = m;
     static volatile int32_t swaps;
     rt_log("hdr: the game's tonemap shader runs as shaders/hdr_tonemap_totk.frag (%d so far)", plat_inc32(&swaps));
+    return 0;
 }
 
 #endif
@@ -1654,6 +1745,10 @@ int vk_hdr_surface_format(const VkSurfaceFormatKHR *f, uint32_t n, VkSurfaceForm
 }
 
 #ifndef VK_HDR_SPLICE_TEST_ONLY
+#ifdef GAME_OOT
+#include "vk_hdr_adaptation.inc"
+#endif
+
 void vk_hdr_metadata(VkSwapchainKHR sc, int new_sc) {
     static unsigned sent = ~0u;
     VkCtx *c = vk_ctx();
@@ -1949,6 +2044,9 @@ void vk_hdr_images_release(void) {
 
 void vk_hdr_release(void) {
     VkCtx *c = vk_ctx();
+#ifdef GAME_OOT
+    hdr_meter_release(c->vma);
+#endif
     for (int i = 0; i < SLOTS; i++)
         if (H.src_view[i]) vkDestroyImageView(c->device, H.src_view[i], NULL), H.src_view[i] = VK_NULL_HANDLE;
     img_free(c, &H.out);

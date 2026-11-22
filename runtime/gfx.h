@@ -66,6 +66,7 @@ extern int gfx_shader_float_atomics;
 extern int gfx_shader_coop_matrix;   // HMMA.16816 f16 on VK_NV_cooperative_matrix (vk_device.c; translator patch 0033)
 extern int gfx_shader_mesh_whole;    // mesh shaders store a primitive's indices whole (vk_device.c; translator patch 0041)
 #define GFX_CB_GMEM (-2)
+#define GFX_CB_HDR_METER (-3)   // host-owned eye adaptation storage buffer
 #endif
 // Translator answers for this device (vk_caps.c): shaderFloat64, storage offset rounding, subgroup size per vs/fs/cs.
 void gfx_shader_set_host(int float64, uint32_t sbuf_align, const uint32_t subgroup[3], uint32_t gather_bits, int zero_locals);
@@ -103,7 +104,7 @@ const uint32_t *gfx_shader_spirv(const GfxShader *s, uint64_t *words);
 const GfxShader *gfx_shader_own(const uint32_t *spirv, uint64_t words, const char *res_json);
 // vk_hdr.c: when the HDR path is armed, splices (OoT) or replaces (TotK) the game's tonemap fragment shader SPIR-V
 // (malloc'd, *words long) and removes output clamps in its FSR pass; gfx_shader.c calls it as fragment shaders load.
-void vk_hdr_shader_swap(uint32_t **spirv, uint64_t *words);
+int vk_hdr_shader_swap(uint32_t **spirv, uint64_t *words);   // returns the added meter binding, or 0
 uint64_t gfx_shader_failures(void);                         // failed translations; feeds GfxStats.shader_failures
 // Reflection: parsed once per shader from the translator's .res.json and the SPIR-V before it enters the cache.
 enum { GFX_RES_UBO, GFX_RES_SSBO, GFX_RES_TEX, GFX_RES_IMG, GFX_RES_KINDS };

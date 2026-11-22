@@ -129,6 +129,10 @@ Every guest thread is a host thread. TotK assumes Horizon's scheduler: three app
   swapchain, which FSR 1 or the blit then scale; the in-game menu is drawn into an RGBA8 image and blended on at the
   HUD's white. Without an HDR10 surface format (Windows with "Use HDR" off, a compositor without colour management)
   the swapchain stays SDR. `REKARINA_SHOTS` reads the window texture, so its pictures clip highlights in HDR.
+  PsychoV35's optional eye adaptation (`hdr_midgray = adaptation`) meters a 32 × 18 grid in the scene composite
+  before tone mapping. The replay reads completed samples at the submission fence and applies a weighted,
+  trimmed luminance histogram and temporal smoothing (`vk_hdr_adaptation.inc`). It uses the scene projection to
+  weight the samples, with a 60-degree vertical field of view when no recent projection is available.
 - DLAA (`vk_dlaa.c`, `dlaa`, off by default). NVIDIA DLSS at the scene's own size, through the driver's NGX core loaded
   at run time (no SDK code compiled in). It runs on the R11G11B10F light target right before the bloom chain's first
   pass, so post effects and the HUD read the anti-aliased picture. The scene's draws get a sub-pixel Halton viewport

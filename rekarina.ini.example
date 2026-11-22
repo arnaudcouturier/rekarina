@@ -261,9 +261,14 @@
 # RenoDX tone mapper: psychov35 (observer-response cone mapper, default), renodrt (Daniele luminance mapper + OkLab
 # grading), or vanilla (the game's ACES curve scaled to game brightness).
 # hdr_tonemap = psychov35
-# PsychoV35 parameters: mid-grey anchor (vanilla or render), match the game's ACES tone slope (0 or 1), tone slope
+# PsychoV35 parameters: mid-grey anchor (vanilla, render or adaptation), match the game's ACES tone slope (0 or 1), tone slope
 # multiplier (0 to 100; 50 = 1.0x), and vanilla highlight hue clip emulation (0 to 100 percent).
 # hdr_midgray = vanilla
+# Eye adaptation uses the pre-tone-map scene to adjust the mid-grey anchor over time. Set the output target as a
+# percentage of game white and set its limits in stops relative to that target.
+# hdr_adaptation_target = 18
+# hdr_adaptation_min_stops = -4
+# hdr_adaptation_max_stops = 2
 # hdr_match_slope = 1
 # hdr_tone_slope = 50
 # hdr_hue_clip = 50

@@ -692,6 +692,7 @@ static int create_device(void) {
         if (!vk_caps_gpl(&c->gpl, &gp)) { *gpl_link = NULL; n_ext -= 2; }
     }
     const VkPhysicalDeviceFeatures *h = &c->f2.features;
+    g_vk.has_fragment_stores = h->fragmentStoresAndAtomics;
     const char *miss = NULL;
     if (!c->f12.timelineSemaphore) miss = "timelineSemaphore";
     else if (!c->f13.dynamicRendering) miss = "dynamicRendering";

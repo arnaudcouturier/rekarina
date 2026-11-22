@@ -77,6 +77,7 @@ int vk_hdr_wanted(void);                  // vk_hdr.c: HDR requested / active / 
 int vk_hdr_active(void);
 int vk_hdr_native(void);
 int vk_hdr_needs_restart(void);
+int vk_hdr_adaptation_supported(void);
 }
 
 // Roboto Medium (Apache-2.0, ui/fonts/LICENSE-Roboto.txt) with Latin and Cyrillic glyphs.
@@ -1246,8 +1247,19 @@ static void tab_screen(float scale) {
             if (strcmp(tm, "vanilla")) {
                 int is_drt = !strcmp(tm, "renodrt");
                 if (!is_drt) {
-                    static const UiTextId mg_modes[] = {UI_MENU_HDR_MIDGRAY_VANILLA, UI_MENU_HDR_MIDGRAY_RENDER};
-                    opt_choice("REKARINA_HDR_MIDGRAY", UI_MENU_HDR_MIDGRAY, mg_modes, 2, UI_MENU_HDR_MIDGRAY_DESC);
+                    static const UiTextId mg_modes[] = {UI_MENU_HDR_MIDGRAY_VANILLA, UI_MENU_HDR_MIDGRAY_RENDER,
+                                                        UI_MENU_HDR_MIDGRAY_ADAPTATION};
+                    bool eye_adaptation = vk_hdr_adaptation_supported();
+                    opt_choice("REKARINA_HDR_MIDGRAY", UI_MENU_HDR_MIDGRAY, mg_modes,
+                               eye_adaptation ? 3 : 2, UI_MENU_HDR_MIDGRAY_DESC);
+                    if (eye_adaptation && !strcmp(cfg_value("REKARINA_HDR_MIDGRAY"), "adaptation")) {
+                        opt_slider("REKARINA_HDR_ADAPTATION_TARGET", UI_MENU_HDR_ADAPTATION_TARGET, 1, 100,
+                                   UI_MENU_HDR_ADAPTATION_TARGET_DESC, 1, "%.0f %%");
+                        opt_slider("REKARINA_HDR_ADAPTATION_MIN_STOPS", UI_MENU_HDR_ADAPTATION_MIN_STOPS, -8, 0,
+                                   UI_MENU_HDR_ADAPTATION_MIN_STOPS_DESC, 0.5f, "%.1f");
+                        opt_slider("REKARINA_HDR_ADAPTATION_MAX_STOPS", UI_MENU_HDR_ADAPTATION_MAX_STOPS, 0, 8,
+                                   UI_MENU_HDR_ADAPTATION_MAX_STOPS_DESC, 0.5f, "%.1f");
+                    }
                     opt_toggle("REKARINA_HDR_MATCH_SLOPE", UI_MENU_HDR_MATCH_SLOPE, UI_MENU_HDR_MATCH_SLOPE_DESC);
                     opt_slider("REKARINA_HDR_TONE_SLOPE", UI_MENU_HDR_TONE_SLOPE, 0, 100, UI_MENU_HDR_TONE_SLOPE_DESC, 5, "%.0f");
                     opt_slider("REKARINA_HDR_HUE_CLIP", UI_MENU_HDR_HUE_CLIP, 0, 100, UI_MENU_HDR_HUE_CLIP_DESC, 5, "%.0f %%");

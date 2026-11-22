@@ -39,6 +39,7 @@ typedef struct VkCtx {
         has_astc_ldr,                       // textureCompressionASTC_LDR (enabled when reported)
         has_calibrated,                     // VK_KHR/EXT_calibrated_timestamps (GPU idle split in the perf line)
         has_hdr_metadata,                   // VK_EXT_hdr_metadata (vk_hdr.c vk_hdr_metadata)
+        has_fragment_stores,                // fragmentStoresAndAtomics (vk_hdr.c, eye adaptation meter)
         has_map_placed,                     // VK_EXT_map_memory_placed with memoryMapPlaced and memoryUnmapReserve (Linux: driver-backed guest memory)
         has_atomic_float,                   // VK_EXT_shader_atomic_float with shaderBufferFloat32AtomicAdd
         has_present_timing,                 // DEBUG-PRESENTTIMING: VK_EXT_present_timing + VK_KHR_present_id2 (REKARINA_PRESENT_TIMING=1)
@@ -209,6 +210,14 @@ void vk_hdr_release(void);   // before the device goes away
 #define VK_HDR_PARAMS_AT 1440u
 #define VK_HDR_PARAMS 6u
 void vk_hdr_support(float out[4 * VK_HDR_PARAMS]);
+#ifdef GAME_OOT
+// Eye adaptation is available when the Vulkan device can atomically write the fragment meter.
+int vk_hdr_adaptation_supported(void);
+// Binds the HDR eye adaptation meter for a draw. The caller binds its zero buffer if no meter was acquired.
+struct VkExec;
+VkDescriptorBufferInfo vk_hdr_meter_bind(struct VkExec *ex);
+void vk_hdr_meter_end_pass(struct VkExec *ex);
+#endif
 // vk_contact.c: screen-space contact shadows on the game's composed scene colour (REKARINA_CONTACT_SHADOWS)
 int vk_contact_strength(void);   // percent, 0 = off
 void vk_contact_release(void);   // before the device goes away

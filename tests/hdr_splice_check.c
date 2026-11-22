@@ -58,6 +58,9 @@ const char *cfg_value(const char *name) {
     if (!strcmp(name, "REKARINA_HDR_GRADE")) return "100";
     if (!strcmp(name, "REKARINA_HDR_BLOOM")) return "50";
     if (!strcmp(name, "REKARINA_HDR_LOCAL_EXPOSURE")) return "50";
+    if (!strcmp(name, "REKARINA_HDR_ADAPTATION_TARGET")) return "18";
+    if (!strcmp(name, "REKARINA_HDR_ADAPTATION_MIN_STOPS")) return "-4";
+    if (!strcmp(name, "REKARINA_HDR_ADAPTATION_MAX_STOPS")) return "2";
     return "0";
 }
 double cfg_double(const char *name) { return strtod(cfg_value(name), NULL); }
@@ -282,11 +285,12 @@ int main(int argc, char **argv) {
         fclose(f);
         uint64_t words = (uint64_t)sz / 4;
         SpliceTrace trace;
-        int r = tonemap_splice(&buf, &words, &trace);
+        int r = tonemap_splice(&buf, &words, 1, &trace);
         if (r > 0) write_spv(argv[3], buf, words);
         free(buf);
-        printf("%d%s%s\n", r, r > 0 && trace.bloom ? " bloom" : "",
-               r > 0 && trace.local_exposure ? " local-exposure" : "");
+        printf("%d%s%s%s\n", r, r > 0 && trace.bloom ? " bloom" : "",
+               r > 0 && trace.local_exposure ? " local-exposure" : "",
+               r > 0 && trace.meter_binding ? " eye-adaptation" : "");
         return r < 0 ? 1 : 0;
     }
     const char *out_dir = argc > 1 ? argv[1] : NULL;
@@ -296,11 +300,15 @@ int main(int argc, char **argv) {
         uint32_t *spv = make_aces_spv(shape, &n);
         uint64_t orig_n = n;
         SpliceTrace trace;
-        int r = tonemap_splice(&spv, &n, &trace);
+        int r = tonemap_splice(&spv, &n, 1, &trace);
         if (shape <= 4 || shape == 6) CHECK(r == 2 && n > orig_n, "exposure-traced ACES shape spliced");
         else if (shape == 5) CHECK(r == 1 && n > orig_n, "fallback vector-store ACES shape spliced");
         else CHECK(r == 0 && n == orig_n, "non-ACES shader untouched");
         if (r > 0) CHECK(trace.local_exposure == (shape == 2 || shape == 4), "trace both local exposure shapes");
+        if (r > 0) {
+            int has_scene = shape != 5;
+            CHECK(trace.meter_binding == (has_scene ? 2 : 0), "meter needs traced scene and unused binding");
+        }
         if (out_dir && shape <= 6) {
             char p[256];
             snprintf(p, sizeof p, "%s/spliced_%d.spv", out_dir, shape);
@@ -308,6 +316,17 @@ int main(int argc, char **argv) {
         }
         free(spv);
     }
+    uint64_t no_meter_words;
+    uint32_t *no_meter = make_aces_spv(2, &no_meter_words);
+    SpliceTrace no_meter_trace;
+    CHECK(tonemap_splice(&no_meter, &no_meter_words, 0, &no_meter_trace) == 2 && !no_meter_trace.meter_binding,
+          "unsupported fragment stores keep HDR and local exposure");
+    if (out_dir) {
+        char path[256];
+        snprintf(path, sizeof path, "%s/spliced_no_meter.spv", out_dir);
+        write_spv(path, no_meter, no_meter_words);
+    }
+    free(no_meter);
 
     // 2. Test vk_hdr_support parameter packing and SDR passthrough
     test_cfg_reset();
@@ -327,6 +346,12 @@ int main(int argc, char **argv) {
     vk_hdr_support(sup);
     CHECK(sup[20] == 0.5f, "bloom 25 halves the game's (p5.x = 0.5)");
     CHECK(sup[21] == 1.0f, "PsychoV35 does not use local exposure control");
+    test_cfg_set("REKARINA_HDR_MIDGRAY", "adaptation");
+    vk_hdr_support(sup);
+    CHECK(sup[17] == 2.0f, "PsychoV35 activates the eye adaptation meter");
+    Nits settings = nits();
+    CHECK(settings.adaptation_target == 0.18f && settings.adaptation_min == 0.0625f && settings.adaptation_max == 4.0f,
+          "adaptation target and stop limits");
 
     test_cfg_set("REKARINA_HDR_TONEMAP", "renodrt");
     test_cfg_set("REKARINA_HDR_GAMMA", "2.4");
@@ -334,6 +359,7 @@ int main(int argc, char **argv) {
     vk_hdr_support(sup);
     CHECK(sup[3] == 3.0f && sup[14] == 2.0f && fabsf(sup[4] - 1.2f) < 1e-5f, "RenoDRT + gamma 2.4 + exposure");
     CHECK(sup[21] == 0.0f, "RenoDRT local exposure off");
+    CHECK(sup[17] == 1.0f, "RenoDRT ignores the adaptive PsychoV35 anchor");
 
     test_cfg_set("REKARINA_HDR_TONEMAP", "vanilla");
     test_cfg_set("REKARINA_HDR_GAMMA", "off");
