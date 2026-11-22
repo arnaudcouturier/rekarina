@@ -2,7 +2,7 @@
 
 Copies tools/vendor/ryujinx to build/xlate/ryujinx, applies tools/xlate/patches/*.patch there (tools/vendor stays
 byte-identical; 0001-0004 are MNG's, 0005-0013, 0015 and 0016 are ours; 0017-0020, the Ampere / NVN2 frontend for
-Switch 2 games, are MNG's and seedds/nxnative's, 0021-0045 ours), then runs `dotnet publish`. Needs the .NET 10 SDK, the MSVC build
+Switch 2 games, are MNG's and seedds/nxnative's, 0021-0046 ours), then runs `dotnet publish`. Needs the .NET 10 SDK, the MSVC build
 tools and vswhere.exe (docs/building.md). Run with .venv. On Linux it builds build/xlate/totk_xlate for linux-x64, which
 NativeAOT links with the system's clang (no MSVC); NativeAOT builds for the OS it runs on only.
 
@@ -44,7 +44,7 @@ BUILD = ROOT / "build" / "xlate"
 WIN = os.name == "nt"
 EXE = "totk_xlate.exe" if WIN else "totk_xlate"
 VSWHERE_DIR = Path(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)")) / "Microsoft Visual Studio" / "Installer"
-PATCH_COUNT = 44   # tools/xlate/patches/*.patch: a missing or stray file stops the build
+PATCH_COUNT = 45   # tools/xlate/patches/*.patch: a missing or stray file stops the build
 
 
 def find_dotnet() -> str | None:
@@ -175,7 +175,8 @@ def prepare_sources() -> Path:
 # vectors, and patch 0042 that of programs whose VOTEU writes a uniform predicate other than UPT (OoT's eye
 # shaders); patch 0043 adds a translation only a job with "as_compute" asks for (a mesh emulation kernel, its own
 # stage GFX_STAGE_MSC in the program hash); patch 0044 changes programs with REDUX, MATCH or a per-lane HMMA, LDSM or
-# MOVM only in compute shaders translated for subgroups wider than 32 lanes (AMD GCN); runtime/gfx_shader.c
+# MOVM only in compute shaders translated for subgroups wider than 32 lanes (AMD GCN); patch 0046 marks DontInline the
+# raw global-memory helpers of mesh shaders whose code is 60,000 to 70,000 bytes long (OoT's foliage); runtime/gfx_shader.c
 # build_code_hash gives exactly those a program hash of their own, so every other cache
 # entry made under the earlier identity is what this build would write. A change to any source gives another left
 # side and the entry stops applying by itself; then it is removed, or made anew with the same care (translate a
@@ -192,6 +193,8 @@ SAME_AS = {
     "b57096b248730a9d5a96a9cba4d295971b0717eb19a487b314ae561b5b799245":
         "b9d1309569a87e96595514e3e1eccb56e907a0b67a1bac3577ae00acd9c8e726",
     "f94d04cd9c4823db5a94b7a2fc0e0e0a21c50b5037202184561551c72d63ec79":
+        "b9d1309569a87e96595514e3e1eccb56e907a0b67a1bac3577ae00acd9c8e726",
+    "e1873b65346245c72d6a907d32e33fc033cf94e915235b93a7ddc5811d4052a0":
         "b9d1309569a87e96595514e3e1eccb56e907a0b67a1bac3577ae00acd9c8e726",
 }   # same-as-end
 

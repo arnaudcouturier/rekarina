@@ -457,6 +457,36 @@ skinned draws, 113,294 were drawn with their own motion (39 %), 179,170 were car
 and none was refused for "position reads other blocks" (all of them before the patch). The 48 variants translated
 there all wrote the position (banks c3 c4 c6, or c3 to c7); none depended on c9. No shader failed.
 
+## The foliage's raw global-memory helpers called, not inlined (patch 0046, 2026-11-22)
+
+A job with `gmem_map` reaches an address traced to no storage buffer through helper functions that look it up in the
+memory pool table (`GlobalToStorage.TryGenerateRawStorageOp`, functions named `*Raw`, `LoadMultiRaw` the commonest).
+The translator emits every helper with `FunctionControl` None, and the driver inlines every call. Eight of the game's
+mesh shaders, the forest's foliage, call them 950 to 982 times (179k to 193k SPIR-V words): inlined, they reach the
+register ceiling of 255 and 1 to 2 MB of machine code. Called instead, the foliage takes some 45% less GPU time there
+(about 1.1 ms a frame). On the smaller mesh shaders the calls cost up to 29%, so only those eight ask for them.
+
+The patch marks the `*Raw` helpers `DontInline` in a mesh shader (not a task shader) whose `MeshStage.Large` is set.
+`tools/xlate/Program.cs` `MakeMeshStage` sets it for a code file (control +0x38, the SPH included) of 60,000 to 70,000
+bytes, and `nvn_ctl.h` `nvn2_ctl_mesh_large` tests the same length. A scan of the 857 mesh inputs of a build's shader
+cache pack (`shader-cache.pack`) set the band:
+
+| Code file (bytes) | Programs | Calls | What |
+|---|---|---|---|
+| 184,704 to 294,912 | 10 | 22 to 38 | every buffer access resolves to c0: no `*Raw` helper |
+| 60,288 to 69,376 | 8 | 950 to 982 | the foliage: one `DontInline` helper each after the patch |
+| 62,848 to 62,976 | 6 | 30 | in the band, but no `*Raw` helper: translated byte for byte as before |
+| 46,592 and below | the rest | up to 550 | medium mesh shaders that inlining serves better |
+
+A size larger than 0x20000 bytes, the first gate tried, selected the ten c0-only programs and changed nothing. The
+programs in the band end their program hash with a tag (`gfx_shader.c` `build_code_hash`, `TKML`; `tools/prepare_shaders.py`
+`code_hash` writes the same), so a cache made before the patch is not used for those 14, and every other entry keeps
+its key; the translator identity is kept (`tools/build_xlate.py` `SAME_AS`).
+
+Checked with the pack's own job flags (the old translator's output is in the pack for all of them): each of the eight
+foliage programs has one function with `FunctionControl` 2 and passes `spirv-val --target-env vulkan1.3`; the six
+other programs in the band and every mesh shader outside it translate to the same bytes as before.
+
 ## Warp collectives on subgroups wider than 32 lanes (patch 0044, 2026-11-20)
 
 An RX 570 (GCN 4, AMD's Windows driver 26.5.2 for Polaris) drew the great tree's rooms without walls, a jump

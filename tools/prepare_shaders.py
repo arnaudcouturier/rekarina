@@ -162,16 +162,19 @@ def bounds(control, code):
 
 def code_hash(stage, control, code, length, c1):
     """gfx_shader.c build_code_hash. Tags: an NVN2 mesh program with point output (nvn_ctl.h nvn2_ctl_mesh_points),
-    and an NVN2 program whose VOTEU writes a uniform predicate other than UPT (nvn2_ctl_voteu_pred, translator patch
-    0042). The runtime's third tag, for mesh programs on devices that ask for whole index vectors, depends on the device
-    and is not written here."""
+    an NVN2 program whose VOTEU writes a uniform predicate other than UPT (nvn2_ctl_voteu_pred, translator patch 0042),
+    and an NVN2 mesh program of 60,000 to 70,000 bytes of instructions (nvn2_ctl_mesh_large, patch 0046). The runtime's
+    tags for mesh programs on devices that ask for whole index vectors and for warp collectives in compute translated
+    for wide subgroups depend on the device and are not written here."""
     nvn2 = struct.unpack_from('<II', control, 0) == (0x98761234, 0xc9)
     tagged = stage == STAGES['ms'] and nvn2 and length > 0x35 and (control[0x5f] != 3 or code[0x35] & 0x0f)
+    large = ((stage & 0xffff) in (STAGES['ms'], 8) and nvn2 and control[0x56] == 7 and   # +0x56: NVN2_STAGE_MESH
+             60000 <= struct.unpack_from('<I', control, 0x38)[0] <= 70000)
     voteu = nvn2 and any(struct.unpack_from('<Q', code, o)[0] & 0xfff == 0x886 and
                          (struct.unpack_from('<Q', code, o + 8)[0] >> 17) & 7 != 7 for o in range(0, length - 15, 16))
     return hashlib.sha256(struct.pack('<I', stage) + control + struct.pack('<Q', length) + code[:length] +
                           struct.pack('<I', len(c1)) + c1 + (b'TKMP\1\0\0\0' if tagged else b'') +
-                          (b'TKVU\1\0\0\0' if voteu else b'')).digest()
+                          (b'TKVU\1\0\0\0' if voteu else b'') + (b'TKML\1\0\0\0' if large else b'')).digest()
 
 
 def driver_crashed(out):

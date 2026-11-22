@@ -1,0 +1,43 @@
+TOTK: DontInline on the raw global-memory helpers of OoT's foliage mesh shaders. Eight mesh shaders, 60,288 to 69,376
+bytes of code (some 3,800 to 4,300 instructions; 179k to 193k SPIR-V words), call the helpers that
+GlobalToStorage.TryGenerateRawStorageOp makes for an address traced to no storage buffer (the memory pool table lookup,
+named *Raw) 950 to 982 times, and a driver that inlines every call runs out of registers at 255 and makes 1 to 2 MB of
+machine code. Called instead, the forest's foliage takes some 45% less GPU time (about 1.1 ms a frame there). On the
+smaller mesh shaders DontInline costs up to 29%, so MeshStage.Large (tools/xlate/Program.cs MakeMeshStage: a code file
+of 60,000 to 70,000 bytes) asks for it, and every other shader is translated byte for byte as before. The next mesh
+shader that calls the helpers is 46,592 bytes long (283 to 550 calls); the larger ones (184,704 to 294,912 bytes) reach
+all their memory through c0 and call none. runtime/nvn_ctl.h nvn2_ctl_mesh_large tests the same length (control +0x38)
+and gfx_shader.c build_code_hash tags those programs, which keeps the translator identity (tools/build_xlate.py SAME_AS)
+for everything else.
+
+--- a/src/Ryujinx.Graphics.Shader/CodeGen/Spirv/SpirvGenerator.cs
++++ b/src/Ryujinx.Graphics.Shader/CodeGen/Spirv/SpirvGenerator.cs
+@@ -159,7 +159,12 @@ namespace Ryujinx.Graphics.Shader.CodeGen.Spirv
+                 }
+ 
+                 SpvInstruction funcType = context.TypeFunction(retType, false, funcArgs);
+-                SpvInstruction spvFunc = context.Function(retType, FunctionControlMask.MaskNone, funcType);
++                // TOTK: a large mesh shader (MeshStage.Large: OoT's foliage, 60,000 to 70,000 bytes of instructions) calls its
++                // raw global-memory helpers (GlobalToStorage.TryGenerateRawStorageOp) 950 to 982 times. Inlined at every call
++                // they reach the register ceiling and megabytes of machine code; called, the shader takes some 45% less
++                // GPU time. Smaller mesh shaders, which inlining serves better, are translated as before.
++                bool dontInline = funcIndex > 0 && context.Properties.MeshStage is { IsTask: false, Large: true } && function.Name.EndsWith("Raw");
++                SpvInstruction spvFunc = context.Function(retType, dontInline ? FunctionControlMask.DontInline : FunctionControlMask.MaskNone, funcType);
+ 
+                 // nxnative: helpers whose body the shader build replaces in the Metal source keep their name (dmsh_hmma16816_f16)
+                 if (function.Name.StartsWith("dmsh_"))
+--- a/src/Ryujinx.Graphics.Shader/MeshStage.cs
++++ b/src/Ryujinx.Graphics.Shader/MeshStage.cs
+@@ -43,6 +43,12 @@ namespace Ryujinx.Graphics.Shader
+         /// </summary>
+         public bool WholeIndices { get; init; }
+ 
++        /// <summary>
++        /// TOTK: a mesh shader of 60,000 to 70,000 bytes of instructions (the code file, SPH included; runtime nvn_ctl.h
++        /// nvn2_ctl_mesh_large). Its raw global-memory helpers are not inlined (SpirvGenerator.Generate).
++        /// </summary>
++        public bool Large { get; init; }
++
+         /// <summary>
+         /// A mesh shader's per-primitive components (the second SPH's OMAP), 4 n + c for generic attribute n's; they follow the vertex components
+         /// in each attribute block.

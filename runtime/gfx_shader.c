@@ -2121,7 +2121,8 @@ static uint32_t xlate_lanes(int stage) {
 
 static int build_code_hash(int stage, const uint8_t *control, const uint8_t *code, uint64_t code_size,
                            const uint8_t *c1, uint32_t c1_len, uint8_t hash[32]) {
-    static const char tag[8] = "TKMP\1", tag_whole[8] = "TKMW\1", tag_voteu[8] = "TKVU\1", tag_wide[8] = "TKWL\1";
+    static const char tag[8] = "TKMP\1", tag_whole[8] = "TKMW\1", tag_voteu[8] = "TKVU\1", tag_wide[8] = "TKWL\1",
+                      tag_large[8] = "TKML\1";
     int tagged = stage == GFX_STAGE_MS && nvn2_ctl_mesh_points(control, code, code_size);
     // A program whose VOTEU writes a uniform predicate is another translation since patch 0042 (the eye shaders'
     // probe light): a tag keeps the earlier translator identity for every other program
@@ -2130,6 +2131,9 @@ static int build_code_hash(int stage, const uint8_t *control, const uint8_t *cod
     // compute is translated for subgroups wider than 32 lanes (AMD GCN): a tag there only. Every other device keeps
     // every key; this one's entries for those programs, made with the first warp's lanes, are not found any more.
     int wide = stage == GFX_STAGE_CS && xlate_lanes(stage) > 32 && nvn2_ctl_warp_lanes(control, code, code_size);
+    // A mesh program of 60,000 to 70,000 bytes of instructions (the foliage) is another translation since patch 0046,
+    // which calls its raw global-memory helpers instead of inlining them: a tag keeps the earlier identity for every other
+    int large = (stage == GFX_STAGE_MS || stage == GFX_STAGE_MSC) && nvn2_ctl_mesh_large(control);
     // Where mesh shaders are asked for with whole index vectors (gfx_shader_mesh_whole, patch 0041: every device but
     // NVIDIA's) they are other translations of the same programs: a second tag, there only, keeps the two apart
     // without another translator identity for everything else the device has cached.
@@ -2138,7 +2142,7 @@ static int build_code_hash(int stage, const uint8_t *control, const uint8_t *cod
     whole = gfx_shader_mesh_whole && stage == GFX_STAGE_MS && nvn2_ctl(control);
 #endif
     size_t total = 4 + CONTROL_SIZE + 8 + (size_t)code_size + 4 + c1_len + (tagged ? sizeof tag : 0) + (whole ? sizeof tag_whole : 0) +
-                   (voteu ? sizeof tag_voteu : 0) + (wide ? sizeof tag_wide : 0);
+                   (voteu ? sizeof tag_voteu : 0) + (wide ? sizeof tag_wide : 0) + (large ? sizeof tag_large : 0);
     uint8_t *buf = malloc(total), *p = buf;
     if (!buf) return 0;
     // a mesh emulation kernel carries its layout's revision: a change of the kernel (tools/xlate MeshStageWrapper
@@ -2152,7 +2156,8 @@ static int build_code_hash(int stage, const uint8_t *control, const uint8_t *cod
     if (tagged) memcpy(p, tag, sizeof tag), p += sizeof tag;
     if (whole) memcpy(p, tag_whole, sizeof tag_whole), p += sizeof tag_whole;
     if (voteu) memcpy(p, tag_voteu, sizeof tag_voteu), p += sizeof tag_voteu;
-    if (wide) memcpy(p, tag_wide, sizeof tag_wide);
+    if (wide) memcpy(p, tag_wide, sizeof tag_wide), p += sizeof tag_wide;
+    if (large) memcpy(p, tag_large, sizeof tag_large);
     rt_sha256(buf, total, hash);
     free(buf);
     return 1;

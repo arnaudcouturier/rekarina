@@ -190,6 +190,12 @@ static class SwshXlate
     // that has shared memory of its own is refused, as seedds/nxnative dm/gfx/tools/dmsh_meshstage.py own_shared does.
     static readonly int[] SharedMemoryOpcodes = { 0x984, 0x388, 0x988, 0x38c, 0x98c, 0xf8c };
 
+    // A mesh shader whose code file (control +0x38 bytes, SPH included) is 60,000 to 70,000 bytes long gets its raw global-memory
+    // helpers called, not inlined (patch 0046, MeshStage.Large): OoT's foliage, 60,288 to 69,376 bytes that call those helpers 950
+    // to 982 times. The next mesh shader that calls them is 46,592 bytes long; the larger ones (184,704 bytes on) call none.
+    // runtime/nvn_ctl.h nvn2_ctl_mesh_large tests the same length.
+    const int LargeMeshMinBytes = 60000, LargeMeshMaxBytes = 70000;
+
     // The MeshStage of a task or mesh job and the code the translator reads (the instructions after the 0x80-byte SPH). The stage
     // memory layout is seedds/nxnative dm/gfx/tools/dmsh_meshstage.py info / memory (MIT): word 0 the workgroup's number, the input
     // (a task's payload) at 0x10, the outputs after it at a 16-byte boundary (a task's payload, or a mesh shader's attribute blocks of
@@ -255,7 +261,7 @@ static class SwshXlate
         return new MeshStage { IsTask = false, HasTask = Field("task") != 0, Threads = threads, PayloadWords = (payload + 3) >> 2, MaxVertices = maxV,
             MaxPrimitives = maxP, VertexComponents = comps.ToArray(), PrimitiveComponents = primComps.ToArray(), Offsets = new[] { 0, 0x10, output, prim },
             Size = prim + ((4 + primVerts * maxP + 3) & ~3), FirstWorkgroupOffset = MeshFirstWorkgroupOffset, PrimitiveVertices = primVerts, WholeIndices = Field("whole_indices") != 0,
-            AsCompute = asCompute };
+            AsCompute = asCompute, Large = code.Length >= LargeMeshMinBytes && code.Length <= LargeMeshMaxBytes };
     }
 
     internal static string Translate(JsonObject job, string outDir)   // also called by the --service mode (Service.cs)

@@ -127,6 +127,14 @@ static inline int nvn2_ctl_warp_lanes(const uint8_t *c, const uint8_t *code, uin
     }
     return 0;
 }
+// An NVN2 mesh program of 60,000 to 70,000 bytes of instructions (+0x38): OoT's foliage mesh shaders (60,288-69,376
+// bytes, 950-982 calls of the raw global-memory helpers), where translator patch 0046 marks those helpers DontInline
+// (tools/xlate/Program.cs MakeMeshStage tests the same length; gfx_shader.c build_code_hash tags these programs). The
+// next mesh program that calls them is 46,592 bytes long, and the larger ones (184,704 bytes on) call none.
+static inline int nvn2_ctl_mesh_large(const uint8_t *c) {
+    uint32_t len = nvn2_ctl(c) ? nvn_ctl_u32(c, 0x38) : 0;
+    return len >= 60000 && len <= 70000 && c[0x56] == NVN2_STAGE_MESH;
+}
 // An NVN2 task or mesh shader's workgroup threads (control +0x58, u16).
 static inline uint32_t nvn2_ctl_mesh_threads(const uint8_t *c) {
     uint16_t t;
