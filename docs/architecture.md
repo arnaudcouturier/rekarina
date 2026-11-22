@@ -139,6 +139,20 @@ Every guest thread is a host thread. TotK assumes Horizon's scheduler: three app
   that computes last frame's position from last frame's blocks (the game writes them into two copies that take turns;
   the uniform snapshot keeps both) and writes the difference into the motion image. `REKARINA_MV_CHECK` measures the
   vectors against the picture, `REKARINA_DLAA_TIMES` times the passes on the GPU. `fxaa` switches the game's own FXAA pass.
+  OoT 1.1.1 jitters the projection on the CPU instead of the viewport (`patch_scene_projection`, on by default; after
+  ShortFuse's NX2navi port, MIT); DLSS still resolves at the game's scaling dispatch. Two patched calls
+  (`scene_projection_impl.h` `scene_projection_build`, `scene_projection_complete`) follow the scene's owner and view,
+  offset the projection the game builds by a Halton phase (16 phases at DLAA) and record a scene-complete sample with
+  the extents of its colour and depth attachments. The resolve takes that CPU camera sample and checks the settings,
+  the depth subresource and the render extent there (`vk_dlaa.c` `projection_rows`), not each draw. A sample is a short
+  lease: recording may run fewer than 12 samples ahead of replay while the uniform backing rotates, as long as the view
+  generation and the attachments' extents stay the same (`scene_projection_feedback`). Camera reprojection uses the
+  unshifted camera; a missing or stale sample leaves the game's own scaled picture for that frame and starts a new
+  history. Model replay (`vk_skin_motion.inc`) uses the jitter recorded with the draw's camera binding: only the
+  private last-frame camera bank gets the unshifted projection and a recomputed view-projection
+  (`scene_motion_projection.h`), and the depth guard (`shaders/model_motion.frag`) adds last frame's raster jitter
+  where it reads last frame's depth. DLSS and FSR 3.1 get the same render-pixel jitter, and frame generation reads the
+  committed sample. With the patch off, the viewport jitter above applies.
 - Occlusion queries never block the CPU; a result that is not ready counts as visible.
 - ASTC textures are uploaded as they are where the device reports `textureCompressionASTC_LDR`, and decoded by a compute shader everywhere else (`vk_astc.c`, `REKARINA_ASTC`). The CPU decoder (`tex_astc*.c`) is the fallback and the test oracle.
 - Draw state. A draw whose program, bound state and textures repeat reuses the previous draw's shaders and skips rebuilding its descriptor sets; descriptor sets are written through update templates (`vk_exec_draw.c`, `vk_pipeline.c`).
