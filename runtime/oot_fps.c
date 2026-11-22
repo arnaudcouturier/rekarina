@@ -960,6 +960,89 @@ static void prompt_glyphs(Cpu *c) {
     if (marked) sheet_ready(text);
 }
 
+// ---- set preloadhold: the neighbouring map's preload kept while the hero turns
+// main+0x3299880 (x19 its manager) picks, each frame, which neighbouring map to load ahead of the hero: the loop
+// main+0x3299c54..0x3299d34 walks the manager's 16 neighbour slots (+0x408, 0x128 bytes each: in use when the byte at
+// +0 is 1, the map's layout path at +0x10), w15 the slot the hero heads for (by the dot of the velocity with the way to
+// it, and its distance), w17 the last slot in use; after the loop (main+0x3299d90..0x3299d9c) w21 = w15 if not
+// negative, else w17 if not negative, else -1. The slot taken is requested (main+0x329a540) and every other one released
+// (main+0x329a400): a released slot whose layout is the one loading or loaded (+0x1e8 the next layout's path, +0x70 the
+// current one's, +0x2c the preload's state, 1..4 while it loads or is loaded) sets the state to 5, which cancels the
+// preload. In a hub such as the Market every turn of the hero changes the slot it heads for, so the preload was
+// cancelled and started again over and over. The site is in the loop's step (add x9, x9, #0x128 at main+0x3299d2c, x10
+// already counted up): on the last step (x10 == 16) the host keeps the slot whose layout is the one held (loading or
+// loaded) until the game has wanted another one for REKARINA_PRELOAD_HOLD_MS (default 2000, 0 or off: the game's own
+// pick), writing the pick to w15 and w17 so the selection after the loop takes it. A direct transition request (+0x28
+// bit 0) is the game's alone. What the game does here is from the Longshot project (commit c88f70440, GPL-3.0, read for
+// what the game does). The host writes x15 and x17 only (both dead after the selection).
+#define HOST_PRELOAD_HOLD (RT_PATCH_PAGE + 0xd10)
+static struct { int seen, cand; uint64_t since_ns, next; long long held, deferred, taken; } preload = {.cand = -2};
+static PlatMutex preload_lock = PLAT_MUTEX_INIT;
+
+static int64_t preload_hold_ns(void) {
+    static int64_t ns = -1;
+    int64_t v = __atomic_load_n(&ns, __ATOMIC_RELAXED);
+    if (v >= 0) return v;
+    const char *e = cfg_get("REKARINA_PRELOAD_HOLD_MS");
+    long ms = 2000;
+    if (e && *e) ms = !strcmp(e, "off") ? 0 : strtol(e, NULL, 10);
+    if (ms < 0) ms = 0;
+    if (ms > 60000) ms = 60000;
+    v = (int64_t)ms * 1000000;
+    __atomic_store_n(&ns, v, __ATOMIC_RELAXED);
+    return v;
+}
+
+// The slot whose layout is the one the manager loads or has loaded (-1: none, or a direct transition request runs).
+static int preload_held_slot(uint64_t mgr) {
+    if (*(const uint8_t *)(uintptr_t)(mgr + 0x28) & 1) return -1;
+    uint64_t pend = g64(mgr + 0x1e8), cur = g64(mgr + 0x70), active = 0;
+    uint32_t state = g32(mgr + 0x2c);
+    if (pend && pend < RT_ADDRESS_LIMIT && *(const uint8_t *)(uintptr_t)pend) active = pend;
+    else if (state >= 1 && state <= 4 && cur && cur < RT_ADDRESS_LIMIT && *(const uint8_t *)(uintptr_t)cur) active = cur;
+    if (!active) return -1;
+    for (int k = 0; k < 16; k++) {
+        uint64_t slot = mgr + 0x408 + 0x128ull * k;
+        if (*(const uint8_t *)(uintptr_t)slot != 1) continue;
+        uint64_t path = g64(slot + 0x10);
+        if (!path || path >= RT_ADDRESS_LIMIT) continue;
+        if (!strncmp((const char *)(uintptr_t)path, (const char *)(uintptr_t)active, 256)) return k;
+    }
+    return -1;
+}
+
+static void preload_hold(Cpu *c) {
+    if (c->x[10] != 0x10) return;   // steps 1..15 of the loop
+    uint64_t mgr = c->x[19];
+    if (!mgr || (mgr & 7) || mgr >= RT_ADDRESS_LIMIT) return;
+    int64_t hold_ns = preload_hold_ns();
+    if (hold_ns <= 0) return;
+    first_run(&preload.seen, "the neighbouring map's preload is held while the hero turns (set preloadhold)");
+    int32_t w15 = (int32_t)c->x[15], w17 = (int32_t)c->x[17];
+    int want = w15 >= 0 ? w15 : w17 >= 0 ? w17 : -1;
+    if (want >= 16) return;   // not a slot: the game's own pick
+    int held = preload_held_slot(mgr), pick = want;
+    uint64_t now = plat_now_ns();
+    plat_mutex_lock(&preload_lock);
+    if (held < 0 || want == held) preload.cand = -2;
+    else {
+        if (preload.cand != want) preload.cand = want, preload.since_ns = now, preload.deferred++;
+        if (now - preload.since_ns >= (uint64_t)hold_ns) preload.cand = -2, preload.taken++;
+        else pick = held, preload.held++;
+    }
+    plat_mutex_unlock(&preload_lock);
+    c->x[15] = (uint32_t)pick;
+    c->x[17] = (uint32_t)pick;
+    if (preload.deferred && log_due(&preload.next)) {
+        plat_mutex_lock(&preload_lock);
+        long long held_frames = preload.held, deferred = preload.deferred, taken = preload.taken;
+        preload.held = preload.deferred = preload.taken = 0;
+        plat_mutex_unlock(&preload_lock);
+        rt_log("oot fps: preload hold: %lld other neighbours wanted, %lld taken after %lld ms, %lld frames kept the held one",
+               deferred, taken, (long long)(hold_ns / 1000000), held_frames);
+    }
+}
+
 __attribute__((constructor)) static void oot_fps_register(void) {
     rt_register_host(HOST_DAY_CLOCK, day_clock);
     rt_register_host(HOST_SOUND_GATE, sound_gate);
@@ -981,6 +1064,7 @@ __attribute__((constructor)) static void oot_fps_register(void) {
     rt_register_host(HOST_INPUT_STEP, input_step);
     rt_register_host(HOST_DOF_SCALE, dof_scale);
     rt_register_host(HOST_PROMPT_GLYPHS, prompt_glyphs);
+    rt_register_host(HOST_PRELOAD_HOLD, preload_hold);
 }
 
 #endif

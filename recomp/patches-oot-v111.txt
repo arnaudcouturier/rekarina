@@ -429,3 +429,16 @@ set fov REKARINA_FOV_PATCH 0
 # factor (dead here: the next instruction writes s8). 100 % switches the set off. Which load to scale in this game is
 # from the ReLink project's notes (nx2/oot_fov.py, GPL-3.0, read for what the game does).
 site fov main 4c52f8 bd413e60 f81f0fea @page:x10 bd413e60 bd403d48 1e280800 f84107ea   # ldr s0, [x19, #0x13c] (camera update)
+
+set preloadhold REKARINA_PRELOAD_HOLD 1
+
+# The neighbouring map's preload kept while the hero turns. main+0x3299880 picks each frame which of its 16 neighbour
+# slots to load ahead of the hero (the loop main+0x3299c54..0x3299d34, w15 the slot the hero heads for, w17 the last
+# slot in use; main+0x3299d90 takes w15, else w17) and releases every other slot, which cancels the preload of a layout
+# it no longer picks. In a hub such as the Market each turn of the hero changed the pick, so the preload was cancelled
+# and started again over and over. The site is the loop's step (x10 already counted up, no flags live across it): on the
+# last step runtime/oot_fps.c preload_hold keeps the slot whose layout is loading or loaded until the game has wanted
+# another one for REKARINA_PRELOAD_HOLD_MS (default 2000, 0 or off: the game's own pick), through w15 and w17. x21 is
+# not touched: the lifted function keeps it in a local. The function saved x30 in its prologue. From the Longshot
+# project's findings (commit c88f70440, GPL-3.0, read for what the game does).
+site preloadhold main 3299d2c 9104a129 9104a129 94701bf9   # add x9, x9, #0x128 -> the same; bl page+0xd10
