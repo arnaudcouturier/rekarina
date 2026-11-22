@@ -450,6 +450,18 @@
     [UI_MENU_FLIGHT_SPIKE_MS_DESC] = "Tempo de fotograma que conta como bloqueio.",
     [UI_MENU_PASS_CRUMBS] = "Marcas de passagem da GPU",
     [UI_MENU_PASS_CRUMBS_DESC] = "Após uma falha da GPU, o registo indica a passagem de renderização que estava a decorrer. Automático: só AMD. Ligado: também NVIDIA, com um pequeno custo.",
+    [UI_MENU_MOTION_VECTORS] = "Vetores de movimento",
+    [UI_MENU_MOTION_VECTORS_DESC] = "O movimento que o DLSS e a geração de fotogramas recebem. Híbrido: o da câmara, "
+                                    "com o movimento próprio de cada personagem por cima. Câmara ou Modelos: apenas "
+                                    "um dos dois, para comparar. Desligado: nenhum. Uma alteração inicia um novo "
+                                    "histórico do DLSS.",
+    [UI_MENU_MOTION_HYBRID] = "Híbrido",
+    [UI_MENU_MOTION_CAMERA] = "Câmara",
+    [UI_MENU_MOTION_MODELS] = "Modelos",
+    [UI_MENU_MOTION_REVERSE] = "Procurar modelos pelo endereço",
+    [UI_MENU_MOTION_REVERSE_DESC] = "O movimento das personagens encontra o desenho de uma personagem no fotograma "
+                                    "anterior apenas pelos endereços dos seus buffers, e não pelos registos de "
+                                    "modelos do jogo. Para comparar as duas pesquisas.",
     [UI_MENU_INPUT_RECORD] = "Gravação de entradas",
     [UI_MENU_INPUT_RECORD_DESC] = "Escreve as tuas entradas num ficheiro para relatórios de erros.",
     [UI_MENU_OPEN_LOG] = "Abrir pasta de registos", [UI_MENU_OPEN_LOG_DESC] = "Mostra a pasta com os ficheiros de registo.",

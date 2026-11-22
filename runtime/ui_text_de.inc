@@ -450,6 +450,18 @@
     [UI_MENU_FLIGHT_SPIKE_MS_DESC] = "Framezeit, die als Hänger zählt.",
     [UI_MENU_PASS_CRUMBS] = "GPU-Pass-Marken",
     [UI_MENU_PASS_CRUMBS_DESC] = "Nach einem GPU-Absturz nennt das Protokoll den Render-Pass, der gerade lief. Automatisch: nur AMD. An: auch NVIDIA, mit geringen Kosten.",
+    [UI_MENU_MOTION_VECTORS] = "Bewegungsvektoren",
+    [UI_MENU_MOTION_VECTORS_DESC] = "Die Bewegung, die DLSS und Frame Generation erhalten. Hybrid: die der Kamera, "
+                                    "darüber die eigene Bewegung jeder Figur. Kamera oder Modelle: nur eines von "
+                                    "beiden, zum Vergleich. Aus: keine. Eine Änderung beginnt einen neuen "
+                                    "DLSS-Verlauf.",
+    [UI_MENU_MOTION_HYBRID] = "Hybrid",
+    [UI_MENU_MOTION_CAMERA] = "Kamera",
+    [UI_MENU_MOTION_MODELS] = "Modelle",
+    [UI_MENU_MOTION_REVERSE] = "Modelle per Adresse finden",
+    [UI_MENU_MOTION_REVERSE_DESC] = "Die Figurenbewegung findet das Zeichnen einer Figur im vorigen Bild nur über die "
+                                    "Adressen ihrer Puffer, nicht über die Modelldaten des Spiels. Zum Vergleich der "
+                                    "beiden Suchwege.",
     [UI_MENU_INPUT_RECORD] = "Eingabeaufzeichnung",
     [UI_MENU_INPUT_RECORD_DESC] = "Schreibt deine Eingaben für Fehlerberichte in eine Datei.",
     [UI_MENU_OPEN_LOG] = "Protokollordner öffnen", [UI_MENU_OPEN_LOG_DESC] = "Zeigt den Ordner mit den Protokolldateien.",

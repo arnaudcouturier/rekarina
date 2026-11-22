@@ -492,6 +492,16 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_FLIGHT_SPIKE_MS_DESC] = "Frame time that counts as a freeze.",
     [UI_MENU_PASS_CRUMBS] = "GPU pass marks",
     [UI_MENU_PASS_CRUMBS_DESC] = "After a GPU crash, the log names the render pass that was running. Automatic: AMD only. On: also NVIDIA, at a small cost.",
+    [UI_MENU_MOTION_VECTORS] = "Motion vectors",
+    [UI_MENU_MOTION_VECTORS_DESC] = "The motion DLSS and frame generation are given. Hybrid: the camera's, with each "
+                                    "character's own drawn over it. Camera or Models: one of the two, to compare. "
+                                    "Off: none. A change starts a new DLSS history.",
+    [UI_MENU_MOTION_HYBRID] = "Hybrid",
+    [UI_MENU_MOTION_CAMERA] = "Camera",
+    [UI_MENU_MOTION_MODELS] = "Models",
+    [UI_MENU_MOTION_REVERSE] = "Find models by address",
+    [UI_MENU_MOTION_REVERSE_DESC] = "Character motion finds last frame's draw of a character by the addresses of its "
+                                    "buffers only, not by the game's model records. For comparing the two lookups.",
     [UI_MENU_INPUT_RECORD] = "Input recording",
     [UI_MENU_INPUT_RECORD_DESC] = "Writes your inputs to a file for bug reports.",
     [UI_MENU_OPEN_LOG] = "Open log folder", [UI_MENU_OPEN_LOG_DESC] = "Shows the folder with the log files.",
@@ -1105,6 +1115,17 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_MENU_FLIGHT_SPIKE_MS_DESC] = "Время кадра, которое считается подвисанием.",
     [UI_MENU_PASS_CRUMBS] = "Метки проходов GPU",
     [UI_MENU_PASS_CRUMBS_DESC] = "После сбоя GPU журнал называет проход отрисовки, который выполнялся. Автоматически: только AMD. Вкл.: также NVIDIA, с небольшой нагрузкой.",
+    [UI_MENU_MOTION_VECTORS] = "Векторы движения",
+    [UI_MENU_MOTION_VECTORS_DESC] = "Движение, которое получают DLSS и генерация кадров. «Гибрид»: движение камеры, а "
+                                    "поверх него собственное движение каждого персонажа. «Камера» или «Модели»: "
+                                    "только одно из двух, для сравнения. «Выкл.»: никакого. Изменение начинает новую "
+                                    "историю DLSS.",
+    [UI_MENU_MOTION_HYBRID] = "Гибрид",
+    [UI_MENU_MOTION_CAMERA] = "Камера",
+    [UI_MENU_MOTION_MODELS] = "Модели",
+    [UI_MENU_MOTION_REVERSE] = "Поиск моделей по адресу",
+    [UI_MENU_MOTION_REVERSE_DESC] = "Движение персонажей ищет отрисовку персонажа в прошлом кадре только по адресам "
+                                    "его буферов, а не по записям моделей игры. Для сравнения двух способов поиска.",
     [UI_MENU_INPUT_RECORD] = "Запись ввода",
     [UI_MENU_INPUT_RECORD_DESC] = "Пишет ваш ввод в файл для отчёта об ошибке.",
     [UI_MENU_OPEN_LOG] = "Открыть папку журналов", [UI_MENU_OPEN_LOG_DESC] = "Показывает папку с файлами журнала.",
@@ -1603,6 +1624,18 @@ static const char *const text_pt_br[UI_TEXT_COUNT] = {
     [UI_MENU_FLIGHT_SPIKE_MS_DESC] = "Tempo de quadro que conta como travamento.",
     [UI_MENU_PASS_CRUMBS] = "Marcas de passagem da GPU",
     [UI_MENU_PASS_CRUMBS_DESC] = "Após uma falha da GPU, o log indica a passagem de renderização que estava em execução. Automático: só AMD. Ligado: também NVIDIA, com um pequeno custo.",
+    [UI_MENU_MOTION_VECTORS] = "Vetores de movimento",
+    [UI_MENU_MOTION_VECTORS_DESC] = "O movimento que o DLSS e a geração de quadros recebem. Híbrido: o da câmera, com "
+                                    "o movimento próprio de cada personagem por cima. Câmera ou Modelos: só um dos "
+                                    "dois, para comparar. Desligado: nenhum. Uma mudança começa um novo histórico do "
+                                    "DLSS.",
+    [UI_MENU_MOTION_HYBRID] = "Híbrido",
+    [UI_MENU_MOTION_CAMERA] = "Câmera",
+    [UI_MENU_MOTION_MODELS] = "Modelos",
+    [UI_MENU_MOTION_REVERSE] = "Buscar modelos pelo endereço",
+    [UI_MENU_MOTION_REVERSE_DESC] = "O movimento dos personagens encontra o desenho de um personagem no quadro "
+                                    "anterior só pelos endereços dos seus buffers, não pelos registros de modelos do "
+                                    "jogo. Para comparar as duas buscas.",
     [UI_MENU_INPUT_RECORD] = "Gravação de comandos",
     [UI_MENU_INPUT_RECORD_DESC] = "Grava os seus comandos num arquivo para relatórios de bug.",
     [UI_MENU_OPEN_LOG] = "Abrir pasta de logs", [UI_MENU_OPEN_LOG_DESC] = "Mostra a pasta com os arquivos de log.",
@@ -2361,6 +2394,16 @@ static const char *const text_zh_hans[UI_TEXT_COUNT] = {
     [UI_MENU_FLIGHT_SPIKE_MS_DESC] = "算作卡顿的帧时间。",
     [UI_MENU_PASS_CRUMBS] = "GPU 渲染通道标记",
     [UI_MENU_PASS_CRUMBS_DESC] = "GPU 崩溃后，日志会写出当时正在运行的渲染通道。自动：仅 AMD。开：NVIDIA 也启用，有少量开销。",
+    [UI_MENU_MOTION_VECTORS] = "运动矢量",
+    [UI_MENU_MOTION_VECTORS_DESC] = "提供给 DLSS 和帧生成的运动信息。混合：使用镜头的运动，并在其上叠加每个角色自身的"
+                                    "运动。镜头或模型：只用其中一种，用于对比。关：不提供。更改后 DLSS 会重新累积历史"
+                                    "。",
+    [UI_MENU_MOTION_HYBRID] = "混合",
+    [UI_MENU_MOTION_CAMERA] = "镜头",
+    [UI_MENU_MOTION_MODELS] = "模型",
+    [UI_MENU_MOTION_REVERSE] = "按地址查找模型",
+    [UI_MENU_MOTION_REVERSE_DESC] = "计算角色运动时，只按缓冲区地址查找角色在上一帧的绘制，而不使用游戏的模型记录。用"
+                                    "于对比两种查找方式。",
     [UI_MENU_INPUT_RECORD] = "输入录制",
     [UI_MENU_INPUT_RECORD_DESC] = "把你的输入写入文件，用于反馈问题。",
     [UI_MENU_OPEN_LOG] = "打开日志文件夹",

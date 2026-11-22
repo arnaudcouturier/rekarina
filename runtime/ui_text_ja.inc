@@ -432,6 +432,17 @@
     [UI_MENU_FLIGHT_SPIKE_MS_DESC] = "フリーズとみなすフレーム時間です。",
     [UI_MENU_PASS_CRUMBS] = "GPUパスのマーク",
     [UI_MENU_PASS_CRUMBS_DESC] = "GPUのクラッシュ後、実行中だったレンダーパスの名前がログに残ります。「自動」: AMDのみ。「オン」: NVIDIAでも有効で、わずかな負荷がかかります。",
+    [UI_MENU_MOTION_VECTORS] = "モーションベクトル",
+    [UI_MENU_MOTION_VECTORS_DESC] = "DLSSとフレーム生成に渡す動きです。「ハイブリッド」：カメラの動きに、各キャラクタ"
+                                    "ー自身の動きを重ねます。「カメラ」／「モデル」：どちらか一方のみ（比較用）。「オ"
+                                    "フ」：渡しません。変更するとDLSSの履歴がリセットされます。",
+    [UI_MENU_MOTION_HYBRID] = "ハイブリッド",
+    [UI_MENU_MOTION_CAMERA] = "カメラ",
+    [UI_MENU_MOTION_MODELS] = "モデル",
+    [UI_MENU_MOTION_REVERSE] = "アドレスでモデルを検索",
+    [UI_MENU_MOTION_REVERSE_DESC] = "キャラクターの動きを求めるとき、前フレームでのキャラクターの描画を、ゲームのモデ"
+                                    "ル情報ではなくバッファのアドレスだけで探します。2つの検索方法を比べるためのもので"
+                                    "す。",
     [UI_MENU_INPUT_RECORD] = "入力の記録",
     [UI_MENU_INPUT_RECORD_DESC] = "不具合報告用に、入力をファイルに書き出します。",
     [UI_MENU_OPEN_LOG] = "ログフォルダーを開く", [UI_MENU_OPEN_LOG_DESC] = "ログファイルのあるフォルダーを表示します。",

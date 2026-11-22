@@ -451,6 +451,18 @@
     [UI_MENU_FLIGHT_SPIKE_MS_DESC] = "Temps d'image considéré comme un gel.",
     [UI_MENU_PASS_CRUMBS] = "Repères de passes GPU",
     [UI_MENU_PASS_CRUMBS_DESC] = "Après un plantage du GPU, le journal nomme la passe de rendu qui était en cours. Automatique : AMD seulement. Activé : NVIDIA aussi, pour un faible coût.",
+    [UI_MENU_MOTION_VECTORS] = "Vecteurs de mouvement",
+    [UI_MENU_MOTION_VECTORS_DESC] = "Le mouvement fourni à DLSS et à la génération d'images. Hybride : celui de la "
+                                    "caméra, avec par-dessus le mouvement propre de chaque personnage. Caméra ou "
+                                    "Modèles : un seul des deux, pour comparer. Désactivé : aucun. Un changement "
+                                    "démarre un nouvel historique DLSS.",
+    [UI_MENU_MOTION_HYBRID] = "Hybride",
+    [UI_MENU_MOTION_CAMERA] = "Caméra",
+    [UI_MENU_MOTION_MODELS] = "Modèles",
+    [UI_MENU_MOTION_REVERSE] = "Trouver les modèles par adresse",
+    [UI_MENU_MOTION_REVERSE_DESC] = "Le mouvement des personnages retrouve le rendu d'un personnage à l'image "
+                                    "précédente uniquement par les adresses de ses tampons, et non par les fiches de "
+                                    "modèles du jeu. Pour comparer les deux recherches.",
     [UI_MENU_INPUT_RECORD] = "Enregistrer les entrées",
     [UI_MENU_INPUT_RECORD_DESC] = "Écrit vos entrées dans un fichier pour les rapports de bug.",
     [UI_MENU_OPEN_LOG] = "Ouvrir les journaux", [UI_MENU_OPEN_LOG_DESC] = "Affiche le dossier des fichiers journaux.",

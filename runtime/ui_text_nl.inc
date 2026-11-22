@@ -449,6 +449,18 @@
     [UI_MENU_FLIGHT_SPIKE_MS_DESC] = "Frametijd die als hapering telt.",
     [UI_MENU_PASS_CRUMBS] = "GPU-passmarkeringen",
     [UI_MENU_PASS_CRUMBS_DESC] = "Na een GPU-crash noemt het log de renderpass die bezig was. Automatisch: alleen AMD. Aan: ook NVIDIA, tegen geringe kosten.",
+    [UI_MENU_MOTION_VECTORS] = "Bewegingsvectoren",
+    [UI_MENU_MOTION_VECTORS_DESC] = "De beweging die DLSS en framegeneratie krijgen. Hybride: die van de camera, met "
+                                    "daarover de eigen beweging van elk personage. Camera of Modellen: alleen een van "
+                                    "beide, om te vergelijken. Uit: geen. Een wijziging begint een nieuwe "
+                                    "DLSS-geschiedenis.",
+    [UI_MENU_MOTION_HYBRID] = "Hybride",
+    [UI_MENU_MOTION_CAMERA] = "Camera",
+    [UI_MENU_MOTION_MODELS] = "Modellen",
+    [UI_MENU_MOTION_REVERSE] = "Modellen zoeken op adres",
+    [UI_MENU_MOTION_REVERSE_DESC] = "De beweging van personages vindt de tekening van een personage in het vorige "
+                                    "frame alleen via de adressen van zijn buffers, niet via de modelgegevens van de "
+                                    "game. Om de twee zoekmethoden te vergelijken.",
     [UI_MENU_INPUT_RECORD] = "Invoer opnemen",
     [UI_MENU_INPUT_RECORD_DESC] = "Schrijft je invoer naar een bestand voor bugmeldingen.",
     [UI_MENU_OPEN_LOG] = "Logmap openen", [UI_MENU_OPEN_LOG_DESC] = "Toont de map met de logbestanden.",

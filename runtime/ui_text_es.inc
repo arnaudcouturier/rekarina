@@ -447,6 +447,18 @@
     [UI_MENU_FLIGHT_SPIKE_MS_DESC] = "Tiempo de fotograma que cuenta como congelación.",
     [UI_MENU_PASS_CRUMBS] = "Marcas de pasadas de GPU",
     [UI_MENU_PASS_CRUMBS_DESC] = "Tras un fallo de la GPU, el registro nombra la pasada de render que estaba en curso. Automático: solo AMD. Activado: también NVIDIA, con un pequeño coste.",
+    [UI_MENU_MOTION_VECTORS] = "Vectores de movimiento",
+    [UI_MENU_MOTION_VECTORS_DESC] = "El movimiento que reciben DLSS y la generación de fotogramas. Híbrido: el de la "
+                                    "cámara, con el movimiento propio de cada personaje encima. Cámara o Modelos: "
+                                    "solo uno de los dos, para comparar. Desactivado: ninguno. Un cambio empieza un "
+                                    "nuevo historial de DLSS.",
+    [UI_MENU_MOTION_HYBRID] = "Híbrido",
+    [UI_MENU_MOTION_CAMERA] = "Cámara",
+    [UI_MENU_MOTION_MODELS] = "Modelos",
+    [UI_MENU_MOTION_REVERSE] = "Buscar modelos por dirección",
+    [UI_MENU_MOTION_REVERSE_DESC] = "El movimiento de los personajes encuentra el dibujo de un personaje en el "
+                                    "fotograma anterior solo por las direcciones de sus búferes, no por los registros "
+                                    "de modelos del juego. Para comparar las dos búsquedas.",
     [UI_MENU_INPUT_RECORD] = "Grabación de entradas",
     [UI_MENU_INPUT_RECORD_DESC] = "Escribe tus entradas en un archivo para los informes de errores.",
     [UI_MENU_OPEN_LOG] = "Abrir carpeta de registros", [UI_MENU_OPEN_LOG_DESC] = "Muestra la carpeta con los archivos de registro.",

@@ -448,6 +448,18 @@
     [UI_MENU_FLIGHT_SPIKE_MS_DESC] = "Tempo di fotogramma che conta come blocco.",
     [UI_MENU_PASS_CRUMBS] = "Marcatori pass GPU",
     [UI_MENU_PASS_CRUMBS_DESC] = "Dopo un crash della GPU, il log indica il render pass che era in esecuzione. Automatico: solo AMD. Attivato: anche NVIDIA, con un piccolo costo.",
+    [UI_MENU_MOTION_VECTORS] = "Vettori di movimento",
+    [UI_MENU_MOTION_VECTORS_DESC] = "Il movimento fornito a DLSS e alla generazione fotogrammi. Ibrido: quello della "
+                                    "telecamera, con sopra il movimento proprio di ogni personaggio. Telecamera o "
+                                    "Modelli: solo uno dei due, per confrontare. Disattivato: nessuno. Una modifica "
+                                    "avvia una nuova cronologia DLSS.",
+    [UI_MENU_MOTION_HYBRID] = "Ibrido",
+    [UI_MENU_MOTION_CAMERA] = "Telecamera",
+    [UI_MENU_MOTION_MODELS] = "Modelli",
+    [UI_MENU_MOTION_REVERSE] = "Trova i modelli per indirizzo",
+    [UI_MENU_MOTION_REVERSE_DESC] = "Il movimento dei personaggi trova il disegno di un personaggio nel fotogramma "
+                                    "precedente solo dagli indirizzi dei suoi buffer, non dai record dei modelli del "
+                                    "gioco. Per confrontare le due ricerche.",
     [UI_MENU_INPUT_RECORD] = "Registrazione input",
     [UI_MENU_INPUT_RECORD_DESC] = "Scrive i tuoi input in un file per le segnalazioni di bug.",
     [UI_MENU_OPEN_LOG] = "Apri cartella dei log", [UI_MENU_OPEN_LOG_DESC] = "Mostra la cartella con i file di log.",

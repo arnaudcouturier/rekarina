@@ -723,13 +723,37 @@ int vk_dlaa_model_motion(void) {
     return motion_vectors_models(__atomic_load_n(&motion_frame, __ATOMIC_RELAXED));
 }
 
+static const char *const motion_names[] = {"off", "camera", "models", "hybrid"};   // MotionVectorsMode order
+
+// The Advanced tab's diagnostics switches, read again when a setting changed. REKARINA_MOTION_VECTORS: where the
+// motion vectors come from, for A/B comparisons: hybrid (the camera's reprojection, with model replay drawn over it),
+// camera or models alone, or off. REKARINA_DLAA_REVERSE_ONLY=1: model replay finds a draw's model by its buffers'
+// addresses only, not by the work entry the game's model update recorded, to compare the two lookups
+// (tracked_model_cpu_impl.h).
+static void motion_settings_check(void) {
+    static unsigned seen = ~0u;
+    unsigned v = cfg_version();
+    if (v == seen) return;
+    seen = v;
+    const char *name = cfg_value("REKARINA_MOTION_VECTORS");
+    for (int m = MOTION_VECTORS_OFF; m <= MOTION_VECTORS_HYBRID; m++)
+        if (!strcmp(name, motion_names[m])) vk_dlaa_set_motion_vectors((MotionVectorsMode)m);
+    vk_dlaa_set_reverse_only(cfg_bool("REKARINA_DLAA_REVERSE_ONLY"));
+}
+
 // Latch between replays so scene capture and evaluation use the same mode.
 static void motion_vectors_frame(void) {
     static int enabled = -1;
     if (enabled < 0) enabled = rt_knob("DLAA_MV", "1");
-    __atomic_store_n(&reverse_only_frame, vk_dlaa_reverse_only_requested(), __ATOMIC_RELAXED);
+    motion_settings_check();
+    int reverse = vk_dlaa_reverse_only_requested();
+    if (reverse != __atomic_load_n(&reverse_only_frame, __ATOMIC_RELAXED))
+        rt_log("dlaa: model replay finds draws by %s", reverse ? "buffer address only" : "work entry, then buffer address");
+    __atomic_store_n(&reverse_only_frame, reverse, __ATOMIC_RELAXED);
     MotionVectorsMode mode = enabled ? vk_dlaa_motion_vectors() : MOTION_VECTORS_OFF;
-    if (mode != __atomic_load_n(&motion_frame, __ATOMIC_RELAXED)) {
+    MotionVectorsMode was = __atomic_load_n(&motion_frame, __ATOMIC_RELAXED);
+    if (mode != was) {
+        rt_log("dlaa: motion vectors %s (were %s): a new history", motion_names[mode], motion_names[was]);
         __atomic_store_n(&motion_frame, mode, __ATOMIC_RELAXED);
         D.reset = 1;
     }

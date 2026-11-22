@@ -1701,6 +1701,16 @@ static void tab_advanced(float scale) {
     opt_toggle("REKARINA_FLIGHT", UI_MENU_FLIGHT, UI_MENU_FLIGHT_DESC);
     opt_slider("REKARINA_FLIGHT_SPIKE_MS", UI_MENU_FLIGHT_SPIKE_MS, 20, 1000, UI_MENU_FLIGHT_SPIKE_MS_DESC, 10, "%.0f");
     opt_choice("REKARINA_PASS_CRUMBS", UI_MENU_PASS_CRUMBS, dyn, 3, UI_MENU_PASS_CRUMBS_DESC);   // vk_crumbs.c pass marks
+    {   // where DLSS's motion vectors come from, for A/B comparisons (vk_dlaa.c motion_settings_check)
+        static const char *const motion[] = {"hybrid", "camera", "models", "off"};
+        const char *motion_names[] = {menu_text(UI_MENU_MOTION_HYBRID), menu_text(UI_MENU_MOTION_CAMERA),
+                                      menu_text(UI_MENU_MOTION_MODELS), menu_text(UI_MENU_OFF)};
+        opt_choice_list("REKARINA_MOTION_VECTORS", UI_MENU_MOTION_VECTORS, motion, motion_names, 4,
+                        UI_MENU_MOTION_VECTORS_DESC);
+    }
+#ifdef GAME_OOT   // the tracked models' lookup (tracked_model_cpu_impl.h); TotK's models are not tracked
+    opt_toggle("REKARINA_DLAA_REVERSE_ONLY", UI_MENU_MOTION_REVERSE, UI_MENU_MOTION_REVERSE_DESC);
+#endif
     static char rec_path[600];   // the recording goes beside the log
     if (!rec_path[0]) {
         char dir[512];

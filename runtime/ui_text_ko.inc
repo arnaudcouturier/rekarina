@@ -439,6 +439,16 @@
     [UI_MENU_FLIGHT_SPIKE_MS_DESC] = "멈춤으로 간주하는 프레임 시간입니다.",
     [UI_MENU_PASS_CRUMBS] = "GPU 패스 표시",
     [UI_MENU_PASS_CRUMBS_DESC] = "GPU 크래시 후 로그에 실행 중이던 렌더 패스의 이름이 남습니다. 자동: AMD만. 켬: NVIDIA에서도 사용하며 약간의 부하가 있습니다.",
+    [UI_MENU_MOTION_VECTORS] = "모션 벡터",
+    [UI_MENU_MOTION_VECTORS_DESC] = "DLSS와 프레임 생성에 전달하는 움직임입니다. 하이브리드: 카메라의 움직임 위에 각 "
+                                    "캐릭터 자체의 움직임을 더합니다. 카메라 또는 모델: 둘 중 하나만 "
+                                    "사용합니다(비교용). 끔: 전달하지 않습니다. 변경하면 DLSS 기록이 새로 시작됩니다.",
+    [UI_MENU_MOTION_HYBRID] = "하이브리드",
+    [UI_MENU_MOTION_CAMERA] = "카메라",
+    [UI_MENU_MOTION_MODELS] = "모델",
+    [UI_MENU_MOTION_REVERSE] = "주소로 모델 찾기",
+    [UI_MENU_MOTION_REVERSE_DESC] = "캐릭터 움직임을 계산할 때 이전 프레임의 캐릭터 그리기를 게임의 모델 기록이 "
+                                    "아니라 버퍼 주소만으로 찾습니다. 두 가지 찾기 방식을 비교하기 위한 옵션입니다.",
     [UI_MENU_INPUT_RECORD] = "입력 기록",
     [UI_MENU_INPUT_RECORD_DESC] = "버그 제보를 위해 입력을 파일에 기록합니다.",
     [UI_MENU_OPEN_LOG] = "로그 폴더 열기", [UI_MENU_OPEN_LOG_DESC] = "로그 파일이 있는 폴더를 엽니다.",

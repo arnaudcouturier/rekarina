@@ -432,6 +432,16 @@
     [UI_MENU_FLIGHT_SPIKE_MS_DESC] = "視為凍結的幀時間。",
     [UI_MENU_PASS_CRUMBS] = "GPU 通道標記",
     [UI_MENU_PASS_CRUMBS_DESC] = "GPU 當機後，記錄檔會指出當時正在執行的渲染通道。「自動」：僅 AMD。「開」：也包含 NVIDIA，有少許效能代價。",
+    [UI_MENU_MOTION_VECTORS] = "運動向量",
+    [UI_MENU_MOTION_VECTORS_DESC] = "提供給 DLSS 與幀生成的運動資訊。「混合」：使用鏡頭的運動，並在其上疊加每個角色本"
+                                    "身的運動。「鏡頭」或「模型」：只用其中一種，用於比較。「關」：不提供。變更後 "
+                                    "DLSS 會重新累積歷史。",
+    [UI_MENU_MOTION_HYBRID] = "混合",
+    [UI_MENU_MOTION_CAMERA] = "鏡頭",
+    [UI_MENU_MOTION_MODELS] = "模型",
+    [UI_MENU_MOTION_REVERSE] = "依位址尋找模型",
+    [UI_MENU_MOTION_REVERSE_DESC] = "計算角色運動時，只依緩衝區位址尋找角色在上一幀的繪製，而不使用遊戲的模型記錄。用"
+                                    "於比較兩種尋找方式。",
     [UI_MENU_INPUT_RECORD] = "輸入錄製",
     [UI_MENU_INPUT_RECORD_DESC] = "將你的輸入寫入檔案，供回報錯誤使用。",
     [UI_MENU_OPEN_LOG] = "開啟記錄檔資料夾", [UI_MENU_OPEN_LOG_DESC] = "顯示存放記錄檔的資料夾。",
