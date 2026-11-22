@@ -895,8 +895,8 @@ class LauncherShortcutTest(unittest.TestCase):
     def test_game_folder_start_menu_desktop(self):
         made, calls = self.run_it()
         launcher = self.setup / self.oot.LAUNCHER_EXE
-        links = [self.dest / 'Rekarina Launcher.lnk', self.base / 'start' / 'Rekarina.lnk',
-                 self.base / 'desktop' / 'Rekarina Launcher.lnk']
+        links = [self.dest / 'Rekarina Launcher.lnk', self.base / 'start' / 'Rekarina (fork).lnk',
+                 self.base / 'desktop' / 'Rekarina Launcher (fork).lnk']
         self.assertEqual(calls, [(link, launcher, self.setup) for link in links])
         self.assertEqual(made, links)
 
@@ -942,6 +942,7 @@ class EnsureShortcutsTest(unittest.TestCase):
         self.dest = base / 'game'
         self.dest.mkdir()
         (self.dest / oot.GAME_EXE).write_bytes(b'the game')
+        (self.dest / 'rekarina-fork.txt').write_text('arnaudcouturier/rekarina\n', encoding='ascii')
         self.old = self.setup('1.2.3')
         self.new = self.setup('1.2.5')
         self.targets = {}   # link -> the launcher it points at (the stand-in's "disk")
@@ -980,27 +981,27 @@ class EnsureShortcutsTest(unittest.TestCase):
 
     def test_missing_are_written_and_the_desktop_is_left_to_the_player(self):
         made, _, installed = self.run_it(self.new, '1.2.5')
-        self.assertEqual(made, [self.dest / 'Rekarina Launcher.lnk', self.base / 'start' / 'Rekarina.lnk'])
+        self.assertEqual(made, [self.dest / 'Rekarina Launcher.lnk', self.base / 'start' / 'Rekarina (fork).lnk'])
         self.assertEqual(installed, [(self.dest, '1.2.5')])   # the uninstaller's parts, the game folder lacking them
 
     def test_an_older_launcher_is_replaced_and_the_same_one_stays(self):
         self.link(self.dest / 'Rekarina Launcher.lnk', self.old / self.oot.LAUNCHER_EXE)
-        self.link(self.base / 'start' / 'Rekarina.lnk', self.new / self.oot.LAUNCHER_EXE)
-        self.link(self.base / 'desktop' / 'Rekarina Launcher.lnk', self.old / self.oot.LAUNCHER_EXE)
+        self.link(self.base / 'start' / 'Rekarina (fork).lnk', self.new / self.oot.LAUNCHER_EXE)
+        self.link(self.base / 'desktop' / 'Rekarina Launcher (fork).lnk', self.old / self.oot.LAUNCHER_EXE)
         made, _, _ = self.run_it(self.new, '1.2.5')
-        self.assertEqual(made, [self.dest / 'Rekarina Launcher.lnk', self.base / 'desktop' / 'Rekarina Launcher.lnk'])
+        self.assertEqual(made, [self.dest / 'Rekarina Launcher.lnk', self.base / 'desktop' / 'Rekarina Launcher (fork).lnk'])
         self.assertTrue(all(t == self.new / self.oot.LAUNCHER_EXE for t in self.targets.values()))
 
     def test_a_newer_launcher_elsewhere_stays(self):
         self.link(self.dest / 'Rekarina Launcher.lnk', self.new / self.oot.LAUNCHER_EXE)
-        self.link(self.base / 'start' / 'Rekarina.lnk', self.new / self.oot.LAUNCHER_EXE)
+        self.link(self.base / 'start' / 'Rekarina (fork).lnk', self.new / self.oot.LAUNCHER_EXE)
         made, _, _ = self.run_it(self.old, '1.2.3')   # the old setup's launcher started by hand
         self.assertEqual(made, [])
 
     def test_a_launcher_that_is_gone_is_replaced(self):
         gone = self.base / 'home' / 'setup' / '1.2.9' / self.oot.LAUNCHER_EXE
         self.link(self.dest / 'Rekarina Launcher.lnk', gone)
-        self.link(self.base / 'start' / 'Rekarina.lnk', gone)
+        self.link(self.base / 'start' / 'Rekarina (fork).lnk', gone)
         made, _, _ = self.run_it(self.old, '1.2.3')
         self.assertEqual(len(made), 2)
 
@@ -1008,7 +1009,7 @@ class EnsureShortcutsTest(unittest.TestCase):
         """The launcher's own update swaps the release inside the same folder: the shortcuts' path is the new
         launcher's (installer/update.py "How the swap works"), and nothing is rewritten."""
         self.link(self.dest / 'Rekarina Launcher.lnk', self.old / self.oot.LAUNCHER_EXE)
-        self.link(self.base / 'start' / 'Rekarina.lnk', self.old / self.oot.LAUNCHER_EXE)
+        self.link(self.base / 'start' / 'Rekarina (fork).lnk', self.old / self.oot.LAUNCHER_EXE)
         (self.old / 'VERSION').write_text('1.2.5\n', encoding='utf-8')   # the folder now holds 1.2.5
         made, _, _ = self.run_it(self.old, '1.2.5')
         self.assertEqual(made, [])

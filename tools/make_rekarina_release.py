@@ -61,12 +61,14 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / 'tools'))
+sys.path.insert(0, str(ROOT))
 import check_content  # noqa: E402
+from installer import fork  # noqa: E402
 SKIP_DIRS = {'__pycache__', '.pytest_cache', '.git'}
 SKIP_SUFFIXES = {'.pyc', '.orig', '.rej', '.tmp', '.obj', '.o'}
 # NVIDIA's and AMD's libraries: theirs to distribute, not ours (installer/components.py downloads them at install)
 VENDOR_DLLS = ('nvngx_*.dll', 'sl.*.dll', 'NvLowLatencyVk.dll', 'amd_fidelityfx*.dll')
-ROOT_FILES = ('Rekarina-Launcher.exe', 'LICENSE', 'THIRD_PARTY_NOTICES.md', 'VERSION')
+ROOT_FILES = ('Rekarina-Launcher.exe', 'LICENSE', 'THIRD_PARTY_NOTICES.md', 'VERSION', fork.INSTALL_MARKER)
 LINUX_ROOT_FILES = ('AppRun', 'rekarina.desktop', 'rekarina.png', '.DirIcon', 'LICENSE', 'THIRD_PARTY_NOTICES.md', 'VERSION')
 APPRUN = '''#!/bin/sh
 # The AppImage entry: Rekarina's launcher window, run by the bundled Python from the read-only mount.
@@ -369,6 +371,7 @@ def main():
         shutil.copy2(shim, out / 'bin' / 'rekarina_dlssg.dll')
     counts['runtime'] = copy_tree(ROOT / 'runtime', out / 'runtime')
     counts['deps'] = copy_tree(ROOT / 'toolchain' / 'deps-mingw', out / 'runtime' / 'deps', whole=True)
+    fork.mark_install(out)
     counts['recomp'] = copy_tree(ROOT / 'recomp', out / 'recomp')
     counts['tools'] = copy_tree(ROOT / 'tools', out / 'tools', skip=('xlate',))   # the translator's sources: bin/ has it built
     counts['installer'] = copy_tree(ROOT / 'installer', out / 'installer')

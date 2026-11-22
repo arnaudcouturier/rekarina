@@ -50,6 +50,7 @@ class SingleUnpackTest(unittest.TestCase):
         text = b''.join(p.read_bytes() for p in sorted((ROOT / 'installer').glob('*.py')))
         cls.files = {
             'Rekarina-Launcher.exe': b'MZ' + os.urandom(3000),
+            'rekarina-fork.txt': b'arnaudcouturier/rekarina\n',
             'installer/all.py': text,                                   # text: dynamic codes, long matches
             'bin/stub.exe': cls.program,                                # a program's bytes
             'data/random.bin': os.urandom(300_000),                     # what deflate stores as it is

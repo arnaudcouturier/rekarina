@@ -94,7 +94,7 @@ static int apply_update(const wchar_t *root)
     if (!exists(fresh)) { DeleteFileW(ready); return 0; }
 
     /* one launcher at a time: a double click starts two */
-    mutex = CreateMutexW(NULL, FALSE, L"Local\\RekarinaLauncherUpdate");
+    mutex = CreateMutexW(NULL, FALSE, L"Local\\RekarinaForkLauncherUpdate");
     if (mutex && WaitForSingleObject(mutex, 60000) == WAIT_TIMEOUT) { CloseHandle(mutex); return 0; }
     if (!exists(ready)) { result = 0; goto done; }   /* the other launcher did it while this one waited */
 

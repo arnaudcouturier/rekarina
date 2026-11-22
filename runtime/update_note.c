@@ -1,7 +1,7 @@
 // The update notice: whether a newer release of the port exists, for the line the overlay shows when the game starts
 // (ui/menu.cpp update_notice_draw) and the menu's title line.
 //
-// The answer is kept in <app data>/Rekarina/update.json, which the launcher (installer/update.py) writes too:
+// The answer is kept in <app data>/RekarinaFork/update.json, which installer/update.py writes too:
 //   {"latest": "1.0.1", "checked": 1731326400}
 // latest: the newest release's version without its "v"; checked: Unix seconds of the check. Other members are left to
 // the launcher and not read here. A file younger than CHECK_EVERY_S is trusted; else one HTTPS request asks GitHub's
@@ -94,10 +94,10 @@ static int cache_path(char *out, size_t cap) {
     char base[512];
 #ifdef _WIN32
     if (!plat_getenv("APPDATA", base, sizeof base)) return 0;
-    snprintf(out, cap, "%s/Rekarina", base);
+    snprintf(out, cap, "%s/RekarinaFork", base);
 #else
-    if (plat_getenv("XDG_CONFIG_HOME", base, sizeof base)) snprintf(out, cap, "%s/rekarina", base);
-    else if (plat_getenv("HOME", base, sizeof base)) snprintf(out, cap, "%s/.config/rekarina", base);
+    if (plat_getenv("XDG_CONFIG_HOME", base, sizeof base)) snprintf(out, cap, "%s/RekarinaFork", base);
+    else if (plat_getenv("HOME", base, sizeof base)) snprintf(out, cap, "%s/.config/RekarinaFork", base);
     else return 0;
 #endif
     plat_file_mkdir_p(out);

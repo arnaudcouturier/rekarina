@@ -18,7 +18,7 @@ import unittest
 import zipfile
 from pathlib import Path
 
-from . import components, ed25519, eta, net, oot, update
+from . import components, ed25519, eta, fork, net, oot, update
 
 GIB = 1 << 30
 
@@ -69,7 +69,8 @@ def release_zip(version, top='Rekarina-Setup', extra=None):
     """A stand-in for a release archive: the files update.REQUIRED names and a few more."""
     files = {'VERSION': version + '\n', 'Rekarina-Launcher.exe': 'new launcher', 'LICENSE': 'MIT',
              'python/pythonw.exe': 'new pythonw', 'python/python.exe': 'new python', 'installer/gui_oot.py': '# new',
-             'installer/update.py': '# new', 'tools/package_oot.py': '# new', 'temp/should-not-land.txt': 'x'}
+             'installer/update.py': '# new', 'tools/package_oot.py': '# new', 'temp/should-not-land.txt': 'x',
+             fork.INSTALL_MARKER: fork.REPOSITORY + '\n'}
     files.update(extra or {})
     data = io.BytesIO()
     with zipfile.ZipFile(data, 'w', zipfile.ZIP_DEFLATED) as z:
@@ -508,6 +509,13 @@ class StageTest(Sandbox):
     def test_flat_archive(self):
         root, path, version = self.stage(release_zip('1.0.1', top=''))
         self.assertEqual((update.stage(path, root, version) / 'VERSION').read_text().strip(), '1.0.1')
+
+    def test_refuses_another_release_channel(self):
+        root, path, version = self.stage(release_zip('1.0.1', extra={fork.INSTALL_MARKER: 'upstream'}))
+        with self.assertRaises(update.UpdateError) as err:
+            update.stage(path, root, version)
+        self.assertEqual(err.exception.id, 'update.bad_archive')
+        self.assertEqual(update.staged_version(root), '')
 
     def test_refused(self):
         data = io.BytesIO()

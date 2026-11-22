@@ -13,15 +13,15 @@ uninstall_entry), so it works without the launcher: PowerShell runs from Windows
 whole before anything is deleted, so it can remove the folders it came from.
 
 What goes (each folder only when it carries the marks of ours, test_ours):
-    the game folder                 rekarina-install.json (or an older totk-install.json) and Rekarina.exe or rekarina.ini
-    <home>\setup\<version> folders  unpacked.txt, or Rekarina-Launcher.exe with installer\oot.py; their temp folders
-                                    (a build's working files) are inside them. <home> is %LOCALAPPDATA%\Rekarina\home.txt's
+    the game folder                 the fork marker, installation record and Rekarina.exe or rekarina.ini
+    <home>\setup\<version> folders  the fork marker, Rekarina-Launcher.exe and installer\oot.py. Their temp folders
+                                    (a build's working files) are inside them. <home> is %LOCALAPPDATA%\RekarinaFork\home.txt's
                                     folder; <home>\setup and <home> go when they are empty afterwards
-    %LOCALAPPDATA%\Rekarina         home.txt, logs, a 1.2.0 install's setup folders, then the folder when empty
-    %APPDATA%\Rekarina              launcher.json, update.json, timings.json, then the folder when empty
-    shortcuts                       Start menu "Rekarina", desktop "Rekarina Launcher", the game folder's own, each only
+    %LOCALAPPDATA%\RekarinaFork     home.txt, logs, an install's setup folders, then the folder when empty
+    %APPDATA%\RekarinaFork          launcher.json, update.json, timings.json, then the folder when empty
+    shortcuts                       Start "Rekarina (fork)", desktop "Rekarina Launcher (fork)", the game folder's own, each only
                                     when it points into a folder that goes
-    the "Apps & features" entry     HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\Rekarina
+    the "Apps & features" entry     HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\RekarinaFork
 Never: a game dump or keys anywhere (.nup .nsp .xci .nsz .xcz .keys stay where they are, with the folders that hold
 them), anything under a link or junction (the link itself goes, not what it points to), a folder without the marks.
 The saves (the game folder's profile\: save, save-tx, account.uid and whatever else it holds) stay where they are
@@ -38,7 +38,7 @@ param(
     [switch]$Quiet,
     [string]$StartMenu = '',
     [string]$Desktop = '',
-    [string]$RegKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\Rekarina'
+    [string]$RegKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\RekarinaFork'
 )
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version 2
@@ -80,6 +80,12 @@ function Forbidden([string]$path) {
 
 function Has([string]$folder, [string]$name) { return Test-Path -LiteralPath (Join-Path $folder $name) }
 
+function Has-ForkMarker([string]$folder) {
+    $marker = Join-Path $folder 'rekarina-fork.txt'
+    try { return (Get-Content -LiteralPath $marker -TotalCount 1 -ErrorAction Stop) -ceq 'arnaudcouturier/rekarina' }
+    catch { return $false }
+}
+
 # Whether a folder is ours, by the marks the setup and the single exe leave: 'game', 'setup', 'appdata' or ''.
 function Test-Ours([string]$folder, [string]$kind) {
     if (-not $folder -or -not (Test-Path -LiteralPath $folder -PathType Container)) { return $false }
@@ -88,15 +94,15 @@ function Test-Ours([string]$folder, [string]$kind) {
     if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) { return $false }
     switch ($kind) {
         'game' {
-            return ((Has $folder 'rekarina-install.json') -or (Has $folder 'totk-install.json')) -and
+            return (Has-ForkMarker $folder) -and ((Has $folder 'rekarina-install.json') -or (Has $folder 'totk-install.json')) -and
                    ((Has $folder 'Rekarina.exe') -or (Has $folder 'rekarina.ini'))
         }
         'setup' {
-            return (Has $folder 'unpacked.txt') -or ((Has $folder 'Rekarina-Launcher.exe') -and (Has $folder 'installer\oot.py'))
+            return (Has-ForkMarker $folder) -and (Has $folder 'Rekarina-Launcher.exe') -and (Has $folder 'installer\oot.py')
         }
         'appdata' {
-            $local = if ($env:LOCALAPPDATA) { Join-Path $env:LOCALAPPDATA 'Rekarina' } else { '' }
-            $roam = if ($env:APPDATA) { Join-Path $env:APPDATA 'Rekarina' } else { '' }
+            $local = if ($env:LOCALAPPDATA) { Join-Path $env:LOCALAPPDATA 'RekarinaFork' } else { '' }
+            $roam = if ($env:APPDATA) { Join-Path $env:APPDATA 'RekarinaFork' } else { '' }
             return ($local -and (Same $folder $local)) -or ($roam -and (Same $folder $roam))
         }
     }
@@ -217,8 +223,8 @@ function Shortcut-Target([string]$lnk) {
 # ---- the plan
 if (-not $GameDir) { $GameDir = $PSScriptRoot }
 $GameDir = Full $GameDir
-$localRk = if ($env:LOCALAPPDATA) { Join-Path $env:LOCALAPPDATA 'Rekarina' } else { '' }
-$roamRk = if ($env:APPDATA) { Join-Path $env:APPDATA 'Rekarina' } else { '' }
+$localRk = if ($env:LOCALAPPDATA) { Join-Path $env:LOCALAPPDATA 'RekarinaFork' } else { '' }
+$roamRk = if ($env:APPDATA) { Join-Path $env:APPDATA 'RekarinaFork' } else { '' }
 $homeDir = ''
 if ($localRk -and (Has $localRk 'home.txt')) {
     $raw = [IO.File]::ReadAllBytes((Join-Path $localRk 'home.txt'))
@@ -238,7 +244,7 @@ function Add-Item([string]$path, [string]$kind, [string]$what) {
 }
 
 if (Test-Ours $GameDir 'game') { Add-Item $GameDir 'game' 'game' }
-else { $refused.Add([ordered]@{ path = $GameDir; why = 'the game folder carries no rekarina-install.json with Rekarina.exe' }) }
+else { $refused.Add([ordered]@{ path = $GameDir; why = 'the game folder is missing the fork marker or installation files' }) }
 $setupRoots = @()
 if ($homeDir) { $setupRoots += (Join-Path $homeDir 'setup') }
 if ($localRk) { $setupRoots += (Join-Path $localRk 'setup') }
@@ -246,14 +252,15 @@ foreach ($root in $setupRoots) {
     if (-not (Test-Path -LiteralPath $root -PathType Container)) { continue }
     foreach ($d in [IO.Directory]::EnumerateDirectories($root)) {
         if (Test-Ours $d 'setup') { Add-Item $d 'setup' 'setup' }
-        else { $refused.Add([ordered]@{ path = $d; why = 'no unpacked.txt or Rekarina-Launcher.exe with installer\oot.py' }) }
+        else { $refused.Add([ordered]@{ path = $d; why = 'the setup folder is missing the fork marker or launcher files' }) }
     }
 }
 # A setup folder anywhere else (a setup unpacked from the zip release) is found through the shortcuts that point to its
 # launcher, under the same guard
 $startDir0 = if ($StartMenu) { $StartMenu } else { [Environment]::GetFolderPath('Programs') }
 $deskDir0 = if ($Desktop) { $Desktop } else { [Environment]::GetFolderPath('Desktop') }
-foreach ($l in @((Join-Path $GameDir 'Rekarina Launcher.lnk'), (Join-Path $startDir0 'Rekarina.lnk'), (Join-Path $deskDir0 'Rekarina Launcher.lnk'))) {
+foreach ($l in @((Join-Path $GameDir 'Rekarina Launcher.lnk'), (Join-Path $startDir0 'Rekarina (fork).lnk'),
+                 (Join-Path $deskDir0 'Rekarina Launcher (fork).lnk'))) {
     if (-not (Test-Path -LiteralPath $l -PathType Leaf)) { continue }
     $t = Shortcut-Target $l
     if ($t -and ([IO.Path]::GetFileName($t) -ieq 'Rekarina-Launcher.exe')) {
@@ -267,7 +274,7 @@ $gone = @($items | ForEach-Object { $_.path })
 $links = @()
 $startDir = if ($StartMenu) { $StartMenu } else { [Environment]::GetFolderPath('Programs') }
 $deskDir = if ($Desktop) { $Desktop } else { [Environment]::GetFolderPath('Desktop') }
-foreach ($l in @((Join-Path $startDir 'Rekarina.lnk'), (Join-Path $deskDir 'Rekarina Launcher.lnk'))) {
+foreach ($l in @((Join-Path $startDir 'Rekarina (fork).lnk'), (Join-Path $deskDir 'Rekarina Launcher (fork).lnk'))) {
     if (-not (Test-Path -LiteralPath $l -PathType Leaf)) { continue }
     $t = Shortcut-Target $l
     $ours = $false

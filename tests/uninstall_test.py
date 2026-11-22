@@ -48,6 +48,7 @@ class UninstallTest(unittest.TestCase):
         for name in ('rekarina-install.json', 'Rekarina.exe', 'rekarina.ini', 'shader-cache/shader-cache.pack',
                      'logs/rekarina.log', 'mods/a mod/romfs/x.bin', 'exefs/main'):
             put(self.game / name)
+        put(self.game / 'rekarina-fork.txt', b'arnaudcouturier/rekarina\n')
         self.saves = [put(self.game / 'profile/save/fb54/progress.sav', b's' * 5000), put(self.game / 'profile/account.uid'),
                       put(self.game / 'profile/save-tx/work/option.sav')]
         self.dump = put(self.game / 'dump/the game.nup', b'n' * 300)   # a player's dump inside the folder: stays
@@ -59,21 +60,26 @@ class UninstallTest(unittest.TestCase):
             put(s / 'unpacked.txt', b'1')
             put(s / 'Rekarina-Launcher.exe')
             put(s / 'installer/oot.py')
+            put(s / 'rekarina-fork.txt', b'arnaudcouturier/rekarina\n')
         put(self.setup / 'temp/oot-abc/obj/main.o', b'o' * 4000)
         put(self.foreign_setup / 'my notes.txt')
+        put(self.foreign_setup / 'Rekarina-Launcher.exe')
+        put(self.foreign_setup / 'installer/oot.py')
+        put(self.foreign_setup / 'unpacked.txt')
         # the application data
-        self.local_rk = self.local / 'Rekarina'
+        self.local_rk = self.local / 'RekarinaFork'
         put(self.local_rk / 'home.txt', str(self.home).encode('utf-16-le'))
         put(self.local_rk / 'logs/install-1.log')
-        self.roam_rk = self.roam / 'Rekarina'
+        self.roam_rk = self.roam / 'RekarinaFork'
         for name in ('launcher.json', 'update.json', 'timings.json'):
             put(self.roam_rk / name)
+        self.upstream_cache = put(self.roam / 'Rekarina/update.json')
         put(self.roam / 'Other App/settings.json')
         # shortcuts: ours in the Start menu (to the launcher), a foreign one on the desktop with our name
         self.start.mkdir(parents=True)
         self.desk.mkdir(parents=True)
-        self.start_link = self.start / 'Rekarina.lnk'
-        self.desk_link = self.desk / 'Rekarina Launcher.lnk'
+        self.start_link = self.start / 'Rekarina (fork).lnk'
+        self.desk_link = self.desk / 'Rekarina Launcher (fork).lnk'
         ok, said = oot.write_shortcut(self.start_link, self.setup / 'Rekarina-Launcher.exe', self.setup, 'test')
         self.assertTrue(ok, said)
         ok, said = oot.write_shortcut(self.desk_link, self.outside / 'keep.txt', self.outside, 'test')
@@ -113,7 +119,7 @@ class UninstallTest(unittest.TestCase):
         self.assertEqual(kinds, {self.game: 'game', self.setup: 'setup', self.old_setup: 'setup',
                                  self.local_rk: 'appdata', self.roam_rk: 'appdata'})
         game_bytes = next(i['bytes'] for i in plan['items'] if i['kind'] == 'game')
-        self.assertEqual(game_bytes, 7 * 100)   # the saves, the dump and what the junction points to are not counted
+        self.assertEqual(game_bytes, 7 * 100 + (self.game / 'rekarina-fork.txt').stat().st_size)
         self.assertEqual(plan['saves_bytes'], 5000 + 100 + 100)
         self.assertEqual(Path(plan['saves']), self.game / 'profile')
         shortcuts = plan['shortcuts'] if isinstance(plan['shortcuts'], list) else [plan['shortcuts']]
@@ -144,6 +150,7 @@ class UninstallTest(unittest.TestCase):
         self.assertFalse(self.local_rk.exists())
         self.assertFalse(self.roam_rk.exists())
         self.assertTrue((self.roam / 'Other App/settings.json').is_file())
+        self.assertTrue(self.upstream_cache.is_file())
         self.assertFalse(self.start_link.exists())
         self.assertTrue(self.desk_link.exists())
         self.assertFalse(self.key_exists())
@@ -191,6 +198,7 @@ class UninstallTest(unittest.TestCase):
         zipped = self.tmp / 'Downloads' / 'Rekarina-Setup-1.2.5-windows'
         put(zipped / 'Rekarina-Launcher.exe')
         put(zipped / 'installer/oot.py')
+        put(zipped / 'rekarina-fork.txt', b'arnaudcouturier/rekarina\n')
         put(zipped / 'temp/oot-x/obj/a.o', b'o' * 3000)
         ok, said = oot.write_shortcut(self.start_link, zipped / 'Rekarina-Launcher.exe', zipped, 'test')
         self.assertTrue(ok, said)
@@ -221,6 +229,7 @@ class InstallTest(unittest.TestCase):
         self.setup = self.tmp / 'setup' / '1.2.5'
         for name in ('rekarina-install.json', 'Rekarina.exe', 'profile/save/a.sav'):
             put(self.game / name)
+        put(self.game / 'rekarina-fork.txt', b'arnaudcouturier/rekarina\n')
         put(self.setup / 'unpacked.txt', b'1' * 2048)
         self.key = rf'Software\RekarinaTest\Uninstall\Rekarina-{os.getpid()}'
         # a Start menu and a desktop of the test's own: the real ones may hold a player's shortcuts
@@ -251,7 +260,7 @@ class InstallTest(unittest.TestCase):
             get = lambda name: winreg.QueryValueEx(k, name)[0]   # noqa: E731
             self.assertEqual(get('DisplayName'), 'Rekarina')
             self.assertEqual(get('DisplayVersion'), '1.2.5')
-            self.assertEqual(get('Publisher'), 'Rekarina')
+            self.assertEqual(get('Publisher'), 'Rekarina (GitHub fork)')
             self.assertEqual(get('DisplayIcon'), str(self.game / 'Rekarina.exe'))
             self.assertIn(str(script), get('UninstallString'))
             self.assertGreaterEqual(get('EstimatedSize'), 2)   # KiB of the game and the setup folder

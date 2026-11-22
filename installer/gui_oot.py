@@ -48,7 +48,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
-from . import components, eta, ini, mods, net, oot, saves, setup_report, shaderjob, uninstall, update
+from . import components, eta, fork, ini, mods, net, oot, saves, setup_report, shaderjob, uninstall, update
 from . import shots as screenshots
 from . import state as statefile
 from tkinter import font as tkfont
@@ -463,8 +463,7 @@ def stop_reason(dest, code, began):
 
 def settings_path():
     """launcher.json: the folders of the last run, so the window opens on Play."""
-    base = os.environ.get('APPDATA') if os.name == 'nt' else os.environ.get('XDG_CONFIG_HOME')
-    return Path(base or Path.home() / '.config') / 'Rekarina' / 'launcher.json'
+    return fork.appdata_dir() / 'launcher.json'
 
 
 def load_settings():

@@ -4,7 +4,7 @@ every way in (its header says what goes, what never goes, and how saves stay).
 
 - install(game, version): the script into the game folder as rekarina-uninstall.ps1 (byte for byte: its byte order
   mark makes Windows PowerShell read it as UTF-8), "Uninstall Rekarina" beside it (PowerShell with the script; the
-  game's icon), and the per-user entry HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\Rekarina (no
+  game's icon), and the per-user entry HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\RekarinaFork (no
   administrator), whose uninstall command is the same. Called by every setup run that leaves a game in the folder
   (installer/oot.py launcher_shortcuts), so the entry follows the game folder and the version.
 - plan(game): what would go, as uninstall.ps1 -List says (the launcher's confirmation sheet).
@@ -17,10 +17,12 @@ import shutil
 import subprocess
 from pathlib import Path
 
+from . import fork
+
 SCRIPT = Path(__file__).resolve().parent / 'uninstall.ps1'
 GAME_SCRIPT = 'rekarina-uninstall.ps1'
 LINK = 'Uninstall Rekarina.lnk'
-REG_PATH = r'Software\Microsoft\Windows\CurrentVersion\Uninstall\Rekarina'
+REG_PATH = rf'Software\Microsoft\Windows\CurrentVersion\Uninstall\{fork.APP_ID}'
 WIN = os.name == 'nt'
 
 
@@ -75,11 +77,11 @@ def register(game, version, setup=None, key=REG_PATH):
     values = {
         'DisplayName': 'Rekarina',
         'DisplayVersion': str(version),
-        'Publisher': 'Rekarina',
+        'Publisher': 'Rekarina (GitHub fork)',
         'DisplayIcon': str(game / 'Rekarina.exe'),
         'InstallLocation': str(game),
         'UninstallString': command_line(game / GAME_SCRIPT),
-        'URLInfoAbout': 'https://github.com/arnaudcouturier/rekarina',
+        'URLInfoAbout': 'https://github.com/' + fork.REPOSITORY,
     }
     dwords = {'NoModify': 1, 'NoRepair': 1,
               'EstimatedSize': min(folder_kib(*[f for f in (game, setup) if f]), 0xFFFFFFFF)}
@@ -98,6 +100,7 @@ def install(game, version, setup=None, key=REG_PATH, log=None):
     game = Path(game)
     done = []
     try:
+        fork.mark_install(game)
         shutil.copyfile(SCRIPT, game / GAME_SCRIPT)
         done.append(GAME_SCRIPT)
     except OSError as e:

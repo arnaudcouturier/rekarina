@@ -51,7 +51,7 @@ import zipfile
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import components, eta, mods, net
+from . import components, eta, fork, mods, net
 from . import state as statefile
 from .events import Reporter
 from .runner import Context, InstallError, Step, run_steps
@@ -1203,6 +1203,8 @@ class Package(Step):
         preset_args = ['--preset-note', f'{components.describe(gpu) or "graphics card not detected"}: preset {chosen["id"]}']
         for k, v in chosen['settings'].items():
             preset_args += ['--set', f'{k}={v}']
+        if fork.owns_install(layout.root):
+            fork.mark_install(ctx.dest)
         code, log = run_tool(ctx, self.id, layout.tools / 'package_oot.py', [
             '--nup', ctx.nup, '--build', build, '--exefs', ctx.dest / 'exefs', '--xlate', layout.xlate, '--out', ctx.dest,
             '--prompts', opt.prompts or 'auto', '--lang', opt.lang or 'en-US', *preset_args,
@@ -1568,8 +1570,9 @@ def background_textures(rep, layout, dest, exe, nup, stop):
 
 
 LAUNCHER_EXE = 'Rekarina-Launcher.exe'   # the setup folder's launcher (installer/update.py LAUNCHER)
-LAUNCHER_LINK = 'Rekarina Launcher.lnk'   # in the game folder and, when the form asks for it, on the desktop
-START_LINK = 'Rekarina.lnk'               # in the player's own Start menu
+LAUNCHER_LINK = 'Rekarina Launcher.lnk'   # beside the game executable
+START_LINK = fork.START_SHORTCUT
+DESKTOP_LINK = fork.DESKTOP_SHORTCUT
 
 
 def shell_folder(csidl):
@@ -1624,7 +1627,7 @@ def launcher_shortcuts(ctx):
     start, desk = start_menu_folder(), desktop_folder()
     if getattr(getattr(ctx, 'options', None), 'no_desktop_shortcut', False):
         desk = None
-    for link in [ctx.dest / LAUNCHER_LINK] + ([start / START_LINK] if start else []) + ([desk / LAUNCHER_LINK] if desk else []):
+    for link in [ctx.dest / LAUNCHER_LINK] + ([start / START_LINK] if start else []) + ([desk / DESKTOP_LINK] if desk else []):
         try:
             link.parent.mkdir(parents=True, exist_ok=True)
             ok, said = write_shortcut(link, launcher, ctx.layout.root, 'Rekarina launcher: build, update and start the game')
@@ -1675,10 +1678,12 @@ def ensure_shortcuts(layout, dest, log=print):
     if not WIN or not launcher.is_file() or not (Path(dest) / GAME_EXE).is_file():
         return []
     dest = Path(dest)
+    if not fork.owns_install(dest):
+        return []
     start, desk = start_menu_folder(), desktop_folder()
     links = [dest / LAUNCHER_LINK] + ([start / START_LINK] if start else [])
-    if desk and (desk / LAUNCHER_LINK).is_file():
-        links.append(desk / LAUNCHER_LINK)
+    if desk and (desk / DESKTOP_LINK).is_file():
+        links.append(desk / DESKTOP_LINK)
     mine = version_key(getattr(layout, 'release', ''))
     same = lambda a, b: os.path.normcase(os.path.abspath(a)) == os.path.normcase(os.path.abspath(b))   # noqa: E731
     made = []
@@ -1780,6 +1785,10 @@ def main(argv=None):
             state = statefile.load(dest)
         except statefile.StateError as e:
             rep.error(e.id, {'path': str(e.path)})
+            rep.emit('end', result='failed', seconds=0)
+            return 1
+        if fork.owns_install(layout.root) and (dest / GAME_EXE).is_file() and not fork.owns_install(dest):
+            rep.error('cli.usage', {'detail': 'Choose a separate game folder for this fork. Import your save on the Saves page.'})
             rep.emit('end', result='failed', seconds=0)
             return 1
         ctx = Context(layout, dest, temp, rep, args, state=state)

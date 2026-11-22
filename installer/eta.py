@@ -9,7 +9,7 @@ Where an estimate comes from, in rising order of trust:
     folder ("first") and for a later run ("rerun": the caches of the first are there). The steps that are limited by
     the processor (SCALED) are multiplied once by 16 / logical cores.
  2. This machine's own durations: every finished step is recorded in timings.json in the user's application data
-    (%APPDATA%\\Rekarina\\timings.json), per step and case, and the next run prefers them.
+    (%APPDATA%\\RekarinaFork\\timings.json), per step and case, and the next run prefers them.
 
         {"format": 1, "cores": 16, "steps": {"oot_compile": {"first": 702.4, "rerun": 163.0}, ...}}
 
@@ -47,6 +47,8 @@ import json
 import os
 import time
 from pathlib import Path
+
+from . import fork
 
 REFERENCE_CORES = 16
 #          step               first  rerun   (seconds)
@@ -108,8 +110,7 @@ def cores():
 
 
 def timings_path():
-    base = os.environ.get('APPDATA') if os.name == 'nt' else os.environ.get('XDG_CONFIG_HOME')
-    return Path(base or Path.home() / '.config') / 'Rekarina' / 'timings.json'
+    return fork.appdata_dir() / 'timings.json'
 
 
 def load_timings(path=None):

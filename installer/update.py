@@ -11,8 +11,8 @@ the tools, and the setup steps then rebuild the game from the dump the player al
 
 The file the game reads
 -----------------------
-check() keeps its last answer in update.json in the user's application data (%APPDATA%\\Rekarina\\update.json; off
-Windows $XDG_CONFIG_HOME/Rekarina/update.json), UTF-8, one JSON object. The game's runtime reads two keys of it to
+check() keeps its last answer in update.json in the user's application data (%APPDATA%\\RekarinaFork\\update.json; off
+Windows $XDG_CONFIG_HOME/RekarinaFork/update.json), UTF-8, one JSON object. The game's runtime reads two keys of it to
 show its "a newer version is out" notice, and these two keep their name, type and meaning in every later version:
 
     "latest"   string   the newest release's version without a leading "v" ("1.0.1"); "" when none is known
@@ -83,9 +83,9 @@ import urllib.error
 import zipfile
 from pathlib import Path
 
-from . import ed25519, net
+from . import ed25519, fork, net
 
-REPO = 'arnaudcouturier/rekarina'
+REPO = fork.REPOSITORY
 API = 'https://api.github.com'
 FEED = ''   # optional custom release feed; '' leaves GitHub Releases as the only source
 # hex Ed25519 public keys of tools/release_sign.py keygen; () verifies downloads against GitHub's asset digest or SHA256SUMS.
@@ -129,8 +129,7 @@ def signing_keys():
 
 
 def state_dir():
-    base = os.environ.get('APPDATA') if os.name == 'nt' else os.environ.get('XDG_CONFIG_HOME')
-    return Path(base or Path.home() / '.config') / 'Rekarina'
+    return fork.appdata_dir()
 
 
 def state_path():
@@ -401,6 +400,8 @@ def stage(archive, root, version, progress=None, cancel=None):
         lacking = [r for r in REQUIRED if not (new / r).is_file()]
         if lacking:
             raise UpdateError('update.bad_archive', reason='it lacks ' + ', '.join(lacking))
+        if not fork.owns_install(new):
+            raise UpdateError('update.bad_archive', reason='it is from a different release channel')
         staged = (new / 'VERSION').read_text(encoding='utf-8').strip()
         if parse_version(staged) != parse_version(version):
             raise UpdateError('update.bad_archive', reason=f'it holds version {staged}, not {version}')

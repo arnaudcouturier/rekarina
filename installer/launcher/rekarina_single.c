@@ -27,6 +27,8 @@
 
 #define PATH_CHARS (MAX_PATH * 2)
 #define TRAILER 56
+#define FORK_HOME L"RekarinaFork"
+#define FORK_INSTALL_MARKER L"rekarina-fork.txt"
 
 static wchar_t g_self[PATH_CHARS], g_dir[PATH_CHARS], g_zip[PATH_CHARS], g_version[40];
 static unsigned long long g_offset, g_size;
@@ -715,10 +717,10 @@ static unsigned long long free_gib(const wchar_t *path) {   /* free room on the 
 /* ---- Rekarina's folder
    Everything of Rekarina lives under one folder the player chooses at the first start: <home>\setup\<version> (this
    program's unpacked files, with the working files of a build in its temp folder) and, as the launcher's first offer
-   for the game, <home>\game. The choice is kept in %LOCALAPPDATA%\Rekarina\home.txt (the path, UTF-16), the one thing
+   for the game, <home>\game. The choice is kept in %LOCALAPPDATA%\RekarinaFork\home.txt (the path, UTF-16), the one thing
    written to the system disk when another disk is chosen. No question is asked when that file names a folder, when
    an earlier version is unpacked in the local application data (that install stays where it is: the folder is then
-   %LOCALAPPDATA%\Rekarina), with --home <folder> (a script's choice) or with --unpack-only (no window may come up). */
+   %LOCALAPPDATA%\RekarinaFork), with --home <folder> (a script's choice) or with --unpack-only (no window may come up). */
 #define HOME_ROOM_GIB 25   /* the setup 1, a build's working files 9, the game 14 (installer/oot.py NEED_TEMP, NEED_DEST) */
 
 /* A folder as a path ends: no slash, no space and no dot at its end (Windows drops them from a name, so the folder made
@@ -797,13 +799,9 @@ static int folder_is_empty(const wchar_t *folder) {
     return empty;
 }
 
-static int names_rekarina(const wchar_t *folder) {   /* the folder's own name has "rekarina" in it, in any case */
+static int names_fork_home(const wchar_t *folder) {
     const wchar_t *leaf = wcsrchr(folder, L'\\');
-    wchar_t low[64];
-    int n = 0;
-    for (leaf = leaf ? leaf + 1 : folder; *leaf && n < 63; leaf++) low[n++] = (wchar_t)towlower(*leaf);
-    low[n] = 0;
-    return wcsstr(low, L"rekarina") != NULL;
+    return !_wcsicmp(leaf ? leaf + 1 : folder, FORK_HOME);
 }
 
 /* home: Rekarina's folder, without a slash at its end. *asked: the player has just chosen it (the launcher is then
@@ -811,7 +809,7 @@ static int names_rekarina(const wchar_t *folder) {   /* the folder's own name ha
 static void find_home(const wchar_t *appdata, const wchar_t *args, int quiet, wchar_t *home, int *asked) {
     wchar_t note[PATH_CHARS], old[PATH_CHARS], here[PATH_CHARS];
     *asked = 0;
-    swprintf(home, PATH_CHARS, L"%ls\\Rekarina", appdata);
+    swprintf(home, PATH_CHARS, L"%ls\\" FORK_HOME, appdata);
     swprintf(note, PATH_CHARS, L"%ls\\home.txt", home);
     swprintf(old, PATH_CHARS, L"%ls\\setup", home);
     const wchar_t *given = args ? wcsstr(args, L"--home ") : NULL;
@@ -844,9 +842,9 @@ static void find_home(const wchar_t *appdata, const wchar_t *args, int quiet, wc
         size_t n = wcslen(picked);
         if (n > 3 && picked[n - 1] == L'\\') picked[n - 1] = 0;
         /* a folder that holds other things gets a folder of Rekarina's own inside it */
-        if (wcslen(picked) <= 3 || (!folder_is_empty(picked) && !names_rekarina(picked))) {
+        if (wcslen(picked) <= 3 || (!folder_is_empty(picked) && !names_fork_home(picked))) {
             if (picked[wcslen(picked) - 1] == L'\\') picked[wcslen(picked) - 1] = 0;
-            wcscat(picked, L"\\Rekarina");
+            wcscat(picked, L"\\" FORK_HOME);
         }
         unsigned long long room = free_gib(picked);
         if (room < HOME_ROOM_GIB) {
@@ -861,7 +859,7 @@ static void find_home(const wchar_t *appdata, const wchar_t *args, int quiet, wc
         break;
     }
     wchar_t folder[PATH_CHARS];
-    swprintf(folder, PATH_CHARS, L"%ls\\Rekarina", appdata);
+    swprintf(folder, PATH_CHARS, L"%ls\\" FORK_HOME, appdata);
     make_dirs(folder);
     write_home(note, home);
     *asked = 1;
@@ -879,6 +877,8 @@ static int in_game_folder(wchar_t *game) {
     *leaf = 0;
     wchar_t record[PATH_CHARS];
     swprintf(record, PATH_CHARS, L"%ls\\rekarina-install.json", game);
+    if (!exists(record)) return 0;
+    swprintf(record, PATH_CHARS, L"%ls\\" FORK_INSTALL_MARKER, game);
     if (!exists(record)) return 0;
     static wchar_t text[PATH_CHARS + 1024];
     swprintf(text, PATH_CHARS + 1024, russian()
@@ -914,7 +914,7 @@ static void launcher_args(const wchar_t *args, wchar_t *out, size_t cap) {
 
 int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, wchar_t *args, int show) {
     (void)prev, (void)show;
-    wchar_t base[PATH_CHARS], home[PATH_CHARS], launcher[PATH_CHARS], mark[PATH_CHARS];
+    wchar_t base[PATH_CHARS], home[PATH_CHARS], launcher[PATH_CHARS], mark[PATH_CHARS], channel[PATH_CHARS];
     int asked = 0;
     int unpack_only = args && wcsstr(args, L"--unpack-only");
     g_quiet = unpack_only;
@@ -931,6 +931,10 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, wchar_t *args, int show) {
     swprintf(g_zip, PATH_CHARS, L"%ls.zip", g_dir);
     swprintf(launcher, PATH_CHARS, L"%ls\\Rekarina-Launcher.exe", g_dir);
     swprintf(mark, PATH_CHARS, L"%ls\\unpacked.txt", g_dir);
+    swprintf(channel, PATH_CHARS, L"%ls\\" FORK_INSTALL_MARKER, g_dir);
+    if (exists(launcher) && !exists(channel))
+        fail(L"This folder already contains another Rekarina installation. Choose a separate folder for this launcher.",
+             L"В этой папке уже установлена другая версия Rekarina. Выберите отдельную папку для этого лаунчера.");
     if (!exists(mark) || !exists(launcher)) {
         if (!make_dirs(g_dir))
             fail(L"Rekarina could not make the folder for its files.", L"Rekarina не смогла создать папку для своих файлов.");
@@ -964,6 +968,9 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, wchar_t *args, int show) {
             fail(en, ru);
         }
     }
+    if (!exists(channel))
+        fail(L"The Rekarina launcher package is missing its release marker. Download it again.",
+             L"В пакете лаунчера Rekarina отсутствует метка выпуска. Скачайте его заново.");
     if (unpack_only) return 0;   /* a test, or a setup script: the folder alone */
     wchar_t command[PATH_CHARS + 4096], game[PATH_CHARS];
     /* the game folder the launcher offers after the choice: beside the setup, under the same folder */
