@@ -376,7 +376,7 @@ static struct {
         NgxHandle *feat;
         uint64_t used;           // evals count when it last ran
     } sizes[5], *last;           // last: the one the previous DLAA frame ran with
-    VkImage last_color;          // the target DLAA ran on last frame: another one means a new history
+    VkImage last_color;          // the target DLAA ran on last frame (light_target_check)
     NgxParam *params;
     int failed, reset;
     int early_full;              // the pause screens' full-size feature was made
@@ -417,6 +417,7 @@ static struct {
     int mv_ok;                   // -1 not built, 0 failed, 1 ready
     uint64_t mv_frames, mv_none;
     uint64_t why[3];             // history resets: scene size changed, no camera, scene target changed
+    uint64_t target_moves_kept;  // scene target changed and the history carried on (light_target_check)
     uint64_t out_addr;           // the storage of the game's output picture, where DLSS ran at the scaling dispatch
     uint64_t at_dispatch, at_pass;   // evaluations by where they ran (vk_dlaa_dispatch / vk_dlaa_pass)
     int on;                      // the dlaa setting, read at each present (the menu switches it live)
@@ -908,6 +909,22 @@ static void fg_camera(const float *v, const double m[16]) {
 
 typedef struct { double vp[16]; int valid; } ProjectionHistory;
 enum { MV_DISABLED = 3, MV_DISABLED_CONTINUOUS };
+
+// The scene target the upscaler reads this frame (image), against the one it read last frame. OoT draws its scene into
+// one of a few pooled light targets of the same size and moves to another whenever its pass list changes, while the
+// camera and the scene carry on: 571 moves in a minute standing at one dialogue, about one every six frames. The
+// upscaler's history lives in its feature, not in the target, so a move whose motion vectors reach back to last
+// frame's camera (mv_pass 1, or MV_DISABLED_CONTINUOUS) keeps it. A new history at each move never let fine dithered
+// detail such as hair gather the whole 16-frame jitter cycle, and it stayed grainy. Without that camera, on the first
+// frame, or with REKARINA_DLAA_TARGET_KEEP=0 (test: the old behaviour), the move starts a new history.
+static void light_target_check(VkImage image, int mv) {
+    if (D.last_color == image) return;
+    static int keep = -1;
+    if (keep < 0) keep = rt_knob("DLAA_TARGET_KEEP", "1");
+    if (keep && D.last_color && (mv == 1 || mv == MV_DISABLED_CONTINUOUS)) D.target_moves_kept++;
+    else D.reset = 1, D.why[2]++;
+    D.last_color = image;
+}
 
 // The pass, recorded through the recorder like the replay's own commands. 0: no camera this frame (the vectors stay
 // zero and DLSS starts a new history).
@@ -1762,7 +1779,7 @@ static void evaluate(VkExec *ex, const VkExecTarget *dst) {
     if (timed) T.cpu_drain += kern_now_ns() - c0;
     if (fsr3()) {   // FSR 3.1 (vk_ffx.cpp) in DLSS's place: the same images, then the same blit below
         if (t->level || t->base_layer || z->level || z->base_layer) return dl_fail("FSR 3.1 on a target that is not level 0, layer 0", 0);
-        if (D.last_color != t->image) D.reset = 1, D.why[2]++, D.last_color = t->image;
+        light_target_check(t->image, mv);
         uint64_t now = plat_now_ns();
         double dt = D.last_eval_ns ? (now - D.last_eval_ns) / 1e6 : 0;
         D.last_eval_ns = now;
@@ -1791,7 +1808,7 @@ static void evaluate(VkExec *ex, const VkExecTarget *dst) {
         Nx2SlSrMode mode = quality == 5 ? NX2SL_SR_DLAA : quality == 2 ? NX2SL_SR_QUALITY
                          : quality == 1 ? NX2SL_SR_BALANCED : quality == 3 ? NX2SL_SR_ULTRA_PERFORMANCE
                          : NX2SL_SR_PERFORMANCE;
-        if (D.last_color != t->image) D.reset = 1, D.why[2]++, D.last_color = t->image;
+        light_target_check(t->image, mv);
         c0 = timed ? kern_now_ns() : 0;
         int ok = vk_sl_sr_evaluate(cb, &color, &depth, &motion, &output, &camera, (uint32_t)D.presents,
                                    preset_value(), D.reset, tjx, tjy, mode);
@@ -1807,7 +1824,7 @@ static void evaluate(VkExec *ex, const VkExecTarget *dst) {
         struct Size *full = size_for(cb, ow, oh, ow, oh);
         if (full && !full->feat) feature_make(cb, p, full, ow, oh, ow, oh, t->format, z->format);
     }
-    if (D.last_color != t->image) D.reset = 1, D.why[2]++, D.last_color = t->image;
+    light_target_check(t->image, mv);
     NgxResourceVK rc = res_image(cv, t->image, t->format, w, h, VK_IMAGE_ASPECT_COLOR_BIT, 0);
     NgxResourceVK ro = res_image(e->out_view, e->out, VK_FORMAT_R16G16B16A16_SFLOAT, ow, oh, VK_IMAGE_ASPECT_COLOR_BIT, 1);
     NgxResourceVK rz = res_image(zv, z->image, z->format, w, h, VK_IMAGE_ASPECT_DEPTH_BIT, 0);
@@ -1930,11 +1947,12 @@ evaluated:
     next_jitter(w, ow);
     if (++D.evals == 1 || D.evals == 300 || D.evals % 3600 == 0)   // 300: one early line with the frames counted
         rt_log("dlaa: %llu frames anti-aliased (scene %ux%u, output %ux%u; %llu frames without the DLAA point, %llu with camera "
-               "motion, %llu without a camera, %llu jitter holds; resets: %llu size, %llu camera, %llu target)",
+               "motion, %llu without a camera, %llu jitter holds; resets: %llu size, %llu camera, %llu target; %llu target "
+               "moves kept the history)",
                (unsigned long long)D.evals, w, h, ow, oh, (unsigned long long)D.frames_missed,
                (unsigned long long)D.mv_frames, (unsigned long long)D.mv_none,
                (unsigned long long)D.holds, (unsigned long long)D.why[0], (unsigned long long)D.why[1],
-               (unsigned long long)D.why[2]);
+               (unsigned long long)D.why[2], (unsigned long long)D.target_moves_kept);
 }
 
 // The HUD-less picture (vk_dlaa_fg_hudless): the game's picture before its HUD (hudless_at_pass; DLSS's output where
