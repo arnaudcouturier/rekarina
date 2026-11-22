@@ -48,6 +48,7 @@
     [UI_MENU_ASPECT_FIT] = "Schwarze Balken", [UI_MENU_ASPECT_STRETCH] = "Strecken",
     [UI_MENU_FOV] = "Sichtfeld",
     [UI_MENU_FOV_DESC] = "Wie viel von der Welt die Kamera zeigt, in Prozent des Sichtfelds im Spiel. Nur Spielversion 1.4.3.",
+    [UI_MENU_FOV_DESC_OOT] = "Wie viel von der Welt die Kamera zeigt, in Prozent des Sichtfelds im Spiel.",
     [UI_MENU_SHADOW_RES] = "Shadow-Map-Größe",
     [UI_MENU_SHADOW_RES_DESC] = "Größe der Shadow Map der Sonne. Die Größe im Spiel ändert sich mit dem Blickwinkel, bis "
                                 "hinunter auf etwa 400 in Bodennähe, sodass Blätterschatten klotzig wirken und springen; "

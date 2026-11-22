@@ -43,6 +43,7 @@
     [UI_MENU_ASPECT_FIT] = "黑邊", [UI_MENU_ASPECT_STRETCH] = "拉伸",
     [UI_MENU_FOV] = "視野",
     [UI_MENU_FOV_DESC] = "鏡頭顯示的範圍，以遊戲原本視野的百分比表示。僅限遊戲版本 1.4.3。",
+    [UI_MENU_FOV_DESC_OOT] = "鏡頭顯示的範圍，以遊戲原本視野的百分比表示。",
     [UI_MENU_SHADOW_RES] = "陰影貼圖尺寸",
     [UI_MENU_SHADOW_RES_DESC] = "太陽陰影貼圖的尺寸。遊戲原本的尺寸會隨視角改變，貼近地面時降到約 400，"
                                 "因此樹葉的陰影呈塊狀且會跳動；固定尺寸可讓陰影穩定且更銳利。"

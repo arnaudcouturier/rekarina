@@ -47,6 +47,7 @@
     [UI_MENU_ASPECT_FIT] = "Bandes noires", [UI_MENU_ASPECT_STRETCH] = "Étirer",
     [UI_MENU_FOV] = "Champ de vision",
     [UI_MENU_FOV_DESC] = "La part du monde que montre la caméra, en pourcentage de celle du jeu. Version 1.4.3 du jeu uniquement.",
+    [UI_MENU_FOV_DESC_OOT] = "La part du monde que montre la caméra, en pourcentage de celle du jeu.",
     [UI_MENU_SHADOW_RES] = "Taille carte d'ombres",
     [UI_MENU_SHADOW_RES_DESC] = "Taille de la carte d'ombres du soleil. Celle du jeu change avec la vue et descend à environ "
                                 "400 près du sol : les ombres des feuilles paraissent alors en blocs et sautent ; une taille "

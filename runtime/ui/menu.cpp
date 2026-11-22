@@ -78,6 +78,7 @@ int vk_hdr_active(void);
 int vk_hdr_native(void);
 int vk_hdr_needs_restart(void);
 int vk_hdr_adaptation_supported(void);
+int rt_patch_set(const char *name);       // host.h: index of a set of the generated patches.h, -1 if absent
 }
 
 // Roboto Medium (Apache-2.0, ui/fonts/LICENSE-Roboto.txt) with Latin and Cyrillic glyphs.
@@ -1153,6 +1154,8 @@ static void tab_screen(float scale) {
     }
 #ifndef GAME_OOT   // the field of view and the shadow settings are patches of TotK
     opt_slider("REKARINA_FOV", UI_MENU_FOV, 70, 140, UI_MENU_FOV_DESC, 5, "%.0f %%");
+#else   // OoT's field of view: the set fov of recomp/patches-oot-v111.txt, when the generated C has it
+    if (rt_patch_set("fov") >= 0) opt_slider("REKARINA_FOV", UI_MENU_FOV, 70, 140, UI_MENU_FOV_DESC_OOT, 5, "%.0f %%");
 #endif
     static const char *const aniso[] = {"game", "2", "4", "8", "16"};
     const char *aniso_names[] = {menu_text(UI_MENU_ANISO_GAME), "2x", "4x", "8x", "16x"};

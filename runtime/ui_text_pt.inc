@@ -46,6 +46,7 @@
     [UI_MENU_ASPECT_FIT] = "Barras pretas", [UI_MENU_ASPECT_STRETCH] = "Esticar",
     [UI_MENU_FOV] = "Campo de visão",
     [UI_MENU_FOV_DESC] = "Quanto do mundo a câmara mostra, em percentagem do valor do próprio jogo. Só na versão 1.4.3 do jogo.",
+    [UI_MENU_FOV_DESC_OOT] = "Quanto do mundo a câmara mostra, em percentagem do valor do próprio jogo.",
     [UI_MENU_SHADOW_RES] = "Mapa de sombras",
     [UI_MENU_SHADOW_RES_DESC] = "Tamanho do mapa de sombras do sol. O tamanho do próprio jogo muda com a vista, descendo "
                                 "até cerca de 400 junto ao chão, pelo que as sombras das folhas ficam aos blocos e saltam; "

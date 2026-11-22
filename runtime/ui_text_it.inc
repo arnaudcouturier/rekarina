@@ -48,6 +48,7 @@
     [UI_MENU_ASPECT_FIT] = "Bande nere", [UI_MENU_ASPECT_STRETCH] = "Allarga",
     [UI_MENU_FOV] = "Campo visivo",
     [UI_MENU_FOV_DESC] = "Quanta parte del mondo mostra la telecamera, in percentuale rispetto a quella del gioco. Solo con la versione 1.4.3 del gioco.",
+    [UI_MENU_FOV_DESC_OOT] = "Quanta parte del mondo mostra la telecamera, in percentuale rispetto a quella del gioco.",
     [UI_MENU_SHADOW_RES] = "Dimensione mappa ombre",
     [UI_MENU_SHADOW_RES_DESC] = "Dimensione della mappa delle ombre del sole. Quella del gioco cambia con la visuale, fino a "
                                 "circa 400 vicino al suolo, per cui le ombre delle foglie appaiono a blocchi e saltano; una "

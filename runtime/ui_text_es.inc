@@ -48,6 +48,7 @@
     [UI_MENU_ASPECT_FIT] = "Franjas negras", [UI_MENU_ASPECT_STRETCH] = "Estirar",
     [UI_MENU_FOV] = "Campo de visión",
     [UI_MENU_FOV_DESC] = "Cuánto mundo muestra la cámara, en porcentaje del valor propio del juego. Solo en la versión 1.4.3 del juego.",
+    [UI_MENU_FOV_DESC_OOT] = "Cuánto mundo muestra la cámara, en porcentaje del valor propio del juego.",
     [UI_MENU_SHADOW_RES] = "Mapa de sombras",
     [UI_MENU_SHADOW_RES_DESC] = "Tamaño del mapa de sombras del sol. El tamaño propio del juego cambia con la vista y baja "
                                 "hasta unos 400 cerca del suelo, por lo que las sombras de las hojas se ven a bloques y "

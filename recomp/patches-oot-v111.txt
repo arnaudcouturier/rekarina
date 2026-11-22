@@ -416,3 +416,16 @@ set tracked_models REKARINA_PATCH_TRACKED_MODELS 1
 site tracked_models main 4f7a30 94000b54 9526a4cc     # bl page+0xd60 (model_destroy_hook)
 site tracked_models main 4fc9ac 940005bd 952690f1     # bl page+0xd70 (model_construct_hook)
 site tracked_models main 4fcb78 97fffd82 95269082     # bl page+0xd80 (model_buffers_hook)
+
+set fov REKARINA_FOV_PATCH 0
+
+# Field of view (runtime/resolution.c res_fov_live, REKARINA_FOV in percent, the Screen tab's Field of view row). The
+# camera update (main+0x4c52d0) copies the active camera's lens into the projection the renderer and the culling read:
+# the near and far planes, then the vertical angle in radians (ldr s0, [x19, #0x13c] at main+0x4c52f8), which it stores
+# at +0xa0 and from half of which it takes the sine, cosine and tangent that the matrix and the frustum culling use. The
+# site keeps its load and multiplies s0 by the factor on page +60 (0x3c), so the projection, its matrix and the culling
+# take the other angle together while the camera's own angle stays the game's: nothing compounds from frame to frame.
+# The same instruction is TotK 1.4.3's fov site and gets the same words: x10 saved around the page's address, s8 as the
+# factor (dead here: the next instruction writes s8). 100 % switches the set off. Which load to scale in this game is
+# from the ReLink project's notes (nx2/oot_fov.py, GPL-3.0, read for what the game does).
+site fov main 4c52f8 bd413e60 f81f0fea @page:x10 bd413e60 bd403d48 1e280800 f84107ea   # ldr s0, [x19, #0x13c] (camera update)

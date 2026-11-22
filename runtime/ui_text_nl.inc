@@ -48,6 +48,7 @@
     [UI_MENU_ASPECT_FIT] = "Zwarte balken", [UI_MENU_ASPECT_STRETCH] = "Uitrekken",
     [UI_MENU_FOV] = "Gezichtsveld",
     [UI_MENU_FOV_DESC] = "Hoeveel van de wereld de camera toont, in procenten van de waarde van het spel. Alleen spelversie 1.4.3.",
+    [UI_MENU_FOV_DESC_OOT] = "Hoeveel van de wereld de camera toont, in procenten van de waarde van het spel.",
     [UI_MENU_SHADOW_RES] = "Grootte shadow map",
     [UI_MENU_SHADOW_RES_DESC] = "Grootte van de shadow map van de zon. De eigen grootte van het spel verandert met het "
                                 "beeld, tot ongeveer 400 dicht bij de grond, waardoor bladschaduwen blokkerig worden en "
