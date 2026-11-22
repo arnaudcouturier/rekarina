@@ -289,6 +289,7 @@ typedef enum {
     UI_MENU_HDR_BLOWOUT, UI_MENU_HDR_BLOWOUT_DESC,
     UI_MENU_HDR_FLARE, UI_MENU_HDR_FLARE_DESC,
     UI_MENU_HDR_BLOOM, UI_MENU_HDR_BLOOM_DESC,
+    UI_MENU_HDR_LOCAL_EXPOSURE, UI_MENU_HDR_LOCAL_EXPOSURE_DESC,
     UI_MENU_HDR_GRADE, UI_MENU_HDR_GRADE_DESC,
     UI_MENU_LAST_ID = UI_MENU_HDR_GRADE_DESC,
     // The entry step's progress picture (ui/prep_screen.cpp, before the game's first frame): a text in every catalog language

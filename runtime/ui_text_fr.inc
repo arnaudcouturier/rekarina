@@ -611,6 +611,8 @@
     [UI_MENU_HDR_BLOWOUT_DESC] = "Désature les hautes lumières intenses vers le blanc dans RenoDRT ; 0 % désactivé.",
     [UI_MENU_HDR_FLARE] = "Compensation de voile HDR",
     [UI_MENU_HDR_FLARE_DESC] = "Assombrit les tons très sombres dans RenoDRT ; 0 désactivé.",
+    [UI_MENU_HDR_LOCAL_EXPOSURE] = "Exposition locale",
+    [UI_MENU_HDR_LOCAL_EXPOSURE_DESC] = "Règle la correction locale de luminosité. 0 la désactive, 50 suit le jeu et 100 double la correction en crans d’exposition.",
     [UI_MENU_HDR_BLOOM] = "Halo lumineux",
     [UI_MENU_HDR_BLOOM_DESC] = "La lueur autour des lumières vives. 50 est celle du jeu ; 0 la supprime, 100 la "
                                "double.",

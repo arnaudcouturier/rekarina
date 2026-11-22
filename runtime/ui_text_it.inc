@@ -608,6 +608,8 @@
     [UI_MENU_HDR_BLOWOUT_DESC] = "Desatura le alte luci intense verso il bianco in RenoDRT; 0 % spento.",
     [UI_MENU_HDR_FLARE] = "Compensazione bagliore HDR",
     [UI_MENU_HDR_FLARE_DESC] = "Scurisce i toni quasi neri in RenoDRT; 0 spento.",
+    [UI_MENU_HDR_LOCAL_EXPOSURE] = "Esposizione locale",
+    [UI_MENU_HDR_LOCAL_EXPOSURE_DESC] = "Regola la correzione locale della luminosità. 0 la disattiva, 50 segue il gioco e 100 raddoppia la correzione in stop.",
     [UI_MENU_HDR_BLOOM] = "Bloom",
     [UI_MENU_HDR_BLOOM_DESC] = "Il bagliore attorno alle luci intense. 50 è quello del gioco; 0 lo disattiva, 100 lo "
                                "raddoppia.",

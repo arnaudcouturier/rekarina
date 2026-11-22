@@ -610,6 +610,8 @@
     [UI_MENU_HDR_BLOWOUT_DESC] = "Entsättigt sehr helle Lichter Richtung Weiß in RenoDRT; 0 % aus.",
     [UI_MENU_HDR_FLARE] = "HDR-Schwarzwert / Flare",
     [UI_MENU_HDR_FLARE_DESC] = "Dunkelt tiefste Töne zur Streulicht-Kompensation in RenoDRT ab; 0 aus.",
+    [UI_MENU_HDR_LOCAL_EXPOSURE] = "Lokale Belichtung",
+    [UI_MENU_HDR_LOCAL_EXPOSURE_DESC] = "Regelt die lokale Helligkeitskorrektur. 0 schaltet sie aus, 50 entspricht dem Spiel und 100 verdoppelt die Korrektur in Blendenstufen.",
     [UI_MENU_HDR_BLOOM] = "Bloom",
     [UI_MENU_HDR_BLOOM_DESC] = "Das Leuchten um helle Lichter. 50 ist das des Spiels; 0 schaltet es aus, 100 "
                                "verdoppelt es.",

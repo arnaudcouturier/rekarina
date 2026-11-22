@@ -609,6 +609,8 @@
     [UI_MENU_HDR_BLOWOUT_DESC] = "Ontzadigt intense hooglichten richting wit in RenoDRT; 0 % is uit.",
     [UI_MENU_HDR_FLARE] = "HDR-flare",
     [UI_MENU_HDR_FLARE_DESC] = "Verduistert tinten bij zwart in RenoDRT; 0 is uit.",
+    [UI_MENU_HDR_LOCAL_EXPOSURE] = "Lokale belichting",
+    [UI_MENU_HDR_LOCAL_EXPOSURE_DESC] = "Regelt de lokale helderheidscorrectie. 0 zet die uit, 50 volgt de game en 100 verdubbelt de correctie in stops.",
     [UI_MENU_HDR_BLOOM] = "Bloom",
     [UI_MENU_HDR_BLOOM_DESC] = "De gloed rond felle lichten. 50 is die van de game zelf; 0 zet hem uit, 100 "
                                "verdubbelt hem.",

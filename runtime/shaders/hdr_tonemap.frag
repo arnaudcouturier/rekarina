@@ -30,8 +30,7 @@
 //   p2: saturation [1], highlight saturation [1], blowout [0], flare [0]
 //   p3: hue correction [1], grade strength [1], gamma correction (0 off, 1: 2.2, 2: 2.4) [1], tone slope [1]
 //   p4: hue clip emulation [0.5], mid grey (0 render, 1 vanilla) [1], match tone slope (0 or 1) [1], unused
-//   p5: bloom strength [1] (not nx_tonemap's: tonemap_splice multiplies the game's bloom term by it where the scene
-//       adds it), three unused
+//   p5: bloom scale [1], local exposure scale in stops [1], two unused. The splicer reads p5 in the game's shader.
 // main only keeps the entry point alive for glslc; tonemap_splice drops main and splices the helper functions.
 layout(location = 0) in vec4 a0;
 layout(location = 1) in vec4 a1;

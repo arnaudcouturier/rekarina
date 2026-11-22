@@ -256,6 +256,8 @@
 # hdr_ui_nits = 203
 # Display gamma correction on the HDR10 present: 2.2 (default), 2.4, or off (sRGB decode).
 # hdr_gamma = 2.2
+# Interpret the HDR scene's primaries as Rec. 709 or Display P3 (bt709 or p3).
+# hdr_color_space = bt709
 # RenoDX tone mapper: psychov35 (observer-response cone mapper, default), renodrt (Daniele luminance mapper + OkLab
 # grading), or vanilla (the game's ACES curve scaled to game brightness).
 # hdr_tonemap = psychov35
@@ -279,6 +281,9 @@
 # hdr_flare = 0
 # hdr_hue = 100
 # hdr_grade = 100
+# Game bloom strength and local exposure in Vanilla and RenoDRT (0 to 100, 50 matches the game).
+# hdr_bloom = 50
+# hdr_local_exposure = 50
 
 [language]
 # Language: a Windows locale such as de-DE, or a Switch code (en-US, ja, zh-Hant, ...). Default: the Windows locale.

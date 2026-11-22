@@ -589,6 +589,8 @@
     [UI_MENU_HDR_BLOWOUT_DESC] = "在 RenoDRT 中使極亮高光趨向白色；0 % 為關閉。",
     [UI_MENU_HDR_FLARE] = "HDR 眩光補償",
     [UI_MENU_HDR_FLARE_DESC] = "在 RenoDRT 中壓暗近黑階以補償眩光；0 為關閉。",
+    [UI_MENU_HDR_LOCAL_EXPOSURE] = "局部曝光",
+    [UI_MENU_HDR_LOCAL_EXPOSURE_DESC] = "調整遊戲的局部亮度校正。0 關閉，50 與遊戲一致，100 將校正的曝光級數加倍。",
     [UI_MENU_HDR_BLOOM] = "泛光",
     [UI_MENU_HDR_BLOOM_DESC] = "明亮光源周圍的光暈。50 為遊戲原本的效果；0 關閉，100 加倍。",
     [UI_MENU_HDR_GRADE] = "原版調色強度",

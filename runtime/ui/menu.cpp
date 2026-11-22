@@ -1267,6 +1267,10 @@ static void tab_screen(float scale) {
             }
             // the game's bloom, with every tone mapper (vk_hdr.c tonemap_splice scales it where the scene adds it)
             opt_slider("REKARINA_HDR_BLOOM", UI_MENU_HDR_BLOOM, 0, 100, UI_MENU_HDR_BLOOM_DESC, 5, "%.0f");
+            if (!strcmp(tm, "vanilla") || !strcmp(tm, "renodrt")) {
+                opt_slider("REKARINA_HDR_LOCAL_EXPOSURE", UI_MENU_HDR_LOCAL_EXPOSURE, 0, 100,
+                           UI_MENU_HDR_LOCAL_EXPOSURE_DESC, 5, "%.0f");
+            }
         }
     }
 #else

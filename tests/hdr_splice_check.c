@@ -57,6 +57,7 @@ const char *cfg_value(const char *name) {
     if (!strcmp(name, "REKARINA_HDR_HUE")) return "100";
     if (!strcmp(name, "REKARINA_HDR_GRADE")) return "100";
     if (!strcmp(name, "REKARINA_HDR_BLOOM")) return "50";
+    if (!strcmp(name, "REKARINA_HDR_LOCAL_EXPOSURE")) return "50";
     return "0";
 }
 double cfg_double(const char *name) { return strtod(cfg_value(name), NULL); }
@@ -176,8 +177,9 @@ static uint32_t *make_aces_spv(int shape, uint64_t *words_out) {
     for (int c = 0; c < 3; c++) { cvar[c] = next++; SPV_INS(&b, SPV_OP_VARIABLE, 13, cvar[c], SPV_SC_FUNCTION); }
     uint32_t in_v = next++;
     SPV_INS(&b, SPV_OP_LOAD, 7, in_v, 30);
-    uint32_t local_exp = next++;
-    SPV_INS(&b, SPV_OP_COMPOSITE_EXTRACT, 6, local_exp, in_v, 3);   // per-pixel local exposure from input.w
+    uint32_t local_stops = next++, local_exp = next++;
+    SPV_INS(&b, SPV_OP_COMPOSITE_EXTRACT, 6, local_stops, in_v, 3);
+    SPV_INS(&b, SPV_OP_EXT_INST, 6, local_exp, 1, GLSL_EXP2, local_stops);
 
     // Uniform gain loaded from UBO %34 member 0, component 2
     uint32_t p_gain = next++, gain = next++;
@@ -268,7 +270,7 @@ static void write_spv(const char *path, const uint32_t *w, uint64_t n) {
 
 int main(int argc, char **argv) {
     // Optional external-file mode: hdr_splice_check --file <in.spv> <out.spv> prints the result (2: exposure traced) and
-    // "bloom" when the game's bloom term was found
+    // each optional term traced in the shader.
     if (argc == 4 && !strcmp(argv[1], "--file")) {
         FILE *f = fopen(argv[2], "rb");
         if (!f) return 2;
@@ -283,7 +285,8 @@ int main(int argc, char **argv) {
         int r = tonemap_splice(&buf, &words, &trace);
         if (r > 0) write_spv(argv[3], buf, words);
         free(buf);
-        printf("%d%s\n", r, r > 0 && trace.bloom ? " bloom" : "");   // the result, and what else was traced
+        printf("%d%s%s\n", r, r > 0 && trace.bloom ? " bloom" : "",
+               r > 0 && trace.local_exposure ? " local-exposure" : "");
         return r < 0 ? 1 : 0;
     }
     const char *out_dir = argc > 1 ? argv[1] : NULL;
@@ -292,10 +295,12 @@ int main(int argc, char **argv) {
         uint64_t n = 0;
         uint32_t *spv = make_aces_spv(shape, &n);
         uint64_t orig_n = n;
-        int r = tonemap_splice(&spv, &n, NULL);
+        SpliceTrace trace;
+        int r = tonemap_splice(&spv, &n, &trace);
         if (shape <= 4 || shape == 6) CHECK(r == 2 && n > orig_n, "exposure-traced ACES shape spliced");
         else if (shape == 5) CHECK(r == 1 && n > orig_n, "fallback vector-store ACES shape spliced");
         else CHECK(r == 0 && n == orig_n, "non-ACES shader untouched");
+        if (r > 0) CHECK(trace.local_exposure == (shape == 2 || shape == 4), "trace both local exposure shapes");
         if (out_dir && shape <= 6) {
             char p[256];
             snprintf(p, sizeof p, "%s/spliced_%d.spv", out_dir, shape);
@@ -318,19 +323,27 @@ int main(int argc, char **argv) {
     CHECK(sup[14] == 1.0f && sup[15] == 1.0f && sup[16] == 0.5f && sup[17] == 1.0f && sup[18] == 1.0f, "PsychoV35 flags");
     CHECK(sup[20] == 1.0f, "bloom 50 is the game's (p5.x = 1)");
     test_cfg_set("REKARINA_HDR_BLOOM", "25");
+    test_cfg_set("REKARINA_HDR_LOCAL_EXPOSURE", "0");
     vk_hdr_support(sup);
     CHECK(sup[20] == 0.5f, "bloom 25 halves the game's (p5.x = 0.5)");
+    CHECK(sup[21] == 1.0f, "PsychoV35 does not use local exposure control");
 
     test_cfg_set("REKARINA_HDR_TONEMAP", "renodrt");
     test_cfg_set("REKARINA_HDR_GAMMA", "2.4");
     test_cfg_set("REKARINA_HDR_EXPOSURE", "120");
     vk_hdr_support(sup);
     CHECK(sup[3] == 3.0f && sup[14] == 2.0f && fabsf(sup[4] - 1.2f) < 1e-5f, "RenoDRT + gamma 2.4 + exposure");
+    CHECK(sup[21] == 0.0f, "RenoDRT local exposure off");
 
     test_cfg_set("REKARINA_HDR_TONEMAP", "vanilla");
     test_cfg_set("REKARINA_HDR_GAMMA", "off");
+    test_cfg_set("REKARINA_HDR_LOCAL_EXPOSURE", "100");
     vk_hdr_support(sup);
     CHECK(sup[3] == 0.0f && sup[14] == 0.0f, "Vanilla + gamma off");
+    CHECK(sup[21] == 2.0f, "Vanilla local exposure doubles the correction in stops");
+    vk_hdr_set_active(0);
+    vk_hdr_support(sup);
+    CHECK(sup[21] == 1.0f, "SDR swapchain keeps the game's local exposure");
 
     if (fails) {
         fprintf(stderr, "hdr_splice_check: %d failures\n", fails);

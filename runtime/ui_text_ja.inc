@@ -590,6 +590,8 @@
     [UI_MENU_HDR_BLOWOUT_DESC] = "RenoDRT で強いハイライトを白に近づけます。0 % でオフ。",
     [UI_MENU_HDR_FLARE] = "HDR フレア補正",
     [UI_MENU_HDR_FLARE_DESC] = "RenoDRT で黒付近を引き締めます。0 でオフ。",
+    [UI_MENU_HDR_LOCAL_EXPOSURE] = "局所露出",
+    [UI_MENU_HDR_LOCAL_EXPOSURE_DESC] = "ゲームの局所的な明るさ補正を調整します。0 でオフ、50 でゲームと同じ、100 で補正の段数が 2 倍になります。",
     [UI_MENU_HDR_BLOOM] = "ブルーム",
     [UI_MENU_HDR_BLOOM_DESC] = "明るい光のまわりのにじみです。50 がゲーム本来の強さで、0 でオフ、100 で 2 倍になります"
                                "。",

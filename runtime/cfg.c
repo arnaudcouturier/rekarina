@@ -50,7 +50,7 @@ static const char *const known[] = {
     "FLIGHT_SPIKE_MS", "FLIGHT_THUMB", "FLIGHT_THUMBS", "FLUSH_SPAN", "FLUSH_UPLOAD", "TEX_EVICT", "FOLIAGE_SHADOW_CULL", "FOLIAGE_SHADOW_VRS", "FOV", "FOV_PATCH", "FPS60", "FPS_LIMIT", "FRAMETIMES", "FREEZE_IDLE", "FREEZE_WHOLE", "FREE_CORES",
     "FAST_TEXT", "FULLSCREEN", "FXAA", "GPL", "GPL_DRAW_BUILD", "GPU", "GPU_INDEX", "GPU_NAME", "HDR", "HDR_BLOOM", "HDR_BLOWOUT",
     "HDR_COLOR_SPACE", "HDR_CONTRAST", "HDR_EXPOSURE", "HDR_FLARE", "HDR_GAME_NITS", "HDR_GAMMA", "HDR_GRADE", "HDR_HIGHLIGHT_SAT",
-    "HDR_HIGHLIGHTS", "HDR_HUE", "HDR_HUE_CLIP", "HDR_LIVE", "HDR_MATCH_SLOPE", "HDR_MIDGRAY", "HDR_PEAK_NITS",
+    "HDR_HIGHLIGHTS", "HDR_HUE", "HDR_HUE_CLIP", "HDR_LIVE", "HDR_LOCAL_EXPOSURE", "HDR_MATCH_SLOPE", "HDR_MIDGRAY", "HDR_PEAK_NITS",
     "HDR_SATURATION", "HDR_SHADOWS", "HDR_TONEMAP", "HDR_TONE_SLOPE", "HDR_UI_NITS", "HIGHFPS_FIX", "INPUT", "INPUT_RECORD", "INPUT_SCRIPT", "LANG", "LIB_PREBUILD",
     "LIB_PREBUILD_KEEP", "LIB_PREBUILD_THREADS", "LOCALE", "LOD_GUARD", "LSTICK_DEADZONE", "MEMORY", "LINUX_GUEST_MEMORY", "SHADOW_PAGE_PRE", "SHADOW_GMEM_PRE", "MENU_LANG", "MENU_TEST", "MESH_ASYNC",
     "MESH_GPL", "MESH_WAIT_MS", "MESH_KEYS_DROP", "MESH_LIB_PREPARE", "MESH_COLD", "MESH_ALT_ONLY", "MESH_FS_AHEAD",
@@ -89,6 +89,7 @@ static const struct { const char *key, *section; } sections[] = {
     {"HDR_EXPOSURE", "display"}, {"HDR_HIGHLIGHTS", "display"}, {"HDR_SHADOWS", "display"}, {"HDR_CONTRAST", "display"},
     {"HDR_SATURATION", "display"}, {"HDR_HIGHLIGHT_SAT", "display"}, {"HDR_BLOWOUT", "display"}, {"HDR_FLARE", "display"},
     {"HDR_HUE", "display"}, {"HDR_GRADE", "display"}, {"HDR_BLOOM", "display"}, {"SHADOW_RES", "display"},
+    {"HDR_LOCAL_EXPOSURE", "display"},
     {"DLAA", "display"}, {"DLSS", "display"}, {"DLSS_PRESET", "display"}, {"FSR_VERSION", "display"}, {"FXAA", "display"},
     {"TAA", "display"}, {"FRAMEGEN", "display"}, {"SKIN_MOTION", "display"}, {"REFLEX", "display"}, {"GAME_ASPECT", "display"}, {"GAME_RES", "display"},
     {"DEVICE_PROFILE", "display"}, {"ASSUME_FOCUS", "display"},
@@ -168,6 +169,7 @@ static const CfgMeta metas[] = {
     {"HDR_BLOWOUT", "0", "0..100", LIVE}, {"HDR_FLARE", "0", "0..100", LIVE},
     {"HDR_HUE", "100", "0..100", LIVE}, {"HDR_GRADE", "100", "0..100", LIVE},
     {"HDR_BLOOM", "50", "0..100", LIVE},   // vk_hdr.c tonemap_splice: the game's bloom term times value / 50
+    {"HDR_LOCAL_EXPOSURE", "50", "0..100", LIVE},   // vk_hdr.c tonemap_splice: local exposure correction in stops
 #else
     {"HDR", "0", "0|1", RESTART}, {"HDR_PEAK_NITS", "1000", "400..10000", LIVE}, {"HDR_GAME_NITS", "203", "80..500", LIVE},
     {"HDR_UI_NITS", "203", "80..500", LIVE}, {"HDR_GAMMA", "off", "off|2.2|2.4", LIVE}, {"HDR_HUE", "80", "0..100", LIVE},

@@ -609,6 +609,8 @@
     [UI_MENU_HDR_BLOWOUT_DESC] = "Dessatura realces intensos em direção ao branco no RenoDRT; 0 % desligado.",
     [UI_MENU_HDR_FLARE] = "Reflexo HDR",
     [UI_MENU_HDR_FLARE_DESC] = "Escurece tons próximos do preto no RenoDRT; 0 desligado.",
+    [UI_MENU_HDR_LOCAL_EXPOSURE] = "Exposição local",
+    [UI_MENU_HDR_LOCAL_EXPOSURE_DESC] = "Ajusta a correção local de brilho. 0 desativa, 50 segue o jogo e 100 duplica a correção em passos de exposição.",
     [UI_MENU_HDR_BLOOM] = "Bloom",
     [UI_MENU_HDR_BLOOM_DESC] = "O brilho à volta das luzes fortes. 50 é o do próprio jogo; 0 desliga-o, 100 duplica-o.",
     [UI_MENU_HDR_GRADE] = "Força da paleta original",

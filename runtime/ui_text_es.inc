@@ -607,6 +607,8 @@
     [UI_MENU_HDR_BLOWOUT_DESC] = "Desatura las luces muy intensas hacia el blanco en RenoDRT; 0 % desactivado.",
     [UI_MENU_HDR_FLARE] = "Compensación de destello HDR",
     [UI_MENU_HDR_FLARE_DESC] = "Oscurece los tonos cercanos al negro en RenoDRT; 0 desactivado.",
+    [UI_MENU_HDR_LOCAL_EXPOSURE] = "Exposición local",
+    [UI_MENU_HDR_LOCAL_EXPOSURE_DESC] = "Ajusta la corrección local de brillo. 0 la desactiva, 50 coincide con el juego y 100 duplica la corrección en pasos.",
     [UI_MENU_HDR_BLOOM] = "Resplandor",
     [UI_MENU_HDR_BLOOM_DESC] = "El brillo alrededor de las luces intensas. 50 es el del propio juego; 0 lo desactiva "
                                "y 100 lo duplica.",
