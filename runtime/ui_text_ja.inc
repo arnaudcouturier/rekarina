@@ -556,6 +556,9 @@
     [UI_MENU_HDR_GAMMA_OFF] = "オフ (sRGB)",
     [UI_MENU_HDR_GAMMA_22] = "2.2",
     [UI_MENU_HDR_GAMMA_24] = "2.4",
+    [UI_MENU_HDR_COLOR_SPACE] = "色空間",
+    [UI_MENU_HDR_COLOR_SPACE_DESC] = "画面の色をディスプレイへ送るときの解釈です。BT.709：ゲームが作ったままの色。DCI-"
+                                     "P3：より広いP3色域に広げ、色を鮮やかにします。",
     [UI_MENU_HDR_TONEMAP] = "HDR トーンマッパー",
     [UI_MENU_HDR_TONEMAP_DESC] = "シーンのハイライトをディスプレイのピーク輝度へ写像する方法です。PsychoV35 は RenoDX 既定、RenoDRT は輝度ベース＋OkLab、バニラはゲームの ACES 曲線を拡張します。",
     [UI_MENU_HDR_TM_PSYCHO] = "PsychoV35",

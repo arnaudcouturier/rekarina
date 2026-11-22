@@ -562,6 +562,9 @@
     [UI_MENU_HDR_GAMMA_OFF] = "끄기 (sRGB)",
     [UI_MENU_HDR_GAMMA_22] = "2.2",
     [UI_MENU_HDR_GAMMA_24] = "2.4",
+    [UI_MENU_HDR_COLOR_SPACE] = "색 공간",
+    [UI_MENU_HDR_COLOR_SPACE_DESC] = "화면의 색을 디스플레이로 보낼 때 해석하는 방식입니다. BT.709: 게임이 만든 "
+                                     "그대로. DCI-P3: 더 넓은 P3 색역으로 펼쳐 색을 더 진하게 합니다.",
     [UI_MENU_HDR_TONEMAP] = "HDR 톤 매퍼",
     [UI_MENU_HDR_TONEMAP_DESC] = "장면 하이라이트를 디스플레이 최대 밝기에 매핑하는 방식입니다. PsychoV35는 RenoDX 기본값, RenoDRT는 휘도+OkLab, 바닐라는 게임 ACES 곡선을 확장합니다.",
     [UI_MENU_HDR_TM_PSYCHO] = "PsychoV35",

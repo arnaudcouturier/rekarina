@@ -574,6 +574,10 @@
     [UI_MENU_HDR_GAMMA_OFF] = "Uit (sRGB)",
     [UI_MENU_HDR_GAMMA_22] = "2.2",
     [UI_MENU_HDR_GAMMA_24] = "2.4",
+    [UI_MENU_HDR_COLOR_SPACE] = "Kleurruimte",
+    [UI_MENU_HDR_COLOR_SPACE_DESC] = "Hoe de kleuren van het beeld op weg naar het scherm worden gelezen. BT.709: "
+                                     "zoals de game ze maakte. DCI-P3: uitgespreid over het bredere P3-gamma, voor "
+                                     "verzadigder kleuren.",
     [UI_MENU_HDR_TONEMAP] = "HDR-tonemapper",
     [UI_MENU_HDR_TONEMAP_DESC] = "Hoe heldere delen naar de piek van het scherm gaan. PsychoV35 is de RenoDX-standaard; RenoDRT gebruikt luminantie en OkLab; Origineel schaalt ACES.",
     [UI_MENU_HDR_TM_PSYCHO] = "PsychoV35",

@@ -555,6 +555,9 @@
     [UI_MENU_HDR_GAMMA_OFF] = "關閉 (sRGB)",
     [UI_MENU_HDR_GAMMA_22] = "2.2",
     [UI_MENU_HDR_GAMMA_24] = "2.4",
+    [UI_MENU_HDR_COLOR_SPACE] = "色彩空間",
+    [UI_MENU_HDR_COLOR_SPACE_DESC] = "畫面顏色送往顯示器時的解讀方式。BT.709：保持遊戲原本的顏色。DCI-P3：鋪展到更寬的"
+                                     " P3 色域，顏色更飽和。",
     [UI_MENU_HDR_TONEMAP] = "HDR 色調對應",
     [UI_MENU_HDR_TONEMAP_DESC] = "將線性場景高光對應至顯示器峰值亮度的方式。PsychoV35 為 RenoDX 預設視覺反應對應；RenoDRT 使用亮度對應與 OkLab 調色；原版依遊戲亮度縮放 ACES 曲線。",
     [UI_MENU_HDR_TM_PSYCHO] = "PsychoV35",

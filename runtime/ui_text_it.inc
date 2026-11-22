@@ -573,6 +573,10 @@
     [UI_MENU_HDR_GAMMA_OFF] = "Off (sRGB)",
     [UI_MENU_HDR_GAMMA_22] = "2.2",
     [UI_MENU_HDR_GAMMA_24] = "2.4",
+    [UI_MENU_HDR_COLOR_SPACE] = "Spazio colore",
+    [UI_MENU_HDR_COLOR_SPACE_DESC] = "Come vengono letti i colori dell'immagine diretti al display. BT.709: come li "
+                                     "ha creati il gioco. DCI-P3: distribuiti sulla gamma P3, più ampia, per colori "
+                                     "più saturi.",
     [UI_MENU_HDR_TONEMAP] = "Tone mapping HDR",
     [UI_MENU_HDR_TONEMAP_DESC] = "Come le alte luci si adattano al picco dello schermo. PsychoV35 è il predefinito RenoDX; RenoDRT usa luminanza e OkLab; Originale scala ACES.",
     [UI_MENU_HDR_TM_PSYCHO] = "PsychoV35",

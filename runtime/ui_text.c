@@ -618,6 +618,10 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_HDR_GAMMA_OFF] = "Off (sRGB)",
     [UI_MENU_HDR_GAMMA_22] = "2.2",
     [UI_MENU_HDR_GAMMA_24] = "2.4",
+    [UI_MENU_HDR_COLOR_SPACE] = "Colour space",
+    [UI_MENU_HDR_COLOR_SPACE_DESC] = "How the picture's colours are read on the way to the display. BT.709: as the "
+                                     "game made them. DCI-P3: spread over the wider P3 gamut, for more saturated "
+                                     "colours.",
     [UI_MENU_HDR_TONEMAP] = "HDR tone mapper",
     [UI_MENU_HDR_TONEMAP_DESC] = "How linear scene highlights map to your display's peak. PsychoV35 is RenoDX's observer-response cone mapper (default); RenoDRT maps luminance with OkLab grading; Vanilla scales the game's ACES curve.",
     [UI_MENU_HDR_TM_PSYCHO] = "PsychoV35",
@@ -1240,6 +1244,9 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_MENU_HDR_GAMMA_OFF] = "Выкл. (sRGB)",
     [UI_MENU_HDR_GAMMA_22] = "2.2",
     [UI_MENU_HDR_GAMMA_24] = "2.4",
+    [UI_MENU_HDR_COLOR_SPACE] = "Цветовое пространство",
+    [UI_MENU_HDR_COLOR_SPACE_DESC] = "Как читаются цвета картинки на пути к дисплею. BT.709: как их создала игра. "
+                                     "DCI-P3: растянуты на более широкий охват P3, цвета насыщеннее.",
     [UI_MENU_HDR_TONEMAP] = "Тональная компрессия HDR",
     [UI_MENU_HDR_TONEMAP_DESC] = "Способ отображения ярких участков на пик экрана. PsychoV35 — модель RenoDX по умолчанию; RenoDRT — яркостная компрессия с OkLab; Оригинал масштабирует кривую ACES.",
     [UI_MENU_HDR_TM_PSYCHO] = "PsychoV35",
@@ -1893,6 +1900,9 @@ static const char *const text_pt_br[UI_TEXT_COUNT] = {
     [UI_MENU_HDR_GAMMA_OFF] = "Desl. (sRGB)",
     [UI_MENU_HDR_GAMMA_22] = "2.2",
     [UI_MENU_HDR_GAMMA_24] = "2.4",
+    [UI_MENU_HDR_COLOR_SPACE] = "Espaço de cor",
+    [UI_MENU_HDR_COLOR_SPACE_DESC] = "Como as cores da imagem são lidas a caminho da tela. BT.709: como o jogo as "
+                                     "fez. DCI-P3: espalhadas pela gama P3, mais ampla, para cores mais saturadas.",
     [UI_MENU_HDR_TONEMAP] = "Mapeamento de tons HDR",
     [UI_MENU_HDR_TONEMAP_DESC] = "Como os realces da cena se ajustam ao pico do monitor. PsychoV35 é o padrão do RenoDX; RenoDRT usa luminância e OkLab; Original escala a curva ACES.",
     [UI_MENU_HDR_TM_PSYCHO] = "PsychoV35",
@@ -2622,6 +2632,9 @@ static const char *const text_zh_hans[UI_TEXT_COUNT] = {
     [UI_MENU_HDR_GAMMA_OFF] = "关闭 (sRGB)",
     [UI_MENU_HDR_GAMMA_22] = "2.2",
     [UI_MENU_HDR_GAMMA_24] = "2.4",
+    [UI_MENU_HDR_COLOR_SPACE] = "色彩空间",
+    [UI_MENU_HDR_COLOR_SPACE_DESC] = "画面颜色送往显示器时的解读方式。BT.709：保持游戏原本的颜色。DCI-P3：铺展到更宽的"
+                                     " P3 色域，颜色更饱和。",
     [UI_MENU_HDR_TONEMAP] = "HDR 色调映射",
     [UI_MENU_HDR_TONEMAP_DESC] = "将线性场景高光映射到显示器峰值亮度的方式。PsychoV35 为 RenoDX 默认视觉响应映射；RenoDRT 使用亮度映射与 OkLab 调色；原版按游戏亮度缩放 ACES 曲线。",
     [UI_MENU_HDR_TM_PSYCHO] = "PsychoV35",

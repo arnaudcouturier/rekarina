@@ -103,6 +103,7 @@ void vk_hdr_off(void) { g_wanted = 0; }
 typedef struct {
     float peak, game, ui;   // nits
     float gamma;            // 0 off, 1: 2.2, 2: 2.4
+    float p3;               // 1: the picture's primaries are read as Display P3 (REKARINA_HDR_COLOR_SPACE)
     float tm[20];           // support buffer parameters (bytes 1440..1519)
 } Nits;
 static struct { unsigned seen; int cur; Nits snap[2]; PlatMutex lock; } N = {.seen = ~0u, .lock = PLAT_MUTEX_INIT};
@@ -123,6 +124,7 @@ static Nits nits(void) {
             n->gamma = vk_hdr_native() ? HDR_GAMMA_22
                        : !strcmp(g, "off") || !strcmp(g, "0") ? 0.0f : !strcmp(g, "2.4") ? 2.0f : HDR_GAMMA_22;
 #ifdef GAME_OOT
+            n->p3 = !strcmp(cfg_value("REKARINA_HDR_COLOR_SPACE"), "p3");
             const char *tm = cfg_value("REKARINA_HDR_TONEMAP");
             float mapper = !strcmp(tm, "vanilla") ? 0.0f : !strcmp(tm, "renodrt") ? 3.0f : 9.0f;
             static const char *const keys[10] = {
@@ -1617,7 +1619,7 @@ VkImage vk_hdr_encode(VkCommandBuffer cb, unsigned slot, VkImage src, VkFormat f
     rec_push(H.push, cb, VK_PIPELINE_BIND_POINT_COMPUTE, H.enc_layout, 0, 2, w);
     struct { int32_t offset[2], size[2]; float p[4], adj[4], q[4]; } pc = {
         {crop[0], crop[1]}, {crop[2], crop[3]}, {n.ui, n.peak, decode ? 1.0f : 0.0f, n.gamma},
-        {adj[0], adj[1], adj[2], adj[3]}, {grade ? 1.0f : 0.0f, n.game / n.ui, 0, 0}};
+        {adj[0], adj[1], adj[2], adj[3]}, {grade ? 1.0f : 0.0f, n.game / n.ui, n.p3, 0}};
     vkCmdPushConstants(cb, H.enc_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof pc, &pc);
     vkCmdDispatch(cb, ((uint32_t)crop[2] + 7) / 8, ((uint32_t)crop[3] + 7) / 8, 1);
     barrier(cb, src, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_GENERAL, CS, 0, ALL, 0);

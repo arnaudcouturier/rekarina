@@ -1236,6 +1236,10 @@ static void tab_screen(float scale) {
         if (!strcmp(hdr, "1")) {
             static const UiTextId gamma_modes[] = {UI_MENU_HDR_GAMMA_OFF, UI_MENU_HDR_GAMMA_22, UI_MENU_HDR_GAMMA_24};
             opt_choice("REKARINA_HDR_GAMMA", UI_MENU_HDR_GAMMA, gamma_modes, 3, UI_MENU_HDR_GAMMA_DESC);
+            static const char *const spaces[] = {"bt709", "p3"};   // the names of the gamuts, in every language
+            const char *space_names[] = {"BT.709", "DCI-P3"};
+            opt_choice_list("REKARINA_HDR_COLOR_SPACE", UI_MENU_HDR_COLOR_SPACE, spaces, space_names, 2,
+                            UI_MENU_HDR_COLOR_SPACE_DESC);
             static const UiTextId tm_modes[] = {UI_MENU_HDR_TM_PSYCHO, UI_MENU_HDR_TM_RENODRT, UI_MENU_HDR_TM_VANILLA};
             opt_choice("REKARINA_HDR_TONEMAP", UI_MENU_HDR_TONEMAP, tm_modes, 3, UI_MENU_HDR_TONEMAP_DESC);
             const char *tm = cfg_value("REKARINA_HDR_TONEMAP");

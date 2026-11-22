@@ -23,7 +23,9 @@
 // scaling, ratio-preserving peak clamp, and SMPTE ST 2084 PQ encode.
 // p.x: nits of 1.0 (UI white), p.y: display peak in nits, p.z: 1 for UNORM sRGB decode, p.w: gamma correction
 // (0 none, 1: 2.2, 2: 2.4).
-// adj / q: colour profile (vk_color.c): q.x = 1 to grade, q.y = game white / UI white.
+// adj / q: colour profile (vk_color.c): q.x = 1 to grade, q.y = game white / UI white. q.z = 1: the picture's
+// primaries are read as Display P3 (D65 white) instead of Rec. 709 (REKARINA_HDR_COLOR_SPACE, the global colour
+// space of ShortFuse's RenoDX OoT mod), which spreads the game's colours over the wider P3 gamut.
 layout(local_size_x = 8, local_size_y = 8) in;
 layout(binding = 0) uniform sampler2D src;
 layout(binding = 1, rgba16f) uniform writeonly image2D dst;
@@ -32,7 +34,7 @@ layout(push_constant) uniform P {
     ivec2 size;
     vec4 p;
     vec4 adj;   // brightness (added), contrast, saturation, gamma (exponent)
-    vec4 q;     // x: 1 to grade, y: the picture's white against 1.0
+    vec4 q;     // x: 1 to grade, y: the picture's white against 1.0, z: 1 for Display P3 primaries
 } pc;
 
 vec3 copy_sign(vec3 mag, vec3 s) {
@@ -76,10 +78,15 @@ void main() {
     if (pc.q.x > 0.5) c = grade(c);
     if (pc.p.w == 1.0) c = gamma_correct(c, 2.2);
     else if (pc.p.w == 2.0) c = gamma_correct(c, 2.4);
-    // Rec. 709 to Rec. 2020 (rows, ITU-R BT.2087)
-    c = c * mat3(0.6274038960, 0.3292830384, 0.0433130657,
-                 0.0690972894, 0.9195403951, 0.0113623156,
-                 0.0163914388, 0.0880133078, 0.8955952532);
+    // The picture's primaries to Rec. 2020 (rows): Rec. 709 (ITU-R BT.2087), or Display P3 with D65 white (both from
+    // the primaries and the D65 white point)
+    const mat3 BT709_TO_BT2020 = mat3(0.6274038960, 0.3292830384, 0.0433130657,
+                                      0.0690972894, 0.9195403951, 0.0113623156,
+                                      0.0163914388, 0.0880133078, 0.8955952532);
+    const mat3 P3_TO_BT2020 = mat3(0.7538330344, 0.1985973691, 0.0475695966,
+                                   0.0457438490, 0.9417772198, 0.0124789312,
+                                   -0.0012103404, 0.0176017173, 0.9836086231);
+    c = c * (pc.q.z > 0.5 ? P3_TO_BT2020 : BT709_TO_BT2020);
     float gray = dot(c, vec3(0.2627002120, 0.6779980715, 0.0593017165));
     const float MID_GRAY_GAMMA = log(1.0 / pow(10.0, 0.75)) / log(0.5);   // ~2.49: 18% grey encodes to 50%
     vec3 encoded = sign_pow(c, 1.0 / MID_GRAY_GAMMA);
