@@ -25,6 +25,7 @@
 #include "host.h"
 #include "nvn_api.h"
 #include "platform/platform.h"
+#include "tex.h"
 #include "vk.h"
 #include "vk_dlaa.h"
 #include "vk_exec.h"
@@ -2115,54 +2116,60 @@ void vk_dlaa_pass(VkExec *ex) {
     }
 }
 
-// OoT scales its picture in compute: after the scene's last pass three dispatches read the light target, the third
-// writing the output-sized picture as a storage image; the HUD is then drawn into that picture and it is copied to the
-// window. The pass rule above (the first pass larger than the scene runs DLSS) only met the HUD's pass: in a frame with
-// no HUD at all (a dialogue between two lines, a cut-scene) no such pass exists, DLSS ran at the window copy, which
-// drew the game's own scaled picture over it, and the picture changed between DLSS's and the game's every time the
-// interface came or went (the sharpness jump in dialogues). So DLSS runs at the scaling dispatch itself and takes its
-// place: the dispatch is not run, DLSS's picture goes into its storage image. The dispatch is known by a storage image
-// larger than the armed light target, or (a scene as large as the output, DLAA) the picture the window copy read last
-// frame. 1: the dispatch is replaced.
+// OoT post-processes and scales its picture in compute: after the bloom composite and ACES/RenoDX tonemap write the
+// armed light target (D.color), three SMAA dispatches run (edges into RG16UI, weights into RGBA8, blend packing
+// sqrt(color) into RGB9E5 through an R32UI storage view) and a fourth scaling dispatch reads that RGB9E5 view and
+// writes the output-sized float picture (B10G11R11) that the HUD draws onto. Replacing that scaling dispatch in both
+// DLAA (1:1) and DLSS/FSR3 upscaling modes keeps SMAA's blur, RGB9E5 quantization, and the game's own scaler off the
+// upscaler's output. Spatial FSR 1 at 1:1 leaves the scaling dispatch alone. 1: the dispatch is replaced.
 int vk_dlaa_dispatch(VkExec *ex, const GfxShader *cs) {
     static int on = -1;
     if (on < 0) on = rt_knob("DLAA_AT_DISPATCH", "1");
     if (D.hl_wait && cs) hudless_track(ex, cs);   // after the evaluation: the picture the HUD-less copy is taken of
     if (!on || !dl_active() || D.done || !D.armed || deferred || !cs) return 0;
+    const int spatial = fsr1();
+    if (scene_projection_enabled() && !spatial && !D.projection.sample.token) return 0;
     const GfxShaderRes *r;
-    if (!res_dlss_upscales()) {
-        // DLAA, the scene at the output's size: the game's post chain (tone map, its scaler's passes, the HUD) reads the
-        // light target from its first compute dispatch on, so DLSS runs in place right before that one and the chain
-        // goes on with the anti-aliased picture. At the output pass, where it ran before, the chain had already read
-        // the aliased scene and DLSS's picture never reached the screen.
-        int nt = gfx_shader_resources(cs, GFX_RES_TEX, &r), reads = 0;
-        vk_texture_lock();
-        for (int i = 0; i < nt && !reads; i++) {
-            if (r[i].slot < 0 || r[i].slot >= 128) continue;
-            uint64_t h = ex->tex[5][r[i].slot];
-            const VkTexImage *img = h ? vk_texture_by_id_locked((int)(h & 0xfffff), NULL, NULL) : NULL;
-            reads = img && img == D.color.img;
-        }
-        vk_texture_unlock();
-        if (!reads) return 0;
-        vk_exec_pass_end(ex);
-        uint64_t evals0 = D.evals;
-        D.ended = D.done = 1, D.up = 0, D.at_dispatch++;
-        D.hl_later = 1, evaluate(ex, NULL), D.hl_later = 0;
-        if (D.evals == evals0) D.ended = D.done = 0;
-        return 0;
-    }
-    int n = gfx_shader_resources(cs, GFX_RES_IMG, &r);
+    int nt = gfx_shader_resources(cs, GFX_RES_TEX, &r);
+    int reads_light = 0, reads_e5 = 0;
     const VkTexImage *out = NULL;
     vk_texture_lock();
+    for (int i = 0; i < nt; i++) {
+        if (r[i].slot < 0 || r[i].slot >= 128) continue;
+        uint64_t h = ex->tex[5][r[i].slot];
+        if (!h) continue;
+        view_t v;
+        int hv = 0;
+        const VkTexImage *img = vk_texture_by_id_locked((int)(h & 0xfffff), &v, &hv);
+        if (!img) continue;
+        if (img == D.color.img) reads_light = 1;
+        if (hv && v.set_format) {
+            TexVkFormat tvf;
+            if (tex_vk_format(v.format, &tvf) && tvf.vk == VK_FORMAT_E5B9G9R9_UFLOAT_PACK32) reads_e5 = 1;
+        }
+    }
+    int n = gfx_shader_resources(cs, GFX_RES_IMG, &r);
     for (int i = 0; i < n && !out; i++) {
         if (r[i].slot < 0 || r[i].slot >= 32) continue;
         uint64_t h = ex->img[5][r[i].slot];   // the compute stage's images (NVN_STAGE_CS)
-        const VkTexImage *img = h ? vk_texture_by_id_locked((int)(h & 0xfffff), NULL, NULL) : NULL;
-        if (!img || !(img->aspect & VK_IMAGE_ASPECT_COLOR_BIT) || img == D.color.img) continue;
-        int larger = img->width > D.color.width && img->height > D.color.height;
-        int final = D.out_addr && img->addr == D.out_addr && img->width == D.color.width && img->height == D.color.height;
-        if (larger || final) out = img;
+        if (!h) continue;
+        view_t v;
+        int hv = 0;
+        const VkTexImage *img = vk_texture_by_id_locked((int)(h & 0xfffff), &v, &hv);
+        if (!img || !(img->aspect & VK_IMAGE_ASPECT_COLOR_BIT) || img == D.color.img || !scene_color(img->format))
+            continue;
+        int reinterpreted = 0;
+        if (hv && v.set_format) {
+            TexVkFormat tvf;
+            if (tex_vk_format(v.format, &tvf) && tvf.vk != img->format) reinterpreted = 1;
+        }
+        if (reinterpreted) continue;   // SMAA compose packs RGB9E5 words through an R32UI view
+        int shape = (double)img->width * D.color.height <= 1.03 * (double)img->height * D.color.width &&
+                    (double)img->height * D.color.width <= 1.03 * (double)img->width * D.color.height;
+        int larger = shape && img->width > D.color.width && img->height > D.color.height;
+        int same = !spatial && img->width == D.color.width && img->height == D.color.height && !reads_light &&
+                   (reads_e5 || (D.out_addr && img->addr == D.out_addr));
+        if (larger || same) out = img;
     }
     if (out) vk_texture_storage_bound_locked(out);   // the picture is written here, as the dispatch would have
     vk_texture_unlock();
@@ -2175,6 +2182,11 @@ int vk_dlaa_dispatch(VkExec *ex, const GfxShader *cs) {
     uint64_t evals0 = D.evals;
     D.ended = D.done = 1, D.up = out->width > D.color.width;
     D.out_addr = out->addr, D.at_dispatch++;
+    static int told;
+    if (!told++)
+        rt_log("dlaa: %s replaces the game's scaling dispatch: scene %ux%u -> output %ux%u (format %d, e5=%d)",
+               spatial ? "FSR 1" : fsr3() ? "FSR 3.1" : "DLSS", D.color.width, D.color.height, out->width,
+               out->height, (int)out->format, reads_e5);
     if (vk_dlaa_pathlog())
         rt_log("PATHLOG   DLSS at the scaling dispatch: storage %llx %ux%u vkfmt %d, light %llx %ux%u", (unsigned long long)out->addr,
                out->width, out->height, (int)out->format, D.color.img ? (unsigned long long)D.color.img->addr : 0ull, D.color.width,
@@ -2256,13 +2268,15 @@ static void vk_dlaa_pass_(VkExec *ex) {
 }
 
 
-// OoT's frame takes no jitter (next_jitter), so while the camera stands DLSS's history repeats one sample of each
-// pixel and its picture goes soft within a few frames, and sharp again at the next camera motion. The present sharpens
-// DLSS's picture on every frame (vk_fsr.c), standing or not: RCAS's limiter narrows that difference from 5.5x to 1.7x.
-// Following the camera instead switched the sharpening on and off through a dialogue, which showed as flicker.
+// Without native projection jitter, OoT's standing camera repeats one sample per pixel and RCAS at 1:1 evens out the
+// sharpness step (vk_fsr.c). With native projection jitter active, DLSS/DLAA accumulates genuine sub-pixel detail and
+// needs no extra 1:1 present RCAS pass on top of HDR10/HUD unless explicitly requested (REKARINA_DLAA_SHARPEN=1).
 int vk_dlaa_sharpens(void) {
     static int on = -1;
-    if (on < 0) on = rt_knob("DLAA_SHARPEN", "1");
+    if (on < 0) {
+        const char *e = cfg_get("REKARINA_DLAA_SHARPEN");
+        on = e && *e ? atoi(e) != 0 : !scene_projection_enabled();
+    }
     return on && dl_active() && !fsr3() && !fsr1();   // FSR 1 runs its own RCAS (vk_fsr_scene)
 }
 
@@ -2322,19 +2336,39 @@ static float fsr1_bias(void) {
     return res_dlss_upscales() ? res_dlss_lod_bias() + 1.0f : 0.0f;
 }
 
+// NVIDIA's DLSS guide asks for log2(render / output) - 1 on top of the game's texture LOD bias whenever sub-pixel
+// temporal jitter is active (-1.0 at DLAA, -1.58 in Quality, -2.0 in Performance). OoT's live render share comes from
+// frame_rate.c (res_fixed_scene_share); TotK's comes from resolution.c.
+static float dlss_lod_bias(void) {
+    if (fsr1()) return fsr1_bias();
+    static float extra = 1e9f;
+    if (extra > 1e8f) {
+        const char *e = cfg_get("REKARINA_DLSS_BIAS_EXTRA");
+        extra = e && *e ? (float)atof(e) : -1.0f;
+    }
+    int jit = scene_projection_enabled() || rt_knob("DLAA_JITTER", "1");
+    double s = res_fixed_scene_share();
+    if (s > 0) return (s < 1.0 ? (float)log2(s) : 0.0f) + (jit ? extra : 0.0f);
+    return res_dlss_upscales() ? res_dlss_lod_bias() : (jit ? extra : 0.0f);
+}
+
 // REKARINA_DLSS, read at each present (the menu switches it live): the scene size of the mode (resolution.c) and the
-// texture bias that goes with it while DLSS runs.
+// texture bias that goes with it while DLSS or FSR runs.
 static void dlss_mode(void) {
     static char mode[32];
-    static int bias_on = -1;
+    static float last_bias = 1e9f;
     const char *m = cfg_value("REKARINA_DLSS");
     if (strcmp(m, mode)) {
         snprintf(mode, sizeof mode, "%s", m);
         res_dlss_mode(m);
-        bias_on = -1;
     }
-    int b = dl_active();
-    if (b != bias_on) bias_on = b, vk_sampler_dlss_bias(b ? (fsr1() ? fsr1_bias() : res_dlss_lod_bias()) : 0.0f);
+    float bias = dl_active() ? dlss_lod_bias() : 0.0f;
+    if (bias != last_bias) {
+        if (last_bias < 1e8f || bias != 0.0f)
+            rt_log("dlaa: texture LOD bias %.2f (mode %s)", bias, mode[0] ? mode : "dlaa");
+        last_bias = bias;
+        vk_sampler_dlss_bias(bias);
+    }
     // The sharpness slider below its default (80 %) takes back the game's own texture sharpening as well, all of it at
     // 0 % (vk_sampler_sharpness): at a native picture no RCAS runs, and 0 % still showed the game's sharp textures.
     // At the default and above the game's textures stay as they are.

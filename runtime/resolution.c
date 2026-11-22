@@ -386,8 +386,13 @@ float res_dlss_lod_bias(void) {
 }
 
 // A DLSS mode that scales (REKARINA_DLSS quality ... ultra_performance); 0: the scene has the output's size (DLAA).
+double res_fixed_scene_share(void);
 int res_dlss_upscales(void) {
     decide();
+    if (!R.on) {
+        double s = res_fixed_scene_share();
+        if (s > 0) return s < 0.999;
+    }
     return R.dlss_k != 0;
 }
 
