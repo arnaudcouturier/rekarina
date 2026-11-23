@@ -202,6 +202,17 @@
     [UI_MENU_CHANNELS_AUTO] = "Automatisch", [UI_MENU_CHANNELS_STEREO] = "Stereo", [UI_MENU_CHANNELS_51] = "5.1 surround",
 
     [UI_MENU_MOTION] = "Bewegingsbesturing", [UI_MENU_MOTION_DESC] = "Richten met de gyroscoop van de controller.",
+    [UI_MENU_VIBRATION] = "Trillen",
+    [UI_MENU_VIBRATION_AUTO] = "Automatisch", [UI_MENU_VIBRATION_BASIC] = "Eenvoudig", [UI_MENU_VIBRATION_OFF] = "Uit",
+    [UI_MENU_VIBRATION_DESC] = "Automatisch: de fijne trillingen van het spel waar de "
+                               "controller ze kan weergeven (haptiek van de DualSense, de "
+                               "vier motoren van een Xbox-controller, HD-trillingen van "
+                               "Switch-controllers). Eenvoudig: alleen de twee trilmotoren. "
+                               "Uit: geen trillingen.",
+    [UI_MENU_DS_EXTRAS] = "DualSense-extra's", [UI_MENU_DS_EXTRAS_NOTE] = "Alleen DualSense",
+    [UI_MENU_DS_EXTRAS_DESC] = "Naast de trillingen geven de triggers terugslag en voegt de "
+                              "luidspreker van de controller kleine tikjes toe. Voor een "
+                              "DualSense met Trillen op Automatisch.",
     [UI_MENU_RUMBLE_STRENGTH] = "Trilsterkte",
     [UI_MENU_RUMBLE_STRENGTH_DESC] = "Hoe sterk de controller trilt.",
     [UI_MENU_RUMBLE_CURVE] = "Trilcurve",

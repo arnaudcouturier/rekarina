@@ -63,8 +63,9 @@ static const char *const kPipePicture[] = {"REKARINA_GAME_RES", "REKARINA_GAME_A
 static const char *const kPipeWindow[] = {"REKARINA_UPSCALER", "REKARINA_SHARPNESS", "REKARINA_ASPECT",
                                           "REKARINA_WINDOW_SIZE", "REKARINA_FULLSCREEN", nullptr};
 static const char *const kPad[] = {"REKARINA_PAD_LAYOUT", "REKARINA_PAD_FOLLOW", "REKARINA_PAD_DRIVER", "REKARINA_MOTION",
-                                   "REKARINA_RUMBLE_STRENGTH", "REKARINA_RUMBLE_CURVE", "REKARINA_RUMBLE_TRIGGERS",
-                                   "REKARINA_LSTICK_DEADZONE", "REKARINA_RSTICK_DEADZONE", nullptr};
+                                   "REKARINA_VIBRATION", "REKARINA_DUALSENSE_EXTRAS", "REKARINA_RUMBLE_STRENGTH",
+                                   "REKARINA_RUMBLE_CURVE", "REKARINA_RUMBLE_TRIGGERS", "REKARINA_LSTICK_DEADZONE",
+                                   "REKARINA_RSTICK_DEADZONE", nullptr};
 static const char *const kKeys[] = {"REKARINA_MOUSE_SENS", "REKARINA_MOUSE_SENS_Y", "REKARINA_MOUSE_INVERT_Y",
                                     "REKARINA_MOUSE_RAW", "REKARINA_WALK_KEY", "REKARINA_WALK_SCALE",
                                     "REKARINA_CURSOR_HIDE", nullptr};

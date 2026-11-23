@@ -4,6 +4,8 @@
 #include <stdio.h>
 #include <windows.h>
 #include <bcrypt.h>
+#include <endpointvolume.h>
+#include <mmdeviceapi.h>
 #include <pdh.h>
 #include <pdhmsg.h>
 #include <psapi.h>
@@ -1764,6 +1766,77 @@ void *plat_lib_open(const char *name) {
 }
 
 void *plat_lib_sym(void *lib, const char *name) { return lib ? (void *)GetProcAddress((HMODULE)lib, name) : NULL; }
+
+void *plat_lib_open_beside(const char *name, int *missing) {
+    char path[WPATH];
+    wchar_t w[WPATH];
+    if (missing) *missing = 0;
+    if (!plat_exe_path(path, sizeof path)) return NULL;
+    char *end = strrchr(path, '\\'), *alt = strrchr(path, '/');
+    if (alt > end) end = alt;
+    if (!end || (size_t)(end + 1 - path) + strlen(name) + 1 > sizeof path) return NULL;
+    strcpy(end + 1, name);
+    if (!widen(path, w, WPATH)) return NULL;
+    if (GetFileAttributesW(w) == INVALID_FILE_ATTRIBUTES) {
+        if (missing) *missing = 1;
+        return NULL;
+    }
+    DWORD mode = 0;
+    BOOL quiet = SetThreadErrorMode(SEM_FAILCRITICALERRORS, &mode);
+    HMODULE m = LoadLibraryExW(w, NULL, LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32);
+    if (quiet) SetThreadErrorMode(mode, NULL);
+    return (void *)m;
+}
+
+// The Core Audio endpoint list (MMDevice) and each endpoint's volume (IAudioEndpointVolume); nothing is changed. The
+// identifiers are the SDK's (mmdeviceapi.h, endpointvolume.h, functiondiscoverykeys_devpkey.h), spelled out here so
+// no import library has to carry them.
+int plat_audio_out_volume(const char *const *names, int n, float *volume, int *muted, char *found, size_t cap) {
+    static const CLSID clsid_enum = {0xbcde0395, 0xe52f, 0x467c, {0x8e, 0x3d, 0xc4, 0x57, 0x92, 0x91, 0x69, 0x2e}};
+    static const IID iid_enum = {0xa95664d2, 0x9614, 0x4f35, {0xa7, 0x46, 0xde, 0x8d, 0xb6, 0x36, 0x17, 0xe6}};
+    static const IID iid_volume = {0x5cdf2c82, 0x841e, 0x4546, {0x97, 0x22, 0x0c, 0xf7, 0x40, 0x78, 0x22, 0x9a}};
+    static const PROPERTYKEY key_name = {{0xa45c254e, 0xdf1c, 0x4efd, {0x80, 0x20, 0x67, 0xd1, 0x46, 0xa8, 0x50, 0xe0}}, 14};
+    // (a thread COM already serves in another mode answers RPC_E_CHANGED_MODE: COM works there, and is not left)
+    HRESULT init = CoInitializeEx(NULL, COINIT_MULTITHREADED);
+    IMMDeviceEnumerator *en = NULL;
+    IMMDeviceCollection *list = NULL;
+    UINT count = 0;
+    int ok = 0;
+    if (SUCCEEDED(CoCreateInstance(&clsid_enum, NULL, CLSCTX_ALL, &iid_enum, (void **)&en)) && en &&
+        SUCCEEDED(en->lpVtbl->EnumAudioEndpoints(en, eRender, DEVICE_STATE_ACTIVE, &list)) && list)
+        list->lpVtbl->GetCount(list, &count);
+    for (UINT i = 0; i < count && !ok; i++) {
+        IMMDevice *dev = NULL;
+        IPropertyStore *props = NULL;
+        PROPVARIANT pv;
+        PropVariantInit(&pv);
+        if (FAILED(list->lpVtbl->Item(list, i, &dev)) || !dev) continue;
+        if (SUCCEEDED(dev->lpVtbl->OpenPropertyStore(dev, STGM_READ, &props)) && props &&
+            SUCCEEDED(props->lpVtbl->GetValue(props, &key_name, &pv)) && pv.vt == VT_LPWSTR && pv.pwszVal) {
+            char name[256];
+            int match = 0;
+            if (!WideCharToMultiByte(CP_UTF8, 0, pv.pwszVal, -1, name, sizeof name, NULL, NULL)) name[0] = 0;
+            for (int k = 0; k < n && !match; k++) match = strstr(name, names[k]) != NULL;
+            IAudioEndpointVolume *ev = NULL;
+            if (match && SUCCEEDED(dev->lpVtbl->Activate(dev, &iid_volume, CLSCTX_ALL, NULL, (void **)&ev)) && ev) {
+                float f = 0;
+                BOOL m = FALSE;
+                if (SUCCEEDED(ev->lpVtbl->GetMasterVolumeLevelScalar(ev, &f)) && SUCCEEDED(ev->lpVtbl->GetMute(ev, &m))) {
+                    *volume = f, *muted = m != FALSE, ok = 1;
+                    if (found && cap) snprintf(found, cap, "%s", name);
+                }
+                ev->lpVtbl->Release(ev);
+            }
+        }
+        PropVariantClear(&pv);
+        if (props) props->lpVtbl->Release(props);
+        dev->lpVtbl->Release(dev);
+    }
+    if (list) list->lpVtbl->Release(list);
+    if (en) en->lpVtbl->Release(en);
+    if (SUCCEEDED(init)) CoUninitialize();
+    return ok;
+}
 
 // ---- machine load: GetSystemTimes for the CPU, PDH (pdh.dll, loaded on first use) for the thermal zones and the GPU
 // engine and adapter memory counters that Task Manager reads.

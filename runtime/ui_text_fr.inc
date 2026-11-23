@@ -204,6 +204,17 @@
     [UI_MENU_CHANNELS_AUTO] = "Automatique", [UI_MENU_CHANNELS_STEREO] = "Stéréo", [UI_MENU_CHANNELS_51] = "Surround 5.1",
 
     [UI_MENU_MOTION] = "Commandes par mouvements", [UI_MENU_MOTION_DESC] = "Viser avec le gyroscope de la manette.",
+    [UI_MENU_VIBRATION] = "Vibrations",
+    [UI_MENU_VIBRATION_AUTO] = "Auto", [UI_MENU_VIBRATION_BASIC] = "Basiques", [UI_MENU_VIBRATION_OFF] = "Désactivées",
+    [UI_MENU_VIBRATION_DESC] = "Auto : les vibrations fines du jeu quand la manette sait les "
+                               "rendre (retour haptique de la DualSense, quatre moteurs "
+                               "d'une manette Xbox, vibration HD des manettes Switch). "
+                               "Basiques : les deux moteurs de vibration seulement. "
+                               "Désactivées : aucune vibration.",
+    [UI_MENU_DS_EXTRAS] = "Effets DualSense", [UI_MENU_DS_EXTRAS_NOTE] = "DualSense uniquement",
+    [UI_MENU_DS_EXTRAS_DESC] = "En plus des vibrations, les gâchettes offrent un retour de "
+                              "force et le haut-parleur de la manette ajoute de petits "
+                              "tapotements. Pour une DualSense avec Vibrations sur Auto.",
     [UI_MENU_RUMBLE_STRENGTH] = "Intensité des vibrations",
     [UI_MENU_RUMBLE_STRENGTH_DESC] = "La force des vibrations de la manette.",
     [UI_MENU_RUMBLE_CURVE] = "Courbe des vibrations",

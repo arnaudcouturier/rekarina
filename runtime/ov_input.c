@@ -357,6 +357,11 @@ static void play(int side, const VibrationValue *v) {
     plat_mutex_lock(&vib_lock);
     vib_last[side] = c;
     vib_at[side] = now;
+    // RenHDrum (input.c input_vibration_mode) gets every value as the game sent it, silence while vibration is not
+    // permitted; it keeps its own pace and law, so neither rumble_update's pacing nor its curve applies
+    InputVibration raw = vib_allowed ? (InputVibration){c.amp_low, c.freq_low, c.amp_high, c.freq_high}
+                                     : (InputVibration){0, 160, 0, 320};
+    input_vibration_feed(side, &raw);
     rumble_update(now);
     plat_mutex_unlock(&vib_lock);
 }

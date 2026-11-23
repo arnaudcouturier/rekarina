@@ -63,6 +63,7 @@ GAME_EXE = 'Rekarina' + EXE
 INI = 'rekarina.ini'      # the settings file beside the game
 OLD_INI = 'totk.ini'      # its name in a folder made before 1.0.0: the game and package_oot.py rename it
 SHIM = 'rekarina_dlssg.dll'   # our library between the game and Streamline, as the game folder and a release name it
+RENHDRUM = 'renhdrum.dll'     # RenHDrum's controller haptics library (tools/build_renhdrum.py, runtime/rumble_rh.c)
 STYLES = (('switch', 'switch'), ('xbox', 'xbox'), ('xbox-label', 'xbox-label'))   # shared-fonts-<folder>, --style
 # Libraries the game loads when they lie beside it (DLSS, FSR 3.1, frame generation). They are not ours to ship: the
 # components step downloads them from their vendors; --dlls names a folder with the player's own copies, which then
@@ -440,6 +441,12 @@ class OotLayout:
         """Our own library between the game and Streamline (runtime/dlssg): a release carries it in bin/ as
         rekarina_dlssg.dll, a checkout has it where its build put it, as totk_dlssg.dll."""
         return self.root / 'build' / 'oot' / 'totk_dlssg.dll' if self.dev else self.root / 'bin' / SHIM
+
+    @property
+    def renhdrum(self):
+        """RenHDrum's library (tools/build_renhdrum.py), which the game's Vibration setting plays controllers through:
+        a release carries it in bin/, a checkout has it where that build put it."""
+        return self.root / 'build' / 'oot' / RENHDRUM if self.dev else self.root / 'bin' / RENHDRUM
 
     @property
     def patches(self):
@@ -847,6 +854,9 @@ class Components(Step):
         # releases 1.2.0 to 1.2.3 carried none, and a folder they set up gets it at its next update)
         gpu, shim = host_gpu(ctx), ctx.layout.shim
         ours = [(SHIM, shim)] if shim.is_file() and 'dlss' in components.groups_for(gpu) else []
+        # (RenHDrum's library for any card, when the release carries it: 1.2.9 and older carried none, and a folder
+        # they set up gets it at its next update)
+        ours += [(RENHDRUM, ctx.layout.renhdrum)] if ctx.layout.renhdrum.is_file() else []
         return fingerprint('oot-components-1', components.pins_digest(), components.gpu_key(gpu), *ours)
 
     def current(self, ctx, record):
@@ -863,6 +873,9 @@ class Components(Step):
             if shim.is_file() and 'dlss' in components.groups_for(gpu):
                 shutil.copy2(shim, ctx.dest / SHIM)
                 ours = [SHIM]   # in the record's files: the step runs again when it is gone (current)
+            if ctx.layout.renhdrum.is_file():   # ours too, bundled: the Vibration setting plays pads through it
+                shutil.copy2(ctx.layout.renhdrum, ctx.dest / RENHDRUM)
+                ours.append(RENHDRUM)
             result = components.install(ctx.dest, gpu, ctx.temp / 'components', log=rep.log,
                                         progress=lambda group, done, total: rep.progress(self.id, group, done, total, 'bytes'))
             failed = result['failed']

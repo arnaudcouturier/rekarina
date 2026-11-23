@@ -463,6 +463,14 @@ int plat_message_box(const char *title, const char *text);
 // in the system directories only. NULL when missing.
 void *plat_lib_open(const char *name);
 void *plat_lib_sym(void *lib, const char *name);
+// A library beside the executable, by its full path (no other folder is searched for it); on Windows its own imports come
+// from its folder and System32, and a file that is no usable DLL fails here without the system's error box. NULL when
+// it does not load; *missing (when not NULL) is 1 when the file is not there.
+void *plat_lib_open_beside(const char *name, int *missing);
+
+// ---- the volume the system gives a playback device (read only): the first active playback device whose name holds one
+// of names[0..n-1], its volume 0..1 and mute, and its name into found. 1 when found and read; 0 elsewhere (not Windows).
+int plat_audio_out_volume(const char *const *names, int n, float *volume, int *muted, char *found, size_t cap);
 
 // ---- machine load for the performance overlay (perfmon.c's sampling thread; each call can take milliseconds). A number
 // the system does not give is -1.

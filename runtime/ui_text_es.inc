@@ -203,6 +203,17 @@
     [UI_MENU_CHANNELS_AUTO] = "Automático", [UI_MENU_CHANNELS_STEREO] = "Estéreo", [UI_MENU_CHANNELS_51] = "Envolvente 5.1",
 
     [UI_MENU_MOTION] = "Control por movimiento", [UI_MENU_MOTION_DESC] = "Apuntar con el giroscopio del mando.",
+    [UI_MENU_VIBRATION] = "Vibración",
+    [UI_MENU_VIBRATION_AUTO] = "Automática", [UI_MENU_VIBRATION_BASIC] = "Básica", [UI_MENU_VIBRATION_OFF] = "Desactivada",
+    [UI_MENU_VIBRATION_DESC] = "Automática: la vibración detallada del juego donde el mando "
+                               "puede reproducirla (respuesta háptica del DualSense, los "
+                               "cuatro motores de un mando Xbox, la vibración HD de los "
+                               "mandos de Switch). Básica: solo los dos motores de "
+                               "vibración. Desactivada: sin vibración.",
+    [UI_MENU_DS_EXTRAS] = "Extras de DualSense", [UI_MENU_DS_EXTRAS_NOTE] = "Solo DualSense",
+    [UI_MENU_DS_EXTRAS_DESC] = "Junto con la vibración, los gatillos dan un retroceso y el "
+                              "altavoz del mando añade pequeños golpecitos. Para un "
+                              "DualSense con Vibración en Automática.",
     [UI_MENU_RUMBLE_STRENGTH] = "Intensidad de vibración",
     [UI_MENU_RUMBLE_STRENGTH_DESC] = "Con qué fuerza vibra el mando.",
     [UI_MENU_RUMBLE_CURVE] = "Curva de vibración",

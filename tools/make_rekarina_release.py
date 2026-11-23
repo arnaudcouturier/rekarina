@@ -17,7 +17,9 @@ folders below, nothing else.
     bin/                    ninja.exe (from --from), rekarina_xlate.exe and its .id (build/xlate/totk_xlate.exe,
                             tools/build_xlate.py), rekarina_dlssg.dll (build/oot/totk_dlssg.dll or --dlssg: our
                             own library between the game and Streamline; without it the tool stops, unless
-                            --no-dlssg)
+                            --no-dlssg), renhdrum.dll (build/oot/renhdrum.dll or --renhdrum, tools/build_renhdrum.py:
+                            RenHDrum's controller haptics library, its licences into licenses/; without it the tool
+                            stops, unless --no-renhdrum)
     runtime/                the runtime's sources as in this tree (the setup compiles them with the player's lifted code)
                             and deps/: headers, import libraries and DLLs of SDL3, Opus, libvpx, Vulkan and VMA
                             (toolchain/deps-mingw)
@@ -311,6 +313,10 @@ def main():
                                                'this tree, as tools/build_dlssg.py builds it against the Streamline '
                                                'SDK)')
     ap.add_argument('--no-dlssg', action='store_true', help='make the release without DLSS Frame Generation')
+    ap.add_argument('--renhdrum', type=Path, help="RenHDrum's controller haptics library (default build/oot/renhdrum.dll "
+                                                  'of this tree, as tools/build_renhdrum.py builds it)')
+    ap.add_argument('--no-renhdrum', action='store_true', help='make the release without RenHDrum (every controller '
+                                                              'keeps its own rumble)')
     ap.add_argument('--previous', type=Path, help='the setup folder of the release before: tools/update_cost.py says '
                                                  'which steps the update runs again, and a long one (the lift, the '
                                                  'shaders) fails the release unless --allow-long names it')
@@ -339,15 +345,25 @@ def main():
     shim = (a.dlssg or ROOT / 'build' / 'oot' / 'totk_dlssg.dll').resolve()
     if not a.no_dlssg:
         need.append(shim)
+    haptics = (a.renhdrum or ROOT / 'build' / 'oot' / 'renhdrum.dll').resolve()
+    if not a.no_renhdrum:
+        need += [haptics, haptics.parent / 'renhdrum-licenses']
     missing = [str(p) for p in need if not p.exists()]
     if missing:
         sys.exit('make_rekarina_release: missing: ' + ', '.join(missing) +
                  ('' if shim.is_file() or a.no_dlssg else ' (--dlssg names the DLSS Frame Generation library, --no-dlssg '
-                                                           'makes the release without it)'))
+                                                           'makes the release without it)') +
+                 ('' if haptics.is_file() or a.no_renhdrum else ' (tools/build_renhdrum.py builds renhdrum.dll, '
+                                                                 '--no-renhdrum makes the release without it)'))
     if not a.no_dlssg:
         problem = dlssg_version_problem(shim)
         if problem:
             sys.exit('make_rekarina_release: ' + problem)
+    if not a.no_renhdrum:   # x86-64, the exports runtime/rumble_rh.c binds, Windows' own imports only
+        import build_renhdrum
+        bad, _ = build_renhdrum.problems(haptics)
+        if bad:
+            sys.exit(f'make_rekarina_release: {haptics}: ' + '; '.join(bad))
     if out.exists():
         if not (out / 'VERSION').is_file() or not (out / 'installer' / 'gui_oot.py').is_file():
             sys.exit(f'make_rekarina_release: {out} exists and is not a Rekarina setup folder: not replaced')
@@ -369,6 +385,10 @@ def main():
         print('make_rekarina_release: --no-dlssg: the release goes without DLSS Frame Generation')
     else:
         shutil.copy2(shim, out / 'bin' / 'rekarina_dlssg.dll')
+    if a.no_renhdrum:
+        print('make_rekarina_release: --no-renhdrum: the release goes without RenHDrum')
+    else:
+        shutil.copy2(haptics, out / 'bin' / 'renhdrum.dll')
     counts['runtime'] = copy_tree(ROOT / 'runtime', out / 'runtime')
     counts['deps'] = copy_tree(ROOT / 'toolchain' / 'deps-mingw', out / 'runtime' / 'deps', whole=True)
     fork.mark_install(out)
@@ -377,6 +397,10 @@ def main():
     counts['installer'] = copy_tree(ROOT / 'installer', out / 'installer')
     if (base / 'licenses').is_dir():
         counts['licenses'] = copy_tree(base / 'licenses', out / 'licenses')
+    if not a.no_renhdrum:   # RenHDrum's MIT and Apache texts, its NOTICE and the libopus licence inside it
+        (out / 'licenses').mkdir(exist_ok=True)
+        for f in sorted((haptics.parent / 'renhdrum-licenses').glob('*.txt')):
+            shutil.copy2(f, out / 'licenses' / f.name)
     for name in ('THIRD_PARTY_NOTICES.md', 'LICENSE', 'VERSION'):
         if (ROOT / name).is_file():
             shutil.copy2(ROOT / name, out / name)

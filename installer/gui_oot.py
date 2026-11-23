@@ -2186,6 +2186,8 @@ class RekarinaApp(App):
             try:
                 if layout.shim.is_file() and 'dlssg' in components.groups_for(card):
                     shutil.copy2(layout.shim, dest / oot.SHIM)
+                if layout.renhdrum.is_file():
+                    shutil.copy2(layout.renhdrum, dest / oot.RENHDRUM)
                 result = components.install(dest, card, temp, cancel=cancelled, progress=lambda group, done, total: emit(
                     {'type': 'progress', 'step': step, 'phase': group, 'done': done, 'total': total, 'unit': 'bytes'}))
             except OSError as e:

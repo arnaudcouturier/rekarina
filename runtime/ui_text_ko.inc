@@ -197,6 +197,13 @@
     [UI_MENU_CHANNELS_AUTO] = "자동", [UI_MENU_CHANNELS_STEREO] = "스테레오", [UI_MENU_CHANNELS_51] = "5.1 서라운드",
 
     [UI_MENU_MOTION] = "자이로 조작", [UI_MENU_MOTION_DESC] = "컨트롤러의 자이로 센서로 조준합니다.",
+    [UI_MENU_VIBRATION] = "진동",
+    [UI_MENU_VIBRATION_AUTO] = "자동", [UI_MENU_VIBRATION_BASIC] = "기본", [UI_MENU_VIBRATION_OFF] = "끄기",
+    [UI_MENU_VIBRATION_DESC] = "자동: 컨트롤러가 지원하면 게임의 섬세한 진동을 재현합니다 (DualSense 햅틱, Xbox 컨트롤러의 "
+                               "모터 4개, Switch 컨트롤러의 HD 진동). 기본: 진동 모터 2개만 사용합니다. 끄기: 진동 없음.",
+    [UI_MENU_DS_EXTRAS] = "DualSense 추가 효과", [UI_MENU_DS_EXTRAS_NOTE] = "DualSense 전용",
+    [UI_MENU_DS_EXTRAS_DESC] = "진동과 함께 트리거에 반동이 생기고 컨트롤러 스피커에서 작은 두드림 소리가 납니다. 진동이 '자동'인 "
+                              "DualSense용입니다.",
     [UI_MENU_RUMBLE_STRENGTH] = "진동 세기",
     [UI_MENU_RUMBLE_STRENGTH_DESC] = "컨트롤러가 진동하는 세기입니다.",
     [UI_MENU_RUMBLE_CURVE] = "진동 커브",

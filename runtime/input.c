@@ -20,6 +20,7 @@
 #include "input_map.h"
 #include "input_wsys.h"
 #include "nvn_api.h"
+#include "rumble_rh.h"
 #include "ui/menu.h"
 #include "vk.h"
 #include "platform/platform.h"
@@ -46,6 +47,7 @@ static unsigned pad_layout_seen;
 static volatile int32_t pad_layout_shown = -1;   // pad_layout for the menu (any thread), -1 without a gamepad
 static volatile int32_t pad_hd;      // ... is a Switch Pro Controller or Joy-Con that takes HD rumble packets; any thread
 static uint64_t hd_until;            // gamepad thread: when the last HD packet's duration runs out (ms), 0 none running
+static volatile int32_t pad_ds;      // the open gamepad is a DualSense (the menu's DualSense extras row); any thread
 // Gamepad thread: the rumble written to the open gamepad (pad_main): when (ms, 0 none yet), the two motors' values, and
 // the writes in the current second and the one before, for the log line of a gamepad that went away (scan_pads).
 static uint64_t rumble_at, rumble_sec;
@@ -630,6 +632,7 @@ static void scan_pads(void) {
     if (pad && !SDL_GamepadConnected(pad)) {
         SDL_CloseGamepad(pad); pad = NULL; sensor_pad = 0; sensor_ok = 0; hd_until = 0;
         plat_xchg32(&pad_hd, 0);
+        plat_xchg32(&pad_ds, 0);
         plat_xchg32(&pad_layout_shown, -1);
         plat_xchg32(&pad_family, -1);
         for (int i = 0; i < 4; i++) plat_xchg32(&pad_labels[i], PAD_LABEL_NONE);
@@ -757,6 +760,7 @@ static void pad_adopt(SDL_Gamepad *g) {
                              (gt == SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_PRO || gt == SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_JOYCON_LEFT ||
                               gt == SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_JOYCON_RIGHT ||
                               gt == SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_JOYCON_PAIR));
+    plat_xchg32(&pad_ds, gt == SDL_GAMEPAD_TYPE_PS5);
     int motion = SDL_GamepadHasSensor(pad, SDL_SENSOR_GYRO) && SDL_GamepadHasSensor(pad, SDL_SENSOR_ACCEL);
     rt_log("input: gamepad \"%s\" (%s, %s, east button %s)", SDL_GetGamepadName(pad), pad_rumble ? "rumble" : "no rumble",
            motion ? "gyro and accelerometer" : "no motion sensors", pad_east_a ? "labelled A" : "not labelled A");
@@ -809,14 +813,78 @@ static void binds_refresh(void) {
 // values (-32768..32767, down is +y), attached before the first scan so it is the gamepad the game reads: drift and full
 // deflection go through the same mapping and dead zone as a real pad. kind (ps5, ps4, switch, xbox) gives it that
 // controller's USB ids, so SDL reports its type and the automatic prompts follow it (a check of the prompt sets without
-// the pads).
+// the pads). It takes rumble, trigger rumble and effect packets: each call is counted, and a line at most every 2 s says
+// what arrived (the calls, the strongest motor values, the Switch packets that were not at rest), so a run shows what a
+// real pad of that kind would have been sent (pad_main, rumble_rh.c).
+static struct {
+    uint32_t rumble, rumble_on, triggers, triggers_on, effects, effects_on, blocks, block_trig;
+    uint8_t block_bits, block_effect[2][11];   // DS5 effects blocks: their enable bits, the last effect of each trigger
+    uint16_t low, high, tl, tr;
+    uint8_t fx[10];
+    uint64_t at;
+} tp;
+static void tp_report(void) {
+    uint64_t now = plat_now_ns();
+    if (now - tp.at < 2000000000ull) return;
+    tp.at = now;
+    if (!tp.rumble_on && !tp.triggers_on && !tp.effects_on && !tp.blocks) return;
+    if (tp.blocks) {
+        char hex[2][34];
+        for (int s = 0; s < 2; s++)
+            for (int i = 0; i < 11; i++) snprintf(hex[s] + 3 * i, 4, "%02x ", tp.block_effect[s][i]);
+        rt_log("input: test gamepad got %u effects blocks (%u with a trigger effect, enable bits %02x); last right "
+               "trigger effect %s, left %s", tp.blocks, tp.block_trig, tp.block_bits, hex[1], hex[0]);
+    }
+    rt_log("input: test gamepad got %u rumble calls (%u moving, strongest %u %u), %u trigger calls (%u moving, strongest "
+           "%u %u), %u effect packets (%u not at rest, last %02x %02x %02x%02x%02x%02x %02x%02x%02x%02x)",
+           tp.rumble, tp.rumble_on, tp.low, tp.high, tp.triggers, tp.triggers_on, tp.tl, tp.tr, tp.effects,
+           tp.effects_on, tp.fx[0], tp.fx[1], tp.fx[2], tp.fx[3], tp.fx[4], tp.fx[5], tp.fx[6], tp.fx[7], tp.fx[8],
+           tp.fx[9]);
+    uint64_t keep = tp.at;
+    memset(&tp, 0, sizeof tp);
+    tp.at = keep;
+}
+static bool SDLCALL tp_rumble(void *user, Uint16 low, Uint16 high) {
+    (void)user;
+    tp.rumble++, tp.rumble_on += low || high;
+    if (low > tp.low) tp.low = low;
+    if (high > tp.high) tp.high = high;
+    tp_report();
+    return true;
+}
+static bool SDLCALL tp_triggers(void *user, Uint16 left, Uint16 right) {
+    (void)user;
+    tp.triggers++, tp.triggers_on += left || right;
+    if (left > tp.tl) tp.tl = left;
+    if (right > tp.tr) tp.tr = right;
+    tp_report();
+    return true;
+}
+static bool SDLCALL tp_effect(void *user, const void *data, int size) {
+    (void)user;
+    static const uint8_t rest[4] = {0x00, 0x01, 0x40, 0x40};
+    const uint8_t *p = data;
+    tp.effects++;
+    if (size == 10) {
+        memcpy(tp.fx, p, 10);
+        tp.effects_on += memcmp(p + 2, rest, 4) || memcmp(p + 6, rest, 4);
+    } else if (size == 47) {   // a DualSense's effects block: bits 0x04 / 0x08 of byte 0 carry a trigger effect
+        tp.effects--, tp.blocks++, tp.block_bits |= p[0];
+        if (p[0] & 0x0c) tp.block_trig++;
+        if (p[0] & 0x04) memcpy(tp.block_effect[1], p + 10, 11);
+        if (p[0] & 0x08) memcpy(tp.block_effect[0], p + 21, 11);
+    }
+    tp_report();
+    return true;
+}
 static void test_pad_attach(void) {
     static SDL_Joystick *joy;   // kept open: a virtual joystick's axes are set through an open handle
     const char *e = cfg_get("REKARINA_TEST_PAD");
     int v[4];
     if (!e || !*e) return;
     char kind[16] = "";
-    if (sscanf(e, "%d,%d,%d,%d,%15s", &v[0], &v[1], &v[2], &v[3], kind) < 4) {
+    int trig[2] = {0, 0};   // ,<lt>,<rt> after the kind: the triggers held at that travel (0..255)
+    if (sscanf(e, "%d,%d,%d,%d,%15[^,],%d,%d", &v[0], &v[1], &v[2], &v[3], kind, &trig[0], &trig[1]) < 4) {
         rt_log("input: REKARINA_TEST_PAD=%s is not <lx>,<ly>,<rx>,<ry>; no test gamepad", e);
         return;
     }
@@ -826,6 +894,7 @@ static void test_pad_attach(void) {
     d.naxes = SDL_GAMEPAD_AXIS_COUNT;
     d.nbuttons = SDL_GAMEPAD_BUTTON_COUNT;
     d.name = "TotK test gamepad";
+    d.Rumble = tp_rumble, d.RumbleTriggers = tp_triggers, d.SendEffect = tp_effect;
     static const struct { const char *kind; Uint16 vendor, product; const char *name; } ids[] = {
         {"ps5", 0x054c, 0x0ce6, "DualSense Wireless Controller"}, {"ps4", 0x054c, 0x09cc, "PS4 Controller"},
         {"switch", 0x057e, 0x2009, "Pro Controller"}, {"xbox", 0x045e, 0x0b13, "Xbox Wireless Controller"},
@@ -842,7 +911,12 @@ static void test_pad_attach(void) {
                                             SDL_GAMEPAD_AXIS_RIGHTY};
     for (int i = 0; i < 4; i++)
         SDL_SetJoystickVirtualAxis(joy, axes[i], (Sint16)(v[i] < -32768 ? -32768 : v[i] > 32767 ? 32767 : v[i]));
-    rt_log("input: test gamepad attached (%s), sticks at %d,%d %d,%d", d.name, v[0], v[1], v[2], v[3]);
+    for (int t = 0; t < 2; t++)   // a trigger's joystick axis runs from -32768 (released) to 32767 (pressed fully)
+        if (trig[t] > 0)
+            SDL_SetJoystickVirtualAxis(joy, t ? SDL_GAMEPAD_AXIS_RIGHT_TRIGGER : SDL_GAMEPAD_AXIS_LEFT_TRIGGER,
+                                       (Sint16)(-32768 + (trig[t] > 255 ? 255 : trig[t]) * 65535 / 255));
+    rt_log("input: test gamepad attached (%s), sticks at %d,%d %d,%d, triggers at %d %d of 255", d.name, v[0], v[1],
+           v[2], v[3], trig[0], trig[1]);
 }
 
 static void pad_main(void *arg);
@@ -1258,7 +1332,64 @@ void input_hd_rumble_encode(const InputVibration *v, uint8_t out[4]) {
     out[3] = (uint8_t)(0x40 + el / 2);
 }
 
-int input_rumble_hd(void) { return __atomic_load_n(&pad_hd, __ATOMIC_RELAXED) != 0; }
+int input_rumble_hd(void) {
+    return __atomic_load_n(&pad_hd, __ATOMIC_RELAXED) && input_vibration_mode() == VIB_AUTO && rh_kind() == RH_NONE;
+}
+
+int input_vibration_mode(void) {
+    static volatile int32_t mode = -1;
+    static volatile uint32_t seen;
+    unsigned v = cfg_version();
+    int32_t m = __atomic_load_n(&mode, __ATOMIC_ACQUIRE);
+    if (m < 0 || v != __atomic_load_n(&seen, __ATOMIC_RELAXED)) {
+        const char *s = cfg_value("REKARINA_VIBRATION");
+        m = s && !strcmp(s, "off") ? VIB_OFF : s && !strcmp(s, "basic") ? VIB_BASIC : VIB_AUTO;
+        __atomic_store_n(&seen, v, __ATOMIC_RELAXED);
+        if (__atomic_exchange_n(&mode, m, __ATOMIC_ACQ_REL) != m)
+            rt_log("vibration: %s", m == VIB_OFF ? "off" : m == VIB_BASIC ? "basic (every controller's two motors)"
+                                                                        : "auto (RenHDrum where it plays the controller)");
+    }
+    return m;
+}
+
+void input_vibration_feed(int side, const InputVibration *v) {
+    if (v) rh_feed(side, v->amp_low, v->freq_low, v->amp_high, v->freq_high);
+}
+
+// REKARINA_DUALSENSE_EXTRAS (live, default 1): a DualSense RenHDrum plays also kicks back in its triggers and taps
+// through its speaker (rumble_rh.c rh_extras). Gamepad thread.
+static int dualsense_extras(void) {
+    static int on = -1;
+    static unsigned seen;
+    unsigned v = cfg_version();
+    if (on < 0 || v != seen) on = cfg_bool("REKARINA_DUALSENSE_EXTRAS") != 0, seen = v;
+    return on;
+}
+
+int input_pad_dualsense(void) { return __atomic_load_n(&pad_ds, __ATOMIC_RELAXED) != 0; }
+
+// g when it is still an open gamepad (the one read, while connected, or one of the others), else NULL: a gamepad that
+// went away was closed by scan_pads. Gamepad thread.
+static SDL_Gamepad *pad_still_open(SDL_Gamepad *g, int on) {
+    if (!g) return NULL;
+    if (g == pad) return on ? g : NULL;
+    for (int i = 0; i < n_others; i++)
+        if (others[i] == g) return SDL_GamepadConnected(g) ? g : NULL;
+    return NULL;
+}
+
+// The Vibration strength in percent (REKARINA_RUMBLE_STRENGTH, 0..300), for RenHDrum's backends. Gamepad thread.
+static int strength_percent(void) {
+    static int pct = -1;
+    static unsigned seen;
+    unsigned v = cfg_version();
+    if (pct < 0 || v != seen) {
+        double s = cfg_double("REKARINA_RUMBLE_STRENGTH");
+        pct = s > 0 ? (s < 300 ? (int)(s + 0.5) : 300) : 0;
+        seen = v;
+    }
+    return pct;
+}
 
 // On the gamepad thread: the game's two sides as one Switch rumble output packet, sent through SDL's HIDAPI Switch
 // driver. SDL 3.4.18 (toolchain/deps-mingw) takes, in SDL_SendGamepadEffect, exactly ten bytes whose first is 0x10 (the
@@ -1506,6 +1637,48 @@ static void pad_main(void *arg) {
             const char *g = cfg_get("REKARINA_RUMBLE_GAP_MS");
             r_gap = g && *g ? atoi(g) : 30;
             if (r_gap < 0 || r_gap > 200) r_gap = 30;
+        }
+        // The Vibration setting (input_vibration_mode). Auto: RenHDrum takes the pad when it plays it (rumble_rh.c; tried
+        // again every 3 s, five times, for a DualSense whose sound card Windows lists after the controller), and the
+        // requests below then go nowhere; it lets go when the setting or the pad changes, or when its backend fails.
+        // Off: the requests go nowhere. Either way the pad's own motors stop once, as they would after a duration.
+        int vm = input_vibration_mode();
+        static SDL_Gamepad *rh_pad;   // the pad RenHDrum was asked for, NULL none
+        static int rh_tries, quiet_was;
+        static uint64_t rh_retry;     // ms, 0 none
+        SDL_Gamepad *rh_want = on && vm == VIB_AUTO && rh_ready() ? pad : NULL;
+        int rh_again = rh_want && rh_want == rh_pad && !rh_kind() && rh_retry && now >= rh_retry;
+        int stop = 0;
+        if (rh_want != rh_pad || rh_again) {
+            stop = rh_kind() != RH_NONE;   // RenHDrum's last motor values stop with it
+            if (stop) rh_detach(pad_still_open(rh_pad, on));   // a DualSense still there gets its triggers back
+            if (rh_want != rh_pad) rh_tries = 0;
+            rh_pad = rh_want, rh_retry = 0;
+            if (rh_want && !rh_attach(rh_want, strength_percent()) &&
+                SDL_GetGamepadType(rh_want) == SDL_GAMEPAD_TYPE_PS5 && ++rh_tries < 5)
+                rh_retry = now + 3000;
+        }
+        if (rh_kind() && on && !rh_tick(pad, plat_now_ns(), strength_percent(), input_rumble_triggers_enabled())) {
+            rh_detach(pad);   // its backend failed: the pad's own rumble from now on (rh_pad stays: not asked again)
+            stop = 1;
+        }
+        if (on && (rh_kind() == RH_DUALSENSE_USB || rh_kind() == RH_DUALSENSE_BT)) {
+            // a DualSense's extras: each trigger's travel (0..255) and whether another button is held
+            int depth[2] = {ax[SDL_GAMEPAD_AXIS_LEFT_TRIGGER] * 255 / 32767, ax[SDL_GAMEPAD_AXIS_RIGHT_TRIGGER] * 255 / 32767};
+            int other = 0;
+            for (int p = 0; p < PAD_COUNT; p++) other |= p != PAD_ZL && p != PAD_ZR && pd[p];
+            rh_extras(pad, plat_now_ns(), dualsense_extras(), depth, other);
+        }
+        int quiet = on && (vm == VIB_OFF || rh_kind());
+        if (quiet) rumble = 0, r_wait = 0;
+        if (quiet && !quiet_was) stop = 1;
+        quiet_was = quiet;
+        if (on && stop) {
+            static const InputVibration rest[2] = {{0, 160, 0, 320}, {0, 160, 0, 320}};
+            SDL_RumbleGamepad(pad, 0, 0, 0);
+            SDL_RumbleGamepadTriggers(pad, 0, 0, 0);   // a pad without trigger motors returns false: ignored
+            if (rh_kind() != RH_SWITCH && __atomic_load_n(&pad_hd, __ATOMIC_RELAXED)) hd_send(rest, 0, now);
+            rumble_low = rumble_high = 0, hd_until = 0;
         }
         if (on && !rumble && !r_wait && hd_until && now >= hd_until) {   // the game stopped streaming: stop as a duration would
             static const InputVibration rest[2] = {{0, 160, 0, 320}, {0, 160, 0, 320}};

@@ -1504,6 +1504,12 @@ static void tab_controls(float scale) {
     opt_toggle("REKARINA_STICK_DASH", UI_MENU_STICK_DASH, UI_MENU_STICK_DASH_DESC);   // input.c dash_apply
     opt_toggle("REKARINA_MENU_GUIDE", UI_MENU_MENU_GUIDE, UI_MENU_MENU_GUIDE_DESC);
     opt_toggle("REKARINA_MOTION", UI_MENU_MOTION, UI_MENU_MOTION_DESC);
+    {   // how the vibration plays (input.c input_vibration_mode): RenHDrum where it plays the pad, two motors, or none
+        static const UiTextId vib[] = {UI_MENU_VIBRATION_AUTO, UI_MENU_VIBRATION_BASIC, UI_MENU_VIBRATION_OFF};
+        opt_choice("REKARINA_VIBRATION", UI_MENU_VIBRATION, vib, 3, UI_MENU_VIBRATION_DESC);
+        if (!input_pad_dualsense()) opt_disable_next(UI_MENU_DS_EXTRAS_NOTE);   // a DualSense's own (rumble_rh.c rh_extras)
+        opt_toggle("REKARINA_DUALSENSE_EXTRAS", UI_MENU_DS_EXTRAS, UI_MENU_DS_EXTRAS_DESC);
+    }
     opt_slider("REKARINA_RUMBLE_STRENGTH", UI_MENU_RUMBLE_STRENGTH, 0, 300, UI_MENU_RUMBLE_STRENGTH_DESC, 10, "%.0f %%");
     opt_slider("REKARINA_RUMBLE_CURVE", UI_MENU_RUMBLE_CURVE, 0.2f, 1.5f, UI_MENU_RUMBLE_CURVE_DESC, 0.05f, "%.2f", nullptr, nullptr,
                true);   // an exponent: logarithmic, the 0.6 default near the middle

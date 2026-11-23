@@ -14,7 +14,8 @@ maintainer requests and use the fork's own release version when shipping.
 | `SHA256SUMS` | SHA-256 checksums for the launcher and setup archive. |
 
 The packager checks the release folder for game content. The launcher fetches NVIDIA and AMD libraries from their
-publishers during setup. The release includes the fork's own Streamline shim for DLSS Frame Generation.
+publishers during setup. The release includes the fork's own Streamline shim for DLSS Frame Generation and
+RenHDrum's controller haptics library, which setup copies beside the game for every graphics card.
 
 ## How updates work
 
@@ -31,7 +32,9 @@ separate folder and use the launcher's Saves page to import a save.
 ## Build and stage a draft
 
 1. Set `VERSION` to the next fork version. Use a numeric version greater than the last release and tag the same
-   source as `v<version>`. Build the translator and Streamline shim from the release revision. See the
+   source as `v<version>`. Build the translator and Streamline shim from the release revision. Build
+   `build/oot/renhdrum.dll` from a checkout of RenHDrum's `v0.5.0` tag with
+   `python tools/build_renhdrum.py --src <renhdrum-checkout> --toolchain <toolchain-folder>/llvm`. See the
    [toolchain notes](building.md).
 2. Create the Windows artifacts from a clean checkout using an unpacked Windows toolchain release as the base.
 
