@@ -7512,8 +7512,12 @@ static VkSampler make_sampler(VkCtx *c, const samp_par *d) {
         si.compareOp = compare_op(d->cmp_func);
         // A depth-compare sampler set to nearest returns 0 or 1 per tap, and the game's shaders smooth shadow edges by
         // a few taps spaced for its own shadow map texels. With REKARINA_SHADOW_SCALE those taps cover a fraction of the
-        // area and the edges turn hard and stepped; linear filtering makes every tap a 2x2 PCF instead.
+        // area and the edges turn hard and stepped; linear filtering makes every tap a 2x2 PCF instead. OoT's sampler
+        // of its cascades is linear already, and its other depth maps (D32F, single-layer D16) keep their size, so
+        // their samplers stay as the game set them.
+#ifndef GAME_OOT
         if (vk_shadow_scale() > 1) si.magFilter = si.minFilter = VK_FILTER_LINEAR;
+#endif
     }
     VkSamplerCustomBorderColorCreateInfoEXT cb = {.sType = VK_STRUCTURE_TYPE_SAMPLER_CUSTOM_BORDER_COLOR_CREATE_INFO_EXT};
     VkSamplerReductionModeCreateInfo rm = {.sType = VK_STRUCTURE_TYPE_SAMPLER_REDUCTION_MODE_CREATE_INFO};

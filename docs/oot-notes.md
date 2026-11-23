@@ -4436,3 +4436,6 @@ over from its released entry`, with 1 alive each time. Replays back to back on t
 `vk_texture.c` changed, from the last arrival hold to the end: median 12.79 ms against 12.75, p99 16.62 against 16.44,
 and no 234 MiB allocation on the replay thread. The worst frame left, ~85 ms on the scene's first 3D frame, is the same
 in both: about 35 pipeline stage libraries built in play.
+
+The override that made depth-compare samplers linear under `shadow_scale` is TotK's alone now: both samplers OoT binds
+to the cascade array (420 and 422 in the pass dumps) are linear already, and its other depth maps keep their size.
