@@ -66,6 +66,8 @@ typedef struct Tex {
     uint8_t run;                  // frames in a row up to run_frame with a GPU write, counted up to WB_RUN
     uint64_t wr_fence;            // any entry: newest submission recorded to write its image (render, copy, clear,
                                   // storage binding); ReadTexels waits for it instead of draining the replay queue
+    uint8_t reused_now;           // its image came from a released entry the GPU may still be reading (recycle_take,
+                                  // scale > 1): its first barrier waits for the earlier work on the queue (init_image)
     uint8_t listed;               // in owned[]
     uint8_t *snap;                // a texture that fills no page: its storage bytes when the GPU write was recorded
     uint32_t wt_n;                // WriteTexels into the storage since the last upload
@@ -96,7 +98,7 @@ static void destroy_tex(Tex *e);
 static void iw_drain(void);   // DEBUG-IMGWATCH
 static void iw_defer_check(VkImage img, const struct Tex *owner, int line);
 static void edge_keep(Tex *e);
-static VkImage recycle_take(const VkImageCreateInfo *ci, VmaAllocation *out);
+static VkImage recycle_take(const VkImageCreateInfo *ci, int scale, VmaAllocation *out);
 struct Tex;
 static int released_in_use(const struct Tex *e, uint64_t now);   // above sweep_released
 static int adopt_released(Tex *e, const tex_t *t);
@@ -718,8 +720,13 @@ static VkDeviceSize image_size(const VkImageCreateInfo *ci) {
 // game's order. Part of the picture and the characters in it went dark for one frame, 5 to 17 times in 2,000 frames
 // of running through the Market, where video memory is short and every transient target lies in pool memory
 // (REKARINA_POOL_TWIN); none after. The console clears nothing there either: the game clears a target before it draws.
+// An image recycle_take handed over while the GPU may still read or write it for its released entry (reused_now) waits
+// for all the earlier work on the queue first: the upload batch and every part go to the one graphics queue, so that
+// barrier orders the new contents after the old entry's last use.
 static void init_image(Tex *e, VkCommandBuffer cb) {
-    VkImageMemoryBarrier2 ib = {.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2, .srcStageMask = VK_PIPELINE_STAGE_2_NONE,
+    VkImageMemoryBarrier2 ib = {.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+                                .srcStageMask = e->reused_now ? VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT : VK_PIPELINE_STAGE_2_NONE,
+                                .srcAccessMask = e->reused_now ? VK_ACCESS_2_MEMORY_WRITE_BIT : VK_ACCESS_2_NONE,
                                 .dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
                                 .dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT,
                                 .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED, .newLayout = VK_IMAGE_LAYOUT_GENERAL,
@@ -824,6 +831,7 @@ typedef struct {
     VkDeviceSize res_at, res_size;
     VmaAllocation own;          // PM_READY: img has memory of its own (REKARINA_TEX_PREMAKE_OWN), not pool memory
     uint8_t noalias;            // PM_READY: the image cannot be bound into its pool memory (img, if any, is an own one)
+    uint8_t scaled;             // an enlarged shadow map (scale > 1): pm_scaled_n counts img, if any (pm_take_scaled)
 } Premade;
 static Premade pm[PM_N];
 static PlatMutex pm_lock = PLAT_MUTEX_INIT;
@@ -833,6 +841,22 @@ static uint64_t pm_seq;
 static _Thread_local Premade *pm_out;   // pm_main: the entry create_tex fills
 static _Thread_local VkViewsAhead pm_va_taken;   // pm_take: the views of the image it handed out, for create_tex's tail
 static struct { uint64_t asked, made, failed, taken, waited, stolen, stale, full, moved, noalias, own_made, own_taken; } PMS;
+
+// An enlarged shadow map (shadow_scale_of; OoT's sun cascades, 234 MiB at scale 4) has memory of its own, so one image
+// serves whichever address the game gives the texture: the game initializes it on its own threads before the replay
+// first draws its shadows, possibly at several addresses in turn, and moves it again whenever its set of transient
+// targets changes (first on a scene's first 3D frame). The image-ahead thread makes the first one (create_tex), the
+// replay takes it at the first use whatever the address (pm_take_scaled), and every later address takes it over from
+// the released entry (recycle_take). pm_scaled_n counts the images of that kind alive (ahead, in an entry, released);
+// the thread makes one only while there is none, a 234 MiB allocation off the replay thread instead of on it.
+static volatile int32_t pm_scaled_n;
+// What became of an enlarged shadow map's image (the first 16 times): how it came, the images of the kind alive after.
+static void scaled_note(const char *how, const VkImageCreateInfo *ci, uint64_t t0) {
+    static volatile int32_t n;
+    log_limited(&n, "frame %llu: enlarged shadow map %ux%ux%u %s (%.1f ms; %d alive)",
+                (unsigned long long)__atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED), ci->extent.width,
+                ci->extent.height, ci->arrayLayers, how, (plat_now_ns() - t0) / 1e6, (int)__atomic_load_n(&pm_scaled_n, __ATOMIC_RELAXED));
+}
 
 // REKARINA_TEX_PREMAKE_OWN (OoT, 1 on, 0 off): six in ten of the game's transient render targets lie at an address the
 // driver cannot bind an image to (512-byte steps against its 1,024: vk_texture.c bind_pool_memory, ALIASWHY), so they
@@ -884,14 +908,15 @@ static void pm_main(void *arg) {
         }
         TexKey k;
         make_key(&p->t, &k);
-        p->img = VK_NULL_HANDLE, p->own = NULL, p->noalias = 0;
+        p->img = VK_NULL_HANDLE, p->own = NULL, p->noalias = 0, p->scaled = 0;
         memset(&p->va, 0, sizeof p->va);
         vk_drv_bg_turn();   // queue work first (gfx_present.c "driver turns")
         pm_out = p;
         create_tex(&p->t, &k, 1);   // on this thread: only the image and its bind, left in *pm_out
         pm_out = NULL;
         plat_mutex_lock(&pm_lock);
-        if (p->img) PMS.made++; else PMS.failed++;
+        if (p->img) PMS.made++;
+        else if (!p->scaled) PMS.failed++;   // (an enlarged shadow map whose image exists already: nothing to make)
         if (p->noalias) PMS.noalias++;
         if (p->own) PMS.own_made++;
         p->frame = __atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED);
@@ -1034,12 +1059,69 @@ static VkImage pm_take_own(Tex *e, const VkImageCreateInfo *ci, VmaAllocation *o
     return got.img;
 }
 
+// A ready entry goes (pm_lock held): its views and image are destroyed.
+static void pm_drop(VkCtx *c, Premade *q) {
+    vk_exec_views_ahead_drop(&q->va);
+    if (c && q->img) {
+        if (q->own) vmaDestroyImage(c->vma, q->img, q->own);
+        else vkDestroyImage(c->device, q->img, NULL);
+        if (q->scaled) __atomic_fetch_sub(&pm_scaled_n, 1, __ATOMIC_ACQ_REL);
+    }
+    __atomic_store_n(&q->state, PM_FREE, __ATOMIC_RELEASE);
+}
+
+// The enlarged shadow map made ahead with create info ci for e's descriptor, at whatever address (pm_scaled_n), its
+// allocation in *out; VK_NULL_HANDLE when there is none. An entry of e's descriptor still queued is dropped (the
+// caller makes the image now); one being made is waited for. One of another shape is destroyed: a single image of
+// that kind is made ahead, and this texture is the one the scene draws.
+static VkImage pm_take_scaled(const Tex *e, const VkImageCreateInfo *ci, VmaAllocation *out) {
+    if (!__atomic_load_n(&pm_started, __ATOMIC_ACQUIRE)) return VK_NULL_HANDLE;
+    for (int spins = 0;; spins++) {
+        Premade got = {0};
+        int busy = 0;
+        plat_mutex_lock(&pm_lock);
+        for (int i = 0; i < PM_N && !got.img; i++) {
+            Premade *q = &pm[i];
+            int same = q->state != PM_FREE && !memcmp(&q->t.d, &e->t.d, sizeof e->t.d);
+            if (q->state == PM_QUEUED && same) {
+                __atomic_store_n(&q->state, PM_FREE, __ATOMIC_RELEASE);
+                PMS.stolen++;
+            } else if (q->state == PM_BUSY && same) {
+                busy = 1;
+            } else if (q->state == PM_READY && q->scaled && q->own) {
+                if (pm_ci_same(&q->ci, ci)) {
+                    got = *q;
+                    __atomic_store_n(&q->state, PM_FREE, __ATOMIC_RELEASE);
+                    PMS.own_taken++;
+                } else {
+                    pm_drop(vk_ctx(), q);
+                    PMS.stale++;
+                }
+            }
+        }
+        if (busy && !got.img && !spins) PMS.waited++;
+        plat_mutex_unlock(&pm_lock);
+        if (got.img) {
+            *out = got.own;
+            if (pm_va_taken.image) vk_exec_views_ahead_drop(&pm_va_taken);
+            pm_va_taken = got.va;
+            return got.img;
+        }
+        if (!busy) return VK_NULL_HANDLE;
+        if (spins < 2000) _mm_pause();
+        else plat_yield();
+    }
+}
+
 // The entries of [lo, lo + size) and those bound into alloc go: the pool's memory is about to be freed. One being made
 // is waited for. keep_frames: also every ready entry older than that many frames (0: only the range).
+// An enlarged shadow map's image made ahead lies in no pool and may wait out a loading screen for the scene's first
+// frame (the age rule would destroy the only one): only the shutdown's call (the whole range) takes it.
 static void pm_gone(uint64_t lo, uint64_t size, VmaAllocation alloc, uint64_t keep_frames) {
     if (!__atomic_load_n(&pm_started, __ATOMIC_ACQUIRE)) return;
     VkCtx *c = vk_ctx();
     uint64_t now = __atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED);
+    int all = !lo && size == ~0ull;
     for (;;) {
         int busy = 0;
         plat_mutex_lock(&pm_lock);
@@ -1050,14 +1132,11 @@ static void pm_gone(uint64_t lo, uint64_t size, VmaAllocation alloc, uint64_t ke
                 __atomic_store_n(&q->state, PM_FREE, __ATOMIC_RELEASE);
             } else if (q->state == PM_BUSY) {
                 busy |= in || alloc != NULL;   // which block it binds into shows only when it is done
+            } else if (q->state == PM_READY && q->scaled && !all) {
+                continue;
             } else if (q->state == PM_READY &&
                        (in || (alloc && (q->bound_to == alloc || q->res_alloc == alloc)) || (keep_frames && now - q->frame > keep_frames))) {
-                vk_exec_views_ahead_drop(&q->va);
-                if (c && q->img) {
-                    if (q->own) vmaDestroyImage(c->vma, q->img, q->own);
-                    else vkDestroyImage(c->device, q->img, NULL);
-                }
-                __atomic_store_n(&q->state, PM_FREE, __ATOMIC_RELEASE);
+                pm_drop(c, q);
                 PMS.stale++;
             }
         }
@@ -1389,6 +1468,32 @@ static Tex *create_tex(const tex_t *t, const TexKey *k, int defer_init) {
                 vk_exec_views_ahead(&tmp, &pm_out->va);
             }
             pm_out->res_alloc = bind_res.alloc, pm_out->res_at = bind_res.at, pm_out->res_size = bind_res.size;
+        } else if (scale > 1 && !tex_mirrored(t)) {
+            // an enlarged shadow map: one image with memory of its own for any address, made here only while there is
+            // none (pm_scaled_n); else the replay takes the one there is over (pm_take_scaled, recycle_take)
+            pm_out->scaled = (uint8_t)scale;
+            int32_t none = 0;
+            if (__atomic_compare_exchange_n(&pm_scaled_n, &none, 1, 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
+                VmaAllocationCreateInfo ai = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
+                VmaAllocation own = NULL;
+                vk_drv_bg_turn();
+                uint64_t t0 = plat_now_ns();
+                if (vmaCreateImage(c->vma, &ci, &ai, &img, &own, NULL) == VK_SUCCESS) {
+                    vk_live_check_born((uint64_t)(uintptr_t)img);   // DEBUG-LIVECHECK
+                    scaled_note("made ahead", &ci, t0);
+                    pm_out->img = img, pm_out->own = own, pm_out->ci = ci, pm_out->bound_to = NULL;
+                    if (vk_exec_views_ahead_on()) {
+                        VkTexImage tmp = {.image = img, .addr = k->addr};
+                        pub_fill(&tmp, &f, type, usage, w, h, depth, levels, layers, samples, d, flags, t, 0, block_views,
+                                 fb_usage, scale);
+                        vk_drv_bg_turn();
+                        vk_exec_views_ahead(&tmp, &pm_out->va);
+                    }
+                } else {
+                    img = VK_NULL_HANDLE;
+                    __atomic_fetch_sub(&pm_scaled_n, 1, __ATOMIC_ACQ_REL);
+                }
+            }
         } else if (spk_alias && pm_own_on() && !tex_mirrored(t) && (bind_why == 1 || bind_why == 3 || bind_why == 4)) {
             // cannot alias for a reason that holds for the replay too (its shape, size or address, not a pool not yet
             // there): the replay need not try again
@@ -1474,7 +1579,13 @@ static Tex *create_tex(const tex_t *t, const TexKey *k, int defer_init) {
             img = VK_NULL_HANDLE;
         }
     }
-    if (!img && !tex_mirrored(t)) img = recycle_take(&ci, &e->alloc);
+    if (!img && !tex_mirrored(t)) {
+        uint64_t t0 = plat_now_ns();
+        img = recycle_take(&ci, scale, &e->alloc);
+        e->reused_now = img && scale > 1;   // the old entry's last parts may still run (init_image)
+        if (img && scale > 1) scaled_note("taken over from its released entry", &ci, t0);
+        if (!img && scale > 1 && (img = pm_take_scaled(e, &ci, &e->alloc))) scaled_note("taken from the image-ahead thread", &ci, t0);
+    }
     if (spk_alias && !tex_mirrored(t) && pm_own_on()) {   // a pool target with memory of its own (REKARINA_TEX_PREMAKE_OWN)
         pm_own_note(!img);
         if (!img) img = pm_take_own(e, &ci, &e->alloc);
@@ -1486,6 +1597,10 @@ static Tex *create_tex(const tex_t *t, const TexKey *k, int defer_init) {
         VkResult r = vmaCreateImage(c->vma, &ci, &ai, &img, &e->alloc, NULL);
         ic_end(ICS_VMA, SEC_IC_VMA_T + sec_mk, sec1);
         if (r == VK_SUCCESS) vk_live_check_born((uint64_t)(uintptr_t)img);   // DEBUG-LIVECHECK
+        if (r == VK_SUCCESS && scale > 1) {   // none was made ahead
+            __atomic_fetch_add(&pm_scaled_n, 1, __ATOMIC_ACQ_REL);
+            scaled_note("made by the replay", &ci, spk_t0);
+        }
         if (r != VK_SUCCESS) {
             if (urgent) vk_drv_urgent(-1);
             log_limited(&n_failed, "image creation failed (%d): nvn fmt %#x %ux%ux%u target %d levels %u layers %u", (int)r,
@@ -1693,6 +1808,9 @@ static __attribute__((noinline)) void destroy_tex(Tex *e) {
     }
     if (e->released) nreleased--, rel_unlink(e);
     if (e->pub.image) vk_exec_image_gone(e->pub.image);
+    // an enlarged shadow map's image goes (recycle_take clears pub.image of the entry it takes one from): the
+    // image-ahead thread may make the next one
+    if (e->pub.image && e->pub.scale > 1) __atomic_fetch_sub(&pm_scaled_n, 1, __ATOMIC_ACQ_REL);
     // an image bound into pool memory is held a while (vk_memory.c vk_mem_pool_image_hold); others go with the GPU
     int held = 0, parked_now = park_image(e);
     if (!parked_now && !(e->pub.image && !e->alloc && e->bound_to && (held = vk_mem_pool_image_hold(e->pub.image, e->bound_to, e->f.depth || e->f.stencil))))
@@ -1715,10 +1833,25 @@ static __attribute__((noinline)) void destroy_tex(Tex *e) {
     vk_defer_free(e);
 }
 
+// Whether released entry r's image was made from create info ci (recycle_take).
+static int recycle_fits(const Tex *r, const VkImageCreateInfo *ci) {
+    return r->pub.format == ci->format && r->pub.width == ci->extent.width && r->pub.height == ci->extent.height &&
+           r->pub.depth == ci->extent.depth && r->pub.levels == ci->mipLevels && r->pub.layers == ci->arrayLayers &&
+           r->pub.samples == (uint32_t)ci->samples && r->pub.usage == ci->usage && r->ci_flags == ci->flags;
+}
+
 // REKARINA_TEX_RECYCLE=<frames> (default 30, 0: off): a new GPU-only image takes the image and memory of a released entry of the same
 // shape that has been released at least that long, instead of allocating. The console renders transient targets into the same
 // memory one after the other; here each address got an image of its own, about 3 GB released and waiting in heavy scenes.
-static VkImage recycle_take(const VkImageCreateInfo *ci, VmaAllocation *out) {
+// An enlarged shadow map (scale > 1, shadow_scale_of) is taken back at once: OoT's transient target allocator gives its
+// cascade array a new address whenever the frame's set of targets changes, and with the age rule the new address made
+// a second 234 MiB array on the replay thread (41-74 ms in a shown frame) while the old one waited out its frames, and
+// the two took turns from then on. The array has memory of its own and the game renders all of it before it samples
+// it, so the new entry may have it as soon as no part being recorded reads or writes the old one: neither written in
+// the submission being recorded nor drawn with this frame. Earlier parts on the queue are ordered before its new
+// contents by init_image (reused_now). Every map of that shape is enlarged alike, so the scale need not match on its
+// own, but it is compared all the same.
+static VkImage recycle_take(const VkImageCreateInfo *ci, int scale, VmaAllocation *out) {
     static int age = -1;
     static uint64_t taken;
     if (age < 0) {
@@ -1732,22 +1865,30 @@ static VkImage recycle_take(const VkImageCreateInfo *ci, VmaAllocation *out) {
               30;
 #endif
     }
-    if (!age) return VK_NULL_HANDLE;
-    uint64_t now = __atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED), done = vk_sync_fence_done();
-    for (Tex *r = rel_head; r && now - r->rel_frame >= (uint64_t)age; r = r->rel_next) {
-        if (!r->alloc || r->bound_to || r->pub.mirrored || r->wr_fence > done || released_in_use(r, now)) continue;
-        if (r->pub.format != ci->format || r->pub.width != ci->extent.width || r->pub.height != ci->extent.height ||
-            r->pub.depth != ci->extent.depth || r->pub.levels != ci->mipLevels || r->pub.layers != ci->arrayLayers ||
-            r->pub.samples != (uint32_t)ci->samples || r->pub.usage != ci->usage || r->ci_flags != ci->flags) continue;
-        VkImage img = r->pub.image;
-        *out = r->alloc;
-        vk_exec_image_gone(img);
-        r->pub.image = VK_NULL_HANDLE, r->alloc = NULL;
-        destroy_tex(r);
-        if (!(++taken & 255)) rt_log("vk: recycled %llu released images", (unsigned long long)taken);
-        return img;
+    uint64_t now = __atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED);
+    Tex *r = NULL;
+    if (scale > 1) {
+        uint64_t rec = vk_exec_recording_fence();   // (0 off the replay: nothing qualifies)
+        for (Tex *q = rel_head; q && !r; q = q->rel_next)   // the newest at the tail: the whole list
+            if (q->alloc && !q->bound_to && !q->pub.mirrored && q->pub.scale == scale && q->wr_fence < rec &&
+                q->draw_frame < now && recycle_fits(q, ci))
+                r = q;
+    } else {
+        if (!age) return VK_NULL_HANDLE;
+        uint64_t done = vk_sync_fence_done();
+        for (Tex *q = rel_head; q && !r && now - q->rel_frame >= (uint64_t)age; q = q->rel_next)
+            if (q->alloc && !q->bound_to && !q->pub.mirrored && q->wr_fence <= done && !released_in_use(q, now) &&
+                recycle_fits(q, ci))
+                r = q;
     }
-    return VK_NULL_HANDLE;
+    if (!r) return VK_NULL_HANDLE;
+    VkImage img = r->pub.image;
+    *out = r->alloc;
+    vk_exec_image_gone(img);
+    r->pub.image = VK_NULL_HANDLE, r->alloc = NULL;
+    destroy_tex(r);
+    if (!(++taken & 255)) rt_log("vk: recycled %llu released images", (unsigned long long)taken);
+    return img;
 }
 
 // ---- REKARINA_TEX_ADOPT (default on; 0: off): a new texture whose storage holds the bytes a released one was filled

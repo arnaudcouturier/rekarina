@@ -4419,3 +4419,20 @@ no flicker in play. OoT's default is now `auto` (`vk_texture.c vk_shadow_scale`)
 more of device-local memory, else 1, logged as `vk: shadow map scale N (auto: ...)`. The array grows from 15 to
 234 MiB; the median frame time during the strafe went from 13.5 to 14.1 ms on an RTX 4090 at 2160p.
 `REKARINA_VRAM_BUDGET_MB=8192` and `shadow_scale = 1` both keep 1600x1600.
+
+There is one such array alive, made off the replay thread. The game's transient target allocator gives the cascade
+texture a new address whenever the frame's set of targets changes, the first time on the scene's first 3D frame. At
+first the replay thread made the array itself at its first use (the image-ahead thread gave up on enlarged maps, which
+have no pool memory to bind), and at the move it made a second one, because the released entry was younger than
+`REKARINA_TEX_RECYCLE`'s six frames. That was two 234 MiB allocations on the replay thread under the texture lock: 41 ms
+each in one census run, which took that frame to 139 ms. Now the image-ahead thread makes the array when the game
+initializes the texture (`vk_texture.c pm_scaled_n`; 0.6 to 1.0 ms there, in the same frame as its first use on these
+replays). The replay takes it at the first use, whatever the address (`pm_take_scaled`), and every later address takes
+it over from the released entry in the same frame (`recycle_take`, scale above 1). The old entry has memory of its own
+and the game renders the whole array before it samples it, so it may go as soon as no part being recorded writes it or
+draws with it. The new entry's first barrier waits for the earlier work on the queue (`init_image`, `reused_now`). The
+log says `vk: frame N: enlarged shadow map 6400x6400x3 made ahead`, then `taken from the image-ahead thread` and `taken
+over from its released entry`, with 1 alive each time. Replays back to back on the installed build's objects with only
+`vk_texture.c` changed, from the last arrival hold to the end: median 12.79 ms against 12.75, p99 16.62 against 16.44,
+and no 234 MiB allocation on the replay thread. The worst frame left, ~85 ms on the scene's first 3D frame, is the same
+in both: about 35 pipeline stage libraries built in play.
