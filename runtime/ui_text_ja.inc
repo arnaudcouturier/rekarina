@@ -192,6 +192,14 @@
     [UI_MENU_CHANNELS_AUTO] = "自動", [UI_MENU_CHANNELS_STEREO] = "ステレオ", [UI_MENU_CHANNELS_51] = "5.1chサラウンド",
 
     [UI_MENU_MOTION] = "ジャイロ操作", [UI_MENU_MOTION_DESC] = "コントローラーのジャイロセンサーで狙いをつけます。",
+    [UI_MENU_VIBRATION] = "振動",
+    [UI_MENU_VIBRATION_AUTO] = "自動", [UI_MENU_VIBRATION_BASIC] = "ベーシック", [UI_MENU_VIBRATION_OFF] = "オフ",
+    [UI_MENU_VIBRATION_DESC] = "自動：コントローラーが対応していれば、ゲームの細かな振動を再現します（DualSense のハプティクス、Xbox "
+                               "コントローラーの4つのモーター、Switch コントローラーの HD "
+                               "振動）。ベーシック：2つの振動モーターのみ。オフ：振動なし。",
+    [UI_MENU_DS_EXTRAS] = "DualSense 追加効果", [UI_MENU_DS_EXTRAS_NOTE] = "DualSense のみ",
+    [UI_MENU_DS_EXTRAS_DESC] = "振動に合わせて、トリガーに反発が加わり、コントローラーのスピーカーから小さなタップ音が鳴ります。振動が「自動」の "
+                              "DualSense 用です。",
     [UI_MENU_RUMBLE_STRENGTH] = "振動の強さ",
     [UI_MENU_RUMBLE_STRENGTH_DESC] = "コントローラーの振動の強さです。",
     [UI_MENU_RUMBLE_CURVE] = "振動カーブ",

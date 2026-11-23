@@ -38,7 +38,7 @@ EXE = '.exe' if WIN else ''
 # NVIDIA's and AMD's are copied when the build folder has them (a developer's own copies, the setup's --dlls); the
 # setup itself downloads them straight into the game folder (installer/components.py), no release carries them.
 DLLS = ('SDL3.dll', 'libopus-0.dll', 'libiconv-2.dll', 'nvngx_dlss.dll', 'amd_fidelityfx_vk.dll', 'totk_dlssg.dll',
-        'rekarina_dlssg.dll',
+        'rekarina_dlssg.dll', 'renhdrum.dll',
         'amd_fidelityfx_loader_vk.dll', 'amd_fidelityfx_upscaler_vk.dll', 'amd_fidelityfx_framegeneration_vk.dll',
         'sl.interposer.dll', 'sl.common.dll', 'sl.dlss.dll', 'sl.dlss_g.dll', 'sl.reflex.dll', 'sl.pcl.dll', 'nvngx_dlssg.dll', 'NvLowLatencyVk.dll')
 SEED_KEYS = ROOT / 'tools' / 'data' / 'pipeline-keys-oot.bin.gz'   # tools/make_seed_keys.py writes it

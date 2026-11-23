@@ -204,6 +204,17 @@
     [UI_MENU_CHANNELS_AUTO] = "Automatisch", [UI_MENU_CHANNELS_STEREO] = "Stereo", [UI_MENU_CHANNELS_51] = "5.1-Surround",
 
     [UI_MENU_MOTION] = "Bewegungssteuerung", [UI_MENU_MOTION_DESC] = "Zielen mit dem Gyroskop des Controllers.",
+    [UI_MENU_VIBRATION] = "Vibration",
+    [UI_MENU_VIBRATION_AUTO] = "Automatisch", [UI_MENU_VIBRATION_BASIC] = "Einfach", [UI_MENU_VIBRATION_OFF] = "Aus",
+    [UI_MENU_VIBRATION_DESC] = "Automatisch: die feine Vibration des Spiels, wo der "
+                               "Controller sie wiedergeben kann (Haptik des DualSense, vier "
+                               "Motoren eines Xbox-Controllers, HD-Vibration der "
+                               "Switch-Controller). Einfach: nur die zwei Vibrationsmotoren. "
+                               "Aus: keine Vibration.",
+    [UI_MENU_DS_EXTRAS] = "DualSense-Extras", [UI_MENU_DS_EXTRAS_NOTE] = "Nur DualSense",
+    [UI_MENU_DS_EXTRAS_DESC] = "Zusätzlich zur Vibration geben die Trigger Rückstoß und der "
+                              "Lautsprecher des Controllers fügt leichte Klopfer hinzu. Für "
+                              "einen DualSense mit Vibration auf Automatisch.",
     [UI_MENU_RUMBLE_STRENGTH] = "Vibrationsstärke",
     [UI_MENU_RUMBLE_STRENGTH_DESC] = "Wie stark der Controller vibriert.",
     [UI_MENU_RUMBLE_CURVE] = "Vibrationskurve",

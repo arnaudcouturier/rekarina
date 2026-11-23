@@ -241,6 +241,16 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_CHANNELS_AUTO] = "Automatic", [UI_MENU_CHANNELS_STEREO] = "Stereo", [UI_MENU_CHANNELS_51] = "5.1 surround",
 
     [UI_MENU_MOTION] = "Motion controls", [UI_MENU_MOTION_DESC] = "Aiming with the controller's gyroscope.",
+    [UI_MENU_VIBRATION] = "Vibration",
+    [UI_MENU_VIBRATION_AUTO] = "Auto", [UI_MENU_VIBRATION_BASIC] = "Basic", [UI_MENU_VIBRATION_OFF] = "Off",
+    [UI_MENU_VIBRATION_DESC] = "Auto: the game's fine vibration where the controller can "
+                               "play it (DualSense haptics, an Xbox controller's four "
+                               "motors, Switch HD rumble). Basic: only the two rumble "
+                               "motors. Off: no vibration.",
+    [UI_MENU_DS_EXTRAS] = "DualSense extras", [UI_MENU_DS_EXTRAS_NOTE] = "DualSense only",
+    [UI_MENU_DS_EXTRAS_DESC] = "Along with the vibration, the triggers kick back and the "
+                              "controller's speaker adds small taps. For a DualSense with "
+                              "Vibration on Auto.",
     [UI_MENU_RUMBLE_STRENGTH] = "Vibration strength",
     [UI_MENU_RUMBLE_STRENGTH_DESC] = "How strong the controller vibrates.",
     [UI_MENU_RUMBLE_CURVE] = "Vibration curve",
@@ -876,6 +886,15 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_MENU_CHANNELS_AUTO] = "Автоматически", [UI_MENU_CHANNELS_STEREO] = "Стерео", [UI_MENU_CHANNELS_51] = "Объёмный 5.1",
 
     [UI_MENU_MOTION] = "Управление движением", [UI_MENU_MOTION_DESC] = "Прицеливание гироскопом контроллера.",
+    [UI_MENU_VIBRATION] = "Вибрация",
+    [UI_MENU_VIBRATION_AUTO] = "Авто", [UI_MENU_VIBRATION_BASIC] = "Простая", [UI_MENU_VIBRATION_OFF] = "Выкл.",
+    [UI_MENU_VIBRATION_DESC] = "Авто: тонкая вибрация игры там, где контроллер её умеет "
+                               "(хаптика DualSense, четыре мотора контроллера Xbox, "
+                               "HD-вибрация контроллеров Switch). Простая: только два мотора "
+                               "вибрации. Выкл.: без вибрации.",
+    [UI_MENU_DS_EXTRAS] = "Эффекты DualSense", [UI_MENU_DS_EXTRAS_NOTE] = "Только для DualSense",
+    [UI_MENU_DS_EXTRAS_DESC] = "Вместе с вибрацией — отдача в триггерах и лёгкие щелчки из "
+                              "динамика контроллера. Для DualSense при вибрации «Авто».",
     [UI_MENU_RUMBLE_STRENGTH] = "Сила вибрации",
     [UI_MENU_RUMBLE_STRENGTH_DESC] = "Насколько сильно вибрирует контроллер.",
     [UI_MENU_RUMBLE_CURVE] = "Кривая вибрации",
@@ -1419,6 +1438,17 @@ static const char *const text_pt_br[UI_TEXT_COUNT] = {
     [UI_MENU_VOLUME] = "Volume", [UI_MENU_VOLUME_DESC] = "Volume geral do jogo.",
 
     [UI_MENU_MOTION] = "Controles de movimento", [UI_MENU_MOTION_DESC] = "Mirar com o giroscópio do controle.",
+    [UI_MENU_VIBRATION] = "Vibração",
+    [UI_MENU_VIBRATION_AUTO] = "Automática", [UI_MENU_VIBRATION_BASIC] = "Básica", [UI_MENU_VIBRATION_OFF] = "Desligada",
+    [UI_MENU_VIBRATION_DESC] = "Automática: a vibração detalhada do jogo onde o controle "
+                               "consegue reproduzi-la (resposta háptica do DualSense, os "
+                               "quatro motores de um controle Xbox, a vibração HD dos "
+                               "controles do Switch). Básica: só os dois motores de "
+                               "vibração. Desligada: sem vibração.",
+    [UI_MENU_DS_EXTRAS] = "Extras do DualSense", [UI_MENU_DS_EXTRAS_NOTE] = "Só DualSense",
+    [UI_MENU_DS_EXTRAS_DESC] = "Junto com a vibração, os gatilhos dão um recuo e o "
+                              "alto-falante do controle acrescenta pequenos toques. Para um "
+                              "DualSense com Vibração em Automática.",
     [UI_MENU_RUMBLE_STRENGTH] = "Intensidade da vibração",
     [UI_MENU_RUMBLE_STRENGTH_DESC] = "Quão forte o controle vibra.",
     [UI_MENU_RUMBLE_CURVE] = "Curva da vibração",
@@ -2130,6 +2160,12 @@ static const char *const text_zh_hans[UI_TEXT_COUNT] = {
     [UI_MENU_VOLUME_DESC] = "游戏的主音量。",
     [UI_MENU_MOTION] = "体感操作",
     [UI_MENU_MOTION_DESC] = "用手柄的陀螺仪瞄准。",
+    [UI_MENU_VIBRATION] = "振动",
+    [UI_MENU_VIBRATION_AUTO] = "自动", [UI_MENU_VIBRATION_BASIC] = "基础", [UI_MENU_VIBRATION_OFF] = "关闭",
+    [UI_MENU_VIBRATION_DESC] = "自动：在控制器支持时呈现游戏的细腻振动（DualSense 的触觉反馈、Xbox 控制器的四个马达、Switch "
+                               "控制器的 HD 振动）。基础：只用两个振动马达。关闭：不振动。",
+    [UI_MENU_DS_EXTRAS] = "DualSense 附加效果", [UI_MENU_DS_EXTRAS_NOTE] = "仅限 DualSense",
+    [UI_MENU_DS_EXTRAS_DESC] = "随振动一起，扳机产生反冲，控制器扬声器发出轻微的敲击声。适用于振动设为“自动”的 DualSense。",
     [UI_MENU_RUMBLE_STRENGTH] = "振动强度",
     [UI_MENU_RUMBLE_STRENGTH_DESC] = "手柄振动的强弱。",
     [UI_MENU_RUMBLE_CURVE] = "振动曲线",

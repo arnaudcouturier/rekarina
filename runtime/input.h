@@ -111,6 +111,17 @@ void input_hd_rumble_encode(const InputVibration *v, uint8_t out[4]);
 uint16_t rumble_motor(float a, float curve, float strength);
 // REKARINA_RUMBLE_TRIGGERS=1: input_rumble also drives the impulse triggers (Xbox) with the high motor's value.
 int input_rumble_triggers_enabled(void);
+// REKARINA_VIBRATION (the menu's Vibration row, live): auto plays the game's vibration through RenHDrum where it can
+// (renhdrum.dll beside the game, rumble_rh.c: a DualSense's voice coils, an Xbox pad's four motors, a Switch
+// controller's HD rumble), else as before (a Switch pad its own HD rumble, every other pad its two motors); basic:
+// every pad's two motors; off: nothing. Any thread.
+enum { VIB_AUTO, VIB_BASIC, VIB_OFF };
+int input_vibration_mode(void);
+// One side (0 left, 1 right) of the game's vibration as the game sent it, no curve or strength applied, for RenHDrum's
+// backends (rumble_rh.c rh_feed). Any thread.
+void input_vibration_feed(int side, const InputVibration *v);
+// The gamepad the game reads is a DualSense (the menu's DualSense extras row). Any thread.
+int input_pad_dualsense(void);
 
 // Motion (REKARINA_MOTION=0 turns it off, live). input_motion_start starts the sensor thread once: every 4 ms it reads the
 // gamepad's gyro and accelerometer (when it has them) and feeds motion_global(). Callable from any thread.

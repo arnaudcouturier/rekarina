@@ -64,7 +64,7 @@ static const char *const known[] = {
     "PROFILE_MAIN", "PROFILE_RENDER", "PROMPTS", "PROMPT_GLYPHS", "PUSH_SKIP", "PUSH_STAGE", "RDOC", "RDOC_DIR", "RDOC_DLL", "REALTIME", "REC_END", "REEXEC",
     "RENDER_SCALE", "REPLAY_ASYNC",
     "REPLAY_CHECK", "RESOLVE_CHECK", "RESTART_WAIT", "ROMFS", "ROMFS_INDEX", "ROMFS_MMAP", "ROMFS_MODS", "ROMFS_PATCHES",
-    "REPLAY_THREADS", "ROMFS_PROOF_DIR", "ROMFS_VERIFY", "RSTICK_DEADZONE", "RUMBLE", "RUMBLE_CURVE", "RUMBLE_GAP_MS", "RUMBLE_STRENGTH", "RUMBLE_TRIGGERS", "SECTIONS", "SHADER_CACHE",
+    "REPLAY_THREADS", "ROMFS_PROOF_DIR", "ROMFS_VERIFY", "RSTICK_DEADZONE", "RUMBLE", "RUMBLE_CURVE", "RUMBLE_GAP_MS", "RUMBLE_STRENGTH", "RUMBLE_TRIGGERS", "VIBRATION", "DUALSENSE_EXTRAS", "RH_TEST", "SECTIONS", "SHADER_CACHE",
     "SHADER_MEMO", "SHADOW_RANGE", "SHADOW_RES", "SHADOW_SCALE", "SHARED_FONTS", "SHARPNESS", "SHOTS", "SHOTS_DIR",
     "SHOTS_FULL", "SPEED_PROBE", "SPIN", "SPIN_HANDOFF_US", "TEX_OVER", "FOLD_MAP", "FOLD_SUBMIT_SLOT", "FOLD_SLEEP", "FOLD_AP_SPIN", "AP_SPIN_US", "SUBMIT_PRIO", "SPLIT_DRAWS", "SPLIT_IN_PASS", "SPLIT_US", "STICK_DEADZONE", "STICK_SENS",
     "SWKBD_ANSWER",
@@ -101,7 +101,7 @@ static const struct { const char *key, *section; } sections[] = {
     {"MODS_DIR", "mods"}, {"MODS_ORDER", "mods"}, {"MODS_DISABLED", "mods"}, {"MODS_REBUILD", "mods"},
     {"MENU_LANG", "language"}, {"LANG", "language"}, {"VOICE_LANG", "language"}, {"FAST_TEXT", "language"}, {"OPERATION_MODE", "language"},
     {"VOLUME", "audio"}, {"AUDIO_CHANNELS", "audio"}, {"BG_MUTE", "audio"},
-    {"MOTION", "input"}, {"RUMBLE_STRENGTH", "input"}, {"RUMBLE_CURVE", "input"}, {"RUMBLE_TRIGGERS", "input"},
+    {"MOTION", "input"}, {"VIBRATION", "input"}, {"DUALSENSE_EXTRAS", "input"}, {"RUMBLE_STRENGTH", "input"}, {"RUMBLE_CURVE", "input"}, {"RUMBLE_TRIGGERS", "input"},
     {"PAD_LAYOUT", "input"}, {"PROMPTS", "input"}, {"PROMPT_GLYPHS", "input"}, {"STICK_DEADZONE", "input"}, {"LSTICK_DEADZONE", "input"}, {"RSTICK_DEADZONE", "input"},
     {"STICK_SENS", "input"},
     {"MENU_CURSOR", "input"}, {"PAD_FOLLOW", "input"}, {"PAD_DRIVER", "input"}, {"KBM_OFF", "input"}, {"MENU_GUIDE", "input"}, {"SCREENSHOT_KEY", "input"}, {"SCREENSHOT_OVERLAY", "input"}, {"CURSOR_HIDE", "input"}, {"MOUSE_MODE", "input"}, {"MOUSE_SENS", "input"}, {"MOUSE_SENS_Y", "input"},
@@ -206,7 +206,8 @@ static const CfgMeta metas[] = {
     // Sound, Controls, Menu
     {"VOLUME", "100", "0..100", LIVE}, {"AUDIO_CHANNELS", "stereo", "auto|stereo|5.1", RESTART},
     {"BG_MUTE", "0", "0|1", LIVE},   // silent while the window is in the background (audio_mixer.c)
-    {"MOTION", "1", "0|1", LIVE}, {"RUMBLE_STRENGTH", "100", "0..300", LIVE}, {"RUMBLE_CURVE", "0.6", "0.2..1.5", LIVE},
+    {"MOTION", "1", "0|1", LIVE}, {"VIBRATION", "auto", "auto|basic|off", LIVE}, {"DUALSENSE_EXTRAS", "1", "0|1", LIVE},
+    {"RUMBLE_STRENGTH", "100", "0..300", LIVE}, {"RUMBLE_CURVE", "0.6", "0.2..1.5", LIVE},
     {"RUMBLE_TRIGGERS", "0", "0|1", LIVE}, {"PAD_LAYOUT", "auto", "auto|nintendo|xbox", LIVE},
     // read at start; the menu says when a change waits for a restart (ui/menu.cpp prompts_note) and where the sets
     // change in the running game (romfs_prompts_live)

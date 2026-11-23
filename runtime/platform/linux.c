@@ -1846,6 +1846,25 @@ int plat_open_folder(const char *path) {
 void *plat_lib_open(const char *name) { return dlopen(name, RTLD_NOW | RTLD_LOCAL); }
 void *plat_lib_sym(void *lib, const char *name) { return lib ? dlsym(lib, name) : NULL; }
 
+void *plat_lib_open_beside(const char *name, int *missing) {
+    char path[PATH_MAX];
+    if (missing) *missing = 0;
+    if (!plat_exe_path(path, sizeof path)) return NULL;
+    char *end = strrchr(path, '/');
+    if (!end || (size_t)(end + 1 - path) + strlen(name) + 1 > sizeof path) return NULL;
+    strcpy(end + 1, name);
+    if (access(path, F_OK)) {
+        if (missing) *missing = 1;
+        return NULL;
+    }
+    return dlopen(path, RTLD_NOW | RTLD_LOCAL);
+}
+
+int plat_audio_out_volume(const char *const *names, int n, float *volume, int *muted, char *found, size_t cap) {
+    (void)names, (void)n, (void)volume, (void)muted, (void)found, (void)cap;
+    return 0;   // (PipeWire / PulseAudio volumes are not read: the cable path is Windows' for now)
+}
+
 // ---- machine load: /proc/stat and /proc/self/stat for the CPU, hwmon for the temperature, the amdgpu sysfs files of
 // the render device for the GPU.
 

@@ -1034,7 +1034,8 @@ class OotComponentsShimTest(unittest.TestCase):
         self.shim.parent.mkdir()
         self.dest = base / 'game'
         self.dest.mkdir()
-        self.layout = SimpleNamespace(shim=self.shim, release='1.2.4')
+        self.renhdrum = base / 'bin' / oot.RENHDRUM
+        self.layout = SimpleNamespace(shim=self.shim, renhdrum=self.renhdrum, release='1.2.4')
 
     def tearDown(self):
         self.tmp.cleanup()
@@ -1065,6 +1066,23 @@ class OotComponentsShimTest(unittest.TestCase):
         self.assertTrue(step.current(self.ctx(rtx40), record))
         (self.dest / self.oot.SHIM).unlink()
         self.assertFalse(step.current(self.ctx(rtx40), record))                # gone: the step runs again
+
+    @unittest.skipUnless(sys.platform == 'win32', 'the libraries are Windows ones (components.groups_for)')
+    def test_renhdrum_goes_beside_the_game_for_any_card(self):
+        # RenHDrum's library (the Vibration setting's Auto): every card, once the release carries it; 1.2.9 and older
+        # carried none, so a folder set up before gets it at its next update
+        radeon = self.components.Gpu('AMD Radeon RX 7800 XT', 'amd', 16 << 30)
+        step = self.oot.Components()
+        without = step.key(self.ctx(radeon))
+        self.renhdrum.write_bytes(b'haptics')
+        self.assertNotEqual(step.key(self.ctx(radeon)), without)
+        installed = {'installed': [], 'present': [], 'kept': [], 'failed': {}}
+        with mock.patch.object(self.components, 'install', return_value=installed):
+            record = step.run(self.ctx(radeon))
+        self.assertEqual((self.dest / self.oot.RENHDRUM).read_bytes(), b'haptics')
+        self.assertIn(self.oot.RENHDRUM, record['files'])
+        (self.dest / self.oot.RENHDRUM).unlink()
+        self.assertFalse(step.current(self.ctx(radeon), record))   # gone: the step runs again
 
 
 class ToolSteadyTest(unittest.TestCase):

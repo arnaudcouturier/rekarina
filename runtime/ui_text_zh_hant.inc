@@ -192,6 +192,12 @@
     [UI_MENU_CHANNELS_AUTO] = "自動", [UI_MENU_CHANNELS_STEREO] = "立體聲", [UI_MENU_CHANNELS_51] = "5.1 環繞聲",
 
     [UI_MENU_MOTION] = "體感操作", [UI_MENU_MOTION_DESC] = "用手把的陀螺儀瞄準。",
+    [UI_MENU_VIBRATION] = "震動",
+    [UI_MENU_VIBRATION_AUTO] = "自動", [UI_MENU_VIBRATION_BASIC] = "基本", [UI_MENU_VIBRATION_OFF] = "關閉",
+    [UI_MENU_VIBRATION_DESC] = "自動：在控制器支援時呈現遊戲的細膩震動（DualSense 的觸覺回饋、Xbox 控制器的四個馬達、Switch "
+                               "控制器的 HD 震動）。基本：只用兩個震動馬達。關閉：不震動。",
+    [UI_MENU_DS_EXTRAS] = "DualSense 附加效果", [UI_MENU_DS_EXTRAS_NOTE] = "僅限 DualSense",
+    [UI_MENU_DS_EXTRAS_DESC] = "隨震動一起，扳機產生反衝，控制器喇叭發出輕微的敲擊聲。適用於震動設為「自動」的 DualSense。",
     [UI_MENU_RUMBLE_STRENGTH] = "震動強度",
     [UI_MENU_RUMBLE_STRENGTH_DESC] = "手把震動的強度。",
     [UI_MENU_RUMBLE_CURVE] = "震動曲線",
