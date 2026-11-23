@@ -4393,3 +4393,29 @@ is an input of the setup's prompts step: an update draws the button pictures aga
 Checked in the game: the setup's own prompts tool drew the button pictures with the change, and the item list opened
 under the keyboard prompts at 1440p and 1080p shows Back with the arrow key in place of the tiny SHIFT, the key as
 large as the other keys; Sort (the mouse) and Select (A D) are the same pictures as before.
+
+## 2026-11-22: leaf shadows boiling on a lit ledge while the hero strafes (`shadow_scale = auto`)
+
+The report: on the lit rock face below a wooden fence, the fern shadows shimmer in bands when the hero strafes left and
+right. The shadow mask (fs 155e38dc3b75418a) moves most in G, the sun cascades' term, before any output processing.
+About 99 % of the ledge samples one layer, the second cascade, and fewer than 2 % change cascade between frames, so a
+cascade switch is not the cause. Upstream 1.2.7 and 1.2.8 built from source with the same save and input script
+measure the same (mean green-mask pulse 16.6 and 16.3): it is not a 1.2.8 regression, and the 1.2.8 NVIDIA blinking
+fixes (`WB_EARLY_RESULTS`, `USNAP_LIVE_SIZE`) stay on: turning both off, DLAA off or the foliage culling off moves the
+pulse by under 6 %, and the ledge still flickers with the foliage shadows shaded at full rate.
+
+The cause is the game's projection. The casters' block of the second cascade holds a light rotation and a matrix
+whose w row is one axis of the light's plane plus an offset, with y on the same axis and depth on the light's
+direction: a light-space perspective shadow map. Its offset and warp follow the camera, so a static point on the
+ledge moves across the 1600x1600 map by fractions of a texel every frame the camera moves (about 23 texels over the
+strafe), and no texel snapping can hold that grid still. Leaves a texel or two wide cover different texels each
+frame. Freezing the map's contents cuts the measured pulse by about a third; a lower compare reference or four offset
+compares lower it by about 12 %, and removing the receiver's normal offset raises it.
+
+A grid four times finer keeps the game's projection: `shadow_scale = 4` makes the array 6400x6400 (it is the only map
+`shadow_scale_of` enlarges on this save; the cascade sampler is the game's own linear compare, and the mask shader
+never reads `shadow_spread`). The green-mask pulse fell from 17.4 to 7.0 on the fixed-step replay, and the owner saw
+no flicker in play. OoT's default is now `auto` (`vk_texture.c vk_shadow_scale`): 4 on a discrete card with 12 GiB or
+more of device-local memory, else 1, logged as `vk: shadow map scale N (auto: ...)`. The array grows from 15 to
+234 MiB; the median frame time during the strafe went from 13.5 to 14.1 ms on an RTX 4090 at 2160p.
+`REKARINA_VRAM_BUDGET_MB=8192` and `shadow_scale = 1` both keep 1600x1600.

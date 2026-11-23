@@ -180,7 +180,11 @@ static const CfgMeta metas[] = {
 #endif
     {"DEVICE_PROFILE", "auto", "auto|desktop|deck|handheld", RESTART},
     {"SHADOW_RES", "game", "game|256|512|768|1024|1536|2048", RESTART},
+#ifdef GAME_OOT
+    {"SHADOW_SCALE", "auto", "auto|1|2|3|4", RESTART},   // vk_texture.c vk_shadow_scale: auto is 4 or 1 by the card
+#else
     {"SHADOW_SCALE", "1", "1..4", RESTART},
+#endif
     {"SHADOW_RANGE", "100", "50..400", RESTART}, {"CONTACT_SHADOWS", "0", "0..100", RESTART},
     {"PCSS", "0", "0..200", RESTART},
     // Game

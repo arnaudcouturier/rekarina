@@ -752,9 +752,37 @@ static void init_image(Tex *e, VkCommandBuffer cb) {
 // copies scale their regions (vk_exec_xfer.c sub_resolve), and shaders sample them with normalised coordinates, so the
 // game sees nothing of it. A map whose storage the CPU writes (mirrored) or that aliases pool memory keeps its size,
 // as its texels must match the guest layout.
-static int shadow_scale(void) {
+//
+// auto (OoT's default) picks 4 or 1 for the card. OoT renders its three sun cascades into a 1600x1600 DEPTH16 array of
+// 3 layers (on the traced save, the only map shadow_scale_of enlarges), through a light-space perspective projection:
+// the casters' matrix divides by the distance along an axis of the light's plane (its w row is that axis plus an
+// offset), and the offset and the warp follow the camera. Every camera move slides the texel grid over the world by a
+// fraction of a texel, which no snapping can hold still, so leaves a texel or two wide cover other texels each frame
+// and their shadows boil while the hero strafes (as much in upstream 1.2.7 as in 1.2.8 and later). A grid four times
+// finer keeps the game's projection and gives each texel a sixteenth of the area. The array then grows from 15 to 234
+// MiB and its passes draw 16 times the texels, so auto takes 4 only on a discrete card with 12 GiB or more of
+// device-local memory.
+#ifdef GAME_OOT
+static int shadow_scale_auto(void) {
+    const VkCtx *c = vk_ctx();
+    uint64_t vram = 0;
+    for (uint32_t i = 0; i < c->mem_props.memoryHeapCount; i++)
+        if ((c->mem_props.memoryHeaps[i].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) && c->mem_props.memoryHeaps[i].size > vram)
+            vram = c->mem_props.memoryHeaps[i].size;
+    if (vk_mem_vram_cap() && vk_mem_vram_cap() < vram) vram = vk_mem_vram_cap();   // DEBUG-VRAMCAP: a smaller card
+    int discrete = c->props.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU, s = discrete && vram >= 12ull << 30 ? 4 : 1;
+    rt_log("vk: shadow map scale %d (auto: %s gpu, %.1f GiB of video memory)", s, discrete ? "discrete" : "not a discrete",
+           (double)vram / 1073741824.0);
+    return s;
+}
+#endif
+
+int vk_shadow_scale(void) {
     static int scale = -1;
     if (scale < 0) {
+#ifdef GAME_OOT
+        if (!strcmp(cfg_value("REKARINA_SHADOW_SCALE"), "auto")) return scale = shadow_scale_auto();
+#endif
         int s = cfg_int("REKARINA_SHADOW_SCALE");
         s = s < 1 ? 1 : s > 4 ? 4 : s;
         rt_log("vk: shadow map scale %d", s);
@@ -764,7 +792,7 @@ static int shadow_scale(void) {
 }
 
 static int shadow_scale_of(const nvn_texdesc *d, const TexVkFormat *f, uint32_t samples, int mirrored) {
-    int scale = shadow_scale();
+    int scale = vk_shadow_scale();
     if (scale == 1 || mirrored || samples > 1 || d->format != NVN_FORMAT_DEPTH16 || !f->depth) return 1;
     if (d->target != NVN_TEXTURE_TARGET_2D_ARRAY || d->width != d->height || d->width < 256 || d->depth < 2 || d->depth > 4)
         return 1;
@@ -7344,7 +7372,7 @@ static VkSampler make_sampler(VkCtx *c, const samp_par *d) {
         // A depth-compare sampler set to nearest returns 0 or 1 per tap, and the game's shaders smooth shadow edges by
         // a few taps spaced for its own shadow map texels. With REKARINA_SHADOW_SCALE those taps cover a fraction of the
         // area and the edges turn hard and stepped; linear filtering makes every tap a 2x2 PCF instead.
-        if (shadow_scale() > 1) si.magFilter = si.minFilter = VK_FILTER_LINEAR;
+        if (vk_shadow_scale() > 1) si.magFilter = si.minFilter = VK_FILTER_LINEAR;
     }
     VkSamplerCustomBorderColorCreateInfoEXT cb = {.sType = VK_STRUCTURE_TYPE_SAMPLER_CUSTOM_BORDER_COLOR_CREATE_INFO_EXT};
     VkSamplerReductionModeCreateInfo rm = {.sType = VK_STRUCTURE_TYPE_SAMPLER_REDUCTION_MODE_CREATE_INFO};

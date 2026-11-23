@@ -204,6 +204,8 @@
 # shadow edge filter is narrowed by the same factor (translator patch 0011), so close shadow edges don't look doubled.
 # Read at start.
 # shadow_scale = 1
+# OoT's sun cascades are one 1600x1600 map of 3 layers, and its default is auto: 4 on a discrete GPU with 12 GiB or more
+# of video memory, which keeps leaf shadows from boiling while the camera moves, else 1.
 # Sun shadow cascade range in percent of the game's (its cascades end at 20, 40, 80 and 160 m), 50 to 400: higher moves
 # the steps where shadows turn softer further away, and spreads the shadow map over more ground. Read at start.
 # shadow_range = 100

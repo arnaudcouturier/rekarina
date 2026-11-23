@@ -2969,15 +2969,11 @@ static const float *pcss_params(void) {
 // shadow filter offset (element 56 .xy of their lighting block), 1 / REKARINA_SHADOW_SCALE. The game spaces its four
 // compares for its own shadow map texels; with maps REKARINA_SHADOW_SCALE times larger, the same offset in UV spans that
 // many more texels and the near cascade shows four separate copies of each edge. Dividing by the scale keeps the game's
-// spacing in texels. The offset is in UV of the shadow map, so the output resolution plays no part. The scale is read
-// once, as vk_texture.c shadow_scale reads it: the maps keep the size they were made with.
+// spacing in texels. The offset is in UV of the shadow map, so the output resolution plays no part. The scale is the
+// one the maps were made with (vk_texture.c vk_shadow_scale, auto included).
 static const float *shadow_spread_params(void) {
     static float p[4] = {0, 0, 0, 0};
-    if (p[0] == 0) {
-        int scale = cfg_int("REKARINA_SHADOW_SCALE");
-        scale = scale < 1 ? 1 : scale > 4 ? 4 : scale;
-        p[0] = 1.0f / (float)scale;
-    }
+    if (p[0] == 0) p[0] = 1.0f / (float)vk_shadow_scale();
     return p;
 }
 

@@ -561,13 +561,16 @@ typedef struct {
     uint8_t fb_usage;              // created with ATTACHMENT_FEEDBACK_LOOP usage (VK_FEEDBACK_LAYOUT, attachable images)
     uint8_t fb_learned;            // a draw sampled it while it was a written attachment of the open pass: its passes
                                    // attach it in ATTACHMENT_FEEDBACK_LOOP_OPTIMAL_EXT (vk_exec.c vk_exec_pass_begin)
-    uint8_t scale;                 // 1, or REKARINA_SHADOW_SCALE for a shadow map made larger than the game's (vk_texture.c
+    uint8_t scale;                 // 1, or vk_shadow_scale() for a shadow map made larger than the game's (vk_texture.c
                                    // shadow_scale_of): width and height above are the larger ones, the game's regions
                                    // are multiplied by it
     uint32_t serial;               // new for every image this record is given (vk_texture_image_serial): the view cache keys
                                    // by it with the handle, as Vulkan hands a destroyed image's handle to a later image
 } VkTexImage;
 uint32_t vk_texture_image_serial(void);   // vk_texture.c: the next image serial (never 0)
+// vk_texture.c: REKARINA_SHADOW_SCALE as the shadow maps are made with it, 1 to 4 (auto decided for the card), read
+// once with the device up
+int vk_shadow_scale(void);
 // Views made ahead with an image (vk_exec_draw.c "Views made ahead with their image", REKARINA_VIEWS_AHEAD): the
 // whole-image sampled view (0), attachment view (1) and 2D array view of a 2D image (2), each with the view cache key it
 // was made for (a ViewKey).
