@@ -85,6 +85,7 @@ void vk_mvcheck_final(VkCommandBuffer cb, uint64_t fence, VkImage mv, VkImage ci
                       uint32_t layer, uint32_t w, uint32_t h, float jx, float jy);
 const char *vk_mvobj_frame_masks(void);   // vk_exec_draw.c: the last motion list, per position and changed banks
 void vk_mvcheck_output(VkCommandBuffer cb, VkImage out, uint32_t ow, uint32_t oh);   // after DLSS on a check frame
-// vk_exec_draw.c, once a draw's fragment shader is known: 1 skips the draw (the game's FXAA while REKARINA_FXAA is 0, its
-// scaling draw when DLSS wrote the scaled picture).
+// vk_exec_draw.c, once a draw's fragment shader is known and before its state is bound: 1 skips the draw (the game's FXAA
+// while REKARINA_FXAA is 0, its scaling draw when DLSS wrote the scaled picture). It also runs OoT's resolve before the
+// bloom (vk_dlaa.c pre_bloom_draw).
 int vk_dlaa_skip_draw(VkExec *ex, const GfxShader *fs);
