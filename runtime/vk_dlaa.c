@@ -311,25 +311,9 @@ static int pre_bloom_on;
 void vk_dlaa_init(void) {
 #ifdef GAME_OOT   // the bloom draw it looks for is OoT's
     pre_bloom_on = rt_knob("DLAA_PRE_BLOOM", "0");
-    rt_log("dlaa: pre-bloom resolve %s (REKARINA_DLAA_PRE_BLOOM=%d)", pre_bloom_on ? "on" : "off", pre_bloom_on);
-    // When Streamline is loaded, record SR availability even if DLAA/DLSS is off at start (live selection).
-    // When Streamline is absent, avoid eagerly loading native _nvngx.dll unless DLSS is actually requested (ADR-0002).
-    if (vk_sl_sr_requested() || (vk_dlaa_wanted() && !fsr3() && !fsr1())) dlss_init();
-    if (!vk_dlaa_wanted() || fsr1()) return;
-    if (fsr3()) {
-        ffx_available = vk_ffx_load();
-        if (ffx_available && !vk_ffx_upscale_available())
-            rt_log("dlaa: FSR upscaling provider '%s' is not available on this device; using the game's scaling",
-                   cfg_value("REKARINA_FSR_VERSION"));
-    } else if (!N.available && (ffx_available = vk_ffx_load())) {
-        fsr3_on = 1;
-        if (vk_ffx_upscale_available()) rt_log("dlaa: DLSS cannot run here: AMD FSR takes its place");
-        else rt_log("dlaa: DLSS is unavailable and FSR upscaling provider '%s' is not available; using the game's scaling",
-                    cfg_value("REKARINA_FSR_VERSION"));
-    }
-#else
-    if (!vk_dlaa_wanted()) return;
-    if (fsr1()) {   // nothing to load: the shaders are the runtime's own
+    if (pre_bloom_on) rt_log("dlaa: pre-bloom resolve on (REKARINA_DLAA_PRE_BLOOM=1)");
+#endif
+    if (vk_dlaa_wanted() && fsr1()) {   // nothing to load: the shaders are the runtime's own
         N.available = 1;
         rt_log("dlaa: the upscaler is AMD FSR 1 (spatial, EASU + RCAS)");
         return;
@@ -542,16 +526,10 @@ static struct {
     uint64_t out_addr;           // the storage of the game's output picture, where DLSS ran at the scaling dispatch
     uint64_t at_dispatch, at_pass;   // evaluations by where they ran (vk_dlaa_dispatch / vk_dlaa_pass)
     struct {                     // OoT's resolve before the bloom (pre_bloom_draw)
+        int running;             // set around that evaluation: evaluate and dl_fail read it
         int last;                // the last evaluation ran there: its history is of scene light
         int tried;               // this frame's bloom draw was inspected
         int resolved;            // DLSS resolved before the bloom this frame
-        VkImage stage;           // tone-mapped color staged at SMAA compose (pre_bloom_stage)
-        VmaAllocation stage_mem;
-        uint32_t stage_w;
-        uint32_t stage_h;
-        int staged;              // this frame's tone-mapped color is valid in stage
-        const char *stage_why;   // why pre_bloom_stage skipped copying this frame (for fallback logs)
-        uint32_t packed_serial;  // serial of the RGB9E5 image SMAA compose wrote, matched at the scaler
         uint64_t evals;          // evaluations that ran before the bloom
     } pre_bloom;
     int on;                      // the dlaa setting, read at each present (the menu switches it live)
@@ -742,10 +720,11 @@ static int dl_active(void) { return !D.failed && D.on; }
 int vk_dlaa_active(void) { return dl_active(); }
 int vk_dlaa_fg_only(void) { return 0; }
 
-static void dl_fail(enum SceneEvaluation evaluation, const char *what, NgxResult r) {
-    if (evaluation == EVALUATE_PREBLOOM || evaluation == EVALUATE_NATIVE_PREBLOOM) {
-        static unsigned failures;
-        if (failures++ < 8) rt_log("dlaa: pre-bloom %s failed (%08x); retaining late fallback", what, (unsigned)r);
+static void dl_fail(const char *what, NgxResult r) {
+    if (D.pre_bloom.running) {   // the scaling dispatch resolves the frame instead (and turns DLAA off if it fails too)
+        static unsigned fail_logs;
+        if (fail_logs++ < 8)
+            rt_log("dlaa: pre-bloom %s failed (%08x): the scaling dispatch resolves", what, (unsigned)r);
         D.reset = 1;
         return;
     }
@@ -771,13 +750,6 @@ static int image2d(uint32_t w, uint32_t h, VkFormat f, VkImageUsageFlags usage, 
 
 static void destroy_size(struct Size *e) {
     const VkCtx *c = vk_ctx();
-    for (unsigned index = 0; index < PRIVATE_BLOOM_TARGET_COUNT; ++index) {
-        const struct PrivateBloomTarget *target = &e->bloom_targets[index];
-        if (target->view) vkDestroyImageView(c->device, target->view, NULL);
-        if (target->image) vmaDestroyImage(c->vma, target->image, target->allocation);
-    }
-    if (e->tonemap_view) vkDestroyImageView(c->device, e->tonemap_view, NULL);
-    if (e->tonemap) vmaDestroyImage(c->vma, e->tonemap, e->tonemap_mem);
     if (e->out_view) vkDestroyImageView(c->device, e->out_view, NULL);
     if (e->mv_view) vkDestroyImageView(c->device, e->mv_view, NULL);
     if (e->out) vmaDestroyImage(c->vma, e->out, e->out_mem);
@@ -788,25 +760,6 @@ static void destroy_size(struct Size *e) {
     }
     if (e->feat && N.release) N.release(e->feat);
     memset(e, 0, sizeof *e);
-}
-
-void vk_dlaa_release_ngx(VkDevice device) {
-    if (!N.initialized) return;
-    for (size_t i = 0; i < sizeof D.sizes / sizeof *D.sizes; ++i) {
-        if (!D.sizes[i].feat) continue;
-        NgxResult r = N.release(D.sizes[i].feat);
-        if (!NGX_OK(r)) rt_log("dlaa: NGX feature release failed (%08x)", (unsigned)r);
-        D.sizes[i].feat = NULL;
-    }
-    if (D.params) {
-        NgxResult r = N.destroy_params(D.params);
-        if (!NGX_OK(r)) rt_log("dlaa: NGX parameter release failed (%08x)", (unsigned)r);
-        D.params = NULL;
-    }
-    unsigned remaining = 0;
-    NgxResult r = N.shutdown(device, &remaining);
-    if (!NGX_OK(r)) rt_log("dlaa: NGX shutdown failed (%08x)", (unsigned)r);
-    N.initialized = N.available = 0;
 }
 
 static void free_size(struct Size *e) {
@@ -2012,18 +1965,12 @@ static const float *projection_rows(const p_scene_projection *p, const VkExecTar
 // tone mapping, and post-processing read the anti-aliased scene. Any frame that cannot resolve there falls back to
 // the scaling dispatch. Because the bloom draw's pass is a single draw (below REKARINA_PAR_MIN), it always replays
 // in order on the replay thread.
-#define OOT_BLOOM_FS        UINT64_C(0x865a04d320227ae3)   // bloom chain's first fragment shader input-id prefix
-#define OOT_SMAA_COMPOSE_CS UINT64_C(0x1f0ccd15c28b87b8)   // SMAA compose compute shader input-id prefix
-#define OOT_SCALER_CS       UINT64_C(0xdf55fc291b0f86ba)   // post-SMAA scaler compute shader input-id prefix
+#define OOT_BLOOM_FS  UINT64_C(0x865a04d320227ae3)   // bloom chain's first fragment shader input-id prefix
+#define OOT_SCALER_CS UINT64_C(0xdf55fc291b0f86ba)   // post-SMAA scaler compute shader input-id prefix
 
 enum {
-    OOT_STAGE_FS           = 1,   // NVN_STAGE_FS
-    OOT_STAGE_CS           = 5,   // NVN_STAGE_CS
-    OOT_BLOOM_SCENE_SLOT   = 0,   // FS texture slot 0: scene light target
-    OOT_SMAA_COLOR_SLOT    = 3,   // CS texture slot 3: tone-mapped float color read by SMAA compose
-    OOT_SMAA_PACKED_SLOT   = 2,   // CS image slot 2: RGB9E5 output packed via R32UI view
-    OOT_SCALER_PACKED_SLOT = 0,   // CS texture slot 0: RGB9E5 input read by the scaler
-    OOT_SCALER_OUTPUT_SLOT = 1,   // CS image slot 1: HUD destination R11G11B10F image
+    OOT_STAGE_FS         = 1,   // NVN_STAGE_FS
+    OOT_BLOOM_SCENE_SLOT = 0,   // FS texture slot 0: scene light target
 };
 
 static uint64_t shader_input_prefix(const GfxShader *shader) {
@@ -2052,9 +1999,9 @@ static int pre_bloom_reads_scene(const VkExec *ex) {
     const VkTexImage *img = vk_texture_by_id_locked(NVN_HANDLE_TEX(handle), &view, &has_view);
     uint32_t base_level = (has_view && view.set_levels) ? view.base_level : 0;
     uint32_t min_layer = (has_view && view.set_layers) ? view.min_layer : 0;
-    int format_ok = !has_view || !view.set_format || (tex_vk_format(view.format, &mapped) && mapped.vk == D.scene.color.format);
-    int reads = img && !img->gone && img->image == D.scene.color.image &&
-                base_level == D.scene.color.level && min_layer == D.scene.color.base_layer && format_ok;
+    int format_ok = !has_view || !view.set_format || (tex_vk_format(view.format, &mapped) && mapped.vk == D.color.format);
+    int reads = img && !img->gone && img->image == D.color.image &&
+                base_level == D.color.level && min_layer == D.color.base_layer && format_ok;
     vk_texture_unlock();
     return reads;
 }
@@ -2072,14 +2019,14 @@ static void pre_bloom_trace(const VkExec *ex, const GfxShader *fs) {
         view_t view = {0};
         int has_view = 0;
         const VkTexImage *img = vk_texture_by_id_locked(NVN_HANDLE_TEX(handle), &view, &has_view);
-        if (!img || img->gone || img->image != D.scene.color.image) continue;
+        if (!img || img->gone || img->image != D.color.image) continue;
         rt_log("PATHLOG   scene sample pass %u %ux%u colors %u fs %016llx slot %d addr %llx mip %u layer %u token %llx target %llu/%llu",
                ex->pass_serial, ex->pass_w, ex->pass_h, ex->pass_ncolor,
                (unsigned long long)shader_input_prefix(fs), slot, (unsigned long long)img->addr,
                has_view && view.set_levels ? view.base_level : 0, has_view && view.set_layers ? view.min_layer : 0,
                (unsigned long long)D.projection.sample.token,
-               (unsigned long long)(D.scene.color.tex ? D.scene.color.tex->serial : 0),
-               (unsigned long long)(D.scene.depth.tex ? D.scene.depth.tex->serial : 0));
+               (unsigned long long)(D.color.tex ? D.color.tex->serial : 0),
+               (unsigned long long)(D.depth.tex ? D.depth.tex->serial : 0));
     }
     vk_texture_unlock();
 }
@@ -2109,8 +2056,8 @@ static const char *pre_bloom_blocked(const VkExec *ex) {
     if (ex->gpu_cond)
         return "the bloom draw is under a condition the GPU decides";
 #endif
-    const VkExecTarget *color = &D.scene.color;
-    const VkExecTarget *depth = &D.scene.depth;
+    const VkExecTarget *color = &D.color;
+    const VkExecTarget *depth = &D.depth;
     unsigned output_w = 0, output_h = 0;
     wide_picture(&output_w, &output_h);
     if (color->width != output_w || color->height != output_h)
@@ -2135,13 +2082,9 @@ static const char *pre_bloom_blocked(const VkExec *ex) {
     return NULL;
 }
 
-static void evaluate(VkExec *ex, const VkExecTarget *dst, enum SceneEvaluation evaluation) {
-#ifdef GAME_OOT
-    // Replay can see a new provider before the present path updates activation.
-    if (fsr3() && !vk_ffx_upscale_available()) return;
-#endif
-    const VkExecTarget *t = &D.scene.color, *z = &D.scene.depth;
-    const int pre_bloom = evaluation == EVALUATE_NATIVE_PREBLOOM;
+static void evaluate(VkExec *ex, const VkExecTarget *dst) {
+    const VkExecTarget *t = &D.color, *z = &D.depth;
+    const int pre_bloom = D.pre_bloom.running;
     if (!dst) dst = t;
     uint32_t w = t->width, h = t->height, ow = dst->width, oh = dst->height;
     const int spatial = fsr1();
@@ -2190,7 +2133,7 @@ static void evaluate(VkExec *ex, const VkExecTarget *dst, enum SceneEvaluation e
     NgxParam *p = D.params;
     VkImageView zv = vk_exec_target_view(z->img, z->format, VK_IMAGE_VIEW_TYPE_2D, VK_IMAGE_ASPECT_DEPTH_BIT, z->level,
                                          z->base_layer, 1, 0);
-    if (pre_bloom && !zv) return dl_fail(evaluation, "scene depth view", 0);
+    if (pre_bloom && !zv) return dl_fail("scene depth view", 0);
     float jx = D.jit_used ? D.ux : 0.0f, jy = D.jit_used ? D.uy : 0.0f;
     if (projection_attempt) {
         jx = projection_camera ? projection->jitter[0] : 0.0f;
@@ -2225,7 +2168,7 @@ static void evaluate(VkExec *ex, const VkExecTarget *dst, enum SceneEvaluation e
     }
     VkImageView cv = vk_exec_target_view(t->img, t->format, VK_IMAGE_VIEW_TYPE_2D, VK_IMAGE_ASPECT_COLOR_BIT, t->level,
                                          t->base_layer, 1, 0);
-    if (pre_bloom && !cv) return dl_fail(evaluation, "scene color view", 0);
+    if (pre_bloom && !cv) return dl_fail("scene color view", 0);
     int timed = T.on > 0 && T.used[T.slot];   // mv_pass began this frame's slot
     if (timed) times_mark(cb, T_DL0);
     uint64_t c0 = timed ? kern_now_ns() : 0;
@@ -2374,33 +2317,34 @@ evaluated:
         }
     }
     vk_mvcheck_output(cb, e->out, ow, oh);   // REKARINA_MV_CHECK (test)
-    if (evaluation != EVALUATE_PREBLOOM) {
-        // the result into the scene target (DLAA: the bloom, the post passes and the HUD read it and draw over it) or into
-        // the scaling pass's target (the HUD draws over it)
-        VkImageBlit b = {.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
-                         .srcOffsets = {{0, 0, 0}, {(int32_t)ow, (int32_t)oh, 1}},
-                         .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, dst->level, dst->base_layer, 1},
-                         .dstOffsets = {{0, 0, 0}, {(int32_t)ow, (int32_t)oh, 1}}};
-        // REKARINA_DLAA_MVDEBUG=1 (test): the motion vectors in place of the picture, x in red and y in green, render pixels
-        // as scene light (the post passes still run over them)
-        static int mvdebug = -1;
-        if (mvdebug < 0) mvdebug = rt_knob("DLAA_MVDEBUG", "0");
-        VkImage shown = mvdebug ? e->mv : e->out;
-        if (shown != e->out) b.srcOffsets[1] = (VkOffset3D){(int32_t)w, (int32_t)h, 1};
-        vkCmdBlitImage(cb, shown, VK_IMAGE_LAYOUT_GENERAL, dst->image, VK_IMAGE_LAYOUT_GENERAL, 1, &b, VK_FILTER_NEAREST);
-        full_barrier(cb);
-        if (dst != t) vk_dlaa_swap_img = t->img, vk_dlaa_swap_view = e->out_view;   // the scaling draw reads DLSS's picture
-        if (vk_dlaa_hudless_wanted && !pre_bloom) {   // frame generation keeps the HUD out of its generated frames
-            static int at_dlss = -1;
-            if (at_dlss < 0) at_dlss = rt_knob("FG_HUDLESS_AT_DLSS", "0");
-            if (evaluation == EVALUATE_AT_DISPATCH && !at_dlss) {
-                D.scene.hudless.pending = 1, D.scene.hudless.width = ow, D.scene.hudless.height = oh;
-                hudless_scene_target(dst != t ? dst->img : NULL, dst != t ? dst->image : VK_NULL_HANDLE);
-            } else {
-                hudless(cb, e->out, ow, oh);
-                D.hl_early++, D.scene.hudless.width = ow, D.scene.hudless.height = oh;
-                hudless_log();
-            }
+    // the result into the scene target (DLAA: the bloom, the post passes and the HUD read it and draw over it) or into
+    // the scaling pass's target (the HUD draws over it)
+    VkImageBlit b = {.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+                     .srcOffsets = {{0, 0, 0}, {(int32_t)ow, (int32_t)oh, 1}},
+                     .dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, dst->level, dst->base_layer, 1},
+                     .dstOffsets = {{0, 0, 0}, {(int32_t)ow, (int32_t)oh, 1}}};
+    // REKARINA_DLAA_MVDEBUG=1 (test): the motion vectors in place of the picture, x in red and y in green, render pixels
+    // as scene light (the post passes still run over them)
+    static int mvdebug = -1;
+    if (mvdebug < 0) mvdebug = rt_knob("DLAA_MVDEBUG", "0");
+    VkImage shown = mvdebug ? e->mv : e->out;
+    if (shown != e->out) b.srcOffsets[1] = (VkOffset3D){(int32_t)w, (int32_t)h, 1};
+    vkCmdBlitImage(cb, shown, VK_IMAGE_LAYOUT_GENERAL, dst->image, VK_IMAGE_LAYOUT_GENERAL, 1, &b, VK_FILTER_NEAREST);
+    full_barrier(cb);
+    if (dst != t) vk_dlaa_swap_img = t->img, vk_dlaa_swap_view = e->out_view;   // the scaling draw reads DLSS's picture
+    // frame generation keeps the HUD out of its generated frames; before the bloom the game's scaler names the picture
+    // the HUD is drawn onto (pre_bloom_scaler)
+    if (vk_dlaa_hudless_wanted && !pre_bloom) {
+        static int at_dlss = -1;
+        if (at_dlss < 0) at_dlss = rt_knob("FG_HUDLESS_AT_DLSS", "0");
+        if (D.hl_later && !at_dlss) {
+            D.hl_wait = 1, D.hl_ow = ow, D.hl_oh = oh;
+            D.hl_pic = dst != t ? dst->img : NULL, D.hl_pic_image = dst != t ? dst->image : VK_NULL_HANDLE;
+            D.hl_pic_addr = D.hl_pic ? D.hl_pic->addr : 0;
+        } else {
+            hudless(cb, e->out, ow, oh);
+            D.hl_early++, D.hl_ow = ow, D.hl_oh = oh;
+            hudless_log();
         }
     } else if (vk_dlaa_hudless_wanted) {
         D.scene.hudless.pending = 1;
@@ -2429,8 +2373,8 @@ evaluated:
 // Called from vk_dlaa_skip_draw on the replay thread before a draw binds its state.
 // At the bloom chain's first draw, suspends the pass, resolves DLSS into the scene target, and resumes the pass.
 static void pre_bloom_draw(VkExec *ex, const GfxShader *fs) {
-    if (!fs || !D.scene.armed) return;
-    int is_bloom = !scene_resolved() && !D.pre_bloom.tried && D.projection.sample.token &&
+    if (!fs || !D.armed) return;
+    int is_bloom = !D.done && !D.pre_bloom.tried && D.projection.sample.token &&
                    pre_bloom_pass(ex) && shader_input_prefix(fs) == OOT_BLOOM_FS;
     if (vk_dlaa_pathlog()) pre_bloom_trace(ex, fs);
     if (!is_bloom || !pre_bloom_reads_scene(ex)) return;
@@ -2449,12 +2393,14 @@ static void pre_bloom_draw(VkExec *ex, const GfxShader *fs) {
     uint64_t evals_before = D.evals;
     vk_exec_par_join();
     vk_exec_pass_end(ex);
-    evaluate(ex, NULL, EVALUATE_NATIVE_PREBLOOM);
+    D.pre_bloom.running = 1;
+    evaluate(ex, NULL);
+    D.pre_bloom.running = 0;
 
     if (D.evals != evals_before) {
         D.pre_bloom.resolved = 1;
-        D.scene.phase = SCENE_RESOLVED;
-        replay_scene_start();
+        D.ended = 1;
+        D.done = 1;
     } else {
         // Evaluation failed; finish any partial work so the scaling dispatch can resolve this frame instead.
         full_barrier(ex->cb);
@@ -2995,7 +2941,7 @@ static void hudless_at_pass(VkExec *ex) {
     else D.hl_window++;
     if (vk_dlaa_pathlog())
         rt_log("PATHLOG   HUD-less picture copied at %s pass %u, %ux%u format %d",
-               pic ? "HUD" : "window", ex->pass_serial + 1, D.scene.hudless.width, D.scene.hudless.height, (int)D.hl_fmt);
+               pic ? "HUD" : "window", ex->pass_serial + 1, D.hl_ow, D.hl_oh, (int)D.hl_fmt);
     hudless_log();
 }
 
@@ -3331,222 +3277,16 @@ void vk_dlaa_pass(VkExec *ex) {
     }
 }
 
-// Looks up an NVN texture/image handle and verifies it references a whole, single-sample, output-sized 2D R11G11B10F
-// backing image viewed in `expected_format` (SMAA compose and the scaler reinterpret the backing storage as R32UI / RGB9E5).
-static const VkTexImage *pre_bloom_image_locked(uint64_t handle, VkFormat expected_format, int is_sampled) {
-    if (!handle) return NULL;
-    view_t view;
-    int has_view = 0;
-    const VkTexImage *image = vk_texture_by_id_locked(NVN_HANDLE_TEX(handle), &view, &has_view);
-    if (!image || image->gone || !image->image) return NULL;
-    if (image->format != VK_FORMAT_B10G11R11_UFLOAT_PACK32) return NULL;
-    if (image->type != VK_IMAGE_TYPE_2D || image->view_type != VK_IMAGE_VIEW_TYPE_2D) return NULL;
-    if (image->aspect != VK_IMAGE_ASPECT_COLOR_BIT || image->samples != 1) return NULL;
-    if (image->levels != 1 || image->layers != 1) return NULL;
-    if (image->width != D.ev_ow || image->height != D.ev_oh) return NULL;
-
-    VkFormat view_format = image->format;
-    if (has_view) {
-        if ((view.set_levels && view.base_level != 0) || (view.set_layers && view.min_layer != 0)) return NULL;
-        if (view.set_target && view.target != NVN_TEXTURE_TARGET_2D) return NULL;
-        if (view.set_format) {
-            TexVkFormat mapped;
-            if (!tex_vk_format(view.format, &mapped)) return NULL;
-            view_format = mapped.vk;
-        }
-    }
-    if (view_format != expected_format) return NULL;
-
-    if (is_sampled) {
-        const uint8_t *swizzle = (has_view && view.set_swizzle) ? view.swz : image->swz;
-        if (image->chan[0] ||
-            swizzle[0] != NVN_TEXTURE_SWIZZLE_R ||
-            swizzle[1] != NVN_TEXTURE_SWIZZLE_G ||
-            swizzle[2] != NVN_TEXTURE_SWIZZLE_B)
-            return NULL;
-    }
-    return image;
-}
-
-static void pre_bloom_stage_destroy(void) {
-    if (!D.pre_bloom.stage) return;
-    const VkCtx *c = vk_ctx();
-    vk_queue_lock();
-    vkDeviceWaitIdle(c->device);
-    vk_queue_unlock();
-    vmaDestroyImage(c->vma, D.pre_bloom.stage, D.pre_bloom.stage_mem);
-    D.pre_bloom.stage = VK_NULL_HANDLE;
-    D.pre_bloom.stage_mem = NULL;
-    D.pre_bloom.stage_w = 0;
-    D.pre_bloom.stage_h = 0;
-}
-
-// Ensures the runtime-owned staging image exists at (w, h) in GENERAL layout. Returns 1 on success.
-static int pre_bloom_stage_ensure(VkCommandBuffer cb, uint32_t w, uint32_t h) {
-    if (D.pre_bloom.stage && D.pre_bloom.stage_w == w && D.pre_bloom.stage_h == h) return 1;
-    pre_bloom_stage_destroy();
-
-    const VkCtx *c = vk_ctx();
-    VkImageCreateInfo ci = {
-        .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
-        .imageType = VK_IMAGE_TYPE_2D,
-        .format = VK_FORMAT_B10G11R11_UFLOAT_PACK32,
-        .extent = {w, h, 1},
-        .mipLevels = 1,
-        .arrayLayers = 1,
-        .samples = VK_SAMPLE_COUNT_1_BIT,
-        .tiling = VK_IMAGE_TILING_OPTIMAL,
-        .usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
-        .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
-    };
-    VmaAllocationCreateInfo alloc_ci = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
-    if (vmaCreateImage(c->vma, &ci, &alloc_ci, &D.pre_bloom.stage, &D.pre_bloom.stage_mem, NULL) != VK_SUCCESS) {
-        D.pre_bloom.stage = VK_NULL_HANDLE;
-        D.pre_bloom.stage_mem = NULL;
-        return 0;
-    }
-
-    VkImageMemoryBarrier2 barrier = {
-        .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
-        .srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
-        .dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
-        .dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT,
-        .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
-        .newLayout = VK_IMAGE_LAYOUT_GENERAL,
-        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-        .image = D.pre_bloom.stage,
-        .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1},
-    };
-    VkDependencyInfo dep = {
-        .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
-        .imageMemoryBarrierCount = 1,
-        .pImageMemoryBarriers = &barrier,
-    };
-    vkCmdPipelineBarrier2(cb, &dep);
-    D.pre_bloom.stage_w = w;
-    D.pre_bloom.stage_h = h;
-    return 1;
-}
-
-// Snapshots the finished tone-mapped float picture as SMAA compose reads it, into our own staging image.
-// The game's image can share physical-pool memory with later passes before the scaler runs, so copying at compose
-// captures the exact image before anything else can alias or overwrite it.
-static void pre_bloom_stage(VkExec *ex) {
-    D.pre_bloom.staged = 0;
-    D.pre_bloom.stage_why = NULL;
-#ifdef GAME_NS2
-    if (ex->gpu_cond) {
-        D.pre_bloom.stage_why = "SMAA compose dispatch is GPU-conditional";
-        return;
-    }
-#endif
-    vk_texture_lock();
-    const VkTexImage *color = pre_bloom_image_locked(ex->tex[OOT_STAGE_CS][OOT_SMAA_COLOR_SLOT],
-                                                     VK_FORMAT_B10G11R11_UFLOAT_PACK32, 1);
-    const VkTexImage *packed = pre_bloom_image_locked(ex->img[OOT_STAGE_CS][OOT_SMAA_PACKED_SLOT],
-                                                      VK_FORMAT_R32_UINT, 0);
-    const char *why = NULL;
-    if (!color) why = "SMAA compose color slot is not a native R11G11B10F image";
-    else if (!packed || packed->image != D.scene.color.image) why = "SMAA compose packed output does not match the armed scene";
-    else if (color->image == packed->image) why = "SMAA compose color image aliases the packed output";
-    else if (!(color->usage & VK_IMAGE_USAGE_TRANSFER_SRC_BIT)) why = "SMAA compose color image lacks transfer-source usage";
-
-    VkImage src = why ? VK_NULL_HANDLE : color->image;
-    uint32_t w = why ? 0 : color->width;
-    uint32_t h = why ? 0 : color->height;
-    if (!why) D.pre_bloom.packed_serial = packed->serial;
-    vk_texture_unlock();
-
-    if (why) {
-        D.pre_bloom.stage_why = why;
-        return;
-    }
-
-    vk_exec_par_join();
-    vk_exec_barrier(ex);   // ensure tone mapping finished writing `src`
-    if (!pre_bloom_stage_ensure(ex->cb, w, h)) {
-        D.pre_bloom.stage_why = "staging image creation failed";
-        return;
-    }
-
-    VkImageSubresourceLayers layer = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
-    VkImageCopy region = {.srcSubresource = layer, .dstSubresource = layer, .extent = {w, h, 1}};
-    vkCmdCopyImage(ex->cb, src, VK_IMAGE_LAYOUT_GENERAL, D.pre_bloom.stage, VK_IMAGE_LAYOUT_GENERAL, 1, &region);
-    ex->recorded++;
-    vk_exec_barrier(ex);   // complete read of `src` before SMAA compose writes `packed` (which may share memory)
-    D.pre_bloom.staged = 1;
-}
-
-// Replaces OoT's post-SMAA scaling dispatch with a 1:1 copy from our staged tone-mapped image into the HUD target,
-// avoiding SMAA blur, RGB9E5 quantization, and scaler ringing halos on native DLAA output. Returns 1 when replaced.
-static int pre_bloom_scaler(VkExec *ex, const GfxShader *cs) {
-    vk_exec_par_join();
-    vk_texture_lock();
-    const VkTexImage *packed = pre_bloom_image_locked(ex->tex[OOT_STAGE_CS][OOT_SCALER_PACKED_SLOT],
-                                                      VK_FORMAT_E5B9G9R9_UFLOAT_PACK32, 1);
-    const VkTexImage *hud_target = pre_bloom_image_locked(ex->img[OOT_STAGE_CS][OOT_SCALER_OUTPUT_SLOT],
-                                                          VK_FORMAT_B10G11R11_UFLOAT_PACK32, 0);
-    const char *fallback_reason = NULL;
-    if (!D.pre_bloom.staged)
-        fallback_reason = D.pre_bloom.stage_why ? D.pre_bloom.stage_why : "SMAA compose was not seen this frame";
-    else if (!packed || packed->serial != D.pre_bloom.packed_serial)
-        fallback_reason = "the scaler reads a different RGB9E5 image";
-    else if (!hud_target)
-        fallback_reason = "the scaler's output view is not a native R11G11B10F image";
-    else if (hud_target->image == packed->image || hud_target->addr == packed->addr)
-        fallback_reason = "the HUD target is SMAA's image";
-    else if (hud_target->width != D.pre_bloom.stage_w || hud_target->height != D.pre_bloom.stage_h)
-        fallback_reason = "the HUD target is not the picture's size";
-    else if (!(hud_target->usage & VK_IMAGE_USAGE_TRANSFER_DST_BIT))
-        fallback_reason = "the HUD target lacks transfer-destination usage";
-#ifdef GAME_NS2
-    else if (ex->gpu_cond)
-        fallback_reason = "the scaler dispatch is GPU-conditional";
-#endif
-    if (!fallback_reason) vk_texture_storage_bound_locked(hud_target);
-    vk_texture_unlock();
-
-    D.pre_bloom.staged = 0;
-    D.pre_bloom.stage_why = NULL;
-    D.scene.hudless.width = D.ev_ow;
-    D.scene.hudless.height = D.ev_oh;
-    if (fallback_reason) {
-        hudless_track(ex, cs);
-    } else {
-        hudless_scene_target(hud_target, hud_target->image);
-    }
-    if (D.scene.hudless.texture) {
-        D.out_addr = D.scene.hudless.address;
-        D.scene.hudless.pending = vk_dlaa_hudless_wanted;
-    }
+// After DLSS resolved before the bloom the game's scaler runs: its output, the picture the HUD is drawn onto, is frame
+// generation's HUD-less source, and the frame's results point stays here as when DLSS replaces this dispatch.
+static void pre_bloom_scaler(VkExec *ex, const GfxShader *cs) {
+    D.hl_ow = D.ev_ow, D.hl_oh = D.ev_oh;
+    hudless_track(ex, cs);
+    if (D.hl_pic) D.out_addr = D.hl_pic_addr, D.hl_wait = vk_dlaa_hudless_wanted;
     vk_exec_results_point(ex);
-
-    if (fallback_reason) {
-        static unsigned fallback_logs;
-        if (fallback_logs++ < 8 || vk_dlaa_pathlog())
-            rt_log("dlaa: pre-bloom uses the game's scaler: %s", fallback_reason);
-        return 0;
-    }
-
-    vk_exec_barrier(ex);
-    VkImageSubresourceLayers layer = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
-    VkImageCopy region = {.srcSubresource = layer, .dstSubresource = layer, .extent = {D.scene.hudless.width, D.scene.hudless.height, 1}};
-    vkCmdCopyImage(ex->cb, D.pre_bloom.stage, VK_IMAGE_LAYOUT_GENERAL, hud_target->image, VK_IMAGE_LAYOUT_GENERAL, 1, &region);
-    ex->recorded++;
-    vk_exec_barrier(ex);
-    if (vk_dump_armed) vk_dump_dlaa_copy(ex, hud_target);
-    VkExecTarget output = {.img = hud_target, .image = hud_target->image,
-                           .width = hud_target->width, .height = hud_target->height};
-    replay_scene_complete(&output);
-
-    static int copy_logged;
-    if (!copy_logged || vk_dlaa_pathlog()) {
-        rt_log("dlaa: pre-bloom copies the tone-mapped picture to the HUD target %#llx at %ux%u",
-               (unsigned long long)hud_target->addr, D.scene.hudless.width, D.scene.hudless.height);
-        copy_logged = 1;
-    }
-    return 1;
+    if (vk_dlaa_pathlog())
+        rt_log("PATHLOG   pre-bloom kept the game's scaling dispatch, output %llx %ux%u", (unsigned long long)D.hl_pic_addr,
+               D.hl_ow, D.hl_oh);
 }
 
 // OoT post-processes and scales its picture in compute: after the bloom composite and ACES/RenoDX tonemap write the
@@ -3558,23 +3298,9 @@ static int pre_bloom_scaler(VkExec *ex, const GfxShader *cs) {
 int vk_dlaa_dispatch(VkExec *ex, const GfxShader *cs, uint64_t caller) {
     static int on = -1;
     if (on < 0) on = rt_knob("DLAA_AT_DISPATCH", "1");
-    if (D.pre_bloom.resolved && cs) {
-        uint64_t key = shader_input_prefix(cs);
-        if (key == OOT_SMAA_COMPOSE_CS) pre_bloom_stage(ex);
-        if (key == OOT_SCALER_CS) return pre_bloom_scaler(ex, cs);
-    }
-    if (D.scene.hudless.pending && !D.scene.replay.completed && cs) hudless_track(ex, cs);   // after the evaluation: the picture the HUD-less copy is taken of
-    D.scene.stock_pack = D.scene.stock_output = NULL;
-    const int checked = replay_scene_live() && D.scene.tonemapped;
-    const int prebloom = checked && D.scene.replay.route != SCENE_ROUTE_ORIGINAL;
-    const int packs_prebloom = checked && caller == MOD_MAIN_BASE + 0x14e3b24;
-    const int scales_prebloom = checked && caller == MOD_MAIN_BASE + 0x251bc0 && D.scene.packed;
-    if (packs_prebloom) {
-        D.scene.packed = VK_NULL_HANDLE;
-        D.scene.packed_serial = D.scene.replay.packed = 0;
-    }
-    if (!cs || (!packs_prebloom && !scales_prebloom && (checked || !on || !dl_active() || scene_resolved() ||
-        !D.scene.armed || deferred))) return 0;
+    if (D.pre_bloom.resolved && cs && shader_input_prefix(cs) == OOT_SCALER_CS) return pre_bloom_scaler(ex, cs), 0;
+    if (D.hl_wait && cs) hudless_track(ex, cs);   // after the evaluation: the picture the HUD-less copy is taken of
+    if (!on || !dl_active() || D.done || !D.armed || deferred || !cs) return 0;
     const int spatial = fsr1();
     if (scene_projection_enabled() && !spatial && !D.projection.sample.token) return 0;
     const GfxShaderRes *r;
@@ -3938,8 +3664,6 @@ void vk_dlaa_frame(void) {
     __atomic_store_n(&motion_record_consumer, on && !D.failed && !fsr1(), __ATOMIC_RELAXED);
     D.pre_bloom.tried = 0;
     D.pre_bloom.resolved = 0;
-    D.pre_bloom.staged = 0;
-    D.pre_bloom.stage_why = NULL;
     if (on != D.on) {
         rt_log("dlaa: %s", on ? "on" : "off");
         D.on = on;
@@ -4011,7 +3735,7 @@ static uint64_t spirv_hash(const GfxShader *s) {
 }
 
 int vk_dlaa_skip_draw(VkExec *ex, const GfxShader *fs) {
-    if (pre_bloom_on && !vk_par_worker && !vk_dlaa_prebloom_enabled()) pre_bloom_draw(ex, fs);   // the replay thread's draws keep the frame's order
+    if (pre_bloom_on && !vk_par_worker) pre_bloom_draw(ex, fs);   // the replay thread's draws keep the frame's order
     static uint64_t frame_read = ~0ull;
     static int fxaa = 1;
     // fxaa = 0 reports once whether it found the game's FXAA draw: the first skip, or a minute of frames (3600) with
