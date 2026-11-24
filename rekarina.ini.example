@@ -178,6 +178,19 @@
 # window is no longer stretched as it used to be; stretch fills the window. Changes while the game runs take effect at
 # once.
 # aspect = fit
+# OoT gameplay HUD layout: edges (anchor hearts, buttons and minimap to the screen's edges on ultrawide displays),
+# center (keep the HUD in the middle 16:9), or custom (start at the screen's edges and apply the per-group offsets and
+# scales below: -15 to 15 % of picture width/height, 75 to 125 % size). Changes while the game runs take effect at once.
+# hud_layout = edges
+# hud_health_x = 0
+# hud_health_y = 0
+# hud_health_scale = 100
+# hud_buttons_x = 0
+# hud_buttons_y = 0
+# hud_buttons_scale = 100
+# hud_minimap_x = 0
+# hud_minimap_y = 0
+# hud_minimap_scale = 100
 # Field of view, in percent of the game's own: 70 to 140, 100 (the default) leaves the camera as it is. Higher shows
 # more of the world around the hero. OoT, and TotK at game version 1.4.3. Changes while the game runs take effect at once.
 # fov = 100
@@ -227,6 +240,9 @@
 # generation, any card). Either takes DLSS / DLAA's depth and motion vectors and turns dlaa on for itself; dlss where
 # DLSS Frame Generation cannot run (an RTX 20 or 30 card, an older driver) runs AMD's in its place. Read at start.
 # framegen = off
+# NVIDIA Reflex low latency (NVIDIA GPUs with VK_NV_low_latency2 or Streamline): 0 = off, 1 = on, 2 = on + boost
+# (keeps GPU clocks elevated when CPU-limited). Kept on while DLSS Frame Generation is active. Changes apply live.
+# reflex = 1
 # What DLSS works from: dlaa (the 3D scene at full size), quality, balanced, performance or ultra_performance (the
 # scene at 67, 58, 50 or 33 % of the output, scaled up by DLSS; these replace render_scale and sharpen texture filtering
 # to match). They apply only with dlaa = 1 and the DLSS model next to the executable; otherwise the scene follows

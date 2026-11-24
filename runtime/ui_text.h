@@ -300,7 +300,14 @@ typedef enum {
     UI_MENU_HDR_GRADE, UI_MENU_HDR_GRADE_DESC,
     // NVIDIA Reflex (vk_reflex.c / vk_dlssg.c)
     UI_MENU_REFLEX, UI_MENU_REFLEX_DESC, UI_MENU_REFLEX_BOOST, UI_MENU_REFLEX_FOR_FG,
-    UI_MENU_LAST_ID = UI_MENU_REFLEX_FOR_FG,
+    // Ultrawide HUD anchoring and custom placement (wide_ui.c)
+    UI_MENU_HUD_LAYOUT, UI_MENU_HUD_LAYOUT_DESC, UI_MENU_HUD_EDGES, UI_MENU_HUD_CENTER, UI_MENU_HUD_CUSTOM,
+    UI_MENU_HUD_HEALTH_X, UI_MENU_HUD_HEALTH_Y, UI_MENU_HUD_HEALTH_SCALE,
+    UI_MENU_HUD_BUTTONS_X, UI_MENU_HUD_BUTTONS_Y, UI_MENU_HUD_BUTTONS_SCALE,
+    UI_MENU_HUD_MINIMAP_X, UI_MENU_HUD_MINIMAP_Y, UI_MENU_HUD_MINIMAP_SCALE,
+    UI_MENU_HUD_POS_X_DESC, UI_MENU_HUD_POS_Y_DESC, UI_MENU_HUD_SCALE_DESC,
+    UI_MENU_HUD_RESET, UI_MENU_HUD_RESET_DESC,
+    UI_MENU_LAST_ID = UI_MENU_HUD_RESET_DESC,
     // The entry step's progress picture (ui/prep_screen.cpp, before the game's first frame): a text in every catalog language
     UI_PREP_TITLE,            // the step's name
     UI_PREP_COUNT,            // "%s of %s": done and total

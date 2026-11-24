@@ -895,6 +895,10 @@ NVN_API(nvnQueuePresentTexture) {
     res_present(c);  // resolution.c: a DLSS mode change sets the game's render size again, between frames
     res_fixed_present();   // frame_rate.c: the fixed scene scale
     {
+        void wide_ui_tick(void);   // wide_ui.c: ultrawide HUD anchoring and custom HUD placement
+        wide_ui_tick();
+    }
+    {
         int romfs_prompts_live(void);   // romfs.c: a changed prompts setting, without a restart
         romfs_prompts_live();
     }

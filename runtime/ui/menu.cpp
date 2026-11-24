@@ -1116,6 +1116,7 @@ static void rows_color(void) {
 }
 
 extern "C" int wide_available(void);
+extern "C" int wide_ui_available(void);
 extern "C" const char *vk_ffx_versions(void);   // vk_ffx.cpp: "" until AMD's library is loaded
 
 static void tab_screen(float scale) {
@@ -1153,6 +1154,33 @@ static void tab_screen(float scale) {
         const char *pic_res_names[] = {"720p", "900p", "1080p", "1440p", "1800p", "2160p (4K)", "2880p (5K)",
                                        menu_text(UI_MENU_GAME_RES_NATIVE)};
         opt_choice_list("REKARINA_GAME_RES", UI_MENU_GAME_RES, pic_res, pic_res_names, 8, UI_MENU_GAME_RES_DESC);
+    }
+    if (wide_ui_available()) {   // ultrawide HUD edge anchoring and custom placement (wide_ui.c)
+        static const UiTextId hud_modes[] = {UI_MENU_HUD_EDGES, UI_MENU_HUD_CENTER, UI_MENU_HUD_CUSTOM};
+        opt_choice("REKARINA_HUD_LAYOUT", UI_MENU_HUD_LAYOUT, hud_modes, 3, UI_MENU_HUD_LAYOUT_DESC);
+        if (!strcmp(cfg_value("REKARINA_HUD_LAYOUT"), "custom")) {
+            opt_slider("REKARINA_HUD_HEALTH_X", UI_MENU_HUD_HEALTH_X, -15, 15, UI_MENU_HUD_POS_X_DESC, 1, "%.0f %%");
+            opt_slider("REKARINA_HUD_HEALTH_Y", UI_MENU_HUD_HEALTH_Y, -15, 15, UI_MENU_HUD_POS_Y_DESC, 1, "%.0f %%");
+            opt_slider("REKARINA_HUD_HEALTH_SCALE", UI_MENU_HUD_HEALTH_SCALE, 75, 125, UI_MENU_HUD_SCALE_DESC, 5, "%.0f %%");
+            opt_slider("REKARINA_HUD_BUTTONS_X", UI_MENU_HUD_BUTTONS_X, -15, 15, UI_MENU_HUD_POS_X_DESC, 1, "%.0f %%");
+            opt_slider("REKARINA_HUD_BUTTONS_Y", UI_MENU_HUD_BUTTONS_Y, -15, 15, UI_MENU_HUD_POS_Y_DESC, 1, "%.0f %%");
+            opt_slider("REKARINA_HUD_BUTTONS_SCALE", UI_MENU_HUD_BUTTONS_SCALE, 75, 125, UI_MENU_HUD_SCALE_DESC, 5, "%.0f %%");
+            opt_slider("REKARINA_HUD_MINIMAP_X", UI_MENU_HUD_MINIMAP_X, -15, 15, UI_MENU_HUD_POS_X_DESC, 1, "%.0f %%");
+            opt_slider("REKARINA_HUD_MINIMAP_Y", UI_MENU_HUD_MINIMAP_Y, -15, 15, UI_MENU_HUD_POS_Y_DESC, 1, "%.0f %%");
+            opt_slider("REKARINA_HUD_MINIMAP_SCALE", UI_MENU_HUD_MINIMAP_SCALE, 75, 125, UI_MENU_HUD_SCALE_DESC, 5, "%.0f %%");
+            if (opt_button("##hud_reset", UI_MENU_HUD_RESET, UI_MENU_HUD_RESET_DESC)) {
+                cfg_set("REKARINA_HUD_HEALTH_X", "0");
+                cfg_set("REKARINA_HUD_HEALTH_Y", "0");
+                cfg_set("REKARINA_HUD_HEALTH_SCALE", "100");
+                cfg_set("REKARINA_HUD_BUTTONS_X", "0");
+                cfg_set("REKARINA_HUD_BUTTONS_Y", "0");
+                cfg_set("REKARINA_HUD_BUTTONS_SCALE", "100");
+                cfg_set("REKARINA_HUD_MINIMAP_X", "0");
+                cfg_set("REKARINA_HUD_MINIMAP_Y", "0");
+                cfg_set("REKARINA_HUD_MINIMAP_SCALE", "100");
+                opt_save_soon();
+            }
+        }
     }
 #ifndef GAME_OOT   // the field of view and the shadow settings are patches of TotK
     opt_slider("REKARINA_FOV", UI_MENU_FOV, 70, 140, UI_MENU_FOV_DESC, 5, "%.0f %%");
