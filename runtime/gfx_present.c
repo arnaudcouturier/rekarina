@@ -33,11 +33,6 @@
 #include "vk_fg.h"
 #include "vk_dlssg.h"
 #include "vk_reflex.h"
-#ifdef GAME_OOT
-#include "vk_ffx.h"
-#include "vk_present_format.h"
-#endif
-#include "renderer_mcp.h"
 
 #define FRAMES 2
 #define MAX_IMAGES 16
@@ -351,12 +346,6 @@ static void window_settings_live(void) {
         if (started) plat_xchg32(&g_dirty, 1);
     }
     if (started && vk_hdr_wanted() != g_sc_hdr_wanted) plat_xchg32(&g_dirty, 1);
-#ifdef GAME_OOT
-    static int fg_wanted = -1;
-    int want_fg = vk_fg_wanted();
-    if (started && want_fg != fg_wanted) plat_xchg32(&g_dirty, 1);
-    fg_wanted = want_fg;
-#endif
     vk_dlssg_reflex_sync();
     if (started && vk_reflex_swapchain_stale()) plat_xchg32(&g_dirty, 1);
     if (started) gfx_window_apply_settings();
@@ -476,7 +465,7 @@ static void flip_locked(void) {
                                  .presentStageQueries = VK_PRESENT_STAGE_IMAGE_FIRST_PIXEL_VISIBLE_BIT_EXT};
     VkPresentTimingsInfoEXT tis = {.sType = VK_STRUCTURE_TYPE_PRESENT_TIMINGS_INFO_EXT, .pNext = &pid, .swapchainCount = 1,
                                    .pTimingInfos = &ti};
-    int fg_sc = vk_fg_swapchain(), dlssg_sc = !fg_sc && vk_dlssg_swapchain_ready();
+    int dlssg_sc = vk_dlssg_swapchain_ready(), fg_sc = vk_fg_swapchain();
     int timed = pt_on && pt_id && !dlssg_sc && !fg_sc;
     if (timed) pi.pNext = &tis;
     VkPresentIdKHR rpid = {0};
@@ -491,7 +480,6 @@ static void flip_locked(void) {
     vk_drv_urgent(-1);
     vk_queue_unlock();
     if (!dlssg_sc && !fg_sc) vk_reflex_present_end(rpid_val);
-    renderer_mcp_present(g_sc_ext.width, g_sc_ext.height, g_sc_hdr, dlssg_sc ? 1 : fg_sc ? 2 : 0, r);
     FT(FT_NOTE, 2, 0, 0);
     vk_device_fault_report(r);
     if (r == VK_SUCCESS) gfx_window_presented();

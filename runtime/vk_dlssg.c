@@ -78,7 +78,7 @@ static int reflex_mode(void) {
 int vk_dlssg_reflex_available(void) { return S.active && S.reflex != NULL; }
 
 void vk_dlssg_reflex_sync(void) {
-    if (!vk_dlssg_owns_swapchain() || !S.reflex) return;
+    if (!S.active || !S.reflex) return;
     int m = reflex_mode();
     if (m == S.reflex_applied) return;
     S.reflex_applied = m;
@@ -324,9 +324,6 @@ void vk_dlssg_device_ready(VkDevice dev) {
         S.reflex_applied = reflex_mode();
         S.reflex(S.reflex_applied);
     }
-#ifdef GAME_OOT
-    if (!S.asked) fg_guard_disarm(FG_GUARD_DLSS);
-#endif
 }
 
 int vk_dlssg_swapchain_ready(void) { return S.active; }
@@ -398,13 +395,7 @@ VkResult vk_dlssg_create_swapchain(VkDevice d, const VkSwapchainCreateInfoKHR *c
     if (guard_setup) fg_guard_arm(FG_GUARD_DLSS);
 #endif
     VkResult r = S.create_sc(d, ci, NULL, sc);
-    if (r == VK_SUCCESS) {
-        S.reflex_applied = -1;
-        vk_dlssg_reflex_sync();
-    }
-#ifdef GAME_OOT
-    if (guard_setup) fg_guard_disarm(FG_GUARD_DLSS);
-#endif
+    if (r == VK_SUCCESS) vk_dlssg_reflex_sync();
     return r;
 }
 void vk_dlssg_destroy_swapchain(VkDevice d, VkSwapchainKHR sc) { S.destroy_sc(d, sc, NULL); }
@@ -429,7 +420,7 @@ VkResult vk_dlssg_present(VkQueue q, const VkPresentInfoKHR *pi) {
 // and the sleep would wait out Streamline's half-second timeout each frame.
 #define HOLD_IDLE_NS 200000000ull
 void vk_dlssg_frame_start(void) {
-    if (!vk_dlssg_owns_swapchain() || !S.present) return;
+    if (!S.active || !S.present) return;
     vk_dlssg_reflex_sync();
     uint32_t f = __atomic_load_n(&S.game, __ATOMIC_RELAXED) + 1;
     if (f == S.started) return;
@@ -441,7 +432,7 @@ void vk_dlssg_frame_start(void) {
 void vk_dlssg_game_present(void) { __atomic_add_fetch(&S.game, 1, __ATOMIC_RELAXED); }
 
 void vk_dlssg_submitted(uint64_t frame) {
-    if (vk_dlssg_owns_swapchain() && S.present) S.submit_end((uint32_t)frame);
+    if (S.active && S.present) S.submit_end((uint32_t)frame);
 }
 
 void vk_dlssg_present_frame(uint64_t frame) { S.cur = (uint32_t)frame; }

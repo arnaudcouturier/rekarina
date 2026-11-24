@@ -934,7 +934,6 @@ static void destroy_all(void) {
     vk_headroom_stop();
     if (g_vk.vma) vmaDestroyAllocator(g_vk.vma);
     vk_reflex_device_release(g_vk.device);
-    vk_dlssg_release();
     if (g_vk.device) vkDestroyDevice(g_vk.device, NULL);
     if (g_vk.messenger) {
         PFN_vkDestroyDebugUtilsMessengerEXT f =

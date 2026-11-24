@@ -40,8 +40,7 @@ void gfx_present_reflex_frame(uint64_t id);
 
 #define WEAK __attribute__((weak))
 
-typedef struct { VkImage image; VkFormat format; GfxOutputEncoding encoding; int w, h, has_crop, crop[4];
-                 uint64_t frame, at, queued, value, reflex_id; VkGuestPq pq; const CfgRenderState *settings; } PresentJob;
+typedef struct { VkImage image; VkFormat format; int w, h, has_crop, crop[4]; uint64_t frame, at, queued, value, reflex_id; } PresentJob;
 
 static PlatMutex pl = PLAT_MUTEX_INIT;
 static PlatCond pcv = PLAT_COND_INIT;   // job queued, job taken, job submitted
@@ -163,37 +162,8 @@ static void present_image(const tex_t *t, const int crop[4], uint64_t at_ns, uin
         return;
     }
     PresentJob j = {.image = img->image, .format = img->format, .w = (int)img->width, .h = (int)img->height, .frame = frame,
-                    .at = at_ns, .queued = queued, .value = value, .reflex_id = vk_reflex_current_id(), .encoding = encoding};
-#ifdef GAME_OOT
-    GfxOutputEncoding written = vk_hdr_written_output(img->serial, frame, &j.pq);
-    if (rt_trace & RT_TRACE_GFX) {
-        static GfxOutputEncoding last_request, last_written;
-        static int last_pq_valid;
-        if (encoding != last_request || written != last_written || j.pq.valid != last_pq_valid) {
-            rt_log("gfx: frame %llu guest encoding request %d, written %d, PQ transform %s",
-                   (unsigned long long)frame, (int)encoding, (int)written, j.pq.valid ? "available" : "unavailable");
-            last_request = encoding;
-            last_written = written;
-            last_pq_valid = j.pq.valid;
-        }
-    }
-    static GfxOutputEncoding previous_output;
-    if (written != GFX_OUTPUT_UNSPECIFIED) previous_output = written;
-    vk_hdr_output_set_guest_pq(encoding == GFX_OUTPUT_PQ || previous_output == GFX_OUTPUT_PQ);
-    j.encoding = written;
-    if (written == GFX_OUTPUT_UNSPECIFIED && (encoding == GFX_OUTPUT_PQ || previous_output == GFX_OUTPUT_PQ)) {
-        j.image = VK_NULL_HANDLE;
-    } else if (written != GFX_OUTPUT_PQ) {
-        vk_hdr_present_source(img, &j.image, &j.format);
-    }
-#else
-    vk_hdr_present_source(img, &j.image, &j.format);
-#endif
-    if (vk_interface_coverage_enabled() || vk_dlaa_prebloom_enabled()) {
-        vk_present_drain();
-        vk_dlaa_seal_scene(frame, img->image, j.image, img->serial);
-    }
-    vk_dlaa_frame();
+                    .at = at_ns, .queued = queued, .value = value, .reflex_id = vk_reflex_current_id()};
+    vk_hdr_present_source(img, &j.image, &j.format);   // REKARINA_HDR: the float picture the game copied into it, same size
     if (crop) {
         j.has_crop = 1;
         for (int i = 0; i < 4; i++) j.crop[i] = crop[i];
@@ -813,9 +783,7 @@ static void vk_be_cpu_synced(uint64_t fence) {
 }
 
 static void vk_be_frame_start(void) {
-    // Pin the last published settings without waiting for Present; a live edit can arrive a frame later.
-    cfg_render_frame_begin();
-    if (vk_dlssg_owns_swapchain()) vk_dlssg_frame_start();
+    if (vk_dlssg_swapchain_ready()) vk_dlssg_frame_start();
     else vk_reflex_frame_start();
 }
 
