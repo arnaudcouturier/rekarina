@@ -888,6 +888,20 @@ static void region_desc(const NVNcopyRegion *r, char *buf, size_t n) {
     snprintf(buf, n, "(%d,%d,%d %dx%dx%d)", r->xoffset, r->yoffset, r->zoffset, r->width, r->height, r->depth);
 }
 
+// Native pre-bloom DLAA's HUD target right after the tone-mapped picture was copied into it, before the HUD draws.
+void vk_dump_dlaa_copy(VkExec *ex, const VkTexImage *target) {
+    plat_mutex_lock(&rec_lock);
+    if (active()) {
+        const char *why = target->usage & VK_IMAGE_USAGE_TRANSFER_SRC_BIT
+            ? copy_out(ex, target->image, target->format, target->aspect, 0, 0, target->width, target->height, 1,
+                       "dlaa_hud_destination")
+            : "image has no transfer-source usage";
+        fprintf(passes_f, "DLAA native copy after pass %d: dlaa_hud_destination%s%s\n", seq - 1, why ? " skipped: " : "",
+                why ? why : "");
+    }
+    plat_mutex_unlock(&rec_lock);
+}
+
 void vk_dump_copy(VkExec *ex, uint32_t op, const void *payload) {
     (void)ex;
     plat_mutex_lock(&rec_lock);
