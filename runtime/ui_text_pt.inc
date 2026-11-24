@@ -634,4 +634,8 @@
     [UI_MENU_HDR_BLOOM_DESC] = "O brilho à volta das luzes fortes. 50 é o do próprio jogo; 0 desliga-o, 100 duplica-o.",
     [UI_MENU_HDR_GRADE] = "Força da paleta original",
     [UI_MENU_HDR_GRADE_DESC] = "Intensidade do aspeto SDR original restaurado no RenoDRT.",
+    [UI_MENU_REFLEX] = "NVIDIA Reflex",
+    [UI_MENU_REFLEX_DESC] = "Inicia cada fotograma o mais tarde que a GPU permite para reduzir a latência de entrada. Ligado + Boost mantém os clocks da GPU elevados quando limitado pela CPU. Aplica de imediato.",
+    [UI_MENU_REFLEX_BOOST] = "Ligado + Boost",
+    [UI_MENU_REFLEX_FOR_FG] = "mantido ligado enquanto a geração de fotogramas DLSS está ativa",
     [UI_PREP_LEFT_LT1] = "falta menos de um minuto",

@@ -613,4 +613,8 @@
                                "。",
     [UI_MENU_HDR_GRADE] = "バニラ調色強度",
     [UI_MENU_HDR_GRADE_DESC] = "RenoDRT でゲーム本来の SDR 調色を復元する強さです。",
+    [UI_MENU_REFLEX] = "NVIDIA Reflex",
+    [UI_MENU_REFLEX_DESC] = "GPU の状況に合わせてフレーム開始を遅らせ、入力遅延を抑えます。オン + ブーストは CPU ボトルネック時も GPU クロックを維持します。すぐに適用されます。",
+    [UI_MENU_REFLEX_BOOST] = "オン + ブースト",
+    [UI_MENU_REFLEX_FOR_FG] = "DLSS フレーム生成が有効な間はオンを維持",
     [UI_PREP_LEFT_LT1] = "残り1分未満",

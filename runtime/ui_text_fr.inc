@@ -637,4 +637,8 @@
                                "double.",
     [UI_MENU_HDR_GRADE] = "Force de l'étalonnage d'origine",
     [UI_MENU_HDR_GRADE_DESC] = "Intensité du rendu SDR d'origine restauré dans RenoDRT.",
+    [UI_MENU_REFLEX] = "NVIDIA Reflex",
+    [UI_MENU_REFLEX_DESC] = "Démarre chaque image le plus tard possible selon le GPU afin de réduire la latence d'entrée. Activé + Boost maintient la fréquence du GPU élevée en cas de limite CPU. S'applique immédiatement.",
+    [UI_MENU_REFLEX_BOOST] = "Activé + Boost",
+    [UI_MENU_REFLEX_FOR_FG] = "maintenu actif avec la génération d'images DLSS",
     [UI_PREP_LEFT_LT1] = "moins d'une minute restante",

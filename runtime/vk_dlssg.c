@@ -37,6 +37,7 @@ static struct {
     int avail;          // Streamline's DLSS-G plugin runs on this card (vk_dlssg_device_ready; 0 before)
     int sr_requested;   // Streamline was initialized with kFeatureDLSS (v5+)
     int sr_ready;       // Streamline DLSS Super Resolution is ready
+    int reflex_applied; // last Reflex mode passed to Streamline (-1 unset)
     const char *why;    // why it is not running although asked, for the menu's row (vk_dlssg_off_why)
     PFN_nx2sl_init init;
     PFN_nx2sl_sr_available sr_available;
@@ -60,18 +61,27 @@ static struct {
     PFN_vkGetSwapchainImagesKHR images;
     PFN_vkAcquireNextImageKHR acquire;
     PFN_vkQueuePresentKHR present;
-} S = {.wanted = -1};
+} S = {.wanted = -1, .reflex_applied = -1};
 
 static void sl_line(const char *line) { rt_log("%s", line); }
 
 static int reflex_mode(void) {
-    static int m = -1;
-    if (m < 0) {
-        const char *s = cfg_get("REKARINA_REFLEX");
-        m = s && *s ? atoi(s) : 1;
-        if (m < 0 || m > 2) m = 1;
-    }
+    int m = cfg_int("REKARINA_REFLEX");
+    if (m < 0) m = 0;
+    if (m > 2) m = 2;
+    // DLSS Frame Generation requires Reflex enabled while active; keep Boost if chosen.
+    if (vk_dlssg_active() && m == 0) m = 1;
     return m;
+}
+
+int vk_dlssg_reflex_available(void) { return S.active && S.reflex != NULL; }
+
+void vk_dlssg_reflex_sync(void) {
+    if (!S.active || !S.reflex) return;
+    int m = reflex_mode();
+    if (m == S.reflex_applied) return;
+    S.reflex_applied = m;
+    S.reflex(m);
 }
 
 int vk_dlssg_wanted(void) {
@@ -269,7 +279,10 @@ void vk_dlssg_device_ready(VkDevice dev) {
     S.active = S.create_sc && S.destroy_sc && S.images && S.acquire && S.present;
     rt_log("dlssg: %s", S.active ? "DLSS Frame Generation ready for live selection" : "the swapchain hooks are missing: off");
     if (!S.active && S.asked) S.why = "Streamline's swapchain hooks are missing";
-    if (S.active) S.reflex(reflex_mode());
+    if (S.active) {
+        S.reflex_applied = reflex_mode();
+        S.reflex(S.reflex_applied);
+    }
 }
 
 int vk_dlssg_swapchain_ready(void) { return S.active; }
@@ -324,7 +337,7 @@ const char *vk_dlssg_off_why(void) {
 
 VkResult vk_dlssg_create_swapchain(VkDevice d, const VkSwapchainCreateInfoKHR *ci, VkSwapchainKHR *sc) {
     VkResult r = S.create_sc(d, ci, NULL, sc);
-    if (r == VK_SUCCESS) S.reflex(reflex_mode());
+    if (r == VK_SUCCESS) vk_dlssg_reflex_sync();
     return r;
 }
 void vk_dlssg_destroy_swapchain(VkDevice d, VkSwapchainKHR sc) { S.destroy_sc(d, sc, NULL); }
@@ -334,7 +347,7 @@ VkResult vk_dlssg_acquire(VkDevice d, VkSwapchainKHR sc, uint64_t t, VkSemaphore
 }
 
 VkResult vk_dlssg_present(VkQueue q, const VkPresentInfoKHR *pi) {
-    if (S.loaded <= 0 || !S.present) return vkQueuePresentKHR(q, pi);
+    if (!S.active || !S.present) return vkQueuePresentKHR(q, pi);
     S.marker(0, S.cur);
     VkResult r = S.present(q, pi);
     S.marker(1, S.cur);
@@ -349,7 +362,8 @@ VkResult vk_dlssg_present(VkQueue q, const VkPresentInfoKHR *pi) {
 // and the sleep would wait out Streamline's half-second timeout each frame.
 #define HOLD_IDLE_NS 200000000ull
 void vk_dlssg_frame_start(void) {
-    if (S.loaded <= 0 || !S.present) return;
+    if (!S.active || !S.present) return;
+    vk_dlssg_reflex_sync();
     uint32_t f = __atomic_load_n(&S.game, __ATOMIC_RELAXED) + 1;
     if (f == S.started) return;
     S.started = f;
@@ -360,7 +374,7 @@ void vk_dlssg_frame_start(void) {
 void vk_dlssg_game_present(void) { __atomic_add_fetch(&S.game, 1, __ATOMIC_RELAXED); }
 
 void vk_dlssg_submitted(uint64_t frame) {
-    if (S.loaded > 0 && S.present) S.submit_end((uint32_t)frame);
+    if (S.active && S.present) S.submit_end((uint32_t)frame);
 }
 
 void vk_dlssg_present_frame(uint64_t frame) { S.cur = (uint32_t)frame; }

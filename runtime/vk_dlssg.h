@@ -22,6 +22,8 @@ VkResult vk_dlssg_create_device(VkInstance inst, VkPhysicalDevice pd, const VkDe
 void vk_dlssg_device_ready(VkDevice dev);   // after the device: checks DLSS SR & DLSS-G and takes the swapchain hooks
 int vk_dlssg_swapchain_ready(void);         // Streamline owns the swapchain hooks (DLSS-G can toggle live)
 int vk_dlssg_active(void);                  // swapchain ready AND REKARINA_FRAMEGEN == dlss
+int vk_dlssg_reflex_available(void);        // Streamline's sl.reflex owns Reflex on its swapchain
+void vk_dlssg_reflex_sync(void);            // applies live REKARINA_REFLEX changes to Streamline's swapchain
 // Why DLSS Frame Generation is not running although REKARINA_FRAMEGEN was dlss at start (for the menu's row), else NULL
 const char *vk_dlssg_off_why(void);
 // 1 when DLSS Frame Generation can run here (an RTX 40 or 50 card, its libraries beside the game), else 0 with *why

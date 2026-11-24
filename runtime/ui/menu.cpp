@@ -68,6 +68,8 @@ void cheats_frame(uint64_t frame);   // cheats.c
 bool tab_cheats(float scale);        // ui/cheats_tab.cpp; true: restart into the rebuild
 const char *vk_dlssg_off_why(void);  // vk_dlssg.c: why DLSS Frame Generation asked at start is not running
 int vk_dlssg_swapchain_ready(void);  // vk_dlssg.c: Streamline owns the swapchain (DLSS-G toggles live)
+int vk_dlssg_active(void);           // vk_dlssg.c: DLSS Frame Generation is actively generating frames
+int vk_reflex_offered(void);         // vk_reflex.c: native VK_NV_low_latency2 or Streamline Reflex available
 const char *vk_fg_off_why(void);     // vk_fg.cpp: the same for AMD FSR frame generation
 int vk_dlssg_offered(const char **why);   // vk_dlssg.c: DLSS Frame Generation can run here
 int vk_fg_offered(const char **why);      // vk_fg.cpp: AMD FSR frame generation can run here
@@ -1203,6 +1205,13 @@ static void tab_screen(float scale) {
                 opt_save_soon();
             }
         }
+    }
+    if (vk_reflex_offered()) {
+        static const UiTextId reflex_labels[] = {UI_MENU_OFF, UI_MENU_ON, UI_MENU_REFLEX_BOOST};
+        const char *note = vk_dlssg_active() && !strcmp(cfg_value("REKARINA_REFLEX"), "0")
+                               ? menu_text(UI_MENU_REFLEX_FOR_FG)
+                               : nullptr;
+        opt_choice("REKARINA_REFLEX", UI_MENU_REFLEX, reflex_labels, 3, UI_MENU_REFLEX_DESC, note);
     }
     static const UiTextId dlss[] = {UI_MENU_DLSS_DLAA, UI_MENU_DLSS_QUALITY, UI_MENU_DLSS_BALANCED,
                                     UI_MENU_DLSS_PERFORMANCE, UI_MENU_DLSS_ULTRA};

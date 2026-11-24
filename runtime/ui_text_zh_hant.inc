@@ -609,4 +609,8 @@
     [UI_MENU_HDR_BLOOM_DESC] = "明亮光源周圍的光暈。50 為遊戲原本的效果；0 關閉，100 加倍。",
     [UI_MENU_HDR_GRADE] = "原版調色強度",
     [UI_MENU_HDR_GRADE_DESC] = "在 RenoDRT 中還原遊戲原版 SDR 色調風格的強度。",
+    [UI_MENU_REFLEX] = "NVIDIA Reflex",
+    [UI_MENU_REFLEX_DESC] = "在 GPU 允許的情況下盡可能延後每幀開始以降低輸入延遲。開啟 + 增強在受 CPU 限制時維持 GPU 頻率。立即生效。",
+    [UI_MENU_REFLEX_BOOST] = "開啟 + 增強",
+    [UI_MENU_REFLEX_FOR_FG] = "啟用 DLSS 畫格生成時維持開啟",
     [UI_PREP_LEFT_LT1] = "剩餘不到一分鐘",
