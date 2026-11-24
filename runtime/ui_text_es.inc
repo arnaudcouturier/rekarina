@@ -287,8 +287,9 @@
     [UI_MENU_WALK_SCALE_DESC] = "La inclinación que reciben las palancas del teclado mientras se mantiene la tecla de "
                                 "caminar. La mitad es caminar; la inclinación completa, correr.",
     [UI_MENU_STICK_SENS] = "Velocidad de cámara (palanca)",
-    [UI_MENU_STICK_SENS_DESC] = "Multiplica la velocidad de cámara propia del juego con la palanca derecha, incluida la "
-                                "máxima, en cada una de las cinco sensibilidades de cámara del juego. El ratón conserva su propio ajuste.",
+    [UI_MENU_STICK_SENS_DESC] = "Multiplica la velocidad de cámara propia del juego con la palanca derecha, incluida "
+                                "la máxima, con cualquier sensibilidad de cámara elegida en las opciones del juego. El "
+                                "ratón conserva su propio ajuste.",
 
     [UI_BINDS_HELP] = "Selecciona una celda y pulsa A o Intro, y después la tecla, el botón del ratón o el botón del "
                       "mando. Supr o X vacía una celda. Una tecla en uso se traslada aquí; un botón del mando se intercambia con el que sustituye.",

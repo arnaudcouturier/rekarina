@@ -288,8 +288,8 @@
                                 "premida. Metade é andar, a inclinação total é correr.",
     [UI_MENU_STICK_SENS] = "Velocidade da câmara (manípulo)",
     [UI_MENU_STICK_SENS_DESC] = "Multiplica a velocidade da câmara do manípulo direito do próprio jogo, incluindo a "
-                                "velocidade máxima, em cada uma das cinco sensibilidades de câmara do jogo. O rato "
-                                "mantém a sua própria definição.",
+                                "velocidade máxima, em qualquer sensibilidade de câmara escolhida nas opções do jogo. "
+                                "O rato mantém a sua própria definição.",
 
     [UI_BINDS_HELP] = "Seleciona uma célula e prime A ou Enter, depois a tecla, o botão do rato ou o botão do comando. "
                       "Delete ou X limpa a célula. Uma tecla já em uso passa para aqui; um botão do comando troca com "

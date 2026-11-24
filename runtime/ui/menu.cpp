@@ -1609,7 +1609,10 @@ static void tab_controls(float scale) {
                pad ? stick_note[0] : nullptr, "REKARINA_STICK_DEADZONE");
     opt_slider("REKARINA_RSTICK_DEADZONE", UI_MENU_RSTICK_DEADZONE, 0, 50, UI_MENU_STICK_DEADZONE_DESC, 1, "%.0f %%",
                pad ? stick_note[1] : nullptr, "REKARINA_STICK_DEADZONE");
-#ifndef GAME_OOT   // multiplies TotK's camera pack (camera_speed.c, romfs.c camera_overlay); a Switch 2 game has no such file
+    // camera_speed.c: TotK multiplies its camera pack at start, OoT the camera's turn rates live (patch set stick_sens)
+#ifdef GAME_OOT
+    opt_slider("REKARINA_STICK_SENS", UI_MENU_STICK_SENS, 0.5f, 4, UI_MENU_STICK_SENS_DESC, 0.05f, "%.2f");
+#else
     opt_slider("REKARINA_STICK_SENS", UI_MENU_STICK_SENS, 0.1f, 3, UI_MENU_STICK_SENS_DESC, 0.05f, "%.2f");
 #endif
     binds_rows(scale);
