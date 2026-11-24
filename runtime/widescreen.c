@@ -27,6 +27,7 @@
 #include "host.h"
 #include "ui/menu.h"
 #include "vk_dlaa.h"
+#include "wide_ui.h"
 
 #define GAME_W 2560   // the picture, main+0x1202ee0 and main+0x31f39f4
 #define GAME_H 1440
@@ -84,6 +85,9 @@ static unsigned picture_height(void) {
 static double scale_k = 1.0;
 double wide_scale_k(void) { return scale_k; }
 
+static float active_aspect = (float)GAME_W / (float)GAME_H;
+float wide_aspect_ratio(void) { return active_aspect; }
+
 // The picture the settings ask for, *ow x *oh; 0 when it is the game's own 2560x1440 (every set stays off). Read at the
 // start, before the window exists: the monitor's size is known then.
 static int picture_size(unsigned *ow, unsigned *oh, int quiet) {
@@ -131,6 +135,7 @@ uint64_t wide_heap_extra_kib(void) {
 void wide_init(void) {
     int so = rt_patch_set("wide_out"), ss = rt_patch_set("wide_scene"), sa = rt_patch_set("wide_aspect"),
         sh = rt_patch_set("wide_hud"), sm = rt_patch_set("wide_movie");
+    wide_ui_init();   // active at 16:9 too so Custom HUD placement works live without restart
     // The scene's share of the picture is not a size in this set: the game's GPU-time dynamic resolution sets it each
     // frame (3/4 of the picture at most), and writing other sizes into wide_scene's constant or the 1920x1080 render
     // sizes left the light target where the controller put it. DLSS's modes fix the share through res_fixed instead
@@ -148,6 +153,7 @@ void wide_init(void) {
     unsigned sch = (unsigned)lround(oh * f / 2) * 2;
     uint64_t out = (uint64_t)oh << 32 | ow, scene = (uint64_t)sch << 32 | sw;
     float match = 16.0f / 9.0f, ratio = (float)ow / oh, tolerance = 0.01f, squeeze = match / ratio;
+    active_aspect = ratio;
     float ui[2] = {2.0f / 3840.0f, 2.0f / 2160.0f}, squeeze4[4] = {squeeze, squeeze, squeeze, squeeze};
     float margin = (1.0f - squeeze) / 2;
     // the screens whose UI keeps the whole picture (recomp/patches-v111.txt, set wide_hud): the item-wheel, pause and

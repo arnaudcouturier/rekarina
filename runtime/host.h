@@ -427,6 +427,7 @@ void frame_step_init(void);                                // after rt_patches_i
 int frame_step_realtime(void);                             // the real-time step is on: presents ignore the interval
 void wide_init(void);                                      // widescreen.c
 int wide_available(void);                                  // the generated C has the widescreen sets
+float wide_aspect_ratio(void);                             // active picture aspect ratio (16:9 when widescreen is off)
 void wide_picture(unsigned *w, unsigned *h);               // the picture the game draws (its scene is never larger)
 uint64_t wide_heap_extra_kib(void);                        // the texture heap's growth (OoT: full scene, widescreen)
 uint64_t wide_heap_base_kib(void);                         // the texture heap's shipped size (OoT)

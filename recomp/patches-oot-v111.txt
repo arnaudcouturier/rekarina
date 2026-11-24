@@ -455,3 +455,18 @@ set preloadhold REKARINA_PRELOAD_HOLD 1
 # not touched: the lifted function keeps it in a local. The function saved x30 in its prologue. From the Longshot
 # project's findings (commit c88f70440, GPL-3.0, read for what the game does).
 site preloadhold main 3299d2c 9104a129 9104a129 94701bf9   # add x9, x9, #0x128 -> the same; bl page+0xd10
+
+# Ultrawide HUD placement and custom HUD layout (runtime/wide_ui.c). On screens wider than 16:9, wide_hud squeezes the
+# 2D canvas horizontally to keep 16:9 proportions; wide_ui hooks the 2D layout engine's pane transform and size paths so
+# gameplay HUD panes can anchor to the screen's edges, span the full width, or use live custom offsets and scaling.
+# Patch page +224 (0xe0) holds a 32-bit dirty-bit mask (0 or 0x40) written by wide_ui_tick to force static panes to
+# recompute transforms after a live setting or plan change; host callbacks sit at page +0xcc0..+0xcf0.
+# Which layout functions and pane offsets the game uses are from Hookshot PR #2843 and Longshot (GPL-3.0, read for what
+# the game does; the runtime implementation is our own).
+set wide_ui REKARINA_PATCH_WIDE_UI 0
+site wide_ui main 152a730 b9400008 b9400008 @page:x16 b940e211 2a110108 b9000008   # calculate pass dirty bits: OR page+224 and store back
+site wide_ui main 152caa0 b9400008 b9400008 @page:x16 b940e211 2a110108            # transform pass dirty bits: OR page+224
+site wide_ui main 152cd98 ad4207e0 ad4207e0 94e5cfd6                               # no-parent join: ldp q0, q1, [sp, #0x40]; bl page+0xcf0
+site wide_ui main 152cdd4 b9403008 b9403008 94e5cfc3                               # parent transform: ldr w8, [x0, #0x30]; bl page+0xce0
+site wide_ui main 152ce64 fc04c263 fc04c263 94e5cf9b                               # translation stored: stur d3, [x19, #0x4c]; bl page+0xcd0
+site wide_ui main 152ac40 2d4b0400 2d4b0400 94e5d820                               # drawn size: ldp s0, s1, [x0, #0x58]; bl page+0xcc0
