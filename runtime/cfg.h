@@ -43,6 +43,8 @@ int cfg_save_to(const char *path);
 int cfg_reset(const char *const *keys, int n);
 // 0 when the last cfg_save / cfg_save_to failed to write (the values stay set in memory, the next save tries again).
 int cfg_last_save_ok(void);
+// 1 when any restart-only setting (!CfgMeta.live) differs from its value at startup (or the last cfg_load).
+int cfg_restart_pending(void);
 // Every setting with a value, for a bug report ("Copy system info"): the rekarina.ini and cfg_set keys (name without
 // REKARINA_, upper case; from_env 0), then the known REKARINA_ variables the environment sets (from_env 1).
 void cfg_each_active(void (*cb)(const char *key, const char *value, int from_env, void *ctx), void *ctx);

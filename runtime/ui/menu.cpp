@@ -1434,11 +1434,24 @@ static const char *prompts_note(bool *restart) {
 
 // The confirmation of "Restart now", over the menu; Cancel has the cursor first. Restart writes rekarina.ini, then closes
 // the game as Quit does and starts it again (gfx_window_request_restart). It waits while the game writes a save, and
-// the game stays when rekarina.ini cannot be written, as the new prompts would not come back. From the Cheats tab
-// (restart_rebuild) Restart also lets the next start rebuild for cheats whose last rebuild failed (cheats_rebuild_allow).
+// the game stays when rekarina.ini cannot be written, as the new settings would not come back. From the Cheats or Mods
+// tab (restart_rebuild) Restart also lets the next start rebuild for cheats whose last rebuild failed
+// (cheats_rebuild_allow).
 static bool restart_rebuild;
+static bool restart_open_req;
+static const char *restart_return_focus;
+
+static void request_restart_confirm(bool rebuild, const char *focus_key) {
+    restart_rebuild = rebuild;
+    restart_return_focus = focus_key;
+    restart_open_req = true;
+}
+
 static void restart_confirm(void) {
-    g_modal = false;
+    if (restart_open_req) {
+        ImGui::OpenPopup("##restart_confirm");
+        restart_open_req = false;
+    }
     ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
     if (!ImGui::BeginPopupModal("##restart_confirm", nullptr,
                                 ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize))
@@ -1467,7 +1480,8 @@ static void restart_confirm(void) {
     if (close) {
         ImGui::CloseCurrentPopup();
         restart_rebuild = false;
-        opt_focus_key("##restart");   // back on the row it came from
+        if (restart_return_focus) opt_focus_key(restart_return_focus);   // back on the row it came from
+        restart_return_focus = nullptr;
     }
     ImGui::EndPopup();
 }
@@ -1564,8 +1578,7 @@ static void tab_controls(float scale) {
     binds_rows(scale);
     opt_end();
     binds_after_page();
-    if (ask) ImGui::OpenPopup("##restart_confirm");   // at the level BeginPopupModal looks it up
-    restart_confirm();
+    if (ask) request_restart_confirm(false, "##restart");
 }
 
 static void row_report(void);
@@ -1764,7 +1777,6 @@ static void tab_advanced(float scale) {
     if (ask) ImGui::OpenPopup("##reset_confirm");   // at the level BeginPopupModal looks it up
 
     // the confirmation, over the menu; Cancel has the cursor first
-    g_modal = false;
     ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
     if (ImGui::BeginPopupModal("##reset_confirm", nullptr,
                                ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize)) {
@@ -1914,11 +1926,7 @@ static void tab_mods(float scale) {
     }
     mods_builtin_rows();
     opt_end();
-    if (rebuild) {
-        restart_rebuild = true;
-        ImGui::OpenPopup("##restart_confirm");
-    }
-    restart_confirm();
+    if (rebuild) request_restart_confirm(true, "##restart");
 }
 
 // ---- the screen: the band with the tabs (L / R or Q / E switch), the panel with the page's rows, the live picture and
@@ -1988,7 +1996,7 @@ static float key_cap(ImDrawList *dl, ImVec2 p, float h, const char *name, bool d
 
 // A plate button of the game's system menu ("Save", "Load"): khaki, its label centred; the cursor darkens it and frames
 // it in white. Navigable.
-static bool plate_button(const char *id, const char *label, ImVec2 size, float scale) {
+static bool plate_button(const char *id, const char *label, ImVec2 size, float scale, bool highlight = false) {
     ImVec2 p = ImGui::GetCursorScreenPos();
     ImGui::PushStyleColor(ImGuiCol_NavCursor, ImVec4(0, 0, 0, 0));
     bool clicked = ImGui::InvisibleButton(id, size, ImGuiButtonFlags_EnableNav);
@@ -1996,12 +2004,13 @@ static bool plate_button(const char *id, const char *label, ImVec2 size, float s
     bool hot = ImGui::IsItemHovered() || (ImGui::IsItemFocused() && ImGui::GetCurrentContext()->NavCursorVisible);
     ImDrawList *dl = ImGui::GetWindowDrawList();
     ImVec2 q(p.x + size.x, p.y + size.y);
-    dl->AddRectFilled(p, q, hot ? kMenuInset : IM_COL32(111, 90, 53, 255));
+    dl->AddRectFilled(p, q, hot ? kMenuInset : highlight ? IM_COL32(130, 102, 52, 255) : IM_COL32(111, 90, 53, 255));
     if (!hot) opt_grain(dl, p, q, 46);
-    dl->AddRect(p, q, kMenuEdge, 0, 0, 1.0f);
+    dl->AddRect(p, q, highlight ? kMenuNote : kMenuEdge, 0, 0, highlight ? 1.5f : 1.0f);
     ImFont *font = ImGui::GetFont();
     float fs = ImGui::GetFontSize(), tw = font->CalcTextSizeA(fs, FLT_MAX, 0, label).x;
-    dl->AddText(font, fs, ImVec2(p.x + (size.x - tw) * 0.5f, p.y + (size.y - fs) * 0.5f), kMenuCream, label);
+    dl->AddText(font, fs, ImVec2(p.x + (size.x - tw) * 0.5f, p.y + (size.y - fs) * 0.5f),
+                highlight && !hot ? kMenuNote : kMenuCream, label);
     if (hot) opt_select_frame(dl, p, q, scale);
     return clicked;
 }
@@ -2174,6 +2183,7 @@ static void layout_menu(const MenuTarget *t, float scale) {
         // the page's rows are a NavFlattened child of this window itself: ImGui clips the items of a direct child
         // only, so behind a second child level the rows scrolled out above won D-pad moves from the buttons
         opt_reserve_bottom(ImGui::GetContentRegionAvail().y - (pb.y - pa.y - inner * 2));
+        g_modal = false;
         switch (k) {
         case TAB_SCREEN: tab_screen(scale); break;
         case TAB_GAME: tab_game(scale); break;
@@ -2183,31 +2193,36 @@ static void layout_menu(const MenuTarget *t, float scale) {
         case TAB_AMIIBO: tab_amiibo(scale); break;
         case TAB_MENU: tab_menu(scale); break;
         case TAB_CHEATS:
-            if (tab_cheats(scale)) {
-                restart_rebuild = true;
-                ImGui::OpenPopup("##restart_confirm");
-            }
-            restart_confirm();
+            if (tab_cheats(scale)) request_restart_confirm(true, "##restart");
             break;
         case TAB_ADVANCED: tab_advanced(scale); break;
         }
         const char *row = opt_focus_row();
         if (*row) snprintf(g_last_row[tab_index(k)], sizeof g_last_row[0], "%s", row);
     }
-    // "Continue" and "Quit game", plates under the panel
-    const char *cont = menu_text(UI_MENU_CONTINUE), *quit = menu_text(UI_MENU_QUIT);
-    float bw = floorf(fmaxf(ImGui::CalcTextSize(cont).x, ImGui::CalcTextSize(quit).x) + fs * 2.4f);
+    // "Continue", "Restart" and "Quit game", plates under the panel
+    const char *cont = menu_text(UI_MENU_CONTINUE), *rst = menu_text(UI_MENU_RESTART_YES), *quit = menu_text(UI_MENU_QUIT);
+    float gap = floorf(fs * 0.7f), avail_w = pb.x - pa.x - inner * 2;
+    float bw = floorf(fmaxf(fmaxf(ImGui::CalcTextSize(cont).x, ImGui::CalcTextSize(rst).x), ImGui::CalcTextSize(quit).x) + fs * 2.4f);
+    if (bw * 3 + gap * 2 > avail_w) bw = floorf((avail_w - gap * 2) / 3);
+    bool restart_needed = cfg_restart_pending() || mods_changed() || cheats_rebuild_pending();
+#ifdef GAME_OOT
+    restart_needed = restart_needed || vk_hdr_needs_restart() != 0;
+#endif
     ImGui::SetCursorScreenPos(ImVec2(pa.x + inner, btn_y));
     if (plate_button("##continue", cont, ImVec2(bw, btn_h), scale)) set_open(0);
-    ImGui::SameLine(0, floorf(fs * 0.7f));
+    ImGui::SameLine(0, gap);
+    if (plate_button("##restart_game", rst, ImVec2(bw, btn_h), scale, restart_needed))
+        request_restart_confirm(cheats_rebuild_pending() != 0, nullptr);
+    ImGui::SameLine(0, gap);
     if (plate_button("##quit", quit, ImVec2(bw, btn_h), scale)) gfx_window_request_close();
     if (!cfg_last_save_ok()) {   // stays until a save succeeds; the settings hold for the session
         ImGui::SameLine(0, floorf(fs * 0.9f));
         ImGui::SetCursorPosY(ImGui::GetCursorPosY() + (btn_h - fs) * 0.5f);
         ImGui::TextColored(ImVec4(1.0f, 0.62f, 0.45f, 1), "%s", menu_text(UI_MENU_SAVE_FAILED));
     }
+    restart_confirm();
     bool was_modal = g_modal || binds_modal();
-    if (g_tab != TAB_ADVANCED && g_tab != TAB_CONTROLS) g_modal = false;
     if (!was_modal && (ImGui::IsKeyPressed(ImGuiKey_Escape, false) || ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false)))
         set_open(0);
     ImGui::End();

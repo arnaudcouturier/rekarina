@@ -216,6 +216,13 @@ int probe_cfg(void) {
     free(got);
     plat_file_delete(path);
     cfg_load(path);
+    CHECK(!cfg_restart_pending(), "restart pending: clean after load");
+    cfg_set("REKARINA_VOLUME", "42");
+    CHECK(!cfg_restart_pending(), "restart pending: live setting does not trigger it");
+    cfg_set("REKARINA_ANISO", "16");
+    CHECK(cfg_restart_pending(), "restart pending: restart-only setting triggers it");
+    cfg_set("REKARINA_ANISO", "game");
+    CHECK(!cfg_restart_pending(), "restart pending: reverting to boot value clears it");
     CHECK(rumble_motor(0, 0.6f, 1.3f) == 0 && rumble_motor(0.5f, 0.6f, 0) == 0, "rumble: zero amplitude or strength is silent");
     CHECK(rumble_motor(1, 0.6f, 3) == 65535 && rumble_motor(5, 1, 1) == 65535, "rumble: saturates at 65535");
     CHECK(rumble_motor(0.25f, 1, 1) > 16000 && rumble_motor(0.25f, 1, 1) < 16800, "rumble: curve 1, strength 100% is linear");

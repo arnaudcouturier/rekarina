@@ -376,11 +376,49 @@ static void migrate(void) {
            prompts ? prompts->value : "xbox");
 }
 
+static char *boot_restart_vals[sizeof metas / sizeof *metas];
+static int boot_restart_ready;
+
+static void snapshot_restart_values(void) {
+    plat_mutex_lock(&set_lock);
+    for (size_t i = 0; i < sizeof metas / sizeof *metas; i++) {
+        free(boot_restart_vals[i]);
+        boot_restart_vals[i] = NULL;
+        if (metas[i].live) continue;
+        char full[80];
+        snprintf(full, sizeof full, PREFIX "%s", metas[i].key);
+        const char *v = cfg_get(full);
+        boot_restart_vals[i] = strdup(v && *v ? v : metas[i].def);
+    }
+    boot_restart_ready = 1;
+    plat_mutex_unlock(&set_lock);
+}
+
+int cfg_restart_pending(void) {
+    if (!boot_restart_ready) return 0;
+    plat_mutex_lock(&set_lock);
+    int pending = 0;
+    for (size_t i = 0; i < sizeof metas / sizeof *metas && !pending; i++) {
+        if (metas[i].live || env_of(metas[i].key)) continue;
+        char full[80];
+        snprintf(full, sizeof full, PREFIX "%s", metas[i].key);
+        const char *v = cfg_get(full);
+        const char *cur = v && *v ? v : metas[i].def;
+        const char *was = boot_restart_vals[i] ? boot_restart_vals[i] : metas[i].def;
+        if (strcmp(cur, was)) pending = 1;
+    }
+    plat_mutex_unlock(&set_lock);
+    return pending;
+}
+
 int cfg_load(const char *path) {
     clear();
     uint64_t size = 0;
     uint8_t *data = plat_file_read(path, &size);
-    if (!data) return 0;
+    if (!data) {
+        snapshot_restart_values();
+        return 0;
+    }
     char *p = (char *)data;
     if (size >= 3 && !memcmp(p, "\xEF\xBB\xBF", 3)) p += 3;   // editors add a BOM
     for (int line = 1; *p; line++) {
@@ -400,6 +438,7 @@ int cfg_load(const char *path) {
     }
     free(data);
     migrate();
+    snapshot_restart_values();
     return 1;
 }
 
@@ -904,6 +943,7 @@ void cfg_init(void) {
         cfg_set(PREFIX "DLAA", "1");
         rt_log("cfg: framegen = %s turns dlaa on: frame generation takes its depth and motion vectors", fg);
     }
+    snapshot_restart_values();
     if (profile_of())
         rt_log("cfg: device profile %s: defaults for the keys " RT_INI_FILE " does not set (REKARINA_DEVICE_PROFILE=desktop "
                "turns it off)", profile_of() == 1 ? "Steam Deck" : "Windows handheld");
