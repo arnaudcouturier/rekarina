@@ -617,4 +617,8 @@
     [UI_MENU_HDR_BLOOM_DESC] = "밝은 빛 주위의 번짐입니다. 50은 게임 원래의 세기이며, 0은 끄고 100은 두 배로 합니다.",
     [UI_MENU_HDR_GRADE] = "바닐라 색보정 강도",
     [UI_MENU_HDR_GRADE_DESC] = "RenoDRT에서 게임 원본 SDR 색감을 복원하는 강도입니다.",
+    [UI_MENU_REFLEX] = "NVIDIA Reflex",
+    [UI_MENU_REFLEX_DESC] = "GPU 여유에 맞춰 프레임 시작을 최대한 늦춰 입력 지연을 줄입니다. 켜기 + 부스트는 CPU 병목 시 GPU 클럭을 유지합니다. 즉시 적용됩니다.",
+    [UI_MENU_REFLEX_BOOST] = "켜기 + 부스트",
+    [UI_MENU_REFLEX_FOR_FG] = "DLSS 프레임 생성 사용 중에는 켜짐 유지",
     [UI_PREP_LEFT_LT1] = "1분 미만 남음",

@@ -633,4 +633,8 @@
                                "y 100 lo duplica.",
     [UI_MENU_HDR_GRADE] = "Intensidad de etalonaje original",
     [UI_MENU_HDR_GRADE_DESC] = "Intensidad del aspecto SDR original restaurado en RenoDRT.",
+    [UI_MENU_REFLEX] = "NVIDIA Reflex",
+    [UI_MENU_REFLEX_DESC] = "Inicia cada fotograma lo más tarde posible según la GPU para reducir la latencia de entrada. Activado + Boost mantiene altas las frecuencias de la GPU cuando limita la CPU. Se aplica al instante.",
+    [UI_MENU_REFLEX_BOOST] = "Activado + Boost",
+    [UI_MENU_REFLEX_FOR_FG] = "permanece activo con la generación de fotogramas DLSS",
     [UI_PREP_LEFT_LT1] = "queda menos de un minuto",

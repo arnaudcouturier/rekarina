@@ -634,4 +634,8 @@
                                "raddoppia.",
     [UI_MENU_HDR_GRADE] = "Forza grading originale",
     [UI_MENU_HDR_GRADE_DESC] = "Intensità del look SDR originale ripristinato in RenoDRT.",
+    [UI_MENU_REFLEX] = "NVIDIA Reflex",
+    [UI_MENU_REFLEX_DESC] = "Avvia ogni fotogramma il più tardi possibile in base alla GPU per ridurre la latenza di input. Attivo + Boost mantiene alte le frequenze della GPU in caso di limite CPU. Si applica subito.",
+    [UI_MENU_REFLEX_BOOST] = "Attivo + Boost",
+    [UI_MENU_REFLEX_FOR_FG] = "mantenuto attivo con DLSS Frame Generation",
     [UI_PREP_LEFT_LT1] = "meno di un minuto rimanente",

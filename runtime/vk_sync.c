@@ -22,6 +22,7 @@
 #include "platform/platform.h"
 #include "cfg.h"
 #include "prep.h"
+#include "vk_reflex.h"
 uint64_t vk_listlog_addr(void), vk_listlog_hash(void);   // DEBUG-LISTLOG
 double vk_listlog_ms(void);
 
@@ -776,6 +777,9 @@ static uint64_t spk_rec, spk_upl, spk_pro, spk_que;   // DEBUG-SPIKE
 #define CHAIN_MAX 48                     // command buffers of one part beside its last (vk_sync_chain)
 typedef struct {
     VkSubmitInfo2 si[2];
+#ifdef VK_NV_LOW_LATENCY_2_EXTENSION_NAME
+    VkLatencySubmissionPresentIdNV lat[2];
+#endif
     VkCommandBufferSubmitInfo cbi[2][CHAIN_MAX + 1];
     VkSemaphoreSubmitInfo waits[2][4], sigs[2][4];
     uint32_t n;
@@ -854,11 +858,22 @@ void vk_sync_submits_drain(void) {
 
 // n batches (1 or 2) to the graphics queue, in order after every batch queued before; VK_SUCCESS when queued.
 static VkResult submit_batches(VkCtx *c, uint32_t n, const VkSubmitInfo2 *si, uint64_t fence, volatile int32_t *ended) {
+    uint64_t reflex_id = vk_reflex_current_id();
     if (!sq_enabled()) {
+        VkSubmitInfo2 local[2];
+#ifdef VK_NV_LOW_LATENCY_2_EXTENSION_NAME
+        VkLatencySubmissionPresentIdNV lat[2];
+#endif
+        for (uint32_t k = 0; k < n; k++) {
+            local[k] = si[k];
+#ifdef VK_NV_LOW_LATENCY_2_EXTENSION_NAME
+            vk_reflex_chain_submit(&local[k], &lat[k], reflex_id);
+#endif
+        }
         wait_ended(ended);
         vk_queue_lock();
         vk_drv_urgent(1);
-        VkResult r = vkQueueSubmit2(c->gfx_queue, n, si, VK_NULL_HANDLE);
+        VkResult r = vkQueueSubmit2(c->gfx_queue, n, local, VK_NULL_HANDLE);
         vk_drv_urgent(-1);
         vk_queue_unlock();
         return r;
@@ -876,6 +891,9 @@ static VkResult submit_batches(VkCtx *c, uint32_t n, const VkSubmitInfo2 *si, ui
         for (uint32_t i = 0; i < si[k].commandBufferInfoCount; i++) j->cbi[k][i] = si[k].pCommandBufferInfos[i];
         j->si[k].pWaitSemaphoreInfos = j->waits[k], j->si[k].pSignalSemaphoreInfos = j->sigs[k];
         j->si[k].pCommandBufferInfos = j->cbi[k];
+#ifdef VK_NV_LOW_LATENCY_2_EXTENSION_NAME
+        vk_reflex_chain_submit(&j->si[k], &j->lat[k], reflex_id);
+#endif
     }
     sq_put++;
     plat_cond_broadcast(&sq_work);

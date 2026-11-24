@@ -33,6 +33,7 @@
 #include "vk_fg.h"
 #include "vk_dlssg.h"
 #include "renderer_mcp.h"
+#include "vk_reflex.h"
 
 #define FRAMES 2
 #define MAX_IMAGES 16
@@ -223,6 +224,10 @@ static VkDeviceSize g_cap_size;
 static int g_cap_w, g_cap_h, g_cap_valid;
 static int g_flip_on;            // vk_present_blit submitted the blit of swapchain image g_flip_idx; vk_present_flip presents it
 static uint32_t g_flip_idx;
+static uint64_t g_flip_reflex_id;   // native Reflex present ID of the pending flip (0 when off)
+static uint64_t g_reflex_next_id;   // set by present_main before vk_present_blit
+
+void gfx_present_reflex_frame(uint64_t id) { g_reflex_next_id = id; }
 
 // ---- REKARINA_FLIGHT thumbnails (flight.c; g_pl): each present also blits the swapchain image down into slot frame % g_th_n
 // of a host-visible ring. A slot's tag names the frame it holds complete; recording a new frame clears the tag first,
@@ -332,6 +337,8 @@ static void window_settings_live(void) {
         if (started) plat_xchg32(&g_dirty, 1);
     }
     if (started && vk_hdr_wanted() != g_sc_hdr_wanted) plat_xchg32(&g_dirty, 1);
+    vk_dlssg_reflex_sync();
+    if (started && vk_reflex_swapchain_stale()) plat_xchg32(&g_dirty, 1);
     if (started) gfx_window_apply_settings();
     started = 1;
 }
@@ -437,6 +444,8 @@ static void pt_collect(VkDevice d) {
 static void flip_locked(void) {
     if (!g_flip_on) return;
     g_flip_on = 0;
+    uint64_t flip_reflex = g_flip_reflex_id;
+    g_flip_reflex_id = 0;
     if (!g_sc) return;
     VkPresentInfoKHR pi = {.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR, .waitSemaphoreCount = 1,
                            .pWaitSemaphores = &g_render_done[g_flip_idx], .swapchainCount = 1, .pSwapchains = &g_sc,
@@ -447,8 +456,13 @@ static void flip_locked(void) {
                                  .presentStageQueries = VK_PRESENT_STAGE_IMAGE_FIRST_PIXEL_VISIBLE_BIT_EXT};
     VkPresentTimingsInfoEXT tis = {.sType = VK_STRUCTURE_TYPE_PRESENT_TIMINGS_INFO_EXT, .pNext = &pid, .swapchainCount = 1,
                                    .pTimingInfos = &ti};
-    int timed = pt_on && pt_id && !vk_dlssg_swapchain_ready() && !vk_fg_swapchain();
+    int dlssg_sc = vk_dlssg_swapchain_ready(), fg_sc = vk_fg_swapchain();
+    int timed = pt_on && pt_id && !dlssg_sc && !fg_sc;
     if (timed) pi.pNext = &tis;
+    VkPresentIdKHR rpid = {0};
+    uint64_t rpid_val = 0;
+    if (!dlssg_sc && !fg_sc && !timed)
+        pi.pNext = vk_reflex_present_begin(pi.pNext, &rpid, &rpid_val, flip_reflex);
     FT(FT_NOTE, 1, 0, 0);
     vk_queue_lock();
     vk_drv_urgent(1);
@@ -458,6 +472,7 @@ static void flip_locked(void) {
     vk_drv_urgent(-1);
     vk_queue_unlock();
     renderer_mcp_present(g_sc_ext.width, g_sc_ext.height, g_sc_hdr, present_route, r);
+    if (!dlssg_sc && !fg_sc) vk_reflex_present_end(rpid_val);
     FT(FT_NOTE, 2, 0, 0);
     vk_device_fault_report(r);
     if (r == VK_SUCCESS) gfx_window_presented();
@@ -517,6 +532,7 @@ static int create_swapchain(void) {
 
     vk_queue_lock();
     vkDeviceWaitIdle(c->device);
+    vk_reflex_swapchain_destroyed();
     VkSwapchainKHR old = g_sc;
     VkSwapchainCreateInfoKHR ci = {
         .sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR, .surface = g_surface, .minImageCount = count,
@@ -564,6 +580,12 @@ static int create_swapchain(void) {
         // a window, not the display: full-screen exclusive disallowed where the driver has the choice
         // (gfx_window_win.c gfx_window_swapchain_next)
         ci.pNext = gfx_window_swapchain_next(c->has_fse);
+#ifdef VK_NV_LOW_LATENCY_2_EXTENSION_NAME
+        VkSwapchainLatencyCreateInfoNV reflex_ci = {0};
+        int reflex_lat = vk_reflex_swapchain_next(&ci, &reflex_ci);
+#else
+        int reflex_lat = 0;
+#endif
         r = vkCreateSwapchainKHR(c->device, &ci, NULL, &g_sc);
         if (r != VK_SUCCESS && want_pt) {
             rt_log("gfx: swap chain with present timing refused (%d): without it", (int)r);
@@ -572,12 +594,14 @@ static int create_swapchain(void) {
             r = vkCreateSwapchainKHR(c->device, &ci, NULL, &g_sc);
         }
         if (r != VK_SUCCESS && ci.pNext) {
-            rt_log("gfx: swap chain with full-screen exclusive disallowed refused (%d): without that", (int)r);
+            rt_log("gfx: swap chain with extensions refused (%d): without pNext", (int)r);
             ci.pNext = NULL;
+            reflex_lat = 0;
             r = vkCreateSwapchainKHR(c->device, &ci, NULL, &g_sc);
         }
         if (r == VK_SUCCESS && want_pt) pt_setup(c->device, g_sc);
         else pt_on = 0;
+        if (r == VK_SUCCESS) vk_reflex_swapchain_created(g_sc, reflex_lat);
     }
     if (r != VK_SUCCESS) {
         rt_log("gfx: vkCreateSwapchainKHR failed (%d)", (int)r);
@@ -1535,15 +1559,23 @@ static int present_image(VkImage src, VkImageLayout layout, VkFormat fmt, int w,
     VkSubmitInfo2 si = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2, .waitSemaphoreInfoCount = 1, .pWaitSemaphoreInfos = &wait,
                         .commandBufferInfoCount = 1, .pCommandBufferInfos = &cbi, .signalSemaphoreInfoCount = 1,
                         .pSignalSemaphoreInfos = &sig};
+    uint64_t reflex_id = g_reflex_next_id;
+    g_reflex_next_id = 0;
+#ifdef VK_NV_LOW_LATENCY_2_EXTENSION_NAME
+    VkLatencySubmissionPresentIdNV reflex_sub;
+    vk_reflex_chain_submit(&si, &reflex_sub, reflex_id);
+#endif
     vk_queue_lock();
     vk_drv_urgent(1);
     r = vkQueueSubmit2(c->gfx_queue, 1, &si, g_fence[slot]);
     vk_drv_urgent(-1);
     vk_queue_unlock();
+    if (reflex_id) vk_reflex_submit_end(reflex_id);
     FT(FT_NOTE, 4, 0, 0);
     if (r == VK_SUCCESS) {
         g_flip_on = 1;
         g_flip_idx = idx;
+        g_flip_reflex_id = reflex_id;
         if (!defer) flip_locked();
     } else {
         vk_device_fault_report(r);
@@ -1615,6 +1647,7 @@ void gfx_window_release_vk(void) {
             g_sc_view[i] = VK_NULL_HANDLE;
         }
         if (g_pool) vkDestroyCommandPool(c->device, g_pool, NULL);
+        vk_reflex_swapchain_destroyed();
         if (vk_fg_swapchain()) vk_fg_release();   // AMD's contexts and swapchain (also one being made again)
         else if (g_sc && vk_dlssg_swapchain_ready()) vk_dlssg_destroy_swapchain(c->device, g_sc);
         else if (g_sc) vkDestroySwapchainKHR(c->device, g_sc, NULL);

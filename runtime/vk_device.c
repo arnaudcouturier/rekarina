@@ -15,6 +15,7 @@
 #include "vk_dlaa.h"
 #include "vk_fg.h"
 #include "vk_dlssg.h"
+#include "vk_reflex.h"
 
 static uint32_t g_gfx_queues = 1;   // queues the graphics family offers (pick_device)
 
@@ -463,6 +464,7 @@ typedef struct {
 #endif
     VkPhysicalDevicePresentTimingFeaturesEXT pt;      // DEBUG-PRESENTTIMING
     VkPhysicalDevicePresentId2FeaturesKHR pid2;
+    VkPhysicalDevicePresentIdFeaturesKHR pid;         // NVIDIA Reflex (VK_NV_low_latency2 + VK_KHR_present_id)
     VkPhysicalDeviceMapMemoryPlacedFeaturesEXT mmp;   // Linux: driver-backed guest memory (vk_memory.c vk_mem_driver_backed)
 #ifdef GAME_NS2
     VkPhysicalDeviceMeshShaderFeaturesEXT mesh;
@@ -495,11 +497,7 @@ static int create_device(void) {
     vkEnumerateDeviceExtensionProperties(g_vk.phys, NULL, &ne, NULL);
     VkExtensionProperties *ep = calloc(ne ? ne : 1, sizeof *ep);
     vkEnumerateDeviceExtensionProperties(g_vk.phys, NULL, &ne, ep);
-#ifdef GAME_NS2
-    const char *ext[58];   // one more: VK_EXT_mesh_shader (and one for DEBUG-PIPESTATS, one for cooperative matrices)
-#else
-    const char *ext[57];   // two for FSR 4's extensions, two for the placed map (VK_KHR_map_memory2, VK_EXT_map_memory_placed), one for full-screen exclusive
-#endif
+    const char *ext[64];
     uint32_t n_ext = 0;
     for (size_t i = 0; i < sizeof k_required_ext / sizeof *k_required_ext; i++) ext[n_ext++] = k_required_ext[i];
 
@@ -662,6 +660,8 @@ static int create_device(void) {
         CHAIN(pid2, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_ID_2_FEATURES_KHR);
         g_vk.has_present_timing = 1;
     }
+    int reflex_exts = vk_reflex_device_exts(ep, ne, ext, &n_ext, (uint32_t)(sizeof ext / sizeof *ext));
+    if (reflex_exts) CHAIN(pid, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_ID_FEATURES_KHR);
     free(ep);
 
     // The driver fills the chain with what it supports; the same chain then enables all of it (robustBufferAccess
@@ -769,6 +769,7 @@ static int create_device(void) {
     int coop_features = c->cm.cooperativeMatrix && c->f12.shaderFloat16;   // read before the chain is freed
 #endif
     int nu_feature = c->f12.shaderSampledImageArrayNonUniformIndexing;
+    int pid_feature = reflex_exts && c->pid.presentId;
     free(c);
     {   // REKARINA_NONUNIFORM=0|1|all (gfx_shader.c patch_nonuniform): texture array accesses with a per-invocation index
         // (1) or every computed index (all) decorated NonUniform. Vulkan leaves such an access undefined without the
@@ -786,6 +787,7 @@ static int create_device(void) {
     }
     if (r != VK_SUCCESS) { rt_log("vk: vkCreateDevice failed (%d)", (int)r); return 0; }
     vk_dlssg_device_ready(g_vk.device);
+    vk_reflex_device_init(g_vk.device, pid_feature);
     vkGetDeviceQueue(g_vk.device, g_vk.gfx_family, 0, &g_vk.gfx_queue);
     if (nq_gfx >= 2) {
         VkQueue present, acquire;
@@ -884,6 +886,7 @@ static void destroy_all(void) {
     if (g_vk.timeline) vkDestroySemaphore(g_vk.device, g_vk.timeline, NULL);
     vk_headroom_stop();
     if (g_vk.vma) vmaDestroyAllocator(g_vk.vma);
+    vk_reflex_device_release(g_vk.device);
     if (g_vk.device) vkDestroyDevice(g_vk.device, NULL);
     if (g_vk.messenger) {
         PFN_vkDestroyDebugUtilsMessengerEXT f =

@@ -34,10 +34,13 @@
 #include "platform/platform.h"
 #include "vk_dlaa.h"
 #include "vk_dlssg.h"
+#include "vk_reflex.h"
+
+void gfx_present_reflex_frame(uint64_t id);
 
 #define WEAK __attribute__((weak))
 
-typedef struct { VkImage image; VkFormat format; int w, h, has_crop, crop[4]; uint64_t frame, at, queued, value; } PresentJob;
+typedef struct { VkImage image; VkFormat format; int w, h, has_crop, crop[4]; uint64_t frame, at, queued, value, reflex_id; } PresentJob;
 
 static PlatMutex pl = PLAT_MUTEX_INIT;
 static PlatCond pcv = PLAT_COND_INIT;   // job queued, job taken, job submitted
@@ -92,6 +95,7 @@ static void present_main(void *arg) {
         plat_mutex_unlock(&pl);
         if (flight_on) vk_thumbs_frame(j.frame);
         vk_dlssg_present_frame(j.frame);
+        gfx_present_reflex_frame(j.reflex_id);
         gfx_blit_frame(j.frame);   // DEBUG-PACELOG: the blit's moments and GPU timestamp
         int tagged = vk_present_blit(j.image, VK_IMAGE_LAYOUT_GENERAL, j.format, j.w, j.h, j.has_crop ? j.crop : NULL);
         // Retire tagged inputs after the actual present, not the blit. Streamline's default mode orders its work
@@ -153,7 +157,7 @@ static void present_image(const tex_t *t, const int crop[4], uint64_t at_ns, uin
         return;
     }
     PresentJob j = {.image = img->image, .format = img->format, .w = (int)img->width, .h = (int)img->height, .frame = frame,
-                    .at = at_ns, .queued = queued, .value = value};
+                    .at = at_ns, .queued = queued, .value = value, .reflex_id = vk_reflex_current_id()};
     vk_hdr_present_source(img, &j.image, &j.format);   // REKARINA_HDR: the float picture the game copied into it, same size
     if (vk_interface_coverage_enabled() || vk_dlaa_prebloom_enabled()) {
         vk_present_drain();
@@ -448,6 +452,7 @@ void gfx_exit_log(void) {
 static void vk_be_present(const tex_t *t, const int crop[4], uint64_t at_ns) {
     vk_sync_start();
     vk_dlssg_game_present();
+    vk_reflex_game_present();
     if (!gfx_replay_async()) {
         uint64_t frame = __atomic_add_fetch(&gfx_counters.frames, 1, __ATOMIC_RELAXED);
         vk_dlssg_submitted(frame);
@@ -764,6 +769,11 @@ static void vk_be_cpu_synced(uint64_t fence) {
     vk_texture_write_back_small(fence);
 }
 
+static void vk_be_frame_start(void) {
+    if (vk_dlssg_swapchain_ready()) vk_dlssg_frame_start();
+    else vk_reflex_frame_start();
+}
+
 const GfxBackend gfx_vulkan_backend = {
     .name = "vulkan",
     .pool_init = vk_be_pool_init,
@@ -782,7 +792,7 @@ const GfxBackend gfx_vulkan_backend = {
     .results_seen = vk_be_results_seen,
     .present = vk_be_present,
     .present_end = vk_be_present_end,
-    .frame_start = vk_dlssg_frame_start,
+    .frame_start = vk_be_frame_start,
     .finish = vk_be_finish,
     .read_texels = vk_be_read_texels,
     .write_texels = vk_be_write_texels,

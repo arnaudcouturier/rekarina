@@ -679,6 +679,10 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_HDR_BLOOM_DESC] = "The glow around bright lights. 50 is the game's own; 0 turns it off, 100 doubles it.",
     [UI_MENU_HDR_GRADE] = "Vanilla grade strength",
     [UI_MENU_HDR_GRADE_DESC] = "Strength of the game's SDR look restored onto the HDR scene in RenoDRT.",
+    [UI_MENU_REFLEX] = "NVIDIA Reflex",
+    [UI_MENU_REFLEX_DESC] = "Starts each frame as late as the GPU allows so input reaches the screen sooner. On + Boost keeps GPU clocks up for lower latency when CPU-bound. Applies at once.",
+    [UI_MENU_REFLEX_BOOST] = "On + Boost",
+    [UI_MENU_REFLEX_FOR_FG] = "kept on while DLSS Frame Generation is active",
     [UI_PREP_LEFT_LT1] = "under a minute left",
 };
 
@@ -1325,6 +1329,10 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_MENU_HDR_BLOOM_DESC] = "Ореол вокруг ярких источников света. 50 — как в игре; 0 выключает его, 100 удваивает.",
     [UI_MENU_HDR_GRADE] = "Сила цветокоррекции игры",
     [UI_MENU_HDR_GRADE_DESC] = "Степень сохранения исходной SDR-палитры игры в RenoDRT.",
+    [UI_MENU_REFLEX] = "NVIDIA Reflex",
+    [UI_MENU_REFLEX_DESC] = "Начинает каждый кадр как можно позже, чтобы снизить задержку ввода. Вкл. + Ускорение удерживает частоты GPU для меньшей задержки при упоре в CPU. Применяется сразу.",
+    [UI_MENU_REFLEX_BOOST] = "Вкл. + Ускорение",
+    [UI_MENU_REFLEX_FOR_FG] = "остаётся включённым при генерации кадров DLSS",
     [UI_PREP_LEFT_LT1] = "осталось меньше минуты",
 };
 
@@ -2004,6 +2012,10 @@ static const char *const text_pt_br[UI_TEXT_COUNT] = {
     [UI_MENU_HDR_BLOOM_DESC] = "O brilho em volta das luzes fortes. 50 é o do próprio jogo; 0 o desliga, 100 o dobra.",
     [UI_MENU_HDR_GRADE] = "Força da paleta original",
     [UI_MENU_HDR_GRADE_DESC] = "Intensidade do visual SDR original restaurado na cena HDR no RenoDRT.",
+    [UI_MENU_REFLEX] = "NVIDIA Reflex",
+    [UI_MENU_REFLEX_DESC] = "Inicia cada quadro o mais tarde que a GPU permite para reduzir a latência de entrada. Ligado + Boost mantém os clocks da GPU elevados quando limitado pela CPU. Aplica imediatamente.",
+    [UI_MENU_REFLEX_BOOST] = "Ligado + Boost",
+    [UI_MENU_REFLEX_FOR_FG] = "mantido ligado enquanto a geração de quadros DLSS está ativa",
     [UI_PREP_LEFT_LT1] = "falta menos de um minuto",
 };
 
@@ -2754,6 +2766,10 @@ static const char *const text_zh_hans[UI_TEXT_COUNT] = {
     [UI_MENU_HDR_BLOOM_DESC] = "明亮光源周围的光晕。50 为游戏原本的效果；0 关闭，100 加倍。",
     [UI_MENU_HDR_GRADE] = "原版调色强度",
     [UI_MENU_HDR_GRADE_DESC] = "在 RenoDRT 中还原游戏原版 SDR 色调风格的强度。",
+    [UI_MENU_REFLEX] = "NVIDIA Reflex",
+    [UI_MENU_REFLEX_DESC] = "在 GPU 允许的情况下尽可能推迟每帧开始以降低输入延迟。开启 + 增强在受 CPU 限制时保持 GPU 频率。立即生效。",
+    [UI_MENU_REFLEX_BOOST] = "开启 + 增强",
+    [UI_MENU_REFLEX_FOR_FG] = "启用 DLSS 帧生成时保持开启",
     [UI_PREP_LEFT_LT1] = "剩余不到一分钟",
 };
 

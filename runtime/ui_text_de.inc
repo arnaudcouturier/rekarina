@@ -636,4 +636,8 @@
                                "verdoppelt es.",
     [UI_MENU_HDR_GRADE] = "Original-Grading-Stärke",
     [UI_MENU_HDR_GRADE_DESC] = "Stärke des wiederhergestellten SDR-Looks des Spiels in RenoDRT.",
+    [UI_MENU_REFLEX] = "NVIDIA Reflex",
+    [UI_MENU_REFLEX_DESC] = "Startet jeden Frame so spät wie die GPU es zulässt, um die Eingabeverzögerung zu verringern. Ein + Boost hält den GPU-Takt bei CPU-Limitierung hoch. Wirkt sofort.",
+    [UI_MENU_REFLEX_BOOST] = "Ein + Boost",
+    [UI_MENU_REFLEX_FOR_FG] = "bleibt aktiv, solange DLSS Frame Generation eingeschaltet ist",
     [UI_PREP_LEFT_LT1] = "noch unter einer Minute",

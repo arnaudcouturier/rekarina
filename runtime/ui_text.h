@@ -299,7 +299,9 @@ typedef enum {
     UI_MENU_HDR_ADAPTATION_MIN_STOPS, UI_MENU_HDR_ADAPTATION_MIN_STOPS_DESC,
     UI_MENU_HDR_ADAPTATION_MAX_STOPS, UI_MENU_HDR_ADAPTATION_MAX_STOPS_DESC,
     UI_MENU_HDR_GRADE, UI_MENU_HDR_GRADE_DESC,
-    UI_MENU_LAST_ID = UI_MENU_HDR_GRADE_DESC,
+    // NVIDIA Reflex (vk_reflex.c / vk_dlssg.c)
+    UI_MENU_REFLEX, UI_MENU_REFLEX_DESC, UI_MENU_REFLEX_BOOST, UI_MENU_REFLEX_FOR_FG,
+    UI_MENU_LAST_ID = UI_MENU_REFLEX_FOR_FG,
     // The entry step's progress picture (ui/prep_screen.cpp, before the game's first frame): a text in every catalog language
     UI_PREP_TITLE,            // the step's name
     UI_PREP_COUNT,            // "%s of %s": done and total

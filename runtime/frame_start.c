@@ -65,6 +65,7 @@ uint64_t kern_self_gpu_wait_ns(uint64_t *last_end); // kernel.c
 extern volatile uint32_t kern_fs_main_tid, kern_fs_present_tid;   // kernel.c
 void kern_self_name(char *name, int n);             // kernel.c
 int vk_dlssg_active(void);                          // vk_dlssg.c
+int vk_reflex_active(void);                         // vk_reflex.c
 int vk_arrive_holding(void);                        // vk_arrive.c
 
 static int fs_mode = -1;          // 0 off, 1 jit (REKARINA_FRAME_START)
@@ -169,7 +170,7 @@ static uint64_t frame_end(uint64_t wait, int seen) {
     if (seen) fs_s_q++;
     else fs_s_noq++;
     uint64_t prev_hold = seen ? fs_hold : 0, nat;   // without a hand-over the hold never happened
-    if (wait > FS_LONG_NS || vk_dlssg_active() || vk_arrive_holding()) {
+    if (wait > FS_LONG_NS || vk_dlssg_active() || vk_reflex_active() || vk_arrive_holding()) {
         fs_n = fs_late = 0;   // not a frame to learn from: start over
         return 0;
     }
