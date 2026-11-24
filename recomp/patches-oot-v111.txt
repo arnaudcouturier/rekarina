@@ -139,6 +139,21 @@ site mouse_direct main 37c45c bd053a81 952c92c9   # str s1, [x20, #0x538] -> bl 
 # as input, so a mouse-held pitch stays as a stick-held one does.
 site mouse_direct main 37c4f4 b9053288 952c929f   # str w8, [x20, #0x530] -> bl page+0xf70
 
+# Right-stick camera speed (runtime/camera_speed.c oot_camera_rate: REKARINA_STICK_SENS, live). The player camera's
+# update (main+0x624c80) turns the view each frame by the curved stick (+0x538 x, +0x53c y of the input object above)
+# times a rate that four leaf functions return in s0. main+0x623f10 gives the yaw rate (the game's own camera speed
+# option, options +0x254, picks its entry in a table); main+0x623b60 the pitch rate, from another table;
+# main+0x2e82220 and main+0x2e821f0 give the same two from the level-2 tables (x1 = 2), which another path of the
+# update takes. Other cameras call the same functions (main+0x70ebbc, +0x27a2da0, +0x27be304, ...). None of the four
+# calls another, so each turn is scaled once. Each site is the load of the returned float, before the epilogue
+# restores x30, so the bl's return address is not seen by the caller. Found by Longshot (MagicBeanDev/Longshot,
+# nx2/oot_patches.py patch_camera_speed, at their image base 0x80020000); checked against our lift 2026-11-24.
+set stick_sens REKARINA_STICK_SENS_PATCH 1
+site stick_sens main 623c40 bd400000 bd400000 9521f454    # ldr s0, [x0] -> the same; bl page+0xd90 (pitch)
+site stick_sens main 624060 bd400000 bd400000 9521f34c    # ldr s0, [x0] -> the same; bl page+0xd90 (yaw)
+site stick_sens main 2e8220c bd400000 bd400000 94807ae1   # ldr s0, [x0] -> the same; bl page+0xd90 (pitch, level 2)
+site stick_sens main 2e82258 bd400000 bd400000 94807ace   # ldr s0, [x0] -> the same; bl page+0xd90 (yaw, level 2)
+
 set turnrate REKARINA_TURN_RATE 1
 
 # A steering update's saved turn rate (main+0x261e8e0, the step in 60 Hz frames in s8 from its first argument; the

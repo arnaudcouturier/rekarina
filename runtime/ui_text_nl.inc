@@ -288,8 +288,8 @@
                                 "helft is lopen, volledig gekanteld is rennen.",
     [UI_MENU_STICK_SENS] = "Camerasnelheid stick",
     [UI_MENU_STICK_SENS_DESC] = "Vermenigvuldigt de camerasnelheid van de rechterstick in het spel, inclusief de "
-                                "topsnelheid, bij elk van de vijf cameragevoeligheden van het spel. De muis houdt zijn "
-                                "eigen instelling.",
+                                "topsnelheid, bij elke cameragevoeligheid die in de opties van het spel is gekozen. De "
+                                "muis houdt zijn eigen instelling.",
 
     [UI_BINDS_HELP] = "Kies een cel en druk op A of Enter, en daarna op de toets, muisknop of controllerknop. Delete of "
                       "X wist een cel. Een toets die al in gebruik is, verhuist hierheen; een controllerknop wisselt "

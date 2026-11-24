@@ -289,8 +289,9 @@
     [UI_MENU_WALK_SCALE_DESC] = "Die Neigung der Tastatur-Sticks, solange die Gehen-Taste gehalten wird. Die Hälfte ist "
                                 "Gehen, die volle Neigung Rennen.",
     [UI_MENU_STICK_SENS] = "Kameratempo des Sticks",
-    [UI_MENU_STICK_SENS_DESC] = "Multipliziert das Kameratempo des rechten Sticks im Spiel, samt Höchsttempo, in jeder der "
-                                "fünf Kameraempfindlichkeiten des Spiels. Die Maus behält ihre eigene Einstellung.",
+    [UI_MENU_STICK_SENS_DESC] = "Multipliziert das Kameratempo des rechten Sticks im Spiel, samt Höchsttempo, bei "
+                                "jeder in den Optionen des Spiels gewählten Kameraempfindlichkeit. Die Maus behält "
+                                "ihre eigene Einstellung.",
 
     [UI_BINDS_HELP] = "Wähle ein Feld und drücke A oder Eingabe, dann die Taste, die Maustaste oder den "
                       "Controller-Knopf. Entf oder X leert ein Feld. Eine schon belegte Taste wandert hierher; ein "

@@ -331,8 +331,8 @@ static const char *const text_en[UI_TEXT_COUNT] = {
     [UI_MENU_DASH_KEY_DESC] = "Held while a direction is held, the hero dashes. Works while dash on the left stick's "
                               "press is on.",
     [UI_MENU_STICK_SENS] = "Stick camera speed",
-    [UI_MENU_STICK_SENS_DESC] = "Multiplies the game's own right-stick camera speed, top speed included, at each of the "
-                                "game's five camera sensitivities. The mouse keeps its own setting.",
+    [UI_MENU_STICK_SENS_DESC] = "Multiplies the game's own right-stick camera speed, top speed included, at any camera "
+                                "sensitivity chosen in the game's options. The mouse keeps its own setting.",
 
     [UI_BINDS_HELP] = "Select a cell and press A or Enter, then the key, mouse button or controller button. Delete or "
                       "X clears a cell. A key in use moves here; a controller button swaps with the one it replaces.",
@@ -1000,8 +1000,8 @@ static const char *const text_ru[UI_TEXT_COUNT] = {
     [UI_MENU_DASH_KEY_DESC] = "Удерживайте вместе с направлением: персонаж делает рывок. Работает, когда включён "
                               "рывок нажатием левого стика.",
     [UI_MENU_STICK_SENS] = "Скорость камеры (стик)",
-    [UI_MENU_STICK_SENS_DESC] = "Умножает скорость поворота камеры правым стиком, включая наибольшую, при каждой из пяти "
-                                "чувствительностей камеры в игре. На мышь не влияет.",
+    [UI_MENU_STICK_SENS_DESC] = "Умножает скорость поворота камеры правым стиком, включая наибольшую, при любой "
+                                "чувствительности камеры в настройках игры. На мышь не влияет.",
 
     [UI_BINDS_HELP] = "Выберите ячейку и нажмите A или Enter, затем клавишу, кнопку мыши или кнопку контроллера. "
                       "Delete или X очищает ячейку. Занятая клавиша переходит сюда; кнопка контроллера меняется "
@@ -1866,8 +1866,8 @@ static const char *const text_pt_br[UI_TEXT_COUNT] = {
     [UI_MENU_RESTART_SAVING] = "O jogo está salvando: dá para reiniciar em um instante.",
     [UI_MENU_STICK_SENS] = "Velocidade da câmera (analógico)",
     [UI_MENU_STICK_SENS_DESC] = "Multiplica a velocidade da câmera do analógico direito do jogo, incluindo a máxima, "
-                                "em cada uma das cinco sensibilidades de câmera do jogo. O mouse mantém a própria "
-                                "configuração.",
+                                "em qualquer sensibilidade de câmera escolhida nas opções do jogo. O mouse mantém a "
+                                "própria configuração.",
     [UI_MENU_WALK_KEY] = "Tecla de andar",
     [UI_MENU_WALK_KEY_DESC] = "Segure para inclinar os analógicos do teclado só em parte, assim o teclado anda em vez "
                               "de correr. A intensidade do andar define quanto. Controle e mouse não são afetados.",
@@ -2668,7 +2668,7 @@ static const char *const text_zh_hans[UI_TEXT_COUNT] = {
     [UI_MENU_RESTART_YES] = "重启",
     [UI_MENU_RESTART_SAVING] = "游戏正在存档：稍后即可重启。",
     [UI_MENU_STICK_SENS] = "摇杆镜头速度",
-    [UI_MENU_STICK_SENS_DESC] = "在游戏的五档镜头灵敏度下，按倍数调整右摇杆的镜头转动速度（包括最高速度）。鼠标使用自己的设置。",
+    [UI_MENU_STICK_SENS_DESC] = "在游戏选项中选择的任意镜头灵敏度下，按倍数调整右摇杆的镜头转动速度（包括最高速度）。鼠标使用自己的设置。",
     [UI_MENU_WALK_KEY] = "步行键",
     [UI_MENU_WALK_KEY_DESC] = "按住时键盘模拟的摇杆只推到一部分，使键盘操作走路而不是奔跑。推动幅度由步行幅度决定。手柄和鼠标不受影响。",
     [UI_MENU_WALK_KEY_TAKEN] = "同时为 %s",

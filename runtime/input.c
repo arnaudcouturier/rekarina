@@ -575,7 +575,12 @@ static void mouse_camera(int32_t out[2], int selector) {
             held[0] = held[1] = 0;   // frames stopped: do not hold a deflection
         }
     }
-    double k = cam_speed_applied(), x = held[0] / k, y = held[1] / k, len = sqrt(x * x + y * y);
+#ifdef GAME_OOT   // the camera squares the stick before the rate camera_speed.c multiplies: a deflection over sqrt(k)
+    double k = sqrt(cam_speed_applied());
+#else
+    double k = cam_speed_applied();
+#endif
+    double x = held[0] / k, y = held[1] / k, len = sqrt(x * x + y * y);
     if (len > STICK_MAX) x *= STICK_MAX / len, y *= STICK_MAX / len;
     out[0] = (int32_t)lround(x);
     out[1] = (int32_t)lround(y);

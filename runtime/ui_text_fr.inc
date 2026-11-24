@@ -289,8 +289,9 @@
     [UI_MENU_WALK_SCALE_DESC] = "L'inclinaison donnée aux sticks du clavier tant que la touche de marche est maintenue. La "
                                 "moitié donne la marche, l'inclinaison complète la course.",
     [UI_MENU_STICK_SENS] = "Vitesse caméra (stick)",
-    [UI_MENU_STICK_SENS_DESC] = "Multiplie la vitesse de caméra du stick droit propre au jeu, vitesse maximale comprise, "
-                                "pour chacune des cinq sensibilités de caméra du jeu. La souris garde son propre réglage.",
+    [UI_MENU_STICK_SENS_DESC] = "Multiplie la vitesse de caméra du stick droit propre au jeu, vitesse maximale "
+                                "comprise, pour toute sensibilité de caméra choisie dans les options du jeu. La souris "
+                                "garde son propre réglage.",
 
     [UI_BINDS_HELP] = "Sélectionnez une case et appuyez sur A ou Entrée, puis sur la touche, le bouton de souris ou le "
                       "bouton de manette. Suppr ou X vide une case. Une touche déjà utilisée est déplacée ici ; un bouton "

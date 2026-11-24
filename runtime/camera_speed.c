@@ -1,13 +1,19 @@
-// Camera speed: REKARINA_STICK_SENS (0.1 to 3, default 1, read at start) multiplies the game's own right-stick camera speeds.
-// The game's Options menu offers five camera sensitivities, Very Low to Very High; their turn rates are the array
-// StickSensitivity {0.8, 1.2, 1.6, 2.0, 2.4} in Component/PlayerCameraParam/PlayerCamera.game__component__
-// PlayerCameraParam.bgyml inside Pack/Actor/PlayerCamera.pack.zs. romfs.c serves a copy of that pack with every entry
-// multiplied (cam_pack_build), so the setting raises the camera's top speed as well as its speed at a partial tilt, at
-// any of the five sensitivities. The mouse camera reaches the game as a right-stick deflection (input.c, mouse_camera),
-// which divides it by the same factor (cam_speed_applied), so REKARINA_MOUSE_SENS alone sets the mouse's speed.
+// Camera speed: REKARINA_STICK_SENS multiplies the game's own right-stick camera speeds, top speed included.
 //
-// The pack is a SARC archive compressed with the dictionary pack.zsdic of Pack/ZsDic.pack.zs. A float in a BYML array
-// is stored in the array itself, so the multiplied values take the bytes of the old ones and no offset moves.
+// TotK (0.1 to 3, read at start): the game's Options menu offers five camera sensitivities, Very Low to Very High; their
+// turn rates are the array StickSensitivity {0.8, 1.2, 1.6, 2.0, 2.4} in Component/PlayerCameraParam/PlayerCamera.
+// game__component__PlayerCameraParam.bgyml inside Pack/Actor/PlayerCamera.pack.zs. romfs.c serves a copy of that pack
+// with every entry multiplied (cam_pack_build), so the setting raises the camera's top speed as well as its speed at a
+// partial tilt, at any of the five sensitivities. The pack is a SARC archive compressed with the dictionary pack.zsdic
+// of Pack/ZsDic.pack.zs. A float in a BYML array is stored in the array itself, so the multiplied values take the bytes
+// of the old ones and no offset moves.
+//
+// OoT (0.5 to 4, live): the game has no such file. Its camera turns each frame by the curved stick times a rate that
+// four small functions return; patch set stick_sens (recomp/patches-oot-v111.txt) calls oot_camera_rate as each of them
+// loads its result, which multiplies it. The game's own camera speed option still picks the rate this multiplies.
+//
+// Either way the mouse camera that reaches the game as a right-stick deflection (input.c, mouse_camera) is divided back
+// by the factor (cam_speed_applied), so REKARINA_MOUSE_SENS alone sets the mouse's speed.
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -15,18 +21,70 @@
 
 #include "cfg.h"
 #include "host.h"
+#if __has_include("patches.h")
+#include "layout.h"
+#include "patches.h"
+#endif
 
 #define MEMBER "Component/PlayerCameraParam/PlayerCamera.game__component__PlayerCameraParam.bgyml"
 #define MAX_RAW (64u << 20)
 
-static float applied = 1.0f;
+#ifdef GAME_OOT
+#define SENS_MIN 0.5
+#define SENS_MAX 4
+#else
+#define SENS_MIN 0.1
+#define SENS_MAX 3
+#endif
 
 float cam_speed_wanted(void) {
     double v = cfg_double("REKARINA_STICK_SENS");
-    return (float)(v < 0.1 ? 0.1 : v > 3 ? 3 : v);
+    return (float)(v < SENS_MIN ? SENS_MIN : v > SENS_MAX ? SENS_MAX : v);
 }
 
+#ifdef GAME_OOT
+// cam_speed_wanted, read again when the settings change (cfg_version): the camera asks for its rates several times a
+// frame.
+static float live_factor(void) {
+    static unsigned seen;
+    static float k = -1;
+    unsigned ver = cfg_version();
+    if (k < 0 || ver != seen) seen = ver, k = cam_speed_wanted();
+    return k;
+}
+
+static int rate_patched(void) {
+    static int set = -2;
+    if (set == -2) set = rt_patch_set("stick_sens");
+    return rt_patch_enabled(set);
+}
+
+float cam_speed_applied(void) { return rate_patched() ? live_factor() : 1.0f; }
+
+#ifdef RT_PATCH_PAGE
+// The host call after each rate function's `ldr s0, [x0]` (patch set stick_sens): s0, the rate it returns, times the
+// factor. Every other register stays.
+static void oot_camera_rate(Cpu *c) {
+    float k = live_factor(), rate;
+    static float logged = 1.0f;   // the factor the log last named
+    if (k != logged) logged = k, rt_log("camera speed: x%.2f on the camera's turn rates", k);
+    if (k == 1.0f) return;
+    uint32_t bits = (uint32_t)c->v[0];
+    memcpy(&rate, &bits, sizeof rate);
+    rate *= k;
+    memcpy(&bits, &rate, sizeof bits);
+    c->v[0] = bits;   // as the load left it: the rest of the register zero
+}
+
+__attribute__((constructor)) static void camera_rate_register(void) {
+    rt_register_host(RT_PATCH_PAGE + 0xd90, oot_camera_rate);
+}
+#endif
+#else
+static float applied = 1.0f;   // the factor of the pack romfs.c serves (cam_pack_served)
+
 float cam_speed_applied(void) { return applied; }
+#endif
 
 static int u32_at(const uint8_t *p, size_t n, size_t off, uint32_t *v) {
     if (off > n || n - off < 4) return 0;
@@ -156,4 +214,8 @@ done:
     return ok;
 }
 
-void cam_pack_served(void) { applied = cam_speed_wanted(); }
+void cam_pack_served(void) {
+#ifndef GAME_OOT
+    applied = cam_speed_wanted();
+#endif
+}

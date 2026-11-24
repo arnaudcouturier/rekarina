@@ -326,6 +326,21 @@ int probe_cfg(void) {
     plat_setenv("REKARINA_STICK_DEADZONE", NULL);
     plat_setenv("REKARINA_LSTICK_DEADZONE", NULL);
     plat_setenv("REKARINA_RSTICK_DEADZONE", NULL);
+    // Stick camera speed (camera_speed.c): OoT 0.5 to 4, TotK 0.1 to 3, 1 when unset
+#ifdef GAME_OOT
+    const float sens_lo = 0.5f, sens_hi = 4;
+#else
+    const float sens_lo = 0.1f, sens_hi = 3;
+#endif
+    plat_setenv("REKARINA_STICK_SENS", NULL);
+    CHECK(cam_speed_wanted() == 1.0f, "stick camera speed: 1 when unset");
+    plat_setenv("REKARINA_STICK_SENS", "2.5");
+    CHECK(cam_speed_wanted() == 2.5f, "stick camera speed: a value in range is taken as it is");
+    plat_setenv("REKARINA_STICK_SENS", "50");
+    CHECK(cam_speed_wanted() == sens_hi, "stick camera speed: held to its top");
+    plat_setenv("REKARINA_STICK_SENS", "0");
+    CHECK(fabsf(cam_speed_wanted() - sens_lo) < 1e-6f, "stick camera speed: held to its bottom");
+    plat_setenv("REKARINA_STICK_SENS", NULL);
     CHECK(input_stick_percent(32767, 0) > 99.99 && input_stick_percent(32767, 0) < 100.01 &&
               input_stick_percent(0, 0) == 0 && fabs(input_stick_percent(3000, -4000) - 5000 * 100.0 / 32767) < 1e-9,
           "stick percent: an axis's end is 100%, the centre 0%, round in between");

@@ -386,8 +386,10 @@ void account_uid(uint64_t out[2]);                         // the local user's n
 void movie_tick(Cpu *c);                                   // at every present, on the presenting guest thread: hands
                                                            // decoded movie frames over when due, signals their events
 // ---- camera speed (camera_speed.c): REKARINA_STICK_SENS
-float cam_speed_wanted(void);                              // the factor REKARINA_STICK_SENS asks for, 0.1 to 3
-float cam_speed_applied(void);                             // the factor in effect: 1 until romfs.c serves the pack
+float cam_speed_wanted(void);                              // the factor REKARINA_STICK_SENS asks for: TotK 0.1 to 3,
+                                                           // OoT 0.5 to 4
+float cam_speed_applied(void);                             // the factor in effect: TotK 1 until romfs.c serves the
+                                                           // pack; OoT the live factor while patch set stick_sens is on
 int cam_pack_build(const void *in, size_t n, const void *zsdic, size_t zsdic_n, void **out, size_t *out_n);
                                                            // Pack/Actor/PlayerCamera.pack.zs with the camera speeds
                                                            // multiplied, malloc'd; 0 = factor 1 or cannot (logged)

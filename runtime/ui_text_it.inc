@@ -287,8 +287,8 @@
                                 "si cammina, con l'inclinazione completa si corre.",
     [UI_MENU_STICK_SENS] = "Velocità telecamera levetta",
     [UI_MENU_STICK_SENS_DESC] = "Moltiplica la velocità della telecamera che il gioco dà alla levetta destra, velocità "
-                                "massima compresa, per ognuna delle cinque sensibilità della telecamera del gioco. Il mouse "
-                                "mantiene la propria impostazione.",
+                                "massima compresa, con qualsiasi sensibilità della telecamera scelta nelle opzioni del "
+                                "gioco. Il mouse mantiene la propria impostazione.",
 
     [UI_BINDS_HELP] = "Seleziona una cella e premi A o Invio, poi il tasto, il pulsante del mouse o il pulsante del "
                       "controller. Canc o X svuota la cella. Un tasto già in uso si sposta qui; un pulsante del controller "
