@@ -530,6 +530,13 @@ static struct {
         int last;                // the last evaluation ran there: its history is of scene light
         int tried;               // this frame's bloom draw was inspected
         int resolved;            // DLSS resolved before the bloom this frame
+        VkImage stage;           // tone-mapped color staged at SMAA compose (pre_bloom_stage)
+        VmaAllocation stage_mem;
+        uint32_t stage_w;
+        uint32_t stage_h;
+        int staged;              // this frame's tone-mapped color is valid in stage
+        const char *stage_why;   // why pre_bloom_stage skipped copying this frame (for fallback logs)
+        uint32_t packed_serial;  // serial of the RGB9E5 image SMAA compose wrote, matched at the scaler
         uint64_t evals;          // evaluations that ran before the bloom
     } pre_bloom;
     int on;                      // the dlaa setting, read at each present (the menu switches it live)
@@ -1965,12 +1972,18 @@ static const float *projection_rows(const p_scene_projection *p, const VkExecTar
 // tone mapping, and post-processing read the anti-aliased scene. Any frame that cannot resolve there falls back to
 // the scaling dispatch. Because the bloom draw's pass is a single draw (below REKARINA_PAR_MIN), it always replays
 // in order on the replay thread.
-#define OOT_BLOOM_FS  UINT64_C(0x865a04d320227ae3)   // bloom chain's first fragment shader input-id prefix
-#define OOT_SCALER_CS UINT64_C(0xdf55fc291b0f86ba)   // post-SMAA scaler compute shader input-id prefix
+#define OOT_BLOOM_FS        UINT64_C(0x865a04d320227ae3)   // bloom chain's first fragment shader input-id prefix
+#define OOT_SMAA_COMPOSE_CS UINT64_C(0x1f0ccd15c28b87b8)   // SMAA compose compute shader input-id prefix
+#define OOT_SCALER_CS       UINT64_C(0xdf55fc291b0f86ba)   // post-SMAA scaler compute shader input-id prefix
 
 enum {
-    OOT_STAGE_FS         = 1,   // NVN_STAGE_FS
-    OOT_BLOOM_SCENE_SLOT = 0,   // FS texture slot 0: scene light target
+    OOT_STAGE_FS           = 1,   // NVN_STAGE_FS
+    OOT_STAGE_CS           = 5,   // NVN_STAGE_CS
+    OOT_BLOOM_SCENE_SLOT   = 0,   // FS texture slot 0: scene light target
+    OOT_SMAA_COLOR_SLOT    = 3,   // CS texture slot 3: tone-mapped float color read by SMAA compose
+    OOT_SMAA_PACKED_SLOT   = 2,   // CS image slot 2: RGB9E5 output packed via R32UI view
+    OOT_SCALER_PACKED_SLOT = 0,   // CS texture slot 0: RGB9E5 input read by the scaler
+    OOT_SCALER_OUTPUT_SLOT = 1,   // CS image slot 1: HUD destination R11G11B10F image
 };
 
 static uint64_t shader_input_prefix(const GfxShader *shader) {
@@ -3277,16 +3290,221 @@ void vk_dlaa_pass(VkExec *ex) {
     }
 }
 
-// After DLSS resolved before the bloom the game's scaler runs: its output, the picture the HUD is drawn onto, is frame
-// generation's HUD-less source, and the frame's results point stays here as when DLSS replaces this dispatch.
-static void pre_bloom_scaler(VkExec *ex, const GfxShader *cs) {
-    D.hl_ow = D.ev_ow, D.hl_oh = D.ev_oh;
-    hudless_track(ex, cs);
-    if (D.hl_pic) D.out_addr = D.hl_pic_addr, D.hl_wait = vk_dlaa_hudless_wanted;
+// Looks up an NVN texture/image handle and verifies it references a whole, single-sample, output-sized 2D R11G11B10F
+// backing image viewed in `expected_format` (SMAA compose and the scaler reinterpret the backing storage as R32UI / RGB9E5).
+static const VkTexImage *pre_bloom_image_locked(uint64_t handle, VkFormat expected_format, int is_sampled) {
+    if (!handle) return NULL;
+    view_t view;
+    int has_view = 0;
+    const VkTexImage *image = vk_texture_by_id_locked(NVN_HANDLE_TEX(handle), &view, &has_view);
+    if (!image || image->gone || !image->image) return NULL;
+    if (image->format != VK_FORMAT_B10G11R11_UFLOAT_PACK32) return NULL;
+    if (image->type != VK_IMAGE_TYPE_2D || image->view_type != VK_IMAGE_VIEW_TYPE_2D) return NULL;
+    if (image->aspect != VK_IMAGE_ASPECT_COLOR_BIT || image->samples != 1) return NULL;
+    if (image->levels != 1 || image->layers != 1) return NULL;
+    if (image->width != D.ev_ow || image->height != D.ev_oh) return NULL;
+
+    VkFormat view_format = image->format;
+    if (has_view) {
+        if ((view.set_levels && view.base_level != 0) || (view.set_layers && view.min_layer != 0)) return NULL;
+        if (view.set_target && view.target != NVN_TEXTURE_TARGET_2D) return NULL;
+        if (view.set_format) {
+            TexVkFormat mapped;
+            if (!tex_vk_format(view.format, &mapped)) return NULL;
+            view_format = mapped.vk;
+        }
+    }
+    if (view_format != expected_format) return NULL;
+
+    if (is_sampled) {
+        const uint8_t *swizzle = (has_view && view.set_swizzle) ? view.swz : image->swz;
+        if (image->chan[0] ||
+            swizzle[0] != NVN_TEXTURE_SWIZZLE_R ||
+            swizzle[1] != NVN_TEXTURE_SWIZZLE_G ||
+            swizzle[2] != NVN_TEXTURE_SWIZZLE_B)
+            return NULL;
+    }
+    return image;
+}
+
+static void pre_bloom_stage_destroy(void) {
+    if (!D.pre_bloom.stage) return;
+    const VkCtx *c = vk_ctx();
+    vk_queue_lock();
+    vkDeviceWaitIdle(c->device);
+    vk_queue_unlock();
+    vmaDestroyImage(c->vma, D.pre_bloom.stage, D.pre_bloom.stage_mem);
+    D.pre_bloom.stage = VK_NULL_HANDLE;
+    D.pre_bloom.stage_mem = NULL;
+    D.pre_bloom.stage_w = 0;
+    D.pre_bloom.stage_h = 0;
+}
+
+// Ensures the runtime-owned staging image exists at (w, h) in GENERAL layout. Returns 1 on success.
+static int pre_bloom_stage_ensure(VkCommandBuffer cb, uint32_t w, uint32_t h) {
+    if (D.pre_bloom.stage && D.pre_bloom.stage_w == w && D.pre_bloom.stage_h == h) return 1;
+    pre_bloom_stage_destroy();
+
+    const VkCtx *c = vk_ctx();
+    VkImageCreateInfo ci = {
+        .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+        .imageType = VK_IMAGE_TYPE_2D,
+        .format = VK_FORMAT_B10G11R11_UFLOAT_PACK32,
+        .extent = {w, h, 1},
+        .mipLevels = 1,
+        .arrayLayers = 1,
+        .samples = VK_SAMPLE_COUNT_1_BIT,
+        .tiling = VK_IMAGE_TILING_OPTIMAL,
+        .usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+        .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+    };
+    VmaAllocationCreateInfo alloc_ci = {.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE};
+    if (vmaCreateImage(c->vma, &ci, &alloc_ci, &D.pre_bloom.stage, &D.pre_bloom.stage_mem, NULL) != VK_SUCCESS) {
+        D.pre_bloom.stage = VK_NULL_HANDLE;
+        D.pre_bloom.stage_mem = NULL;
+        return 0;
+    }
+
+    VkImageMemoryBarrier2 barrier = {
+        .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+        .srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+        .dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+        .dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT,
+        .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+        .newLayout = VK_IMAGE_LAYOUT_GENERAL,
+        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .image = D.pre_bloom.stage,
+        .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1},
+    };
+    VkDependencyInfo dep = {
+        .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+        .imageMemoryBarrierCount = 1,
+        .pImageMemoryBarriers = &barrier,
+    };
+    vkCmdPipelineBarrier2(cb, &dep);
+    D.pre_bloom.stage_w = w;
+    D.pre_bloom.stage_h = h;
+    return 1;
+}
+
+// Snapshots the finished tone-mapped float picture as SMAA compose reads it, into our own staging image.
+// The game's image can share physical-pool memory with later passes before the scaler runs, so copying at compose
+// captures the exact image before anything else can alias or overwrite it.
+static void pre_bloom_stage(VkExec *ex) {
+    D.pre_bloom.staged = 0;
+    D.pre_bloom.stage_why = NULL;
+#ifdef GAME_NS2
+    if (ex->gpu_cond) {
+        D.pre_bloom.stage_why = "SMAA compose dispatch is GPU-conditional";
+        return;
+    }
+#endif
+    vk_texture_lock();
+    const VkTexImage *color = pre_bloom_image_locked(ex->tex[OOT_STAGE_CS][OOT_SMAA_COLOR_SLOT],
+                                                     VK_FORMAT_B10G11R11_UFLOAT_PACK32, 1);
+    const VkTexImage *packed = pre_bloom_image_locked(ex->img[OOT_STAGE_CS][OOT_SMAA_PACKED_SLOT],
+                                                      VK_FORMAT_R32_UINT, 0);
+    const char *why = NULL;
+    if (!color) why = "SMAA compose color slot is not a native R11G11B10F image";
+    else if (!packed || packed->image != D.color.image) why = "SMAA compose packed output does not match the armed scene";
+    else if (color->image == packed->image) why = "SMAA compose color image aliases the packed output";
+    else if (!(color->usage & VK_IMAGE_USAGE_TRANSFER_SRC_BIT)) why = "SMAA compose color image lacks transfer-source usage";
+
+    VkImage src = why ? VK_NULL_HANDLE : color->image;
+    uint32_t w = why ? 0 : color->width;
+    uint32_t h = why ? 0 : color->height;
+    if (!why) D.pre_bloom.packed_serial = packed->serial;
+    vk_texture_unlock();
+
+    if (why) {
+        D.pre_bloom.stage_why = why;
+        return;
+    }
+
+    vk_exec_par_join();
+    vk_exec_barrier(ex);   // ensure tone mapping finished writing `src`
+    if (!pre_bloom_stage_ensure(ex->cb, w, h)) {
+        D.pre_bloom.stage_why = "staging image creation failed";
+        return;
+    }
+
+    VkImageSubresourceLayers layer = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+    VkImageCopy region = {.srcSubresource = layer, .dstSubresource = layer, .extent = {w, h, 1}};
+    vkCmdCopyImage(ex->cb, src, VK_IMAGE_LAYOUT_GENERAL, D.pre_bloom.stage, VK_IMAGE_LAYOUT_GENERAL, 1, &region);
+    ex->recorded++;
+    vk_exec_barrier(ex);   // complete read of `src` before SMAA compose writes `packed` (which may share memory)
+    D.pre_bloom.staged = 1;
+}
+
+// Replaces OoT's post-SMAA scaling dispatch with a 1:1 copy from our staged tone-mapped image into the HUD target,
+// avoiding SMAA blur, RGB9E5 quantization, and scaler ringing halos on native DLAA output. Returns 1 when replaced.
+static int pre_bloom_scaler(VkExec *ex, const GfxShader *cs) {
+    vk_exec_par_join();
+    vk_texture_lock();
+    const VkTexImage *packed = pre_bloom_image_locked(ex->tex[OOT_STAGE_CS][OOT_SCALER_PACKED_SLOT],
+                                                      VK_FORMAT_E5B9G9R9_UFLOAT_PACK32, 1);
+    const VkTexImage *hud_target = pre_bloom_image_locked(ex->img[OOT_STAGE_CS][OOT_SCALER_OUTPUT_SLOT],
+                                                          VK_FORMAT_B10G11R11_UFLOAT_PACK32, 0);
+    const char *fallback_reason = NULL;
+    if (!D.pre_bloom.staged)
+        fallback_reason = D.pre_bloom.stage_why ? D.pre_bloom.stage_why : "SMAA compose was not seen this frame";
+    else if (!packed || packed->serial != D.pre_bloom.packed_serial)
+        fallback_reason = "the scaler reads a different RGB9E5 image";
+    else if (!hud_target)
+        fallback_reason = "the scaler's output view is not a native R11G11B10F image";
+    else if (hud_target->image == packed->image || hud_target->addr == packed->addr)
+        fallback_reason = "the HUD target is SMAA's image";
+    else if (hud_target->width != D.pre_bloom.stage_w || hud_target->height != D.pre_bloom.stage_h)
+        fallback_reason = "the HUD target is not the picture's size";
+    else if (!(hud_target->usage & VK_IMAGE_USAGE_TRANSFER_DST_BIT))
+        fallback_reason = "the HUD target lacks transfer-destination usage";
+#ifdef GAME_NS2
+    else if (ex->gpu_cond)
+        fallback_reason = "the scaler dispatch is GPU-conditional";
+#endif
+    if (!fallback_reason) vk_texture_storage_bound_locked(hud_target);
+    vk_texture_unlock();
+
+    D.pre_bloom.staged = 0;
+    D.pre_bloom.stage_why = NULL;
+    D.hl_ow = D.ev_ow;
+    D.hl_oh = D.ev_oh;
+    if (fallback_reason) {
+        hudless_track(ex, cs);
+    } else {
+        D.hl_pic = hud_target;
+        D.hl_pic_image = hud_target->image;
+        D.hl_pic_addr = hud_target->addr;
+    }
+    if (D.hl_pic) {
+        D.out_addr = D.hl_pic_addr;
+        D.hl_wait = vk_dlaa_hudless_wanted;
+    }
     vk_exec_results_point(ex);
-    if (vk_dlaa_pathlog())
-        rt_log("PATHLOG   pre-bloom kept the game's scaling dispatch, output %llx %ux%u", (unsigned long long)D.hl_pic_addr,
-               D.hl_ow, D.hl_oh);
+
+    if (fallback_reason) {
+        static unsigned fallback_logs;
+        if (fallback_logs++ < 8 || vk_dlaa_pathlog())
+            rt_log("dlaa: pre-bloom uses the game's scaler: %s", fallback_reason);
+        return 0;
+    }
+
+    vk_exec_barrier(ex);
+    VkImageSubresourceLayers layer = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+    VkImageCopy region = {.srcSubresource = layer, .dstSubresource = layer, .extent = {D.hl_ow, D.hl_oh, 1}};
+    vkCmdCopyImage(ex->cb, D.pre_bloom.stage, VK_IMAGE_LAYOUT_GENERAL, hud_target->image, VK_IMAGE_LAYOUT_GENERAL, 1, &region);
+    ex->recorded++;
+    vk_exec_barrier(ex);
+    if (vk_dump_armed) vk_dump_dlaa_copy(ex, hud_target);
+
+    static int copy_logged;
+    if (!copy_logged || vk_dlaa_pathlog()) {
+        rt_log("dlaa: pre-bloom copies the tone-mapped picture to the HUD target %#llx at %ux%u",
+               (unsigned long long)hud_target->addr, D.hl_ow, D.hl_oh);
+        copy_logged = 1;
+    }
+    return 1;
 }
 
 // OoT post-processes and scales its picture in compute: after the bloom composite and ACES/RenoDX tonemap write the
@@ -3298,7 +3516,11 @@ static void pre_bloom_scaler(VkExec *ex, const GfxShader *cs) {
 int vk_dlaa_dispatch(VkExec *ex, const GfxShader *cs, uint64_t caller) {
     static int on = -1;
     if (on < 0) on = rt_knob("DLAA_AT_DISPATCH", "1");
-    if (D.pre_bloom.resolved && cs && shader_input_prefix(cs) == OOT_SCALER_CS) return pre_bloom_scaler(ex, cs), 0;
+    if (D.pre_bloom.resolved && cs) {
+        uint64_t key = shader_input_prefix(cs);
+        if (key == OOT_SMAA_COMPOSE_CS) pre_bloom_stage(ex);
+        if (key == OOT_SCALER_CS) return pre_bloom_scaler(ex, cs);
+    }
     if (D.hl_wait && cs) hudless_track(ex, cs);   // after the evaluation: the picture the HUD-less copy is taken of
     if (!on || !dl_active() || D.done || !D.armed || deferred || !cs) return 0;
     const int spatial = fsr1();
@@ -3664,6 +3886,8 @@ void vk_dlaa_frame(void) {
     __atomic_store_n(&motion_record_consumer, on && !D.failed && !fsr1(), __ATOMIC_RELAXED);
     D.pre_bloom.tried = 0;
     D.pre_bloom.resolved = 0;
+    D.pre_bloom.staged = 0;
+    D.pre_bloom.stage_why = NULL;
     if (on != D.on) {
         rt_log("dlaa: %s", on ? "on" : "off");
         D.on = on;
