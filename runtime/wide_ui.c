@@ -416,6 +416,7 @@ static float g_wx = 1.0f;   // current spanning width multiplier
 static float g_half_x = WIDE_CANVAS_HALF_X;
 static float g_half_y = WIDE_CANVAS_HALF_Y;
 static int g_force_frames;
+static int g_plan_dirty;   // protected by g_lock; consumed after the placement callbacks
 static int g_log_budget;
 
 static WideHudGroupCfg g_group_cfg[WIDE_HUD_GROUP_COUNT];
@@ -488,13 +489,38 @@ static void pane_drop(PaneNode *n) {
     n->dead = 1;
 }
 
+// Pane callbacks capture the planner inputs. On a rebuild, check ownership against a
+// snapshot of the guest pages so a retired layout cannot leave a dangling pointer.
+// The guest fields below are naturally aligned and fit within one 4 KiB page.
+enum { HUD_PAGE_BYTES = 4096, HUD_PAGE_SLOTS = 256 };
+static struct {
+    uint64_t tag[HUD_PAGE_SLOTS];
+    unsigned char bytes[HUD_PAGE_SLOTS][HUD_PAGE_BYTES];
+} g_pane_pages;
+
+static int read_pane_field(uint64_t addr, void *out, size_t size) {
+    uint64_t page = addr & ~(uint64_t)(HUD_PAGE_BYTES - 1);
+    size_t offset = (size_t)(addr - page);
+    if (addr < 0x10000 || addr > RT_ADDRESS_LIMIT - size) return 0;
+    if (offset + size > HUD_PAGE_BYTES) return plat_mem_read(addr, out, size);
+    unsigned slot = (unsigned)(page >> 12) % HUD_PAGE_SLOTS;
+    if (g_pane_pages.tag[slot] != page) {
+        g_pane_pages.tag[slot] = 0;
+        if (!plat_mem_read(page, g_pane_pages.bytes[slot], HUD_PAGE_BYTES)) return 0;
+        g_pane_pages.tag[slot] = page;
+    }
+    memcpy(out, g_pane_pages.bytes[slot] + offset, size);
+    return 1;
+}
+
 static int pane_alive(const PaneNode *n) {
-    if (!n->key || !n->layout || n->dead) return 0;
-    if (!plat_mem_readable(n->key + PANE_LAYOUT, 8) || g_u64(n->key + PANE_LAYOUT) != n->layout) return 0;
-    if (!plat_mem_readable(n->layout + LYT_PANES, 8) || !plat_mem_readable(n->layout + LYT_COUNT, 4)) return 0;
-    uint64_t base = g_u64(n->layout + LYT_PANES);
-    uint32_t cnt = g_u32(n->layout + LYT_COUNT) & 0xffffu;
-    return base && n->key >= base && (n->key - base) % PANE_STRIDE == 0 && (n->key - base) / PANE_STRIDE < cnt;
+    uint64_t layout, base;
+    uint32_t count;
+    if (!read_pane_field(n->key + PANE_LAYOUT, &layout, sizeof layout) || !layout || layout != n->layout ||
+        !read_pane_field(layout + LYT_PANES, &base, sizeof base) ||
+        !read_pane_field(layout + LYT_COUNT, &count, sizeof count)) return 0;
+    return base && n->key >= base && (n->key - base) % PANE_STRIDE == 0 &&
+           (n->key - base) / PANE_STRIDE < (count & 0xffffu);
 }
 
 static const char *const HUD_ROOT_NAMES[] = {
@@ -595,7 +621,10 @@ static void cb_placed(Cpu *c) {
     PaneNode *pn = parent ? pane_find(parent) : NULL;
     if (parent && !(pn && pn->layout && !pn->dead && pn->tree_ok)) {
         PaneNode *old = pane_find(pane);
-        if (old && old->layout) pane_drop(old);
+        if (old && old->layout) {
+            if (old->tree_ok) g_plan_dirty = 1;
+            pane_drop(old);
+        }
         plat_mutex_unlock(&g_lock);
         return;
     }
@@ -622,19 +651,30 @@ static void cb_placed(Cpu *c) {
     uint32_t align_y = (((flags >> 11) & 0x7fu) / 3u) % 3u;
 
     uint64_t layout = g_u64(pane + PANE_LAYOUT);
-    if (n->layout != layout) classify_pane(n, pane, layout);
+    int layout_changed = n->layout != layout;
+    int was_tracked = n->tree_ok;
+    if (layout_changed) classify_pane(n, pane, layout);
 
     n->tree_ok = (uint8_t)(!n->is_world && (parent != 0 || n->is_hud));
+    float parent_ox = pn ? pn->ox : NAN;
+    uint8_t type = (uint8_t)((flags >> 22) & 0xfu);
+    float x0 = raw_x - (align_x == 1 ? 0.5f * w : align_x == 2 ? w : 0.0f);
+    float y1 = raw_y + (align_y == 1 ? 0.5f * h : align_y == 2 ? h : 0.0f);
+    if (was_tracked != n->tree_ok || ((n->tree_ok || parent) &&
+        (layout_changed || parent != n->parent || type != n->type ||
+         raw_x != n->ox || (pn && parent_ox != n->parent_ox) || x0 != n->x0 || x0 + w != n->x1 ||
+         (custom_on && (raw_y != n->oy || y1 != n->y1 || y1 - h != n->y0)))))
+        g_plan_dirty = 1;
     n->parent = parent;
     n->layout = layout;
-    n->type = (uint8_t)((flags >> 22) & 0xfu);
+    n->type = type;
     n->ox = raw_x;
-    n->parent_ox = pn ? pn->ox : NAN;
-    n->x0 = raw_x - (align_x == 1 ? 0.5f * w : align_x == 2 ? w : 0.0f);
-    n->x1 = n->x0 + w;
+    n->parent_ox = parent_ox;
+    n->x0 = x0;
+    n->x1 = x0 + w;
     n->oy = raw_y;
-    n->y1 = raw_y + (align_y == 1 ? 0.5f * h : align_y == 2 ? h : 0.0f);
-    n->y0 = n->y1 - h;
+    n->y1 = y1;
+    n->y0 = y1 - h;
 
     float side = (inh_push != 0.0f) ? 0.0f : n->plan_dx;
     n->moved_x = inh_x + side;
@@ -699,6 +739,7 @@ static WidePanePlan g_plan_out[PANE_CAP];
 static int32_t g_slot_to_dense[PANE_CAP];
 
 static void run_planner_locked(int custom_on) {
+    memset(g_pane_pages.tag, 0, sizeof g_pane_pages.tag);
     int n_live = 0;
     for (int w = 0; w < PANE_CAP / 64; w++) {
         for (uint64_t bits = g_used_bits[w]; bits; bits &= bits - 1) {
@@ -889,6 +930,7 @@ void wide_ui_tick(void) {
 
     plat_mutex_lock(&g_lock);
     if (mode_changed || sliders_changed) {
+        g_plan_dirty = 1;
         memcpy(last_cfg, cfg, sizeof cfg);
         memcpy(g_group_cfg, cfg, sizeof cfg);
         g_force_frames = 4;
@@ -922,7 +964,10 @@ void wide_ui_tick(void) {
                (double)ratio, (double)ex, any_custom);
     }
 
-    if (active) run_planner_locked(any_custom);
+    if (active && g_plan_dirty) {
+        run_planner_locked(any_custom);
+        g_plan_dirty = 0;
+    }
 
     if (g_force_frames > 0) {
         write_force_mask(0x40u);
