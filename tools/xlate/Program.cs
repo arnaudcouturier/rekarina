@@ -198,9 +198,11 @@ static class SwshXlate
 
     // The MeshStage of a task or mesh job and the code the translator reads (the instructions after the 0x80-byte SPH). The stage
     // memory layout is seedds/nxnative dm/gfx/tools/dmsh_meshstage.py info / memory (MIT): word 0 the workgroup's number, the input
-    // (a task's payload) at 0x10, the outputs after it at a 16-byte boundary (a task's payload, or a mesh shader's attribute blocks of
-    // 32 vertices, a word per component of the SPH's OMAP), then a mesh shader's primitive bytes (count at +3, three index bytes a
-    // triangle from +4).
+    // (a task's payload) at 0x10, the outputs after it at a 16-byte boundary (a task's payload, or a mesh shader's attribute area:
+    // its vertex blocks of 32 vertices, a word per component of the SPH's OMAP, then its primitive blocks of 32 primitives, a word per
+    // component of the per-primitive SPH's OMAP; MeshStage.PrimitiveAreaWord), then a mesh shader's primitive bytes (count at +3, three
+    // index bytes a triangle from +4). The primitive bytes' place is the translator's: after a block for each 32 of the larger of
+    // max_vertices and max_primitives, with a word per vertex and per-primitive component in each, which lies past the attribute area.
     static MeshStage MakeMeshStage(JsonObject job, string stage, byte[] code, out byte[] instructions)
     {
         if (job["mesh"] is not JsonObject m) throw new ArgumentException($"stage {stage} without \"mesh\"");
@@ -211,10 +213,11 @@ static class SwshXlate
         int primVerts = m["prim_verts"] is JsonNode pv ? (int)pv : 3;
         if (primVerts < 1 || primVerts > 3) throw new NotSupportedException($"mesh shader with {primVerts} vertices a primitive");
         // "as_compute": n: the stage as a compute kernel for a GPU without VK_EXT_mesh_shader (MeshStage.AsCompute): a task shader, or a
-        // mesh shader of triangles without per-primitive attributes (with a task or without); n is the runtime's revision of the layout
+        // mesh shader of triangles (with a task or without; per-primitive attributes give each triangle vertices of its own); n is the
+        // runtime's revision of the layout
         bool asCompute = Field("as_compute") != 0;
-        if (asCompute && stage == "ms" && (primVerts != 3 || primSph != 0))
-            throw new NotSupportedException("mesh shader as compute: only triangles without per-primitive attributes");
+        if (asCompute && stage == "ms" && primVerts != 3)
+            throw new NotSupportedException("mesh shader as compute: only triangles");
         int threads = job["local"] is JsonArray l && l.Count > 0 ? (int)l[0] : 1;
         bool task = stage == "ts";
         if (code.Length < 0x90 || (code.Length & 15) != 0) throw new ArgumentException($"{stage} code of {code.Length} bytes: no SPH and instructions");
@@ -296,8 +299,11 @@ static class SwshXlate
                     res["mesh"] = new JsonObject
                     {
                         ["threads"] = mesh.Threads, ["payload_words"] = mesh.PayloadWords, ["max_vertices"] = mesh.MaxVertices, ["max_primitives"] = mesh.MaxPrimitives,
-                        ["outputs"] = new JsonArray(mesh.VertexComponents.Where(c => c >= 0).Select(c => c >> 2).Distinct().Select(x => (JsonNode)x).ToArray()),
-                        ["per_primitive_outputs"] = new JsonArray(mesh.PrimitiveComponents.Select(c => c >> 2).Distinct().Select(x => (JsonNode)x).ToArray()),
+                        // (per-primitive attributes that go out as the vertices' own are outputs like the others: MeshStage.PrimitiveOutputsPerVertex)
+                        ["outputs"] = new JsonArray(mesh.VertexComponents.Where(c => c >= 0)
+                            .Concat(mesh.PrimitiveOutputsPerVertex ? mesh.PrimitiveComponents : Array.Empty<int>()).Select(c => c >> 2).Distinct().Select(x => (JsonNode)x).ToArray()),
+                        ["per_primitive_outputs"] = new JsonArray((mesh.PrimitiveOutputsPerVertex ? Array.Empty<int>() : mesh.PrimitiveComponents)
+                            .Select(c => c >> 2).Distinct().Select(x => (JsonNode)x).ToArray()),
                         ["stage_memory"] = mesh.Size,
                     };
                 if (mesh != null && mesh.AsCompute && mesh.IsTask)   // a task kernel (MeshStageWrapper.GenerateAsCompute)
@@ -307,7 +313,7 @@ static class SwshXlate
                 }
                 else if (mesh != null && mesh.AsCompute)   // the emulation buffer's layout for this shader (MeshStageWrapper.GenerateAsCompute)
                 {
-                    int[] locs = mesh.VertexComponents.Where(c => c >= 0).Select(c => c >> 2).Distinct().OrderBy(x => x).ToArray();
+                    int[] locs = mesh.EmuLocations();
                     res["stage"] = "msc";
                     res["mesh"]["as_compute"] = new JsonObject { ["vec4s"] = 1 + locs.Length, ["max_meshlets"] = mesh.EmuMaxMeshlets(1 + locs.Length),
                         ["locations"] = new JsonArray(locs.Select(x => (JsonNode)x).ToArray()), ["task"] = mesh.HasTask ? 1 : 0 };

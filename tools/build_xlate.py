@@ -44,7 +44,7 @@ BUILD = ROOT / "build" / "xlate"
 WIN = os.name == "nt"
 EXE = "totk_xlate.exe" if WIN else "totk_xlate"
 VSWHERE_DIR = Path(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)")) / "Microsoft Visual Studio" / "Installer"
-PATCH_COUNT = 46   # tools/xlate/patches/*.patch: a missing or stray file stops the build
+PATCH_COUNT = 47   # tools/xlate/patches/*.patch: a missing or stray file stops the build
 
 
 def find_dotnet() -> str | None:
@@ -177,7 +177,8 @@ def prepare_sources() -> Path:
 # stage GFX_STAGE_MSC in the program hash); patch 0044 changes programs with REDUX, MATCH or a per-lane HMMA, LDSM or
 # MOVM only in compute shaders translated for subgroups wider than 32 lanes (AMD GCN); patch 0046 marks DontInline the
 # raw global-memory helpers of mesh shaders whose code is 60,000 to 70,000 bytes long (OoT's foliage); patch 0047 changes only
-# the mesh emulation kernels (the buffer's address from push constants), which MESHC_REVISION re-keys; runtime/gfx_shader.c
+# the mesh emulation kernels (the buffer's address from push constants), which runtime/gfx_shader.c MESHC_REVISION re-keys;
+# patch 0048 changes only mesh programs with per-primitive outputs and their emulation kernels; runtime/gfx_shader.c
 # build_code_hash gives exactly those a program hash of their own, so every other cache
 # entry made under the earlier identity is what this build would write. A change to any source gives another left
 # side and the entry stops applying by itself; then it is removed, or made anew with the same care (translate a

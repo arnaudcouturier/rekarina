@@ -91,12 +91,13 @@ index byte). Patch 0024 puts a `TaskEXT` or `MeshEXT` entry point named `main` a
    With `mesh.whole_indices` (patch 0041) a thread stores a primitive's whole index vector.
 
 Stage memory layout (bytes): 0 workgroup number, 0x10 input (the payload), then at the next 16-byte boundary the
-outputs (a task's payload, or a mesh shader's attribute blocks: 32 vertices per block, a word per component, the
-components the SPH's OMAP enables in its order: the system values of byte 0x35 bits 0..3 (primitive id, layer,
-viewport index, point size), the position, the generic attributes, then the per-primitive SPH's), then a mesh shader's
-primitive bytes (count at +3, index bytes from +4). The guest code addresses the attribute blocks itself, in that
-order; the primitive bytes' place is the translator's (`MeshStage.Offsets[3]`), so a component left out of the list
-puts the primitive bytes inside the last attribute block. A shader with LDS / STS / ATOMS of its own is refused (its shared
+outputs (a task's payload, or a mesh shader's attribute area: first its vertex blocks, 32 vertices per block, a word
+per component, the components the SPH's OMAP enables in its order: the system values of byte 0x35 bits 0..3
+(primitive id, layer, viewport index, point size), the position, the generic attributes; then, after the last vertex
+block, its primitive blocks, 32 primitives per block, a word per component of the per-primitive SPH's OMAP), then a
+mesh shader's primitive bytes (count at +3, index bytes from +4). The guest code addresses the attribute area itself,
+in that order (patch 0048 below); the primitive bytes' place is the translator's (`MeshStage.Offsets[3]`), so a
+component left out of the list puts the primitive bytes inside the last attribute block. A shader with LDS / STS / ATOMS of its own is refused (its shared
 memory would overlap the stage memory, as nxnative refuses it); none of OoT's is.
 
 What a task or mesh module holds, for the runtime's pipeline (`vk_pipeline.c` `stages_create`):
@@ -110,7 +111,8 @@ What a task or mesh module holds, for the runtime's pipeline (`vk_pipeline.c` `s
 - Mesh outputs: `Position` (and `PointSize` where the SPH enables it or the shader outputs points) in a per-vertex
   block array; generic attribute n as a `vec4` array at `Location n` (the
   locations a vertex shader's outputs have, so the fragment shaders of vertex programs fit); per-primitive attribute n
-  as a `vec4` array at `Location n` decorated `PerPrimitiveEXT`; `PrimitiveTriangleIndicesEXT` (points:
+  as a plain `vec4` array at `Location n` with each primitive on vertices of its own (patch 0048; where that does not
+  fit in 256 vertices, a `vec4` array decorated `PerPrimitiveEXT`); `PrimitiveTriangleIndicesEXT` (points:
   `PrimitivePointIndicesEXT`, lines: `PrimitiveLineIndicesEXT`). A component the shader does not write reads 0 (w 1).
 - `res.json` gains `"mesh": {threads, payload_words, max_vertices, max_primitives, outputs: [locations],
   per_primitive_outputs: [locations], stage_memory: bytes}`; `stage` is `"ts"` / `"ms"` as sent.
@@ -127,11 +129,10 @@ What the runtime has to do (contract changes against `e31d224` / `efbb06a`; runt
   without a task.
 - Per-primitive attributes (4 of OoT's 500 mesh shaders, all agl `AglShader.sharcb`): their second SPH is the first
   0x80 bytes of the c1 segment in all four, which the translator uses when `c1` starts with an SPH (type 1, version 4).
-  The fragment shader paired with such a mesh shader reads those locations as per-primitive: its SPIR-V inputs at
-  `res.json mesh.per_primitive_outputs` need the `PerPrimitiveEXT` decoration (and the module `OpCapability
-  MeshShadingEXT`, `OpExtension "SPV_EXT_mesh_shader"`) before the pipeline is built, or the interfaces do not match.
-  A fragment translation does not know this; the runtime has to patch it, or send `mesh.c1_offset` and get a separate
-  fragment variant later if that turns out simpler.
+  Since patch 0048 they go out as plain vertex outputs (each primitive on vertices of its own), which the fragment
+  shader, translated without knowing its mesh shader, reads as the flat inputs it declares; nothing for the runtime.
+  Only a shader whose primitives would need more than 256 vertices so keeps `PerPrimitiveEXT` outputs (none in OoT):
+  its fragment shader's inputs at `res.json mesh.per_primitive_outputs` would need the same decoration.
 - Fragment inputs the mesh shader does not write (`res.json mesh.outputs`): there is no vertex-output fix-up for mesh
   pipelines; Vulkan rejects a fragment input with no matching output.
 - Subgroups: the kernel assumes 32 lanes (as compute); `stages_create` pins 32 only for non-mesh pipelines. On NVIDIA
@@ -516,6 +517,76 @@ Checked on the RTX 5070: the same 70 s (the forest, then the great tree) with th
 patch, each into an empty shader cache: 992 SPIR-V modules in both, all byte for byte equal, among them 21 compute
 kernels with REDUX, 11 with HMMA, 10 with LDSM, one with MOVM and 10 task or mesh programs with REDUX (the files that
 differ are the run's own: provisional keys in `res.json`, the answers of stored inputs, the use masks).
+
+## The 2.0 translator set (2026-11-23)
+
+Upstream's version 2.0 was allowed to translate every player's shaders again, so the translator changes that had waited for it
+were gathered: patch 0048 below. It did not need it: it changes the 12 mesh programs with per-primitive
+outputs and their emulation kernels, which `gfx_shader.c build_code_hash` keys apart (tag `TKPP`). Translated
+with the shipped translator and with this one: 31,598 shaders of a corpus of 42,851 (all the harness can form; the rest,
+mostly fragment shaders that need the game's answers, translate with neither), all byte for byte the same; the 1,085
+mesh programs of a build as the runtime asks for them, with and without whole index vectors, 1,073 the same and the 12
+above different; their emulation kernels the same, the 10 of those 12 with triangles now translated; the 71 kernels with
+HMMA, without `coop_matrix` and with NV's, the same. So the set keeps the shipped identity (`tools/build_xlate.py
+SAME_AS`), and a player's prepared shader cache and driver caches stay: the update runs no shader step
+(`tools/update_cost.py`), and the game translates the 12 programs anew when it first draws them. Shown in the temple's
+block room with a cache folder that held only a pack the shipped translator made: the prewarm translated nothing, and in
+play the set's build translated the two per-primitive programs drawn there and the same 19 shaders the shipped build
+also had to translate (the pack lacked them), those byte for byte as the shipped translator wrote them.
+
+In this fork the patch is 0048 (upstream's 0046, after this fork's own 0045 and 0046, with upstream's 0045 as 0047) and
+the identity is kept only once this fork's translator passes the same comparison: until then `SAME_AS` has no entry
+for its sources and an update would translate every shader again.
+
+Left out of the set: the clustered lighting's light records read 16 bytes at a time (the three heaviest passes
+on weak GPUs): the same shaders with 16-byte loads took 15.3 / 11.8 / 7.3 ms on the integrated Radeon
+against 14.8 / 11.8 / 7.1 without (the round trip through GLSL both times), and capping the loop at two lights a tile
+did not move them either: their ~7,700-instruction body is bound by arithmetic, not by the loads.
+
+## Per-primitive outputs after the vertex blocks (patch 0048, 2026-11-23)
+
+Players saw the pictures of the ghosts and the tops of the push blocks in the temple in the woods drawn flat green. Four
+of agl's mesh shaders (`AglShader.sharcb`; 12 of a build's 1,085 mesh programs with their variants, ten of triangles and
+two of points, three with a task shader) have per-primitive attributes. The most used of them draws 128 vertices and 64
+primitives a workgroup, with six vertex components (the position and location 2's x, y) and four per-primitive ones
+(locations 0 and 1 x, location 3 x, y). The guest code writes vertex v's
+component k at byte (v / 32) x 768 + k x 128 + (v % 32) x 4 of the attribute area and primitive p's component j at
+3072 + (p / 32) x 512 + j x 128 + (p % 32) x 4 (the translation of `baf3d07b0d451a84`): every vertex block first,
+then every primitive block, from the end of the last vertex block (max_vertices / 32 of them, rounded up). The entry
+point read them interleaved, each block's per-primitive words after its vertex words (the layout the nxnative lowering
+came with), which agrees only without per-primitive components or with one block: every vertex from 32 on and every
+per-primitive word came from other words. MacNativeGames found the same in their port (their issue 2214, "mesh shader
+primitive outputs read from the primitive blocks"); this is our own code. `MeshStage.VertexBlockWords`,
+`PrimitiveBlockWords` and `PrimitiveAreaWord` give the layout; the primitive bytes keep their place, which lies past the
+area for any counts.
+
+The per-primitive attributes also went out decorated `PerPrimitiveEXT`, which the fragment shader's inputs at those
+locations must carry too, and nothing gave them that (the fragment translation does not know its mesh shader). They now
+go out as plain vertex outputs (`MeshStage.PrimitiveOutputsPerVertex`): each primitive gets vertices of its own (output
+vertex n is corner n % k of primitive n / k, k vertices a primitive), which carry its corners' vertex words and its own
+per-primitive words; the fragment shaders drawn with these programs declare those inputs flat (NVN2 marks them
+constant; checked on the two the frame dumps below show, `a75289082a4d738b` and `fefe386d01dd83d0`), so every point of
+a primitive reads its value exactly. 64 triangles take 192 of the 256 vertices every device outputs; a
+shader whose primitives would need more keeps `PerPrimitiveEXT` outputs (none in OoT). The mesh emulation
+(`MeshStage.AsCompute`) takes these shaders too now, where Program.cs refused them before (their draws were left out on
+GPUs without mesh shaders): each triangle gets three vertices of its own in the emulation buffer, as above
+(`MeshStage.EmuMeshletVertices`, `EmuLocations`).
+
+Checked: the 1,085 mesh programs of a build's `shader-programs.bin` translated with the shipped translator and with this
+one, as the runtime asks (and with `whole_indices`, and as emulation kernels): 1,073 byte for byte the same, the 12 with
+per-primitive outputs differ and pass spirv-val; as emulation kernels, the 10 of triangles translate now (the two of
+points are still refused).
+
+In the game (the reporting player's save at the block puzzle, 1080p base mode; the patched modules put in place of the
+shipped ones with `REKARINA_SPV_FILE`, so that nothing else differs): the picture is painted every frame. A pass renders
+its subject into a 1024 x 1024 target, two draws of a task and mesh shader with one per-primitive colour (mesh
+`59bd5ef12a84bc6e`) lay brush strokes from it into a second target, and a third pass composes both into the texture
+that the block tops and the picture sample. With the shipped translation the strokes' target is one flat green (0, 0.63,
+0) in a frame dump of the RTX 5070, and so are the block tops on screen: green minus red on a block's top 99 to 105 of
+255 on every shot, against 19 to 23 with the patched modules, whose tops show the strokes. The mesh emulation
+(`REKARINA_MESH_EMULATE=1`) left those draws out before (the picture without its strokes) and draws them now, as the
+patched mesh path does. The integrated Radeon, whose mesh shaders store whole index vectors, shows the same with
+this build and translator against the shipped ones: 81 to 87 against 21 to 31 at 720p.
 
 ## Warp-aggregated atomics (patches 0028 and 0030, 2026-11-07)
 

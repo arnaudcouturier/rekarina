@@ -1,0 +1,543 @@
+TOTK: a mesh shader's per-primitive outputs read where the guest code writes them, and handed on as plain vertex outputs
+(docs/oot-xlate.md). The attribute area holds every vertex block first (32 vertices, a word per vertex component) and then
+every primitive block (32 primitives, a word per per-primitive component), from the end of the last vertex block
+(max_vertices / 32 blocks, rounded up); the entry point read them interleaved, each block's per-primitive words after its
+vertex words, so a mesh shader of 128 vertices and 64 primitives with four per-primitive components (three of agl's) took
+every vertex from 32 on and every per-primitive word from other words. MeshStage.VertexBlockWords, PrimitiveBlockWords and
+PrimitiveAreaWord give the layout to both entry points. The per-primitive attributes went out decorated PerPrimitiveEXT,
+which the fragment shader's inputs must carry too and do not (its translation does not know its mesh shader): each
+primitive now gets vertices of its own that carry its per-primitive words as plain outputs
+(MeshStage.PrimitiveOutputsPerVertex, where 256 vertices hold them). The mesh emulation (MeshStage.AsCompute) takes such
+shaders too, each triangle on three vertices of its own in the emulation buffer (MeshStage.EmuMeshletVertices,
+EmuLocations). A mesh shader without per-primitive outputs translates as before, byte for byte.
+
+--- a/src/Ryujinx.Graphics.Shader/CodeGen/Spirv/MeshStageWrapper.cs
++++ b/src/Ryujinx.Graphics.Shader/CodeGen/Spirv/MeshStageWrapper.cs
+@@ -19,7 +19,8 @@ namespace Ryujinx.Graphics.Shader.CodeGen.Spirv
+     //   2. the kernel runs; an early EXIT returns here;
+     //   3. a task copies its output payload to the TaskPayloadWorkgroupEXT block and launches output word 1 mesh workgroups; a mesh shader
+     //      sets its outputs: max_vertices vertices, the primitive count byte (primitive bytes + 3) primitives, each vertex's attribute
+-    //      words from its block of 32 (a word per component, the SPH's OMAP order; a component the shader does not have reads 0, w 1)
++    //      words from its block of 32 (a word per component, the SPH's OMAP order; a component the shader does not have reads 0, w 1),
++    //      each primitive's per-primitive words from its block of 32 after the last vertex block (MeshStage.PrimitiveComponents)
+     //      and three index bytes per triangle from the primitive bytes + 4. A shader that outputs points or lines
+     //      (MeshStage.PrimitiveVertices) has one or two index bytes a primitive, and points take their size from the point size's
+     //      block (1 when the shader writes none). Thread n stores index byte n; with MeshStage.WholeIndices thread n stores
+@@ -72,6 +73,9 @@ namespace Ryujinx.Graphics.Shader.CodeGen.Spirv
+             int primitiveVertices = mesh.PrimitiveVertices;
+             int pointSizeSlot = mesh.IsTask ? -1 : Array.IndexOf(mesh.VertexComponents, MeshStage.PointSize);
+             bool hasPointSize = !mesh.IsTask && (pointSizeSlot >= 0 || primitiveVertices == 1);
++            // per-primitive attributes as the vertices' own: each primitive has vertices of its own (MeshStage.PrimitiveOutputsPerVertex)
++            bool unshared = !mesh.IsTask && mesh.PrimitiveOutputsPerVertex;
++            int outVertices = unshared ? mesh.MaxPrimitives * primitiveVertices : mesh.MaxVertices;
+ 
+             if (!mesh.IsTask)
+             {
+@@ -83,7 +87,7 @@ namespace Ryujinx.Graphics.Shader.CodeGen.Spirv
+                 {
+                     context.MemberDecorate(perVertexType, 1, Decoration.BuiltIn, (SpvLiteralInteger)BuiltIn.PointSize);
+                 }
+-                SpvInstruction perVertexArray = context.TypeArray(perVertexType, C(mesh.MaxVertices));
++                SpvInstruction perVertexArray = context.TypeArray(perVertexType, C(outVertices));
+                 perVertex = context.Variable(context.TypePointer(StorageClass.Output, perVertexArray), StorageClass.Output);
+                 context.AddGlobalVariable(perVertex);
+                 context.Name(perVertex, "mesh_vertices");
+@@ -120,7 +124,7 @@ namespace Ryujinx.Graphics.Shader.CodeGen.Spirv
+ 
+                 foreach (int attr in components.Keys.Where(a => a >= 0).OrderBy(a => a))
+                 {
+-                    SpvInstruction array = context.TypeArray(vec4, C(mesh.MaxVertices));
++                    SpvInstruction array = context.TypeArray(vec4, C(outVertices));
+                     SpvInstruction variable = context.Variable(context.TypePointer(StorageClass.Output, array), StorageClass.Output);
+                     context.Decorate(variable, Decoration.Location, (SpvLiteralInteger)attr);
+                     context.AddGlobalVariable(variable);
+@@ -128,8 +132,8 @@ namespace Ryujinx.Graphics.Shader.CodeGen.Spirv
+                     attributes.Add((attr, variable));
+                 }
+ 
+-                // per-primitive attributes: their components follow the vertex components in each block (Location n, PerPrimitiveEXT; the
+-                // fragment shader's inputs there must carry PerPrimitiveEXT too)
++                // per-primitive attributes: component i of a primitive block (MeshStage.PrimitiveComponents; Location n). As the
++                // vertices' own (unshared), or decorated PerPrimitiveEXT, which the fragment shader's inputs there must carry too
+                 for (int i = 0; i < mesh.PrimitiveComponents.Length; i++)
+                 {
+                     int c = mesh.PrimitiveComponents[i];
+@@ -139,15 +143,20 @@ namespace Ryujinx.Graphics.Shader.CodeGen.Spirv
+                         primitiveComponents[c >> 2] = slots = [-1, -1, -1, -1];
+                     }
+ 
+-                    slots[c & 3] = mesh.VertexComponents.Length + i;
++                    slots[c & 3] = i;
+                 }
+ 
+                 foreach (int attr in primitiveComponents.Keys.OrderBy(a => a))
+                 {
+-                    SpvInstruction array = context.TypeArray(vec4, C(mesh.MaxPrimitives));
++                    SpvInstruction array = context.TypeArray(vec4, C(unshared ? outVertices : mesh.MaxPrimitives));
+                     SpvInstruction variable = context.Variable(context.TypePointer(StorageClass.Output, array), StorageClass.Output);
+                     context.Decorate(variable, Decoration.Location, (SpvLiteralInteger)attr);
+-                    context.Decorate(variable, Decoration.PerPrimitiveNV);   // PerPrimitiveEXT, the same value
++
++                    if (!unshared)
++                    {
++                        context.Decorate(variable, Decoration.PerPrimitiveNV);   // PerPrimitiveEXT, the same value
++                    }
++
+                     context.AddGlobalVariable(variable);
+                     context.Name(variable, $"mesh_prim_attr{attr}");
+                     primitiveAttributes.Add((attr, variable));
+@@ -230,13 +239,17 @@ namespace Ryujinx.Graphics.Shader.CodeGen.Spirv
+             {
+                 SpvInstruction count = context.GlslUMin(u32, context.ShiftRightLogical(u32, context.Load(u32, Shared(C(primitives / 4))), C(24)), C(mesh.MaxPrimitives));
+ 
+-                context.SetMeshOutputsEXT(C(mesh.MaxVertices), count);
++                context.SetMeshOutputsEXT(unshared ? context.IMul(u32, count, C(primitiveVertices)) : C(mesh.MaxVertices), count);
+ 
+-                int stride = Math.Max(mesh.VertexComponents.Length + mesh.PrimitiveComponents.Length, 1) * MeshStage.Block;
+                 SpvInstruction outVec4 = context.TypePointer(StorageClass.Output, vec4);
+ 
++                // vertex n's block and primitive n's block (MeshStage.VertexBlockWords, PrimitiveBlockWords, PrimitiveAreaWord)
+                 SpvInstruction Block(SpvInstruction n) => context.IAdd(u32, C(output), context.IAdd(u32,
+-                    context.IMul(u32, context.UDiv(u32, n, C(MeshStage.Block)), C(stride)),
++                    context.IMul(u32, context.UDiv(u32, n, C(MeshStage.Block)), C(mesh.VertexBlockWords)),
++                    context.UMod(u32, n, C(MeshStage.Block))));
++
++                SpvInstruction PrimitiveBlock(SpvInstruction n) => context.IAdd(u32, C(output + mesh.PrimitiveAreaWord), context.IAdd(u32,
++                    context.IMul(u32, context.UDiv(u32, n, C(MeshStage.Block)), C(mesh.PrimitiveBlockWords)),
+                     context.UMod(u32, n, C(MeshStage.Block))));
+ 
+                 SpvInstruction Vector(SpvInstruction block, int[] slots)
+@@ -253,23 +266,9 @@ namespace Ryujinx.Graphics.Shader.CodeGen.Spirv
+                     return context.CompositeConstruct(vec4, v);
+                 }
+ 
+-                if (primitiveAttributes.Count != 0)
++                // output vertex n from the vertex block `block`: its position, point size and generic attributes
++                void WriteVertex(SpvInstruction n, SpvInstruction block)
+                 {
+-                    Loop(count, n =>
+-                    {
+-                        SpvInstruction block = Block(n);
+-
+-                        foreach ((int attr, SpvInstruction variable) in primitiveAttributes)
+-                        {
+-                            context.Store(context.AccessChain(outVec4, variable, n), Vector(block, primitiveComponents[attr]));
+-                        }
+-                    });
+-                }
+-
+-                Loop(C(mesh.MaxVertices), n =>
+-                {
+-                    SpvInstruction block = Block(n);
+-
+                     if (components.TryGetValue(-1, out int[] position))
+                     {
+                         context.Store(context.AccessChain(outVec4, perVertex, n, context.Constant(context.TypeS32(), 0)), Vector(block, position));
+@@ -288,7 +287,66 @@ namespace Ryujinx.Graphics.Shader.CodeGen.Spirv
+                     {
+                         context.Store(context.AccessChain(outVec4, variable, n), Vector(block, components[attr]));
+                     }
+-                });
++                }
++
++                if (unshared)
++                {
++                    // MeshStage.PrimitiveOutputsPerVertex: output vertex n is corner n % k of primitive n / k (k vertices a primitive),
++                    // its guest vertex the one index byte n names, and it carries that primitive's per-primitive attributes as its own
++                    Loop(context.IMul(u32, count, C(primitiveVertices)), n =>
++                    {
++                        SpvInstruction at = context.IAdd(u32, n, C(primitives + 4));
++                        SpvInstruction word = context.Load(u32, Shared(context.ShiftRightLogical(u32, at, C(2))));
++                        SpvInstruction shift = context.IMul(u32, context.BitwiseAnd(u32, at, C(3)), C(8));
++                        SpvInstruction index = context.BitwiseAnd(u32, context.ShiftRightLogical(u32, word, shift), C(0xff));
++
++                        WriteVertex(n, Block(context.GlslUMin(u32, index, C(mesh.MaxVertices - 1))));
++
++                        SpvInstruction block = PrimitiveBlock(context.UDiv(u32, n, C(primitiveVertices)));
++
++                        foreach ((int attr, SpvInstruction variable) in primitiveAttributes)
++                        {
++                            context.Store(context.AccessChain(outVec4, variable, n), Vector(block, primitiveComponents[attr]));
++                        }
++                    });
++
++                    // primitive n's vertices are output vertices k n .. k n + k - 1, its vector stored whole
++                    SpvInstruction indexType = primitiveVertices == 1 ? u32 : context.TypeVector(u32, primitiveVertices);
++                    SpvInstruction outIndex = context.TypePointer(StorageClass.Output, indexType);
++
++                    Loop(count, n =>
++                    {
++                        SpvInstruction first = context.IMul(u32, n, C(primitiveVertices));
++                        SpvInstruction[] v = new SpvInstruction[primitiveVertices];
++
++                        for (int k = 0; k < primitiveVertices; k++)
++                        {
++                            v[k] = k == 0 ? first : context.IAdd(u32, first, C(k));
++                        }
++
++                        context.Store(context.AccessChain(outIndex, indices, n), primitiveVertices == 1 ? first : context.CompositeConstruct(indexType, v));
++                    });
++
++                    context.Return();
++                    context.FunctionEnd();
++                    AddMeshEntryPoint(context, entry, mesh, outVertices);
++                    return;
++                }
++
++                if (primitiveAttributes.Count != 0)
++                {
++                    Loop(count, n =>
++                    {
++                        SpvInstruction block = PrimitiveBlock(n);
++
++                        foreach ((int attr, SpvInstruction variable) in primitiveAttributes)
++                        {
++                            context.Store(context.AccessChain(outVec4, variable, n), Vector(block, primitiveComponents[attr]));
++                        }
++                    });
++                }
++
++                Loop(C(mesh.MaxVertices), n => WriteVertex(n, Block(n)));
+ 
+                 SpvInstruction outU32 = context.TypePointer(StorageClass.Output, u32);
+ 
+@@ -330,13 +388,20 @@ namespace Ryujinx.Graphics.Shader.CodeGen.Spirv
+             }
+ 
+             context.FunctionEnd();
++            AddMeshEntryPoint(context, entry, mesh, mesh.MaxVertices);
++        }
+ 
++        // The entry point and its execution modes; a mesh shader outputs at most outputVertices vertices
++        private static void AddMeshEntryPoint(CodeGenContext context, SpvInstruction entry, MeshStage mesh, int outputVertices)
++        {
+             context.AddEntryPoint(mesh.IsTask ? SpvModule.ExecutionModelTaskEXT : SpvModule.ExecutionModelMeshEXT, entry, "main", context.GlobalVariables.ToArray());
+             context.AddExecutionMode(entry, ExecutionMode.LocalSize, (SpvLiteralInteger)mesh.Threads, (SpvLiteralInteger)1, (SpvLiteralInteger)1);
+ 
+             if (!mesh.IsTask)
+             {
+-                context.AddExecutionMode(entry, ExecutionMode.OutputVertices, (SpvLiteralInteger)mesh.MaxVertices);
++                int primitiveVertices = mesh.PrimitiveVertices;
++
++                context.AddExecutionMode(entry, ExecutionMode.OutputVertices, (SpvLiteralInteger)outputVertices);
+                 context.AddExecutionMode(entry, SpvModule.ExecutionModeOutputPrimitivesEXT, (SpvLiteralInteger)mesh.MaxPrimitives);
+                 context.AddExecutionMode(entry,
+                     primitiveVertices == 1 ? ExecutionMode.OutputPoints :
+@@ -349,14 +414,17 @@ namespace Ryujinx.Graphics.Shader.CodeGen.Spirv
+         // emulation buffer, which an indexed draw then reads as a vertex and an index buffer:
+         //   header (byte 0): VkDrawIndexedIndirectCommand {min(workgroups, the most that fit) x MaxPrimitives x 3, 1, 0, 0, 0}, by workgroup 0;
+         //   vertices (byte MeshStage.EmuVertexOffset): meshlet m's vertex v at vec4 (m x MaxVertices + v) x (1 + attributes): the position,
+-        //     then each generic attribute in location order (a component the shader does not have is 0, w 1);
++        //     then each generic attribute in location order (a component the shader does not have is 0, w 1); a shader with per-primitive
++        //     attributes gives each triangle three vertices of its own, vertex k of triangle p at m x 3 MaxPrimitives + 3 p + k, which
++        //     carry its corners' vertex attributes and its own per-primitive ones (each at its location, in the same order), so that the
++        //     fragment shader reads the primitive's value at every point of it;
+         //   indices (byte MeshStage.EmuIndexOffset): meshlet m's triangle p at word (m x MaxPrimitives + p) x 3, each the vertex's number in
+         //     the vertex buffer; a triangle past the meshlet's count, or naming a vertex past its MaxVertices, is its first vertex
+         //     three times (degenerate, nothing drawn).
+         // A meshlet past the most that fit writes nothing. The buffer's address is a push constant (a uvec2 at offset 0) the runtime
+         // pushes before each dispatch: a run-time value. Two constants the runtime replaced before it built the pipeline (MeshStage.EmuAddressLo,
+         // Hi) came out with the high word lost on AMD's driver for RDNA 1 and 2, and the first read of a task's launch count lost the device.
+-        // Triangles only, without per-primitive attributes (Program.cs refuses others).
++        // Triangles only (Program.cs refuses points and lines).
+         // Under a task the draw takes two kernels: the task's (IsTask), one workgroup a task workgroup, keeps each one's payload and launch
+         // count in the buffer (MeshStage.EmuPayloadOffset, EmuLaunchOffset) and writes the mesh kernel's dispatch arguments
+         // ({EmuTaskLaunches, tasks, 1} at EmuMeshArgsOffset); the mesh shader's (HasTask), workgroup (j, t) for launch j of task t, idle past
+@@ -397,7 +465,22 @@ namespace Ryujinx.Graphics.Shader.CodeGen.Spirv
+                 slots[comp] = i;
+             }
+ 
+-            int[] attrs = components.Keys.Where(a => a >= 0).OrderBy(a => a).ToArray();
++            // per-primitive attributes: component i of a primitive block (as Generate)
++            Dictionary<int, int[]> primitiveComponents = new();
++
++            for (int i = 0; i < mesh.PrimitiveComponents.Length; i++)
++            {
++                int c = mesh.PrimitiveComponents[i];
++
++                if (!primitiveComponents.TryGetValue(c >> 2, out int[] slots))
++                {
++                    primitiveComponents[c >> 2] = slots = [-1, -1, -1, -1];
++                }
++
++                slots[c & 3] = i;
++            }
++
++            int[] attrs = mesh.EmuLocations();
+             int vec4s = 1 + attrs.Length;
+             int maxMeshlets = mesh.IsTask ? 0 : mesh.EmuMaxMeshlets(vec4s);   // a task writes no meshlets
+ 
+@@ -614,39 +697,64 @@ namespace Ryujinx.Graphics.Shader.CodeGen.Spirv
+ 
+             {
+                 SpvInstruction count = context.GlslUMin(u32, context.ShiftRightLogical(u32, context.Load(u32, Shared(C(primitives / 4))), C(24)), C(mesh.MaxPrimitives));
+-                int stride = Math.Max(mesh.VertexComponents.Length + mesh.PrimitiveComponents.Length, 1) * MeshStage.Block;
+ 
++                // vertex n's block and primitive n's block (MeshStage.VertexBlockWords, PrimitiveBlockWords, PrimitiveAreaWord, as Generate)
+                 SpvInstruction Block(SpvInstruction n) => context.IAdd(u32, C(output), context.IAdd(u32,
+-                    context.IMul(u32, context.UDiv(u32, n, C(MeshStage.Block)), C(stride)),
++                    context.IMul(u32, context.UDiv(u32, n, C(MeshStage.Block)), C(mesh.VertexBlockWords)),
+                     context.UMod(u32, n, C(MeshStage.Block))));
+ 
+-                SpvInstruction firstVertex = context.IMul(u32, meshlet, C(mesh.MaxVertices));
++                SpvInstruction PrimitiveBlock(SpvInstruction n) => context.IAdd(u32, C(output + mesh.PrimitiveAreaWord), context.IAdd(u32,
++                    context.IMul(u32, context.UDiv(u32, n, C(MeshStage.Block)), C(mesh.PrimitiveBlockWords)),
++                    context.UMod(u32, n, C(MeshStage.Block))));
+ 
+-                Loop(C(mesh.MaxVertices), n =>
++                // the vec4s of one vertex of the buffer, from word `at` on: the position and the generic attributes (attrs' order) from
++                // the vertex block `block`; a per-primitive attribute from the primitive block `primitiveBlock`
++                void PutVertex(SpvInstruction at, SpvInstruction block, SpvInstruction primitiveBlock)
+                 {
+-                    SpvInstruction block = Block(n);
+-                    SpvInstruction at = context.IAdd(u32, C(MeshStage.EmuVertexOffset / 4),
+-                        context.IMul(u32, context.IAdd(u32, firstVertex, n), C(vec4s * 4)));
+-
+                     for (int a = 0; a < vec4s; a++)
+                     {
+-                        int[] slots = a == 0 ? (components.TryGetValue(-1, out int[] p) ? p : new[] { -1, -1, -1, -1 }) : components[attrs[a - 1]];
++                        SpvInstruction from = block;
++                        int[] slots = a == 0 ? (components.TryGetValue(-1, out int[] p) ? p : new[] { -1, -1, -1, -1 })
++                            : components.TryGetValue(attrs[a - 1], out int[] v) ? v : primitiveComponents[attrs[a - 1]];
++
++                        if (a != 0 && !components.ContainsKey(attrs[a - 1]))
++                        {
++                            from = primitiveBlock;
++                        }
+ 
+                         for (int k = 0; k < 4; k++)
+                         {
+                             SpvInstruction value = slots[k] < 0
+                                 ? C(k == 3 ? 0x3f800000 : 0)
+-                                : context.Load(u32, Shared(context.IAdd(u32, block, C(slots[k] * MeshStage.Block))));
++                                : context.Load(u32, Shared(context.IAdd(u32, from, C(slots[k] * MeshStage.Block))));
+                             Put(context.IAdd(u32, at, C(a * 4 + k)), value);
+                         }
+                     }
+-                });
++                }
++
++                // per-primitive attributes take each triangle three vertices of its own (MeshStage.EmuMeshletVertices)
++                bool perPrimitive = mesh.PrimitiveComponents.Length != 0;
++                SpvInstruction firstVertex = context.IMul(u32, meshlet, C(mesh.EmuMeshletVertices));
++
++                if (!perPrimitive)
++                {
++                    Loop(C(mesh.MaxVertices), n =>
++                    {
++                        SpvInstruction block = Block(n);
++                        SpvInstruction at = context.IAdd(u32, C(MeshStage.EmuVertexOffset / 4),
++                            context.IMul(u32, context.IAdd(u32, firstVertex, n), C(vec4s * 4)));
++
++                        PutVertex(at, block, null);
++                    });
++                }
+ 
+                 SpvInstruction indexBase = context.IAdd(u32, C(MeshStage.EmuIndexOffset / 4), context.IMul(u32, meshlet, C(mesh.MaxPrimitives * 3)));
+ 
+                 // one triangle a step: it is drawn when it is within the count and all three of its vertices are within the
+                 // meshlet's; an index past the last vertex would name the next meshlet's vertices here (the mesh stage drops
+-                // such a triangle), which drew long slivers across the scene
++                // such a triangle), which drew long slivers across the scene. With per-primitive attributes the step also writes
++                // the triangle's three vertices (vertex k of triangle n at meshlet vertex 3 n + k): its corners' vertex words and
++                // its own primitive words.
+                 Loop(C(mesh.MaxPrimitives), n =>
+                 {
+                     SpvInstruction[] index = new SpvInstruction[3];
+@@ -661,6 +769,20 @@ namespace Ryujinx.Graphics.Shader.CodeGen.Spirv
+                         live = context.LogicalAnd(boolType, live, context.ULessThan(boolType, index[k], C(mesh.MaxVertices)));
+                     }
+ 
++                    if (perPrimitive)
++                    {
++                        SpvInstruction primitiveBlock = PrimitiveBlock(n);
++
++                        for (int k = 0; k < 3; k++)
++                        {
++                            SpvInstruction vertex = context.IAdd(u32, firstVertex, context.IAdd(u32, context.IMul(u32, n, C(3)), C(k)));
++                            SpvInstruction at = context.IAdd(u32, C(MeshStage.EmuVertexOffset / 4), context.IMul(u32, vertex, C(vec4s * 4)));
++
++                            PutVertex(at, Block(context.GlslUMin(u32, index[k], C(mesh.MaxVertices - 1))), primitiveBlock);
++                            index[k] = context.IAdd(u32, context.IMul(u32, n, C(3)), C(k));
++                        }
++                    }
++
+                     for (int k = 0; k < 3; k++)
+                     {
+                         Put(context.IAdd(u32, indexBase, context.IAdd(u32, context.IMul(u32, n, C(3)), C(k))),
+--- a/src/Ryujinx.Graphics.Shader/MeshStage.cs
++++ b/src/Ryujinx.Graphics.Shader/MeshStage.cs
+@@ -1,3 +1,5 @@
++using System.Linq;
++
+ namespace Ryujinx.Graphics.Shader
+ {
+     /// <summary>
+@@ -50,11 +52,32 @@ namespace Ryujinx.Graphics.Shader
+         public bool Large { get; init; }
+ 
+         /// <summary>
+-        /// A mesh shader's per-primitive components (the second SPH's OMAP), 4 n + c for generic attribute n's; they follow the vertex components
+-        /// in each attribute block.
++        /// A mesh shader's per-primitive components (the second SPH's OMAP), 4 n + c for generic attribute n's, in the primitive blocks.
+         /// </summary>
+         public int[] PrimitiveComponents { get; init; } = System.Array.Empty<int>();
+ 
++        /// <summary>
++        /// The attribute area as the guest code addresses it (the console's mesh output memory, from Offsets[2]): first every vertex
++        /// block, each the vertex components of 32 vertices (component k of vertex v at word k x 32 + v % 32 of block v / 32), as many
++        /// as max_vertices needs; then every primitive block, the per-primitive components of 32 primitives laid out the same way. The
++        /// translation read them interleaved (block n's per-primitive words after its vertex words), which is the same only without
++        /// per-primitive components or with one block: a mesh shader of 128 vertices and 64 primitives with four per-primitive
++        /// components (three of agl's) read every vertex from 32 on and every per-primitive word from the wrong words.
++        /// VertexBlockWords and PrimitiveBlockWords are a block's words; PrimitiveAreaWord is the first primitive block's word from
++        /// the area's start.
++        /// </summary>
++        public int VertexBlockWords => System.Math.Max(VertexComponents.Length, 1) * Block;
++        public int PrimitiveBlockWords => PrimitiveComponents.Length * Block;
++        public int PrimitiveAreaWord => (MaxVertices + Block - 1) / Block * VertexBlockWords;
++
++        /// <summary>
++        /// The per-primitive components go out as plain vertex outputs: each primitive gets vertices of its own (output vertex n is corner
++        /// n % k of primitive n / k), which carry its corners' vertex words and its per-primitive words. The fragment shader is translated
++        /// without knowing its mesh shader, so it reads those locations as plain inputs (flat, as NVN2 marks them constant), where
++        /// PerPrimitiveEXT outputs would need its inputs decorated the same. Where the 256 vertices every Vulkan device outputs hold them.
++        /// </summary>
++        public bool PrimitiveOutputsPerVertex => PrimitiveComponents.Length != 0 && MaxPrimitives * PrimitiveVertices <= 256;
++
+         /// <summary>Byte offsets in the stage memory: the workgroup's number, the input, the outputs, the primitive bytes.</summary>
+         public int[] Offsets { get; init; }
+ 
+@@ -97,10 +120,19 @@ namespace Ryujinx.Graphics.Shader
+         public int EmuMaxTasks() => System.Math.Max(1, System.Math.Min((EmuPayloadOffset - EmuLaunchOffset) / 4,
+             (EmuVertexOffset - EmuPayloadOffset) / (System.Math.Max(PayloadWords, 1) * 4)));
+ 
++        /// <summary>A meshlet's vertices in the emulation buffer: max_vertices; with per-primitive components three a triangle, each
++        /// triangle's own, which carry its per-primitive attributes (MeshStageWrapper.GenerateAsCompute).</summary>
++        public int EmuMeshletVertices => PrimitiveComponents.Length != 0 ? MaxPrimitives * 3 : MaxVertices;
++
++        /// <summary>The generic attributes' locations a vertex of the emulation buffer carries after its position, in order: the
++        /// vertex attributes' and the per-primitive ones'.</summary>
++        public int[] EmuLocations() =>
++            VertexComponents.Where(c => c >= 0).Select(c => c >> 2).Concat(PrimitiveComponents.Select(c => c >> 2)).Distinct().OrderBy(x => x).ToArray();
++
+         /// <summary>The meshlets the emulation buffer holds when each vertex takes vec4s vec4s.</summary>
+         public int EmuMaxMeshlets(int vec4s)
+         {
+-            int byVertices = (EmuIndexOffset - EmuVertexOffset) / (MaxVertices * vec4s * 16);
++            int byVertices = (EmuIndexOffset - EmuVertexOffset) / (EmuMeshletVertices * vec4s * 16);
+             int byIndices = (EmuBytes - EmuIndexOffset) / (MaxPrimitives * 3 * 4);
+             return System.Math.Max(1, System.Math.Min(byVertices, byIndices));
+         }
+new file mode 100644
+--- /dev/null
++++ b/src/Ryujinx.Graphics.Shader/MeshStage.cs.orig
+@@ -0,0 +1,108 @@
++namespace Ryujinx.Graphics.Shader
++{
++    /// <summary>
++    /// TOTK: an NVN2 (Switch 2) task or mesh shader, translated to a VK_EXT_mesh_shader stage. The Ampere code runs as a compute
++    /// kernel whose stage memory is its shared memory (seedds/nxnative's lowering: InstEmitAmpereMem.AIsberd, AStageOut); the
++    /// SPIR-V entry point around it (CodeGen/Spirv/MeshStageWrapper.cs) fills the stage inputs and hands the outputs to Vulkan, as
++    /// nxnative's dm/gfx/tools/dmsh_meshstage.py does for Metal (MIT).
++    /// </summary>
++    public sealed class MeshStage
++    {
++        /// <summary>True for a task shader, false for a mesh shader.</summary>
++        public bool IsTask { get; init; }
++
++        /// <summary>A mesh shader launched by a task shader: its input is the task's payload.</summary>
++        public bool HasTask { get; init; }
++
++        /// <summary>Threads of a workgroup (control +0x58).</summary>
++        public int Threads { get; init; }
++
++        /// <summary>The payload's 32-bit words (control +0x5a, bytes, rounded up).</summary>
++        public int PayloadWords { get; init; }
++
++        /// <summary>A mesh shader's most vertices and primitives (control +0x60, +0x62).</summary>
++        public int MaxVertices { get; init; }
++        public int MaxPrimitives { get; init; }
++
++        /// <summary>
++        /// The components of the attribute area, in its order (the SPH's OMAP): -1 - c for the position's component c,
++        /// 4 n + c for generic attribute n's, PointSize for the point size and Unused for a system value the entry point
++        /// hands to nothing (it still takes its block).
++        /// </summary>
++        public int[] VertexComponents { get; init; }
++        public const int PointSize = -5;
++        public const int Unused = -6;
++
++        /// <summary>Vertices of a primitive (control +0x5f): 3 triangles, 2 lines, 1 points; an index byte each.</summary>
++        public int PrimitiveVertices { get; init; } = 3;
++
++        /// <summary>
++        /// A primitive's index vector is stored whole, by the thread whose number is the primitive's. Otherwise thread n stores
++        /// index byte n, so the components of a triangle's vector come from three threads: AMD's Windows driver for RDNA 1 and 2
++        /// loses such stores, and every mesh draw comes out empty.
++        /// </summary>
++        public bool WholeIndices { get; init; }
++
++        /// <summary>
++        /// TOTK: a mesh shader of 60,000 to 70,000 bytes of instructions (the code file, SPH included; runtime nvn_ctl.h
++        /// nvn2_ctl_mesh_large). Its raw global-memory helpers are not inlined (SpirvGenerator.Generate).
++        /// </summary>
++        public bool Large { get; init; }
++
++        /// <summary>
++        /// A mesh shader's per-primitive components (the second SPH's OMAP), 4 n + c for generic attribute n's; they follow the vertex components
++        /// in each attribute block.
++        /// </summary>
++        public int[] PrimitiveComponents { get; init; } = System.Array.Empty<int>();
++
++        /// <summary>Byte offsets in the stage memory: the workgroup's number, the input, the outputs, the primitive bytes.</summary>
++        public int[] Offsets { get; init; }
++
++        /// <summary>The stage memory's bytes.</summary>
++        public int Size { get; init; }
++
++        /// <summary>The constant buffer 0 byte offset where the host puts the draw's first workgroup.</summary>
++        public int FirstWorkgroupOffset { get; init; }
++
++        /// <summary>Set by the translator: the shared memory that holds the stage memory.</summary>
++        public int SharedMemoryId { get; set; } = -1;
++
++        /// <summary>Vertices and primitives of an attribute block.</summary>
++        public const int Block = 32;
++
++        /// <summary>
++        /// TOTK: a mesh shader for a GPU without VK_EXT_mesh_shader: a compute kernel that writes what the mesh entry point would hand to
++        /// Vulkan into the emulation buffer (CodeGen/Spirv/MeshStageWrapper.cs GenerateAsCompute; runtime vk_exec_draw.c mesh_emulate).
++        /// </summary>
++        public bool AsCompute { get; init; }
++
++        /// <summary>The emulation buffer (runtime/vk.h VK_MESH_EMU_*, which must match): its bytes; the draw's arguments at 0; under a task the
++        /// mesh kernel's dispatch arguments, the meshlets taken (a counter) and each task's launch count and payload; then the vertices
++        /// and the indices; and the two 32-bit constants that stand for its address in the module until the runtime puts the address
++        /// there.</summary>
++        public const int EmuBytes = 64 << 20;
++        public const int EmuMeshArgsOffset = 32;
++        public const int EmuCounterOffset = 48;
++        public const int EmuLaunchOffset = 4 << 10;
++        public const int EmuPayloadOffset = 64 << 10;
++        public const int EmuVertexOffset = 8 << 20;
++        public const int EmuIndexOffset = 48 << 20;
++        public const uint EmuAddressLo = 0xC0DE5A71, EmuAddressHi = 0xC0DE5A72;
++
++        /// <summary>The most mesh workgroups one task workgroup launches in the emulation (more are dropped): the mesh kernel runs this many
++        /// per task, the idle ones returning at once.</summary>
++        public const int EmuTaskLaunches = 64;
++
++        /// <summary>The task workgroups whose launch counts and payloads the emulation buffer holds.</summary>
++        public int EmuMaxTasks() => System.Math.Max(1, System.Math.Min((EmuPayloadOffset - EmuLaunchOffset) / 4,
++            (EmuVertexOffset - EmuPayloadOffset) / (System.Math.Max(PayloadWords, 1) * 4)));
++
++        /// <summary>The meshlets the emulation buffer holds when each vertex takes vec4s vec4s.</summary>
++        public int EmuMaxMeshlets(int vec4s)
++        {
++            int byVertices = (EmuIndexOffset - EmuVertexOffset) / (MaxVertices * vec4s * 16);
++            int byIndices = (EmuBytes - EmuIndexOffset) / (MaxPrimitives * 3 * 4);
++            return System.Math.Max(1, System.Math.Min(byVertices, byIndices));
++        }
++    }
++}

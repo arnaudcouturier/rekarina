@@ -2127,7 +2127,7 @@ static uint32_t xlate_lanes(int stage) {
 static int build_code_hash(int stage, const uint8_t *control, const uint8_t *code, uint64_t code_size,
                            const uint8_t *c1, uint32_t c1_len, uint8_t hash[32]) {
     static const char tag[8] = "TKMP\1", tag_whole[8] = "TKMW\1", tag_voteu[8] = "TKVU\1", tag_wide[8] = "TKWL\1",
-                      tag_large[8] = "TKML\1";
+                      tag_large[8] = "TKML\1", tag_prim[8] = "TKPP\1";
     int tagged = stage == GFX_STAGE_MS && nvn2_ctl_mesh_points(control, code, code_size);
     // A program whose VOTEU writes a uniform predicate is another translation since patch 0042 (the eye shaders'
     // probe light): a tag keeps the earlier translator identity for every other program
@@ -2146,8 +2146,16 @@ static int build_code_hash(int stage, const uint8_t *control, const uint8_t *cod
 #ifdef GAME_NS2
     whole = gfx_shader_mesh_whole && stage == GFX_STAGE_MS && nvn2_ctl(control);
 #endif
+    // A mesh program with per-primitive outputs (a per-primitive SPH: control +0x68 bit 7), and its emulation kernel, is
+    // another translation since patch 0048 (the outputs read after the vertex blocks): a tag gives exactly those new
+    // keys and keeps the earlier translator identity, and every player's cache, for everything else
+    int prim = 0;
+#ifdef GAME_NS2
+    prim = (stage == GFX_STAGE_MS || stage == GFX_STAGE_MSC) && nvn2_ctl(control) && (control[0x68] & 0x80);
+#endif
     size_t total = 4 + CONTROL_SIZE + 8 + (size_t)code_size + 4 + c1_len + (tagged ? sizeof tag : 0) + (whole ? sizeof tag_whole : 0) +
-                   (voteu ? sizeof tag_voteu : 0) + (wide ? sizeof tag_wide : 0) + (large ? sizeof tag_large : 0);
+                   (voteu ? sizeof tag_voteu : 0) + (wide ? sizeof tag_wide : 0) + (large ? sizeof tag_large : 0) +
+                   (prim ? sizeof tag_prim : 0);
     uint8_t *buf = malloc(total), *p = buf;
     if (!buf) return 0;
     // a mesh emulation kernel carries its layout's revision: a change of the kernel (tools/xlate MeshStageWrapper
@@ -2162,7 +2170,8 @@ static int build_code_hash(int stage, const uint8_t *control, const uint8_t *cod
     if (whole) memcpy(p, tag_whole, sizeof tag_whole), p += sizeof tag_whole;
     if (voteu) memcpy(p, tag_voteu, sizeof tag_voteu), p += sizeof tag_voteu;
     if (wide) memcpy(p, tag_wide, sizeof tag_wide), p += sizeof tag_wide;
-    if (large) memcpy(p, tag_large, sizeof tag_large);
+    if (large) memcpy(p, tag_large, sizeof tag_large), p += sizeof tag_large;
+    if (prim) memcpy(p, tag_prim, sizeof tag_prim);
     rt_sha256(buf, total, hash);
     free(buf);
     return 1;
