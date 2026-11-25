@@ -168,9 +168,21 @@ static int core_load(void) {
         return 0;
     }
     snprintf(path, sizeof path, "%s\\_nvngx.dll", dir);
-    N.core = LoadLibraryA(path);
+    // The core's own dependencies sit beside it in the driver's DriverStore folder. LoadLibraryA with a full path
+    // looks for them in the usual places only, not there, and a player's RTX 3060 Laptop (driver 576.88) got error 126
+    // (a module not found) where his other games run DLSS. The DLL's own folder joins the search for its dependencies
+    // (LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR with the default folders); a Windows that refuses those flags (error 87) gets
+    // the altered search path, which also starts at the DLL's folder.
+    N.core = LoadLibraryExA(path, NULL, LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
+    DWORD err = N.core ? 0 : GetLastError();
+    if (!N.core && err == ERROR_INVALID_PARAMETER) {
+        N.core = LoadLibraryExA(path, NULL, LOAD_WITH_ALTERED_SEARCH_PATH);
+        err = N.core ? 0 : GetLastError();
+    }
     if (!N.core) {
-        rt_log("dlaa: cannot load %s (error %lu): DLAA off", path, GetLastError());
+        DWORD at = GetFileAttributesA(path);
+        rt_log("dlaa: cannot load %s (error %lu; the file %s): DLAA off", path, err,
+               at == INVALID_FILE_ATTRIBUTES ? "is not there" : "is there (126: a module it needs was not found)");
         return 0;
     }
 #define FN(f, name) N.f = (void *)GetProcAddress((HMODULE)N.core, name)
