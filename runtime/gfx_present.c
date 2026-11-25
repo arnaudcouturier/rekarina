@@ -1346,8 +1346,7 @@ uint64_t gfx_blit_gpu_ns(uint64_t frame) {   // the completion thread
     return t > 0 && t <= now ? (uint64_t)t : 0;
 }
 
-static int present_image(VkImage src, VkImageLayout layout, VkFormat fmt, int w, int h, const int crop[4], int defer,
-                         GfxOutputEncoding encoding) {
+static int present_image(VkImage src, VkImageLayout layout, VkFormat fmt, int w, int h, const int crop[4], int defer) {
     int tagged = 0;
     int general = layout == VK_IMAGE_LAYOUT_GENERAL;
     {   // DEBUG-FOCUS: REKARINA_TEST_FOCUS=<frame>,<frame>: the window "loses" the focus at the first frame and gains it at
@@ -1647,7 +1646,7 @@ static int present_image(VkImage src, VkImageLayout layout, VkFormat fmt, int w,
     }
     if (src) vk_fg_frame(cb, g_sc, g_sc_fmt, g_sc_ext, hudless, g_sc_hdr, to);
     if (src) output_rate();
-    if (src) tagged = vk_dlssg_frame(cb, g_sc_ext, hudless, g_hl_view, g_sc_fmt, interface_coverage, interface_coverage_view);
+    if (src) tagged = vk_dlssg_frame(cb, g_sc_ext, hudless, g_hl_view, g_sc_fmt);                // DLSS Frame Generation: constants and tags (vk_dlssg.c)
     sync_barrier(cb, dst, last, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, last_stage, last_write, VK_PIPELINE_STAGE_2_NONE, 0);
     vk_crumb(cb, VK_CRUMB_PRESENT_END, crumb);
     bt_write(cb);   // the frame clock's shown moment
@@ -1705,10 +1704,8 @@ void vk_present_image(VkImage src, VkImageLayout layout, VkFormat fmt, int w, in
     present_image(src, layout, fmt, w, h, crop, 0, GFX_OUTPUT_UNSPECIFIED);
 }
 
-int vk_present_blit(VkImage src, VkImageLayout layout, VkFormat fmt, int w, int h, const int crop[4],
-                    GfxOutputEncoding encoding) {
-    if (!src) return 0;
-    return present_image(src, layout, fmt, w, h, crop, 1, encoding);
+int vk_present_blit(VkImage src, VkImageLayout layout, VkFormat fmt, int w, int h, const int crop[4]) {
+    return present_image(src, layout, fmt, w, h, crop, 1);
 }
 
 void vk_present_flip(void) {
