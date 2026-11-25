@@ -686,14 +686,92 @@ static void scan_pads(void) {
     SDL_free(ids);
 }
 
-// A press on gamepad g: a button down, a trigger past half way or a stick past PAD_USED. Gamepad thread.
+// A trigger counts only once it has read let go (TRIGGER_REST or below) for a second without a break since its gamepad
+// was opened. Some devices report a trigger held for good: a 2.4 GHz receiver whose full-range trigger axes rest at
+// half travel reads about 16,400, past TRIGGER_ON. Without the rule such a pad held ZL and ZR from the start when it was
+// the one read, and with several pads open REKARINA_PAD_FOLLOW took it as pressed, made it the one read and never let
+// go of it again (pad_pressed_now stays true). A real trigger rests when its pad opens and counts a second later; a pull
+// in that second waits for the next full second let go. One let-go reading is not enough: such a receiver reads let go
+// for a moment as it opens and then held for good (another port's player report showed exactly that). Once a trigger
+// counts it counts until its pad is closed. The test gamepad (REKARINA_TEST_PAD) counts at once: its triggers are held
+// on purpose. Gamepad thread.
+enum { TRIGGER_REST = 8000 };
+#define TRIGGER_REST_NS 1000000000ull
+static SDL_Joystick *tp_joy;   // kept open: a virtual joystick's axes are set through an open handle
+typedef struct {
+    SDL_JoystickID id;   // 0: a free slot
+    uint64_t opened, rest_since[2];
+    uint8_t counts[2], said[2];
+} TrigRest;
+static TrigRest trig_rest[MAX_OTHER_PADS + 1];
+
+static int pad_is_open(SDL_JoystickID id) {
+    if (pad && SDL_GetGamepadID(pad) == id) return 1;
+    for (int i = 0; i < n_others; i++)
+        if (SDL_GetGamepadID(others[i]) == id) return 1;
+    return 0;
+}
+
+static TrigRest *trig_of(SDL_Gamepad *g) {
+    SDL_JoystickID id = SDL_GetGamepadID(g);
+    TrigRest *free_slot = NULL;
+    for (int i = 0; i < MAX_OTHER_PADS + 1; i++) {
+        if (trig_rest[i].id == id) return &trig_rest[i];
+        if (!free_slot && (!trig_rest[i].id || !pad_is_open(trig_rest[i].id))) free_slot = &trig_rest[i];
+    }
+    if (!free_slot) return NULL;
+    memset(free_slot, 0, sizeof *free_slot);
+    free_slot->id = id, free_slot->opened = plat_now_ns();
+    // (REKARINA_TEST_PAD_TRIGGER_RULE=1: the test gamepad follows the rule too, to see it hold back a held trigger)
+    int test = tp_joy && SDL_GetJoystickID(tp_joy) == id && !cfg_env("REKARINA_TEST_PAD_TRIGGER_RULE");
+    free_slot->counts[0] = free_slot->counts[1] = (uint8_t)test;
+    return free_slot;
+}
+
+// Each poll, for every open gamepad: a trigger let go for a second starts to count; one that has not after 3 s is
+// logged once (with its reading), and if it counts later, that too.
+static void trig_update(SDL_Gamepad *g, uint64_t now) {
+    TrigRest *r = trig_of(g);
+    if (!r) return;
+    for (int t = 0; t < 2; t++) {
+        if (r->counts[t]) continue;
+        int v = SDL_GetGamepadAxis(g, t ? SDL_GAMEPAD_AXIS_RIGHT_TRIGGER : SDL_GAMEPAD_AXIS_LEFT_TRIGGER);
+        if (v <= TRIGGER_REST) {
+            if (!r->rest_since[t]) {
+                r->rest_since[t] = now;
+            } else if (now - r->rest_since[t] >= TRIGGER_REST_NS) {
+                r->counts[t] = 1;
+                if (r->said[t])
+                    rt_log("input: \"%s\": its %s trigger has read let go for a second (%d of 32767): it counts from now",
+                           SDL_GetGamepadName(g), t ? "right" : "left", v);
+            }
+        } else {
+            r->rest_since[t] = 0;
+            if (!r->said[t] && now - r->opened >= 3 * TRIGGER_REST_NS) {
+                r->said[t] = 1;
+                rt_log("input: \"%s\": its %s trigger reads %d of 32767 and has not read let go for a second since it "
+                       "was opened, so it does not count until it does", SDL_GetGamepadName(g), t ? "right" : "left", v);
+            }
+        }
+    }
+}
+
+// Trigger t (0 left, 1 right) of g as the game takes it: its reading once it counts, 0 before.
+static int trig_value(SDL_Gamepad *g, int t) {
+    TrigRest *r = trig_of(g);
+    if (r && !r->counts[t]) return 0;
+    return SDL_GetGamepadAxis(g, t ? SDL_GAMEPAD_AXIS_RIGHT_TRIGGER : SDL_GAMEPAD_AXIS_LEFT_TRIGGER);
+}
+
+// A press on gamepad g: a button down, a trigger past half way (once it counts) or a stick past PAD_USED. Gamepad
+// thread.
 static int pad_pressed_now(SDL_Gamepad *g) {
     for (int k = 0; k < SDL_GAMEPAD_BUTTON_COUNT; k++)
         if (SDL_GetGamepadButton(g, (SDL_GamepadButton)k)) return 1;
     for (int a = 0; a < SDL_GAMEPAD_AXIS_COUNT; a++) {
-        int v = SDL_GetGamepadAxis(g, (SDL_GamepadAxis)a);
-        if (a == SDL_GAMEPAD_AXIS_LEFT_TRIGGER || a == SDL_GAMEPAD_AXIS_RIGHT_TRIGGER ? v > TRIGGER_ON : abs(v) > PAD_USED)
-            return 1;
+        int trig = a == SDL_GAMEPAD_AXIS_LEFT_TRIGGER ? 0 : a == SDL_GAMEPAD_AXIS_RIGHT_TRIGGER ? 1 : -1;
+        int v = trig >= 0 ? trig_value(g, trig) : SDL_GetGamepadAxis(g, (SDL_GamepadAxis)a);
+        if (trig >= 0 ? v > TRIGGER_ON : abs(v) > PAD_USED) return 1;
     }
     return 0;
 }
@@ -1603,16 +1681,23 @@ static void pad_main(void *arg) {
         uint64_t now = plat_now_ns() / 1000000u;
         if (now >= next_scan) next_scan = now + RESCAN_MS, scan_pads();
         SDL_UpdateGamepads();
+        {   // the triggers' rest rule (trig_update) for every open gamepad, before any of them is read
+            uint64_t tnow = plat_now_ns();
+            if (pad) trig_update(pad, tnow);
+            for (int i = 0; i < n_others; i++) trig_update(others[i], tnow);
+        }
         pad_follow_press();
         int on = pad && SDL_GamepadConnected(pad);
         uint8_t pd[PAD_COUNT] = {0};
         int16_t ax[SDL_GAMEPAD_AXIS_COUNT] = {0};
         if (on) {
             for (int p = PAD_SOUTH; p < PAD_ZL; p++) pd[p] = SDL_GetGamepadButton(pad, pad_sdl[p]);
-            pd[PAD_ZL] = SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_LEFT_TRIGGER) > TRIGGER_ON;
-            pd[PAD_ZR] = SDL_GetGamepadAxis(pad, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER) > TRIGGER_ON;
+            pd[PAD_ZL] = trig_value(pad, 0) > TRIGGER_ON;
+            pd[PAD_ZR] = trig_value(pad, 1) > TRIGGER_ON;
             for (int p = PAD_ZR + 1; p < PAD_COUNT; p++) pd[p] = SDL_GetGamepadButton(pad, pad_sdl[p]);   // false without paddles
             for (int a = 0; a < SDL_GAMEPAD_AXIS_COUNT; a++) ax[a] = SDL_GetGamepadAxis(pad, (SDL_GamepadAxis)a);
+            ax[SDL_GAMEPAD_AXIS_LEFT_TRIGGER] = (int16_t)trig_value(pad, 0);   // (a trigger that does not count yet: 0)
+            ax[SDL_GAMEPAD_AXIS_RIGHT_TRIGGER] = (int16_t)trig_value(pad, 1);
         }
         plat_mutex_lock(&snap_lock);
         snap.on = on, snap.rumble = on && pad_rumble;
