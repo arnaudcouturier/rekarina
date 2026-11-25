@@ -4659,3 +4659,31 @@ filter in both places, no frame over 25 ms more. The integrated Radeon (RDNA 2, 
 turning, 600 frames from 300 after the arrival, off / 80 / 80 / off): 6.2 and 6.1 fps off (1 % low 4.9 / 4.8) against
 6.3 and 6.1 with the filter (5.0 / 4.7), no FATAL, no lost device. So the filter is on by default in OoT;
 REKARINA_MASK_FILTER=0 is the old picture as a test value.
+
+## 2026-11-25: the exposure step when the item bar closes (the bridge over a long gap)
+
+Upstream's notes (9f9cd9f's change, 960a5af), brought over with the change.
+
+A player's report and the owner's recording: a sharp darkening and recovery when the item bar (PLUS) opens outdoors,
+and a brighter picture for a moment after it closes. Reproduced by script in the field at noon (a 60 fps limit, the bar
+opened ten seconds after the arrival and closed five seconds later, twice; the flight recorder's thumbnails and
+`REKARINA_PROBE_FS=1893e0a44a9ee521`, the sky LUT pass's exposure factor, every frame).
+
+The close. The factor stood at 2.72 before the bar and at 2.85 for the 14 frames after its close: one push of the
+game's 15-frame average from a read that found no sum, the step the pause menu had before the bridge of 2026-11-20.
+The bar draws no scene of the world (the background is a 640x360 capture of it, drawn with constant parameters under a
+40 % dim), but it draws the hero and the items: 220 draws a frame against 2,100, enough texture bindings to count as a
+scene for the bridge's test. The environment's sums stop for as long as the bar is open (no float-sum range in any of
+its frames), so the close was logged as a skip in play ("had no sum for the wait ..., 303 frames after its last, with
+the scene drawn throughout") and not bridged. Now a gap of eight frames and more is bridged whether a scene counted as
+drawn in it or not (`vk_mem_late_apply`, LATE_PLAY_GAP); the skips in play that stay unbridged are one frame long (8 of
+8, 17 of 17 and 15 of 15 logged in three tours; the longer ones logged there, 14 to 1,377 frames, are map changes).
+After: 2.73 before the bar and 2.73, 2.73, 2.72 after it, and the thumbnails' mean 66 before, 66 / 65 / 66 after
+(66 then 68 to 69 before the change).
+
+The open, not solved. The thumbnails' mean: 66, then 25 for two frames (the live scene under the 40 % dim), then 15
+from the first frame that shows the capture, rising by about one every other frame to 22 and staying there. The game's
+parameters of the background draw and of the dim are constant over those frames and no uniform of any pass differs
+between two consecutive frames of the rise, so the rise comes from an image's content: in every bar frame the game
+filters an environment cube again down its mip chain (85 small passes). Whether the step from 25 to 15 or the rise
+to 22 is the game's own cannot be told without a reference picture of the console.

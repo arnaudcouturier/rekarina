@@ -5450,6 +5450,7 @@ static struct {
     int n, failed;
     uint64_t deferred, applied, words, stores;   // since the last log; stores: words taken as stored (late_shadow)
     uint64_t bridged;                            // sums put in early over a gap (vk_mem_late_apply)
+    uint64_t short_gaps;                         // skips in play left to the sum's own slot (vk_mem_late_apply)
 } LS;
 static PlatMutex late_lock = PLAT_MUTEX_INIT;
 
@@ -5606,7 +5607,7 @@ static LateShadow *late_shadow(uint64_t addr, uint64_t size) {
 // The delivery slot of each range the late sums serve (late_lock): the newest wait value at which one of its sums went
 // into guest memory (vk_mem_late_apply's bridge).
 #define LATE_SLOTS 16
-typedef struct { uint64_t addr, size, slot, used; } LateSlot;
+typedef struct { uint64_t addr, size, slot, used, frame; } LateSlot;   // frame: the frame count at that delivery
 static LateSlot late_slots[LATE_SLOTS];
 static uint64_t late_slot_clock;
 static LateSlot *late_slot(uint64_t addr, uint64_t size, int make) {
@@ -5617,7 +5618,7 @@ static LateSlot *late_slot(uint64_t addr, uint64_t size, int make) {
         if (x->used < lru->used) lru = x;
     }
     if (!make) return NULL;
-    *lru = (LateSlot){addr, size, 0, ++late_slot_clock};
+    *lru = (LateSlot){addr, size, 0, ++late_slot_clock, 0};
     return lru;
 }
 
@@ -5681,13 +5682,40 @@ static void late_put(const LateSum *e, uint64_t before, const char *how) {
 // 2026-11-20). So when a wait opens a new delivery slot for a range that has no sum for it but has the newer one
 // waiting (the frame just before, whose tail still runs), that frame's sum goes in now, once its work is complete, as on
 // the console; it also stays queued for its own slot, so the next read sees it again instead of nothing. The wait for the
-// frame's tail falls only on such a gap (once after each pause). REKARINA_LATE_BRIDGE=0: no bridge.
+// frame's tail falls only on such a gap. REKARINA_LATE_BRIDGE=0: no bridge.
+//
+// Only a gap with frames that drew no scene in it is bridged: the pause menu, a loading screen. In play some ranges
+// skip a frame now and then while the scene goes on (a 4 KiB range in the field, 64-byte ones in a temple,
+// 2026-11-22), and up to 1.2.11 each such skip was bridged too: the game thread whose wait returned (nvnSyncWait or the
+// present) waited for the frame before's GPU tail, which otherwise runs beside the next frame, and the frame came out at
+// 25-35 ms where the replay took 6-9 ms (a player's log at a 60 fps limit: 17 of the 21 bridges it logged were each
+// followed by a long frame of the game's own; another player's field bridged that range every two or three frames). A
+// skip in play goes as before 1.2.8: the newer sum goes in at its own slot, once, without a wait. The Market with four
+// cores and eight threads, base mode, 75 fps limit, the same exe both ways: 100 or more bridges a run against 4, frames
+// over 25 ms 77 against 11, 1 % low 41.4 against 55.6 fps, 71.8 against 74.6 fps (2026-11-22).
+// REKARINA_LATE_BRIDGE_PLAY=1 (DEBUG A/B): skips in play are bridged too, as up to 1.2.11.
+//
+// A gap of LATE_PLAY_GAP frames and more is bridged whether a scene counted as drawn in it or not. The item bar
+// (PLUS) draws no scene of the world, but it draws the hero and the items with enough textures to count as one
+// (220 draws a frame against 2,100; vk_texture.c DRAW_SUBMIT_MIN), and the environment's sums stop for as long as it
+// is open. So its close was taken for a skip in play ("had no sum for the wait ..., 303 frames after its last, with
+// the scene drawn throughout"), the first read after it found nothing, and the exposure stepped up for 15 frames as
+// after the pause menu before the bridge: the field at noon, the sky LUT's factor 2.72 before the bar, 2.85 for the
+// 14 frames after its close (a player's and the owner's report of a flash when the bar closes). A skip in play is one
+// frame, two or three at the most.
+#define LATE_PLAY_GAP 8
 #define LATE_BRIDGE_MAX 8
+int perf_scene_frames_ago(void);   // vk_texture.c: presents since a submission last drew a scene
+static uint64_t late_noscene;      // the last frame a wait returned in with no scene drawn lately (atomic)
 void vk_mem_late_apply(uint64_t before) {
     late_watch("wait returned for", before, 0);   // DEBUG-LATELOG
+    uint64_t frame = __atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED);
+    if (perf_scene_frames_ago() > 2 && __atomic_load_n(&late_noscene, __ATOMIC_RELAXED) < frame)
+        __atomic_store_n(&late_noscene, frame, __ATOMIC_RELAXED);   // before the return below: no sums come then
     if (!__atomic_load_n(&LS.n, __ATOMIC_RELAXED)) return;
-    static int bridge_on = -1;
+    static int bridge_on = -1, in_play = -1;
     if (bridge_on < 0) bridge_on = rt_knob("LATE_BRIDGE", "1");
+    if (in_play < 0) in_play = rt_knob("LATE_BRIDGE_PLAY", "0");
     uint64_t done = vk_sync_fence_done();
     plat_mutex_lock(&late_lock);
     int k = 0, inval = 0;
@@ -5701,6 +5729,7 @@ void vk_mem_late_apply(uint64_t before) {
         late_put(e, before, "");
         LateSlot *s = late_slot(e->addr, e->size, 1);
         if (s->slot < before) s->slot = before;
+        s->frame = frame;
     }
     __atomic_store_n(&LS.n, k, __ATOMIC_RELAXED);
     // The bridge's candidates: the oldest newer sum of each known range that this slot leaves without one, where no
@@ -5715,6 +5744,16 @@ void vk_mem_late_apply(uint64_t before) {
         int older = 0;
         for (int j = 0; j < k; j++) older |= LS.q[j].addr == e->addr && LS.q[j].size == e->size && LS.q[j].fence < before;
         if (older) continue;
+        if (!in_play && __atomic_load_n(&late_noscene, __ATOMIC_RELAXED) <= s->frame &&
+            frame - s->frame < LATE_PLAY_GAP) {   // a skip in play: no wait
+            if (++LS.short_gaps <= 20 || LS.short_gaps % 100 == 0)
+                rt_log("vk: late sums: %#llx+%#llx had no sum for the wait for %llu, %llu frames after its last, with the "
+                       "scene drawn throughout: the newer one goes in at its own slot, no wait (%llu such skips so far)",
+                       (unsigned long long)e->addr, (unsigned long long)e->size, (unsigned long long)before,
+                       (unsigned long long)(frame - s->frame), (unsigned long long)LS.short_gaps);
+            s->slot = before;   // this slot is settled: the next wait for the same value looks no further
+            continue;
+        }
         if (!want || e->fence < want) want = e->fence, nb = 0;
         if (e->fence == want && nb < LATE_BRIDGE_MAX) ba[nb] = e->addr, bs[nb] = e->size, nb++;
     }
@@ -5731,6 +5770,7 @@ void vk_mem_late_apply(uint64_t before) {
             if (s->slot >= before) break;   // another thread's wait bridged this slot meanwhile
             late_put(e, before, " bridged");
             s->slot = before;
+            s->frame = __atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED);
             if (++LS.bridged <= 20 || LS.bridged % 100 == 0)
                 rt_log("vk: late sums: %#llx+%#llx had no sum for the wait for %llu; the frame before's went in early (%llu so far)",
                        (unsigned long long)e->addr, (unsigned long long)e->size, (unsigned long long)before,
