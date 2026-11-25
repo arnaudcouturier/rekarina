@@ -364,9 +364,44 @@ static int pick_device(void) {
     if (!n) { rt_log("vk: no Vulkan device"); return 0; }
     VkPhysicalDevice *pd = calloc(n, sizeof *pd);
     vk_dlssg_enumerate(g_vk.instance, &n, pd);
+    {   // DEBUG-GPULIST: REKARINA_GPU_LIST_SWAP=1 swaps this list's first two cards, the other order Streamline's
+        // interposer gives on some laptops (a test of the number-without-a-name rule below on a PC whose lists agree)
+        const char *sw = cfg_env("REKARINA_GPU_LIST_SWAP");
+        if (sw && *sw == '1' && n >= 2) { VkPhysicalDevice t = pd[0]; pd[0] = pd[1]; pd[1] = t; }
+    }
     const char *e = cfg_get("REKARINA_GPU_INDEX");   // no fixed default: the best device when unset
     int want = e && *e ? atoi(e) : -1;
     const char *name = cfg_get("REKARINA_GPU_NAME");
+    if (want >= 0 && !(name && *name)) {
+        // The Graphics card row saves the index alone, counted in Vulkan's loader order (ui/menu.cpp list_gpus), but
+        // with Streamline loaded, for DLSS upscaling or frame generation, this list comes from Streamline's interposer
+        // (vk_dlssg_enumerate), which can put the cards in another order. A tester's laptop on upstream's 2.0.0-rc.3 (an
+        // RTX card and Intel graphics, gpu_index = 1 in the ini, frame generation on): number 1 was the Intel there,
+        // and the game ended in Intel's driver, twice. So where the two orders name different cards at that index, the
+        // card is the loader's, unless only this list has an NVIDIA card there: Streamline is loaded for DLSS alone,
+        // which runs on an NVIDIA card only. From upstream's 9b2f240.
+        uint32_t m = 0;
+        vkEnumeratePhysicalDevices(g_vk.instance, &m, NULL);
+        VkPhysicalDevice *raw = m ? calloc(m, sizeof *raw) : NULL;
+        if (raw && vkEnumeratePhysicalDevices(g_vk.instance, &m, raw) >= 0 && want < (int)m && want < (int)n) {
+            VkPhysicalDeviceProperties a, b, q;
+            vkGetPhysicalDeviceProperties(raw[want], &a);
+            vkGetPhysicalDeviceProperties(pd[want], &b);
+            if (a.vendorID != b.vendorID || a.deviceID != b.deviceID || strcmp(a.deviceName, b.deviceName)) {
+                int nv_a = a.vendorID == 0x10de, nv_b = b.vendorID == 0x10de, at = -1;
+                if (nv_b && !nv_a) at = want;   // the listed order's card is the NVIDIA one: as saved
+                for (uint32_t i = 0; i < n && at < 0; i++) {
+                    vkGetPhysicalDeviceProperties(pd[i], &q);
+                    if (q.vendorID == a.vendorID && q.deviceID == a.deviceID && !strcmp(q.deviceName, a.deviceName)) at = (int)i;
+                }
+                rt_log("vk: REKARINA_GPU_INDEX=%d without a name: Vulkan's own list has %s there, this start's list %s; "
+                       "gpu %d is taken", want, a.deviceName,
+                       b.deviceName, at >= 0 ? at : want);
+                if (at >= 0) want = at;
+            }
+        }
+        free(raw);
+    }
     int best = -1, best_score = -1;
 again:
     for (uint32_t i = 0; i < n; i++) {
