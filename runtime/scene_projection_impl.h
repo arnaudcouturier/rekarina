@@ -308,8 +308,6 @@ unsigned scene_output_draw_role(uint64_t return_address) {
 }
 
 static void scene_bloom_schedule(Cpu *cpu) {
-    const CfgRenderState *settings = cfg_render_frame_acquire();
-    const CfgRenderState *previous = cfg_render_use(settings);
     int previous_bloom_scope = bloom_scope;
     bloom_scope = 0;
     if (vk_dlaa_prebloom_enabled() && scene_projection_enabled() && cfg_bool("REKARINA_DLAA") &&
@@ -323,8 +321,6 @@ static void scene_bloom_schedule(Cpu *cpu) {
     cpu->pc = MOD_MAIN_BASE + 0x25e6c0;
     rt_dispatch(cpu);
     bloom_scope = previous_bloom_scope;
-    cfg_render_use(previous);
-    cfg_render_release(settings);
 }
 
 static void scene_bloom_aux(Cpu *cpu) {

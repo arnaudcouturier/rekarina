@@ -160,6 +160,11 @@ static void present_image(const tex_t *t, const int crop[4], uint64_t at_ns, uin
     PresentJob j = {.image = img->image, .format = img->format, .w = (int)img->width, .h = (int)img->height, .frame = frame,
                     .at = at_ns, .queued = queued, .value = value, .reflex_id = vk_reflex_current_id()};
     vk_hdr_present_source(img, &j.image, &j.format);   // REKARINA_HDR: the float picture the game copied into it, same size
+    if (vk_interface_coverage_enabled() || vk_dlaa_prebloom_enabled()) {
+        vk_present_drain();
+        vk_dlaa_seal_scene(frame, img->image, j.image, img->serial);
+    }
+    vk_dlaa_frame();
     if (crop) {
         j.has_crop = 1;
         for (int i = 0; i < 4; i++) j.crop[i] = crop[i];

@@ -1566,8 +1566,7 @@ static int present_image(VkImage src, VkImageLayout layout, VkFormat fmt, int w,
     }
     // frame generation's picture without the HUD, through the same path; after the menu's live picture, which reads the
     // colour adjustment's image that this makes again
-    // The PQ presentation path does not yet have a matching HUD-less encode and scale path.
-    VkImage hudless = src && encoding != GFX_OUTPUT_PQ ?
+    VkImage hudless = src ?
         hudless_record(bt_frame_next, cb, slot, w, h, rect, to, general) : VK_NULL_HANDLE;
     hlshot = hlshot && hudless && hlcap_buffer();
     if (hlshot) {   // DEBUG-HLSHOT
@@ -1646,7 +1645,7 @@ static int present_image(VkImage src, VkImageLayout layout, VkFormat fmt, int w,
     }
     if (src) vk_fg_frame(cb, g_sc, g_sc_fmt, g_sc_ext, hudless, g_sc_hdr, to);
     if (src) output_rate();
-    if (src) tagged = vk_dlssg_frame(cb, g_sc_ext, hudless, g_hl_view, g_sc_fmt);                // DLSS Frame Generation: constants and tags (vk_dlssg.c)
+    if (src) tagged = vk_dlssg_frame(cb, g_sc_ext, hudless, g_hl_view, g_sc_fmt, interface_coverage, interface_coverage_view);
     sync_barrier(cb, dst, last, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, last_stage, last_write, VK_PIPELINE_STAGE_2_NONE, 0);
     vk_crumb(cb, VK_CRUMB_PRESENT_END, crumb);
     bt_write(cb);   // the frame clock's shown moment

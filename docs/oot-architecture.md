@@ -61,42 +61,6 @@ ordinary Frame Generation with the accepted tags intact. A visible host overlay 
 Alpha replay supports direct and indexed-indirect game draws, and fits their accumulated alpha at presentation.
 Its fitted image retains storage usage across frames with no game UI, so extraction can resume without reallocating it.
 
-Output proof tracks checked output draws when Guest PQ or `RT_TRACE_GFX` is active, keeping SDR and Host HDR frames
-on the zero-cost parallel replay path (ADR-0001). A later write or aliased write to a recorded output image invalidates
-the proof. In Guest PQ mode, swapchain selection follows the verified output rather than the guest's request or image
-format alone, bypasses host re-encoding, and omits the HUD-less input until encoding and scaling match end-to-end.
-An unverified frame during confirmed Guest PQ is not presented. Native HDR is advertised to the guest only on an
-HDR10-capable surface, and a surface capability change prompts the guest to query again.
-
-The checked OoT 1.1.1 compositor allocation can use signed RGBA16F instead of R11G11B10F (`hdr_compositor`, off by
-default). The HDR encoder supports the guest's RGB-to-nits PQ transform without finished-picture grading, and `hdr_ui`
-supports linear menu output prior to guest encoding.
-
-If Vulkan swapchain creation retires the previous swapchain and then fails, retries do not reuse the retired handle.
-If DLSS Frame Generation is unavailable on OoT, frame generation stays off rather than switching to AMD FSR.
-DLSS and DLAA use the backend selected at initialization. Selecting AMD frame generation at startup does not by
-itself disable Streamline DLSS or DLAA, while Streamline Reflex and swapchain hooks yield whenever AMD FSR SDK 2 is
-the active Swapchain Owner (ADR-0002). Native NGX remains available on the legacy path and is not eagerly loaded when
-Streamline is absent and DLSS is not requested.
-
-AMD FSR requires the split SDK 2 Vulkan libraries. On OoT, AMD FSR SDK 2 frame generation uses the renderer's chosen
-output only if it is compatible (8-bit UNORM for SDR or RGB10A2 for HDR10). Output changes drain pending AMD presents
-before replacing its swapchain and frame-generation context, or switching away from AMD if the new output is
-unsupported. An AMD SDK 2 interpolation dispatch error requests a rebuild without AMD frame generation, draining
-pending presents before fallback (and reporting a fatal error if three drains fail). The SDK 2 interpolation context
-uses the swapchain's HDR10 state and the first eligible camera's depth flags, pausing when camera data or depth
-conventions mismatch and resetting history on resume. The performance overlay names the active frame-generation backend
-separately from the scene upscaler.
-
-For temporal upscaling, `REKARINA_FSR_VERSION=auto` picks FSR 4 when available and otherwise tries FSR 3. An explicit
-request for an unavailable provider leaves the game's scaling active instead of selecting another FSR generation.
-
-For developer diagnostics with the AMD FSR SDK 2.4 Vulkan DLLs, set `REKARINA_FSR_DEBUG_VIEW=1` before launch
-to draw the SDK debug view when the temporal upscaler runs. The view replaces the normal upscaler output,
-is off by default, and does not apply to FSR 1.
-Set `REKARINA_FSR_FG_DEBUG_VIEW=1` before launch to draw the SDK debug view on AMD-generated frames.
-This is a separate option and is also off by default.
-
 ## Where a frame goes (2026-11-08 morning, realtime = 1, unlocked: forest porch 60-63 fps, lighter scenes 92-103 fps)
 
 - GPU ~16 ms of work a frame: the game's passes and dispatches ~11 ms (the lighting's full-screen material passes
@@ -245,12 +209,6 @@ are the latency columns.
 
 
 ## Experimental pre-bloom DLSS
-
-On Windows, launch with `REKARINA_RENDERER_MCP=1` for read-only renderer telemetry. The log lists the local
-named pipe for that process. Point an MCP client at `python tools/renderer_mcp.py <PID>` over stdio and call
-`renderer_snapshot` with no arguments. Its `scene` record is sealed with the existing replay frame and projection
-view token; it includes the route, resource serials, extents and HUD-less/coverage eligibility. The other fields
-are latest observations and may describe different frames. A null field means nothing has been recorded yet.
 
 With `REKARINA_DLSS_PREBLOOM=1` on OoT 1.1.1, a successful early DLSS evaluation gives the checked
 bloom composite a private output-sized attachment. The checked guest draw and helper calls record

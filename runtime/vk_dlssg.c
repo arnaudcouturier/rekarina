@@ -327,9 +327,8 @@ void vk_dlssg_device_ready(VkDevice dev) {
 }
 
 int vk_dlssg_swapchain_ready(void) { return S.active; }
-int vk_dlssg_owns_swapchain(void) { return S.active && !vk_fg_swapchain(); }
 int vk_dlssg_active(void) {
-    if (!vk_dlssg_owns_swapchain()) return 0;
+    if (!S.active) return 0;
     // UI coverage checks this during draw replay; resolve the setting only after configuration changes.
     static _Thread_local unsigned seen;
     static _Thread_local int selected = -1;
@@ -439,7 +438,10 @@ void vk_dlssg_present_frame(uint64_t frame) { S.cur = (uint32_t)frame; }
 
 uint64_t vk_dlssg_shown(void) { return vk_dlssg_active() ? S.shown() : 0; }
 
-int vk_dlssg_frame(VkCommandBuffer cb, VkExtent2D ext, VkImage hudless, VkImageView hudless_view, VkFormat hudless_fmt) {
+int vk_dlssg_interface_coverage_available(void) { return S.frame_with_interface && vk_dlssg_active(); }
+
+int vk_dlssg_frame(VkCommandBuffer cb, VkExtent2D ext, VkImage hudless, VkImageView hudless_view, VkFormat hudless_fmt,
+                   VkImage interface_coverage, VkImageView interface_coverage_view) {
     if (!S.active) return 0;
     int selected = vk_dlssg_active();
     if (selected) vk_dlaa_hudless_wanted = 1;   // the upscaling pass keeps a copy of the picture before the HUD
@@ -452,6 +454,7 @@ int vk_dlssg_frame(VkCommandBuffer cb, VkExtent2D ext, VkImage hudless, VkImageV
     // Off in every frame without the inputs: the game's pause screens have no camera, and generation kept on there
     // blended whole frames of them. The library keeps the resources while it is off (nx2_sl.h version 4+), so on again
     // costs nothing, and the first frame back starts generation's history anew (reset).
+    static int went_on, was_on;
     int on = selected && (have || (went_on && !S.retains));
     if (!selected) went_on = 0;
     else if (on) went_on = 1;
@@ -483,8 +486,20 @@ int vk_dlssg_frame(VkCommandBuffer cb, VkExtent2D ext, VkImage hudless, VkImageV
     Nx2SlImage zh = {hudless, hudless_view, hudless_fmt, ext.width, ext.height, VK_IMAGE_LAYOUT_GENERAL,
                      VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
                          VK_IMAGE_USAGE_STORAGE_BIT};
-    S.frame(cb, have ? &zd : NULL, have ? &zm : NULL, have && hudless && hudless_view ? &zh : NULL, have ? &k : NULL,
-            ext.width, ext.height, on, S.cur);
+    const int have_alpha = interface_coverage && interface_coverage_view;
+    const Nx2SlImage *hudless_input = have && hudless && hudless_view &&
+        (!vk_interface_coverage_enabled() || have_alpha) ? &zh : NULL;
+    if (S.frame_with_interface) {
+        Nx2SlImage coverage = {interface_coverage, interface_coverage_view, VK_FORMAT_R16_SFLOAT, ext.width, ext.height,
+                               VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+                                   VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT};
+        S.frame_with_interface(cb, have ? &zd : NULL, have ? &zm : NULL, hudless_input,
+            on && hudless_input && interface_coverage && interface_coverage_view ? &coverage : NULL,
+            have ? &k : NULL, ext.width, ext.height, on, S.cur);
+    } else {
+        S.frame(cb, have ? &zd : NULL, have ? &zm : NULL, hudless_input, have ? &k : NULL,
+                ext.width, ext.height, on, S.cur);
+    }
     // Even a failed SDK call may have accepted tags before failing to change options.
     return on && have;
 }

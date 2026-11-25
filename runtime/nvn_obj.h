@@ -197,6 +197,7 @@ enum {
 unsigned scene_bloom_draw_role(uint64_t return_address);
 unsigned scene_output_draw_role(uint64_t return_address);
 int scene_interface_draw_active(void);
+
 typedef struct { int32_t prim, first, count, base_instance, instances; uint32_t draw_role; } p_draw;   // TOTK: instances 0 = one instance (DrawArrays)
 typedef struct { int32_t prim, itype, count, base_vertex, base_instance, instances; uint64_t ibuf; uint32_t draw_role; } p_draw_idx;
 typedef struct { int32_t x, y, z; uint64_t caller; } p_dispatch;   // caller: return address of the game call site (to locate the dispatcher)
