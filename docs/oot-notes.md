@@ -4687,3 +4687,31 @@ parameters of the background draw and of the dim are constant over those frames 
 between two consecutive frames of the rise, so the rise comes from an image's content: in every bar frame the game
 filters an environment cube again down its mip chain (85 small passes). Whether the step from 25 to 15 or the rise
 to 22 is the game's own cannot be told without a reference picture of the console.
+
+## 2026-11-21: the mesh emulation's buffer address from push constants (translator patch 0047; upstream numbers it 0045)
+
+Upstream's notes (1.2.10, ff6548e), brought over with the change; its patch 0045 is 0047 here, after this fork's own 0045
+and 0046. Here the `SAME_AS` entry waits for the same comparison with this fork's translator (empty shader caches,
+the same route with the earlier translator and with this one, every module both wrote compared).
+
+On a GPU without mesh shaders (an RX 5700 XT; the integrated Radeon with `REKARINA_MESH_EMULATE=1`) the device was lost
+at the first emulated frame with task draws on: the mesh kernel's first read of a task's launch count went to the
+emulation buffer + 0x1000 with the address's high word all ones. The kernels held the buffer's address as two
+32-bit constants the runtime patched into the module (`vk_pipeline.c` `meshc_module`), and AMD's driver for RDNA 1
+and 2 lost the high word on the way to the 64-bit address.
+
+Translator patch 0047 makes the kernels read the address from push constants (8 bytes at offset 0) instead:
+`MeshStageWrapper.GenerateAsCompute` declares a push-constant block with a `uvec2` and bit casts it to the 64-bit base.
+Only the emulation kernels change (`GFX_STAGE_MSC`), so `tools/build_xlate.py` keeps the translator identity
+(`SAME_AS`) and `gfx_shader.c` `MESHC_REVISION` 4 gives the kernels new keys. The runtime gives such kernels' layouts
+the push-constant range (`Bindings.emu`, `layout_get`) and `mesh_emulate` pushes the address before each task and
+mesh dispatch (`emu_push_address`); a module without the marker constants is used as it is. With it: a direct draw of
+more workgroups than the buffer holds meshlets runs in pieces, the crash record names the emulation step a thread
+was in, and `REKARINA_MESH_EMU_LOG=first` logs the first 64 emulated draws.
+
+Proof: the integrated Radeon with the emulation forced and task draws on, 220 s through the forest into the field: no
+device loss, 27 kernels translated in play, none refused, no emulated draw skipped; the ground's grass the same as
+with the Radeon's own mesh shaders at the same frames. The identity: 70 s on the RTX 5070 into empty shader caches with
+1.2.8's translator and with this one: every module both wrote is byte for byte the same (3,863 files; the differences
+are stored inputs and the provisional keys in .res.json, which follow the run's constants). `tools/update_cost.py` from
+1.2.8: only the compile step runs again; no shader is translated again.

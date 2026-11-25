@@ -122,6 +122,7 @@ typedef struct Layout {
     VkDescriptorUpdateTemplate tpl[2]; // per set (make_tpl); VK_NULL_HANDLE: written with write structs
     uint8_t pool;                      // stages reading the texture pool set (gfx.h GFX_POOL_SET): bit 0 the vertex
                                        // side (set 0's stages), bit 1 the fragment side of independent layouts
+    uint8_t emu;                       // Bindings.emu: the push constant range of the mesh emulation's kernels
     VkDescriptorSetLayoutBinding b[];
 } Layout;
 
@@ -1003,6 +1004,8 @@ typedef struct {
     VkDescriptorSetLayoutBinding b[MAX_BINDINGS];
     VkPipeBinding pb[MAX_BINDINGS];
     uint8_t pool;                      // a stage reads the texture pool set (gfx_shader_pool_mask)
+    uint8_t emu;                       // a mesh emulation kernel (GFX_STAGE_MSC / TSC): the layout has VK_MESH_EMU_PUSH_BYTES
+                                       // of push constants, the emulation buffer's address (compute_layout)
 } Bindings;
 
 static VkDescriptorType descriptor_type(int kind, const GfxShaderRes *r) {
@@ -1250,14 +1253,16 @@ static Layout *layout_get(Bindings *B) {
     int64_t total = bindings_sort(B, &h);
     if (total < 0) return NULL;
     if (B->pool) h = fnv(h, "pool", 4);
+    if (B->emu) h = fnv(h, "emu", 3);
     Layout **head = &layouts[h % LAYOUT_BUCKETS];
     for (Layout *l = *head; l; l = l->next)
-        if (l->hash == h && l->n == B->n && !l->set1 && l->pool == B->pool && !memcmp(l->b, B->b, B->n * sizeof *B->b))
+        if (l->hash == h && l->n == B->n && !l->set1 && l->pool == B->pool && l->emu == B->emu &&
+            !memcmp(l->b, B->b, B->n * sizeof *B->b))
             return l;
     if (B->pool && !vk_tpool_layout()) return NULL;
     Layout *l = calloc(1, sizeof *l + B->n * sizeof *B->b);
     if (!l) return NULL;
-    l->hash = h, l->n = B->n, l->pool = B->pool;
+    l->hash = h, l->n = B->n, l->pool = B->pool, l->emu = B->emu;
     memcpy(l->b, B->b, B->n * sizeof *B->b);
     l->push = total <= (int64_t)P.max_push;
     VkDescriptorSetLayoutCreateInfo si = {.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
@@ -1271,6 +1276,9 @@ static Layout *layout_get(Bindings *B) {
     VkPipelineLayoutCreateInfo pi = {.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO, .setLayoutCount = 1,
                                      .pSetLayouts = &l->set};
     if (l->pool) pi.setLayoutCount = with_pool(sets, l->set, VK_NULL_HANDLE, 0), pi.pSetLayouts = sets;
+    // the mesh emulation's kernels read the emulation buffer's address from push constants (translator patch 0047)
+    static const VkPushConstantRange emu_range = {VK_SHADER_STAGE_COMPUTE_BIT, 0, VK_MESH_EMU_PUSH_BYTES};
+    if (l->emu) pi.pushConstantRangeCount = 1, pi.pPushConstantRanges = &emu_range;
     if (vkCreatePipelineLayout(P.device, &pi, NULL, &l->layout) != VK_SUCCESS) {
         vkDestroyDescriptorSetLayout(P.device, l->set, NULL);
         free(l);
@@ -2761,8 +2769,8 @@ static uint32_t *meshc_module(const uint32_t *code, uint64_t words) {
         }
         i += n;
     }
-    if (found != 3) free(c), c = NULL;
-    return c;
+    if (found != 3 && found) free(c), c = NULL;   // none: a kernel of translator patch 0047, which takes the address from
+    return c;                                     // push constants (vk_exec_draw.c mesh_emulate pushes it): used as it is
 }
 
 static VkPipeline compute_create_v(const GfxShader *cs, const Layout *l, int passthrough) {
@@ -2789,7 +2797,11 @@ static VkPipeline compute_create_v(const GfxShader *cs, const Layout *l, int pas
                                       .stage = {.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
                                                 .stage = VK_SHADER_STAGE_COMPUTE_BIT, .module = m, .pName = "main"},
                                       .layout = l->layout};
-    pin_subgroup32(&ci.stage, &rqc, code, words);
+    {   // DEBUG-EMUPIN: REKARINA_MESH_EMU_PIN=0: the mesh emulation's kernels run at the driver's width (a test)
+        static int emu_pin = -1;
+        if (emu_pin < 0) emu_pin = rt_knob("MESH_EMU_PIN", "1");
+        if (!emu || emu_pin) pin_subgroup32(&ci.stage, &rqc, code, words);
+    }
     // A warp on the console always has its 32 lanes. Without this the driver may run partial subgroups in a workgroup that
     // is a whole number of them, and the ballots the foliage culling reserves its list slots with count differently from
     // one frame to the next (REKARINA_FULL_SUBGROUPS=0 turns it off).
@@ -2797,8 +2809,9 @@ static VkPipeline compute_create_v(const GfxShader *cs, const Layout *l, int pas
         static int on = -1;
         if (on < 0) on = rt_knob("FULL_SUBGROUPS", "1");
         uint32_t lx = local_size_x(code, words);
-        if (on && P.f_full_subgroups && (P.sg32_stages & VK_SHADER_STAGE_COMPUTE_BIT) && lx && lx % vk_caps.sg_size == 0 &&
-            uses_subgroup_ops(code, words))
+        // only with the pin (pin_subgroup32 set it: a stage it pins, a module with subgroup operations): without a
+        // required size the local size would have to be a multiple of the device's largest subgroup
+        if (on && P.f_full_subgroups && ci.stage.pNext == &rqc && lx && lx % vk_caps.sg_size == 0)
             ci.stage.flags |= VK_PIPELINE_SHADER_STAGE_CREATE_REQUIRE_FULL_SUBGROUPS_BIT;
     }
     VkPipeline pipe = VK_NULL_HANDLE;
@@ -2842,7 +2855,7 @@ static Layout *compute_layout(const GfxShader *cs, Bindings *B, const char **why
     if (gfx_shader_stage(cs) != GFX_STAGE_CS && gfx_shader_stage(cs) != GFX_STAGE_MSC && gfx_shader_stage(cs) != GFX_STAGE_TSC)
         *why = "not a compute shader";
     else if (!add_stage(B, cs, 0)) *why = "too many bindings";
-    else if (!(l = layout_get(B))) *why = "descriptor layout creation failed";
+    else if ((B->emu = gfx_shader_stage(cs) != GFX_STAGE_CS), !(l = layout_get(B))) *why = "descriptor layout creation failed";
     return l;
 }
 

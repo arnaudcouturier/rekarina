@@ -5975,7 +5975,11 @@ static int prepare_stages(VkExec *ex, int mesh, int prim, int restart) {
 // (VK_C0_MESH_FIRST). The indirect record is NVN's {count, first} (assumed, nvn_obj.h p_draw_mesh_ind): its count is
 // copied on the GPU into a {count, 1, 1} argument before the pass, and first is taken as 0 (said once).
 // DEBUG-MESHCOUNT: REKARINA_MESHCOUNT=<frame>: for 40 frames from <frame>, the {count, first} each DrawMeshTasksIndirect
-// record held when the GPU copied it, read back at the fence and logged per frame (record address and count)
+// record held when the GPU copied it, read back at the fence and logged per frame (record address and count).
+// REKARINA_MESHCOUNT=first: the 40 frames from the first such copy of the run (a scene's first frames, where the
+// records may not have been filled yet). Both count copy paths record: the batch (mesh_ind_copy) and the one per draw.
+// With REKARINA_MESHCOUNT_PROG a batched copy carries the program and pass width of the draw that started its batch,
+// not its own draw's: REKARINA_MESH_BATCH=0 names each draw's own.
 typedef struct { uint64_t frame, ind, prog; uint32_t w, h; } McMeta;
 static VkBuffer mc_buf;
 static VmaAllocation mc_alloc;
@@ -6011,12 +6015,13 @@ static uint32_t mc_sub_lo;
 static uint64_t mc_sub_fence;
 static void mc_record(VkExec *ex, VkBuffer src, VkDeviceSize off, uint64_t ind, uint64_t avail) {
     static int on = -1;
+    uint64_t fr = __atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED);
     if (on < 0) {
         const char *e = cfg_get("REKARINA_MESHCOUNT");
         on = e && *e;
-        mc_from = on ? strtoull(e, NULL, 0) : 0;
+        mc_from = !on ? 0 : !strcmp(e, "first") ? fr : strtoull(e, NULL, 0);
+        if (on) rt_log("MESHCOUNT: the counts of indirect mesh draws are logged for 40 frames from frame %llu", (unsigned long long)mc_from);
     }
-    uint64_t fr = __atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED);
     if (!on || fr < mc_from || fr >= mc_from + 40) return;
     if (!mc_buf) {
         VkBufferCreateInfo bi = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, .size = 8192 * 64,
@@ -6070,6 +6075,7 @@ static int mesh_ind_copy(VkExec *ex, uint64_t ind, VkBuffer *ib, VkDeviceSize *i
     VK_MEM_USE(ip);
     VkBufferCopy cp = {ip.offset, *io, 4};
     vkCmdCopyBuffer(ex->cb, ip.buffer, *ib, 1, &cp);
+    mc_record(ex, ip.buffer, ip.offset, ind, ip.avail);   // DEBUG-MESHCOUNT
     VK_MEM_BOUND(ip);
     ex->recorded++;
     return 1;
@@ -6108,8 +6114,21 @@ static VkBuffer emu_buf;
 static VmaAllocation emu_alloc;
 static uint64_t emu_addr;
 static int emu_failed;
+static _Thread_local const char *emu_step;   // the step of an emulated draw this thread records (the crash record)
 
 uint64_t vk_mesh_emu_address(void) { return __atomic_load_n(&emu_addr, __ATOMIC_ACQUIRE); }
+const char *vk_exec_crash_step(void) { return emu_step; }
+
+// The kernels take the emulation buffer's address as a run-time value (translator patch 0047): pushed before each
+// dispatch into their layout's push constants (vk_pipeline.c layout_get, Bindings.emu). The two constants the runtime
+// patched into the module before came out with the high word lost on AMD's driver for RDNA 1 and 2: the mesh kernel's
+// first read of a task's launch count went to the buffer + 0x1000 with the high word all ones, and the device was lost
+// at the first emulated frame (an RX 5700 XT, the integrated Radeon with REKARINA_MESH_EMULATE=1; 2026-11-21).
+static void emu_push_address(VkExec *ex, const VkPipeInfo *pi) {
+    uint64_t a = __atomic_load_n(&emu_addr, __ATOMIC_ACQUIRE);
+    uint32_t w[2] = {(uint32_t)a, (uint32_t)(a >> 32)};
+    vkCmdPushConstants(ex->cb, pi->layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, VK_MESH_EMU_PUSH_BYTES, w);
+}
 
 static int mesh_emu_wanted(void) {
     static int on = -1;
@@ -6142,7 +6161,8 @@ static int mesh_emu_buffer(void) {
     }
     VkBufferDeviceAddressInfo ii = {.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO, .buffer = emu_buf};
     __atomic_store_n(&emu_addr, bda(c->device, &ii), __ATOMIC_RELEASE);
-    rt_log("vk_exec: mesh emulation buffer: %llu MiB", (unsigned long long)(VK_MESH_EMU_BYTES >> 20));
+    rt_log("vk_exec: mesh emulation buffer: %llu MiB at device address %#llx", (unsigned long long)(VK_MESH_EMU_BYTES >> 20),
+           (unsigned long long)emu_addr);
     return emu_addr != 0;
 }
 
@@ -6168,16 +6188,26 @@ static void mesh_emulate(VkExec *ex, const p_draw_mesh *d, const p_draw_mesh_ind
     uint32_t vec4s, max_meshlets;
     const uint8_t *locs;
     gfx_shader_meshc(msc, &vec4s, &max_meshlets, &locs);
-    {   // DEBUG-MESHEMU: REKARINA_MESH_EMU_LOG=<frame>: the emulated draws of that frame; REKARINA_MESH_EMU_SKIP=<key prefix>[,...]
+    {   // DEBUG-MESHEMU: REKARINA_MESH_EMU_LOG=<frame>: the emulated draws of that frame (first: the first 64 of the run);
+        // REKARINA_MESH_EMU_SKIP=<key prefix>[,...]
         static int64_t logf = -2;
+        static int nfirst;
         static const char *skip;
-        if (logf == -2) { const char *e = cfg_get("REKARINA_MESH_EMU_LOG"); logf = e && *e ? atoll(e) : -1; skip = cfg_get("REKARINA_MESH_EMU_SKIP"); }
-        char hx[17];
+        if (logf == -2) {
+            const char *e = cfg_get("REKARINA_MESH_EMU_LOG");
+            logf = e && !strcmp(e, "first") ? -3 : e && *e ? atoll(e) : -1;
+            skip = cfg_get("REKARINA_MESH_EMU_SKIP");
+        }
+        char hx[17], thx[17] = "-";
         const uint8_t *k8 = gfx_shader_key(msc);
         for (int i = 0; i < 8; i++) snprintf(hx + 2 * i, 3, "%02x", k8[i]);
-        if (logf >= 0 && __atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED) == (uint64_t)logf)
-            rt_log("MESHEMU msc %s vec4s %u locs %u%s count %d first %d", hx, vec4s, vec4s - 1, di ? " indirect" : "",
-                   di ? -1 : (int)d->count, di ? -1 : (int)d->first);
+        if ((logf >= 0 && __atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED) == (uint64_t)logf) ||
+            (logf == -3 && nfirst++ < 64)) {
+            for (int i = 0; tsc && i < 8; i++) snprintf(thx + 2 * i, 3, "%02x", gfx_shader_key(tsc)[i]);
+            rt_log("MESHEMU msc %s tsc %s vec4s %u locs %u max %u%s count %d first %d frame %llu", hx, thx, vec4s, vec4s - 1,
+                   max_meshlets, di ? " indirect" : "", di ? -1 : (int)d->count, di ? -1 : (int)d->first,
+                   (unsigned long long)__atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED));
+        }
         if (skip && strstr(skip, hx)) return;
         static const char *save;   // REKARINA_MESH_EMU_SAVE=<key prefix>:<dir>: that shader's kernel and its mesh stage, once
         static int saved;
@@ -6225,57 +6255,83 @@ static void mesh_emulate(VkExec *ex, const p_draw_mesh *d, const p_draw_mesh_ind
         if (!mesh_ind_find(di->ind, &ib, &io))
             return warn_once(W_INDIRECT, "mesh draw arguments at %#llx are not backed or not aligned: skipped", (unsigned long long)di->ind);
         c0_mesh_first = 0;
-    } else {
-        c0_mesh_first = d->first;
     }
     cb_res(ex);
     dummies_init();
     vk_dlaa_pjitter(ex, NVN_STAGE_MS);
-    vk_exec_dispatch_barrier(ex);   // ends the pass; the previous emulated draw's reads and earlier writes are done
-    if (di || task) {
-        // An indirect count of 0 (the game's own culling hid the object) runs no workgroup, so nothing writes this draw's
-        // arguments and the draw took the previous emulated draw's, with that draw's vertices read at this one's
-        // stride: slivers across the scene. The arguments start at no triangles; workgroup 0 writes them when it runs.
-        // Under a task the mesh kernel's dispatch arguments and the meshlet counter start at zero too (64 bytes).
-        vkCmdFillBuffer(ex->cb, emu_buf, 0, task ? 64 : sizeof(VkDrawIndexedIndirectCommand), 0);
-        VkMemoryBarrier2 mb = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2, .srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT,
-                               .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
-                               .dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT,
-                               .dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT | VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT};
-        VkDependencyInfo dep = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1, .pMemoryBarriers = &mb};
-        vkCmdPipelineBarrier2(ex->cb, &dep);
-        ex->recorded++;
+    // A direct draw of more workgroups than the buffer holds meshlets would lose the rest (the kernel writes nothing
+    // past max_meshlets and draws only those): it runs in pieces of at most max_meshlets workgroups, each piece's
+    // first workgroup moved on through c0 (VK_C0_MESH_FIRST, which the kernel adds to its workgroup number as the
+    // mesh stage does) and drawn before the next piece's dispatch writes the buffer again. An indirect count is the
+    // GPU's and the meshlets under a task are taken by a counter: those run as one piece.
+    uint32_t total = di || task ? 1 : d->count, piece = di || task || !max_meshlets ? total : max_meshlets;
+    if (total > piece) {
+        static uint8_t said;
+        if (!__atomic_exchange_n(&said, 1, __ATOMIC_RELAXED))
+            rt_log("vk_exec: an emulated mesh draw of %u workgroups runs in %u pieces (the buffer holds %u meshlets of "
+                   "%u vec4s a vertex)", total, (total + piece - 1) / piece, max_meshlets, vec4s);
     }
-    if (task) {   // the task kernel keeps the payloads and launch counts, and the mesh kernel's arguments
-        bind_pipeline(ex, VK_PIPELINE_BIND_POINT_COMPUTE, tp);
+    for (uint32_t done = 0; done < total; done += piece) {
+        uint32_t n = total - done < piece ? total - done : piece;
+        if (!di) c0_mesh_first = d->first + done;
+        emu_step = "end the pass";
+        vk_exec_dispatch_barrier(ex);   // ends the pass; the previous emulated draw's reads and earlier writes are done
+        if (di || task) {
+            emu_step = "clear the arguments";
+            // An indirect count of 0 (the game's own culling hid the object) runs no workgroup, so nothing writes this draw's
+            // arguments and the draw took the previous emulated draw's, with that draw's vertices read at this one's
+            // stride: slivers across the scene. The arguments start at no triangles; workgroup 0 writes them when it runs.
+            // Under a task the mesh kernel's dispatch arguments and the meshlet counter start at zero too (64 bytes).
+            vkCmdFillBuffer(ex->cb, emu_buf, 0, task ? 64 : sizeof(VkDrawIndexedIndirectCommand), 0);
+            VkMemoryBarrier2 mb = {.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2, .srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+                                   .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                                   .dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT,
+                                   .dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT | VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT};
+            VkDependencyInfo dep = {.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO, .memoryBarrierCount = 1, .pMemoryBarriers = &mb};
+            vkCmdPipelineBarrier2(ex->cb, &dep);
+            ex->recorded++;
+        }
+        if (task) {   // the task kernel keeps the payloads and launch counts, and the mesh kernel's arguments
+            emu_step = "the task kernel";
+            bind_pipeline(ex, VK_PIPELINE_BIND_POINT_COMPUTE, tp);
+            twin_dispatch = 1;
+            bind_resources(ex, tinfo);
+            twin_dispatch = 0;
+            emu_push_address(ex, tinfo);
+            if (di) vkCmdDispatchIndirect(ex->cb, ib, io);
+            else vkCmdDispatch(ex->cb, d->count, 1, 1);
+            ex->dispatch_end_at = ++ex->recorded;
+            vk_exec_barrier(ex);
+        }
+        emu_step = "the mesh kernel";
+        bind_pipeline(ex, VK_PIPELINE_BIND_POINT_COMPUTE, cp);
         twin_dispatch = 1;
-        bind_resources(ex, tinfo);
+        bind_resources(ex, info);
         twin_dispatch = 0;
-        if (di) vkCmdDispatchIndirect(ex->cb, ib, io);
-        else vkCmdDispatch(ex->cb, d->count, 1, 1);
+        emu_push_address(ex, info);
+        if (task) vkCmdDispatchIndirect(ex->cb, emu_buf, VK_MESH_EMU_MESH_ARGS_OFFSET);
+        else if (di) vkCmdDispatchIndirect(ex->cb, ib, io);
+        else vkCmdDispatch(ex->cb, n, 1, 1);
         ex->dispatch_end_at = ++ex->recorded;
-        vk_exec_barrier(ex);
+        vk_exec_barrier(ex);   // the meshlets are written before the draw reads them as vertices, indices and arguments
+        emu_step = "the draw's pipeline and resources";
+        prep_emu_vs = vs;
+        int ok = prepare_stages(ex, 2, NVN_DRAW_PRIMITIVE_TRIANGLES, 0);
+        prep_emu_vs = NULL;
+        if (!ok) {
+            emu_step = NULL;
+            return;
+        }
+        emu_step = "the draw";
+        VkDeviceSize vo = VK_MESH_EMU_VERTEX_OFFSET;
+        vkCmdBindVertexBuffers2(ex->cb, 0, 1, &emu_buf, &vo, NULL, NULL);   // the recorder wraps this one (the stride is static)
+        vkCmdBindIndexBuffer(ex->cb, emu_buf, VK_MESH_EMU_INDEX_OFFSET, VK_INDEX_TYPE_UINT32);
+        vkCmdDrawIndexedIndirect(ex->cb, emu_buf, 0, 1, sizeof(VkDrawIndexedIndirectCommand));
+        ex->recorded++;
+        B.vb_valid = 0, ibs_buf = VK_NULL_HANDLE;   // the next draw binds its own vertex and index buffers
+        vk_pipeline_dynamic_forget();
     }
-    bind_pipeline(ex, VK_PIPELINE_BIND_POINT_COMPUTE, cp);
-    twin_dispatch = 1;
-    bind_resources(ex, info);
-    twin_dispatch = 0;
-    if (task) vkCmdDispatchIndirect(ex->cb, emu_buf, VK_MESH_EMU_MESH_ARGS_OFFSET);
-    else if (di) vkCmdDispatchIndirect(ex->cb, ib, io);
-    else vkCmdDispatch(ex->cb, d->count, 1, 1);
-    ex->dispatch_end_at = ++ex->recorded;
-    vk_exec_barrier(ex);   // the meshlets are written before the draw reads them as vertices, indices and arguments
-    prep_emu_vs = vs;
-    int ok = prepare_stages(ex, 2, NVN_DRAW_PRIMITIVE_TRIANGLES, 0);
-    prep_emu_vs = NULL;
-    if (!ok) return;
-    VkDeviceSize vo = VK_MESH_EMU_VERTEX_OFFSET;
-    vkCmdBindVertexBuffers(ex->cb, 0, 1, &emu_buf, &vo);
-    vkCmdBindIndexBuffer(ex->cb, emu_buf, VK_MESH_EMU_INDEX_OFFSET, VK_INDEX_TYPE_UINT32);
-    vkCmdDrawIndexedIndirect(ex->cb, emu_buf, 0, 1, sizeof(VkDrawIndexedIndirectCommand));
-    ex->recorded++;
-    B.vb_valid = 0, ibs_buf = VK_NULL_HANDLE;   // the next draw binds its own vertex and index buffers
-    vk_pipeline_dynamic_forget();
+    emu_step = NULL;
     if (!vk_par_worker) vk_exec_frame.draws++;
     {
         static uint8_t said;

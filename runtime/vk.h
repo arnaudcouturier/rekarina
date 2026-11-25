@@ -408,8 +408,11 @@ void vk_mem_gmem_writeback(void);   // replay thread: this submission may write 
 // write into CPU-visible memory at record time (vk_mem_gpu_pending) and reports it at the fence with vk_gpu_written,
 // which copies the bytes back into guest memory before telling the texture cache (vk_guest_written).
 // Mesh draws on a GPU without VK_EXT_mesh_shader (vk_exec_draw.c mesh_emulate): the emulation buffer's device address
-// (0 until it exists), and the marker constants a GFX_STAGE_MSC module holds in its place (tools/xlate MeshStage).
+// (0 until it exists). Kernels of translator patch 0047 read it from push constants (VK_MESH_EMU_PUSH_BYTES at offset 0,
+// pushed before each emulated dispatch); older kernels hold the marker constants in its place (tools/xlate MeshStage),
+// which vk_pipeline.c meshc_module replaces.
 uint64_t vk_mesh_emu_address(void);
+#define VK_MESH_EMU_PUSH_BYTES 8u
 void vk_pipeline_dynamic_forget(void);   // vk_pipeline.c: the dynamic state the replay last set is unknown now
 #define VK_MESH_EMU_ADDRESS_LO 0xC0DE5A71u
 #define VK_MESH_EMU_ADDRESS_HI 0xC0DE5A72u

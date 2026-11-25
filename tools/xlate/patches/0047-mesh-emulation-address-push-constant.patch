@@ -1,0 +1,40 @@
+A mesh shader translated as a compute kernel (patch 0043, for GPUs without VK_EXT_mesh_shader) takes the emulation
+buffer's address from a push constant (a uvec2 at offset 0) the runtime pushes before each dispatch, a run-time value,
+in place of two marker constants the runtime replaced in the module. On AMD's driver for RDNA 1 and 2 those two
+constants came out with the high word lost: the mesh kernel's first read of a task's launch count went to the buffer +
+0x1000 with the high word all ones and the device was lost at the first emulated frame (an RX 5700 XT; the integrated
+Radeon with the emulation forced, 2026-11-21). Changes no other translation (tools/build_xlate.py SAME_AS keeps the
+identity); runtime/gfx_shader.c MESHC_REVISION 4 gives the emulation kernels new cache ids.
+
+--- a/src/Ryujinx.Graphics.Shader/CodeGen/Spirv/MeshStageWrapper.cs
++++ b/src/Ryujinx.Graphics.Shader/CodeGen/Spirv/MeshStageWrapper.cs
+@@ -353,8 +353,10 @@
+         //   indices (byte MeshStage.EmuIndexOffset): meshlet m's triangle p at word (m x MaxPrimitives + p) x 3, each the vertex's number in
+         //     the vertex buffer; a triangle past the meshlet's count, or naming a vertex past its MaxVertices, is its first vertex
+         //     three times (degenerate, nothing drawn).
+-        // A meshlet past the most that fit writes nothing. The buffer's address is two constants (MeshStage.EmuAddressLo, Hi) the runtime
+-        // replaces before it builds the pipeline. Triangles only, without per-primitive attributes (Program.cs refuses others).
++        // A meshlet past the most that fit writes nothing. The buffer's address is a push constant (a uvec2 at offset 0) the runtime
++        // pushes before each dispatch: a run-time value. Two constants the runtime replaced before it built the pipeline (MeshStage.EmuAddressLo,
++        // Hi) came out with the high word lost on AMD's driver for RDNA 1 and 2, and the first read of a task's launch count lost the device.
++        // Triangles only, without per-primitive attributes (Program.cs refuses others).
+         // Under a task the draw takes two kernels: the task's (IsTask), one workgroup a task workgroup, keeps each one's payload and launch
+         // count in the buffer (MeshStage.EmuPayloadOffset, EmuLaunchOffset) and writes the mesh kernel's dispatch arguments
+         // ({EmuTaskLaunches, tasks, 1} at EmuMeshArgsOffset); the mesh shader's (HasTask), workgroup (j, t) for launch j of task t, idle past
+@@ -417,8 +419,14 @@
+             SpvInstruction lid = context.CompositeExtract(u32, context.Load(uvec3, lidVariable), 0);
+             SpvInstruction group = context.CompositeExtract(u32, context.Load(uvec3, groupVariable), 0);
+             SpvInstruction groups = context.CompositeExtract(u32, context.Load(uvec3, countVariable), 0);
+-            SpvInstruction baseAddress = context.Bitcast(u64, context.CompositeConstruct(uvec2,
+-                context.Constant(u32, unchecked((int)MeshStage.EmuAddressLo)), context.Constant(u32, unchecked((int)MeshStage.EmuAddressHi))));
++            SpvInstruction pushType = context.TypeStruct(true, uvec2);
++            context.Decorate(pushType, Decoration.Block);
++            context.MemberDecorate(pushType, 0, Decoration.Offset, (SpvLiteralInteger)0);
++            SpvInstruction pushVariable = context.Variable(context.TypePointer(StorageClass.PushConstant, pushType), StorageClass.PushConstant);
++            context.AddGlobalVariable(pushVariable);
++            context.Name(pushVariable, "emu_address");
++            SpvInstruction baseAddress = context.Bitcast(u64,
++                context.Load(uvec2, context.AccessChain(context.TypePointer(StorageClass.PushConstant, uvec2), pushVariable, C(0))));
+ 
+             SpvInstruction Shared(SpvInstruction wordIndex) => context.AccessChain(sharedPtr, shared, wordIndex);
+ 

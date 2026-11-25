@@ -2108,8 +2108,9 @@ static size_t pack_answers(uint8_t *o, const GfxShaderAnswers *a) {
 // no other translation and keeps the translator identity (tools/build_xlate.py SAME_AS), so every player's cache stays
 // valid, and the tag gives exactly these programs new ids: what the cache holds for them from before is never found.
 // 2: a triangle naming a vertex past the meshlet's last is dropped, as the mesh stage drops it; 3: the buffer's layout
-// with room for the tasks (vertices from 8 MiB), and the task kernels
-#define MESHC_REVISION 3u
+// with room for the tasks (vertices from 8 MiB), and the task kernels; 4: the buffer's address from push constants
+// (translator patch 0047) instead of two constants the runtime patched in
+#define MESHC_REVISION 4u
 
 // The subgroup lanes a stage's programs are translated for (the request's "subgroup", build_request): the vertex,
 // compute or fragment stage's answer, which task and mesh stages and their kernels share unless they are pinned.
