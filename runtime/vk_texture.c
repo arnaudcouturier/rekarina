@@ -1298,13 +1298,28 @@ static int tex_plan(const tex_t *t, int bc1, TexPlan *P) {
     // NVN renders into a 3D texture slice by slice (a view's min layer is the depth plane, nvn_mtl.m), e.g. the
     // grading LUT of the menu background blur. Vulkan needs a 2D view of the slice for that.
     if (type == VK_IMAGE_TYPE_3D && (usage & VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT)) flags |= VK_IMAGE_CREATE_2D_ARRAY_COMPATIBLE_BIT;
-    // The 512x512 float maps of the ground fog's fluid simulation are only read and written by compute shaders. Created as
-    // possible render targets too, one of their passes (cs 3a7117b072154c38) took 9 ms where its twin took 0.2 ms, on the frames
-    // the simulation runs; without those usages the same frames took 30 ms instead of 39 in two runs of three.
-    // REKARINA_SIM_NO_ATTACH=0 keeps the usages.
+    // REKARINA_SIM_NO_ATTACH=1 (a test switch; off by default since 2.0) makes the game's 512x512 RG16F and RGBA16F images
+    // without render target usage. It was on from 2026-11-08 for the ground fog's simulation maps, which only compute
+    // shaders write: created as possible render targets, one of their passes (cs 3a7117b072154c38) had taken 9 ms where
+    // its twin took 0.2 ms, in two of five runs on an RTX 5070. But the game makes the targets it draws the fog's sources
+    // into (four draws and one a frame wherever the fog runs) with the same format, size and flags (every one of these
+    // images has NVN_TEXTURE_FLAGS_IMAGE), so those draws were left out ("not renderable here"). Kept, they cost no frame
+    // rate measured in 2.0 (docs/oot-notes.md); the log names each kind of these images once.
     if (w == 512 && h == 512 && !tex_mirrored(t) && (f.vk == VK_FORMAT_R16G16_SFLOAT || f.vk == VK_FORMAT_R16G16B16A16_SFLOAT) &&
-        (usage & VK_IMAGE_USAGE_STORAGE_BIT) && rt_knob("SIM_NO_ATTACH", "1"))
-        usage &= ~(VkImageUsageFlags)(VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_ATTACHMENT_FEEDBACK_LOOP_BIT_EXT);
+        (usage & VK_IMAGE_USAGE_STORAGE_BIT)) {
+        int drop = rt_knob("SIM_NO_ATTACH", "0");
+        if (drop) usage &= ~(VkImageUsageFlags)(VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_ATTACHMENT_FEEDBACK_LOOP_BIT_EXT);
+        static uint32_t seen[16];   // nvn flags << 16 | format << 1 | dropped, each once (a race may log one twice)
+        static volatile int32_t nseen;
+        uint32_t key = (uint32_t)d->flags << 16 | (uint32_t)d->format << 1 | (uint32_t)(drop != 0), found = 0;
+        int n = __atomic_load_n(&nseen, __ATOMIC_ACQUIRE);
+        for (int i = 0; i < n && i < 16; i++) found |= seen[i] == key;
+        if (!found && n < 16) {
+            seen[n] = key, __atomic_store_n(&nseen, n + 1, __ATOMIC_RELEASE);
+            rt_log("vk: 512x512 float image (nvn format %#x flags %#x): render target usage %s (REKARINA_SIM_NO_ATTACH=%d)",
+                   (unsigned)d->format, (unsigned)d->flags, drop ? "dropped" : "kept", drop != 0);
+        }
+    }
     VkImageCreateInfo ci = {.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, .flags = flags, .imageType = type, .format = f.vk,
                             .extent = {w, h, depth}, .mipLevels = levels, .arrayLayers = layers,
                             .samples = (VkSampleCountFlagBits)samples, .tiling = VK_IMAGE_TILING_OPTIMAL, .usage = usage,

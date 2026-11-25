@@ -4439,3 +4439,25 @@ in both: about 35 pipeline stage libraries built in play.
 
 The override that made depth-compare samplers linear under `shadow_scale` is TotK's alone now: both samplers OoT binds
 to the cascade array (420 and 422 in the pass dumps) are linear already, and its other depth maps keep their size.
+
+## 2026-11-23: the fog's source draws were left out (REKARINA_SIM_NO_ATTACH off by default)
+
+Upstream's notes (ec8414f), brought over with the change.
+
+Since 2026-11-08 every 512x512 RG16F and RGBA16F image with storage usage was made without render target usage
+(`vk_texture.c`, `REKARINA_SIM_NO_ATTACH`), meant for the ground fog simulation's maps, which only compute shaders write:
+one of their passes had taken 9 ms where its twin took 0.2 ms in two of five runs on the RTX 5070. Every colour image of
+an NVN2 game has storage usage here, and the game makes all of these images with `NVN_TEXTURE_FLAGS_IMAGE`, the targets
+it draws the fog's sources into among them: a density source (four draws) and a velocity source (one draw) a frame
+wherever the fog runs (seen in the temple in the woods and the meadow before it). Those draws were left out ("render
+target format 0x29 target 1 (512x512) is not renderable here"); the simulation ran on its own state without them
+(a frame dump in the temple: density at most 0.010 in one channel instead of 0.026). The flags cannot tell these
+images apart, so the usages are kept now and `REKARINA_SIM_NO_ATTACH=1` is the old rule as a test switch.
+
+Cost, kept against dropped, ABBA, base mode, RTX 5070 at 1440p, no frame limit: the temple's block room on a player's
+save (camera turns) 64.2 / 64.1 fps against 64.3 / 65.2, GPU busy p50 15.07 / 15.14 ms against 15.08 / 14.88; the GPU time
+of all passes of two frames 28.30 ms against 28.12 (the fog's passes are each under 0.03 ms); the forest, the field and
+the Market in one tour 102.2 / 112.5, 82.4 / 97.0, 85.8 / 98.0 fps against 87.7 / 103.6, 89.6 / 94.1, 88.7 / 99.3 (GPU p50
+8.80 / 8.22, 10.21 / 9.49, 7.82 / 7.43 ms against 8.67 / 8.76, 10.05 / 9.50, 7.66 / 7.40): the runs drift more between
+the first and the last of a set than the arms differ. No pass of 9 ms came back. The integrated Radeon at 720p, standing in the meadow before the temple where the fog
+runs: 10.2 / 9.7 fps, GPU busy p50 92.0 / 93.1 ms kept, against 9.8 / 9.9 fps and 92.6 / 91.2 ms dropped.
