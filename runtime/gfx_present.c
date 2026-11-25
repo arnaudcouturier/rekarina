@@ -32,6 +32,7 @@
 #include "vk_dlaa.h"
 #include "vk_fg.h"
 #include "vk_dlssg.h"
+#include "renderer_mcp.h"
 
 #define FRAMES 2
 #define MAX_IMAGES 16
@@ -456,6 +457,7 @@ static void flip_locked(void) {
                : present_route == 2 ? vk_fg_present(&pi) : vkQueuePresentKHR(vk_ctx()->gfx_queue, &pi);
     vk_drv_urgent(-1);
     vk_queue_unlock();
+    renderer_mcp_present(g_sc_ext.width, g_sc_ext.height, g_sc_hdr, present_route, r);
     FT(FT_NOTE, 2, 0, 0);
     vk_device_fault_report(r);
     if (r == VK_SUCCESS) gfx_window_presented();
