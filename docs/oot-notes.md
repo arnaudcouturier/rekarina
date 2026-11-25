@@ -4461,3 +4461,17 @@ the Market in one tour 102.2 / 112.5, 82.4 / 97.0, 85.8 / 98.0 fps against 87.7 
 8.80 / 8.22, 10.21 / 9.49, 7.82 / 7.43 ms against 8.67 / 8.76, 10.05 / 9.50, 7.66 / 7.40): the runs drift more between
 the first and the last of a set than the arms differ. No pass of 9 ms came back. The integrated Radeon at 720p, standing in the meadow before the temple where the fog
 runs: 10.2 / 9.7 fps, GPU busy p50 92.0 / 93.1 ms kept, against 9.8 / 9.9 fps and 92.6 / 91.2 ms dropped.
+
+## 2026-11-21: NonUniform marking off by default on AMD (1.2.9.1)
+
+Upstream's notes (1.2.10, ff6548e), brought over with the change.
+
+1.2.9 decorated texture array accesses NonUniform by default on every GPU but NVIDIA's (the section above). On an
+RX 6600 (AMD's Windows driver, RDNA 2) the game then stopped now and then in the first dungeon as new effects came up
+(enemy deaths): an access violation inside amdvlk64.dll while a pipeline worker linked a pipeline from its four stage
+libraries (`vk_pipeline.c` `gpl_link` from `pipe_worker`), right after a stage library was built in play. With
+`REKARINA_NONUNIFORM=0` the same fights, and the dungeon's boss, ran without a crash. On RDNA 3 / 4 the decoration did not
+change the flicker it was meant for. So it is off by default on AMD now (every AMD driver), as on NVIDIA; other GPUs keep
+it, and `REKARINA_NONUNIFORM=1` turns it on anywhere. The libraries are kept for the life of the process and the link
+takes four of them under stage-independent set layouts, whether their modules were decorated or not; nothing points at
+our side of the link, so the driver's handling of the decorated modules is the likely fault.

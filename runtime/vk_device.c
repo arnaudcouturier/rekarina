@@ -773,17 +773,22 @@ static int create_device(void) {
     free(c);
     {   // REKARINA_NONUNIFORM=0|1|all (gfx_shader.c patch_nonuniform): texture array accesses with a per-invocation index
         // (1) or every computed index (all) decorated NonUniform. Vulkan leaves such an access undefined without the
-        // decoration, so 1 is the default on every GPU but NVIDIA's, whose hardware takes a descriptor per lane anyway:
-        // its modules stay as they were. =0 turns it off; it needs shaderSampledImageArrayNonUniformIndexing.
+        // decoration. It is off by default on NVIDIA, whose hardware takes a descriptor per lane anyway, and on AMD:
+        // on an RX 6600 (AMD's Windows driver, RDNA 2) 1.2.9's decorated modules crashed the driver now and then while
+        // it linked a pipeline from stage libraries in play (amdvlk64.dll in vk_pipeline.c gpl_link, as new effects
+        // came up), and with REKARINA_NONUNIFORM=0 the same fights ran clean; on RDNA 3 / 4 it did not change the
+        // flicker it was meant for. Other GPUs keep 1. =1 turns it on anywhere for tests; it needs
+        // shaderSampledImageArrayNonUniformIndexing.
         const char *e = cfg_get("REKARINA_NONUNIFORM");
-        int set = e && *e, nvidia = g_vk.props.vendorID == 0x10de;
-        int mode = set ? (!strcmp(e, "all") ? 2 : strcmp(e, "0") != 0) : !nvidia;
+        int set = e && *e, nvidia = g_vk.props.vendorID == 0x10de, amd = g_vk.props.vendorID == 0x1002;
+        int mode = set ? (!strcmp(e, "all") ? 2 : strcmp(e, "0") != 0) : !nvidia && !amd;
         gfx_shader_nonuniform = nu_feature ? mode : 0;
         rt_log("vk: texture array accesses decorated NonUniform: %s%s",
                !mode ? "off" : !nu_feature ? "no, the device lacks the feature"
                : mode == 2 ? "every computed index" : "those with a per-invocation index",
                set ? " (REKARINA_NONUNIFORM)" : nvidia ? " (NVIDIA: not needed; REKARINA_NONUNIFORM=1 turns it on)"
-                                              : " (the default here; REKARINA_NONUNIFORM=0 turns it off)");
+               : amd ? " (AMD: off by default; REKARINA_NONUNIFORM=1 turns it on)"
+                     : " (the default here; REKARINA_NONUNIFORM=0 turns it off)");
     }
     if (r != VK_SUCCESS) { rt_log("vk: vkCreateDevice failed (%d)", (int)r); return 0; }
     vk_dlssg_device_ready(g_vk.device);
