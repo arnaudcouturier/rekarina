@@ -380,13 +380,22 @@ static int ends_with(const char *s, const char *tail) {
 
 // What the cache's files were made from, as tex-cache/prepared.txt holds it: the walk's own version, the dump (path,
 // size, last write), the shapes and the BC1 rule. Empty when the dump is not known.
+// The dump's path goes in in one form, absolute with '/': the game opens it as its settings give it ("D:/x.nup"), the
+// entry step's child as REKARINA_ROMFS, which prep_child_paths makes absolute with the system's own separators
+// ("D:\x.nup"). The same file came out as two texts, so the stamp the child wrote after its walk never matched the one
+// the game wanted, and every start walked the 21,658 archives again (since 1.2.8's child walk).
 #define TEX_STAMP "rekarina texture cache 1"
 static void stamp_of(const TxRun *x, char *out, size_t n) {
     uint64_t size = 0, wt = 0;
     out[0] = 0;
     fs_init();   // the dump opened (once per process)
-    if (!romfs_image_path() || !romfs_image_identity(&size, &wt)) return;
-    snprintf(out, n, "%s|%s|%llu|%llu|shapes %d|bc1 %d\n", TEX_STAMP, romfs_image_path(), (unsigned long long)size,
+    const char *image = romfs_image_path();
+    if (!image || !romfs_image_identity(&size, &wt)) return;
+    char path[PLAT_PATH_MAX * 2];
+    if (!plat_full_path(image, path, sizeof path)) snprintf(path, sizeof path, "%s", image);
+    for (char *c = path; *c; c++)
+        if (*c == '\\') *c = '/';
+    snprintf(out, n, "%s|%s|%llu|%llu|shapes %d|bc1 %d\n", TEX_STAMP, path, (unsigned long long)size,
              (unsigned long long)wt, x->shapes, rt_knob("TEX_BC1", "1") != 0);
 }
 
