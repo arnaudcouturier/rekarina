@@ -344,6 +344,10 @@ Shaders: `.venv-py314\Scripts\python tools\shader_census.py --version <ver> --tr
 to `build\<ver>\shaders\` and runs it through the translator and `spirv-val`; failure groups go to `failures.txt`.
 `tools\xlate_smoke.py` checks the translator alone, without game files.
 
+`tests\interface_coverage_check.c` checks the runtime fragment rewrite. Compile `interface_coverage_check.frag` with
+`glslangValidator -V` as-is, with `-DCOMPONENT_OUTPUT=1`, and with `-DSECOND_OUTPUT=1`. Pass the three modules followed
+by two output paths to the compiled check; run `spirv-val --target-env vulkan1.3` on each output.
+
 ## Reverse engineering (optional)
 
 - Ghidra 12.1.2 with Adubbz's Ghidra-Switch-Loader in `toolchain\ghidra\` (JDK 21) opens the game modules (NSO).
