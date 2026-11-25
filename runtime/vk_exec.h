@@ -238,6 +238,10 @@ extern int vk_dump_armed;
 void vk_dump_init(void);                 // reads the environment; vk_exec_record's first call
 void vk_dump_pass_end(VkExec *ex);       // after vkCmdEndRendering
 void vk_probe_pass_end(VkExec *ex);      // DEBUG-PROBE: after vkCmdEndRendering, REKARINA_PASS_PROBE=1
+// The shadow mask's temporal filter (vk_maskfilter.c, REKARINA_MASK_FILTER): each draw notes the scene's camera block;
+// after the sun's pass into the shadow mask the filter runs (after vkCmdEndRendering, before the dump's hooks)
+void vk_maskfilter_draw(VkExec *ex);
+void vk_maskfilter_pass_end(VkExec *ex);
 void vk_probe_dispatch(VkExec *ex, const GfxShader *cs, const VkPipeInfo *info);   // DEBUG-PROBE: after a dispatch
 VkDescriptorBufferInfo vk_exec_probe_ubo(VkExec *ex, int st, int slot);   // DEBUG-PROBE
 VkDescriptorBufferInfo vk_exec_probe_support(void);                     // DEBUG-PROBE

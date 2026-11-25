@@ -4545,3 +4545,117 @@ where cascade 1 has 27). The larger map lowered the mask's flicker everywhere (s
 cost seen on the RTX 5070: the cascades' passes take 0.07 to 0.09 ms of GPU a frame at any of the three sizes, and the
 frame rate stayed within run-to-run noise (the village 128.3 / 131.7 / 129.9 fps at 1600 / 2200 / 3072, the forest 124.8
 / 131.5 / 131.0).
+
+## 2026-11-23: the shadow mask filtered over time (a test switch)
+
+Upstream's notes (4b197fc, a19c173), brought over with the filter. The map sizes they name (3072, Automatic) are upstream's Shadow resolution row, which this fork does not have.
+
+### 2026-11-24: the depth clamp with negativeOneToOne (two test switches for RDNA 3 / 4)
+
+BatzZie's next runs (RX 7900 XTX, 2.0 RC1) ruled the clear and the mesh path out: with REKARINA_MESH_EMULATE=1 (mesh
+draws through the compute emulation and an ordinary vertex pipeline) the far shadows still flicker, and his own Vulkan
+layer, which turned the depth clamp off for every draw into the cascade array, had all three layers filled at frame
+3060 (41,507 / 37,769 / 18,645 distinct values) and no flicker; his layer logged every shadow draw with viewport 0..1,
+no depth bias, LESS, test and write on and the depth clamp ON, the same for the good and the bad layers. The game draws
+in NVN's -w..w depth mode, which every pipeline here takes through VK_EXT_depth_clip_control's negativeOneToOne, and
+asks for the depth clamp on its shadow draws. The two other ports of the game never use negativeOneToOne: their vertex
+and mesh stages convert the depth themselves (eden's convert_depth_mode), and they keep the game's clamp; Longshot does
+not flicker on his card. So the pair, clamp with negativeOneToOne, is what RDNA 3's driver gets wrong.
+
+- REKARINA_DEPTH_NDC=shader (REKARINA_MESH_NDC=shader the same; gfx_shader.c ndc_twin_make / ndc_convert): each vertex,
+  tessellation evaluation, geometry and mesh shader gets a twin whose module writes z = (z + w) / 2 itself, with its own
+  key and input id (its own pipelines, pipeline libraries and no pipeline-file record); a draw takes the twin of its
+  LAST stage before the rasterizer only (vk_exec_draw.c prepare_draw and prepare_stages: the mesh shader; the geometry
+  shader, else the vertex shader; the emulated mesh draw's own vertex shader), and that pipeline is made without
+  negativeOneToOne (the key carries it). The clamp stays as the game asks. Where the conversion goes: a mesh shader's
+  stores to its output block's Position (a 2-index access chain; a store to another member chosen by a constant, the
+  point size, stays as it is); the vertex stages' Position (a variable of its own, or the member of the gl_PerVertex
+  block the translator declares) before each return of the entry point; a geometry shader's before each emit, its own
+  value stored back after it. A shader with any other use of its Position block gets no twin and keeps
+  negativeOneToOne; the log counts the shaders converted and left, the first 4 left with their key and reason.
+- REKARINA_SHADOW_CLAMP=0 (vk_exec_draw.c shadow_clamp_off): draws into a D16 depth target that is one layer of an
+  image of several, with no colour target (the sun's cascade array), are made with the clamp off, as BatzZie's layer
+  did; logged once.
+
+Checked on the RTX 5070 (1080p base mode, the game's 1600 map, the forest and the field's drawbridge at exact spots,
+every pass's depth target dumped at frame 2600, each place plain twice and once with the switch; targets paired by order
+within each size and format; the median share of pixels off by more than 2, two plain runs against plain and switch):
+the field's scene depth 0.894 / 0.804 %, its cascades 0.378 / 0.320 %, its far map 0.255 / 0.188 %, the forest's scene
+36.6 / 25.8 % and its cascades 2.889 / 3.193 % (the wind moves the forest between runs): the switch draws the same depth
+as negativeOneToOne, within the runs' own differences; every cascade pass's distinct values and shares at 1.0 and 0
+within the plain runs' spread. Coverage in the forest: 1,024 shaders converted in the first minutes, none left. No
+FATAL, no lost device in any run. REKARINA_SHADOW_CLAMP=0 is not neutral: in the field's cascade layer 0 the share at
+0 falls from 35.4 to 0.2 % and the share at 1.0 rises from 14.9 to 26.4 %, layer 2's from 70 to 94 %: what lies in
+front of a cascade's near plane (tall casters) is clipped instead of clamped onto it, and its shadow is lost. So
+DEPTH_NDC=shader is the candidate fix with no picture change; SHADOW_CLAMP=0 a fallback with that cost. A Radeon RDNA 3
+/ 4 player's dump decides it: with REKARINA_DEPTH_NDC=shader, cascade layers 1 and 2 drawn (thousands of distinct
+values, as layer 0) and no flicker in play.
+
+2026-11-24, night: the player's two runs of 2.0.0-rc.2 at his spot decided it the other way. With
+REKARINA_DEPTH_NDC=shader (the log's line of the switch, over 3,000 shaders converted, none left) the forest flickered as
+before; with REKARINA_SHADOW_CLAMP=0 there was no flicker and every layer was filled. So the clip space is not the
+cause and the conversion is not the fix: the fault goes with the device's depth clamp (the near and far clip off) on
+that hardware, in either clip space. What the lost layers have that the good one has not: cascade 0 is orthographic,
+cascades 1 and 2 carry a perspective warp, so only they have vertices behind the projection's eye (w < 0), which a
+rasterizer without a near clip must cut at w = 0 itself. Unproven that this is the step RDNA 3 gets wrong.
+
+REKARINA_SHADOW_CLAMP=auto|shader|0|1 (vk_exec_draw.c shadow_clamp_mode, gfx_shader.c gfx_shader_near_twin). shader:
+a draw into the cascade array that the game clamps goes without the device's clamp, and its last stage before the
+rasterizer is a twin whose module writes z = z < -w ? -w : z at every Position (the depth twins' converter with a mode;
+z < 0 ? 0 : z after the conversion when REKARINA_DEPTH_NDC=shader is on as well). A primitive in front of the near plane
+lies on it as with the clamp; one that crosses it is drawn whole, a little deeper between the crossing and its inner
+vertices; the far side is clipped, where the clamp writes 1.0 into a map cleared to 1.0 under LESS; a vertex with
+w < 0 gets a depth beyond the far plane, so the far clip cuts its primitive where w crosses 0; a NaN stays one and is
+clipped. The twins are made at a cascade draw's first use of a shader (a handful of mesh shaders in the field), with
+their own key and input id. auto, the default: shader on AMD's Windows driver for RDNA 3 and 4 (vk_caps.amd_prop
+without amd_sc), the device's clamp (1) on every other driver. REKARINA_DEPTH_NDC's default is off again.
+
+Checked on the RTX 5070 the same way (the field in front of the Market, frame 2600, plain twice, the switch, the clamp
+off): the share of pixels off by more than 2, two plain runs against plain and switch: the scene's depth 0.642 /
+0.669 %, the cascades 0.243 / 0.196 %, the far map 0.099 / 0.079 %. The cascade layers' share at 1.0 (nothing drawn)
+and at 0 (held on the near plane): plain 14.9 | 35.4, 57.7 | 7.2, 69.9 | 24.2; switch 14.9 | 34.6, 57.7 | 5.6,
+69.9 | 24.2; clamp off 22.6 | 0.3, 64.0 | 0.0, 94.0 | 0.0. So the shader's hold keeps every caster (the cover equals
+the plain runs' to a tenth of a percent) where the clamp simply off loses a third of the far layer's; the 0.8 and
+1.6 points fewer texels at exactly 0 in layers 0 and 1 are the triangles that cross the near plane. No fault, no
+lost device. Not run on an RDNA 3 or 4 card: these draws now use the state that player's second run had, with the
+casters kept; his run of the next test build decides it, REKARINA_SHADOW_CLAMP=0 beside it to compare.
+
+## 2026-11-23: the shadow mask filtered over time (on by default since 2026-11-24)
+
+What still shimmers with the larger map is the far half of the picture, the sun's cascades 1 and 2 (10-160 m): they
+carry a perspective warp along the view, so they cannot be held still in the world without losing resolution ("Shadow
+resolution" above), and their texels slide under the scene in every frame of motion. REKARINA_MASK_FILTER=<percent> (80
+by default in OoT since 2026-11-24, 0 turns it off; runtime/vk_maskfilter.c) filters the one place every sun shadow
+passes through, the screen-space shadow mask, over time: after the sun's pass into the mask (the frame's last write to
+it) a compute pass (runtime/mask_filter_spv.h, written by tools/make_mask_filter.py) takes each pixel's surface to
+last frame's picture by the camera's motion (its depth, and this frame's view-projection against last frame's from the
+game's scene context block, as the motion vectors of DLAA take them), reads last frame's filtered mask there, holds it
+within the range of this frame's 3x3 neighbourhood, so a shadow that moves or ground that comes into view takes this
+frame's value at once, and mixes it in by the weight (green and blue, the hard shadows and the grass's; red and alpha
+pass through). The result is copied over the mask and kept as the next frame's history (two RGBA8 images of the
+scene's size). A first version that read the mask as a storage image crashed once inside NVIDIA's shader compiler
+(nvgpucomp64.dll) in the field; the mask is read through a sampled view now, and the same runs played through.
+
+The mask's toggles with REKARINA_MASK_FILTER=80 against none (1080p, the map at 3072 as Automatic picks it on the RTX
+5070, the same method as above; still / turning / walking, lower 40 % | upper half where it matters):
+
+| place, mode | off | 80 |
+|---|---|---|
+| the forest, base mode | 0.15 / 2.04 (0.94 \| 2.73) / 1.64 % | 0.03 / 1.04 (0.34 \| 1.66) / 0.48 % |
+| the drawbridge, base mode | 0.03 / 0.52 / 0.24 % | 0.01 / 0.15 / 0.08 % |
+| the drawbridge, DLAA | 2.43 / 1.41 % | 1.23 / 0.77 / 0.64 % |
+
+(the forest's walking figure off is batch 1's 3072 run, 108 frames; the DLAA run without the filter ended before its
+walk). The whole picture, where most toggles are other things than the shadows: the forest turning 3.00 % against
+2.80-2.88 %, walking 3.23 % against 2.80 % and 3.26 % (two runs), DLAA standing 0.09 % against 0.06-0.07 %. Looked at
+frame by frame, the camera turning around the hero in the forest and the hero walking onto the drawbridge and past a
+tree: no trail of the hero's shadow or of anything else, the legs' shadows on the stones as sharp as without it.
+
+Its frame rate (2026-11-24, RTX 5070, 1080p base mode, 240 limit, the camera turning, 1500 frames from 1000 after the
+arrival, off / 80 / 80 / off): the field 114.2 and 121.0 fps off (1 % low 56.2 / 57.9) against 113.3 and 118.0 with
+the filter (58.1 / 64.3), the forest 131.3 and 126.4 off (93.3 / 82.7) against 131.3 and 129.0 (96.0 / 88.5): the
+means -1.6 % and +1.0 %, inside the spread of each arm's own two runs (up to 6.8 fps), the 1 % low higher with the
+filter in both places, no frame over 25 ms more. The integrated Radeon (RDNA 2, 720p base mode, the forest, the camera
+turning, 600 frames from 300 after the arrival, off / 80 / 80 / off): 6.2 and 6.1 fps off (1 % low 4.9 / 4.8) against
+6.3 and 6.1 with the filter (5.0 / 4.7), no FATAL, no lost device. So the filter is on by default in OoT;
+REKARINA_MASK_FILTER=0 is the old picture as a test value.

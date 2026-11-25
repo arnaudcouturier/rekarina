@@ -87,6 +87,10 @@ void vk_dlaa_frame(void);
 // vk_exec_draw.c, each draw before its fixed state is recorded: notes the scene camera block (vk_dlaa_draw), and moves
 // the viewport of the scene's draws by the frame's jitter (vk_dlaa_viewport, when the viewport is recorded).
 void vk_dlaa_draw(VkExec *execution);
+// OoT's view-projection from rows 0-10 of its scene context block (row-major, double), and a 4x4 inverse (0: singular);
+// for the shadow mask's temporal filter (vk_maskfilter.c)
+void vk_dlaa_ocam_vp(const float *rows, double out[16]);
+int vk_dlaa_inv4(const double m[16], double out[16]);
 void vk_dlaa_pjitter(VkExec *execution, int stage);   // the scene camera block's projection jitter (REKARINA_DLAA_PJITTER)
 // vk_exec.c, at the start of a submission's recording: the projection jitter in the game's own scene context blocks
 // (REKARINA_DLAA_PJITTER=2), before the uniform and mirror copies are taken

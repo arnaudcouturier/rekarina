@@ -923,6 +923,7 @@ void vk_exec_pass_end(VkExec *ex) {
     for (int i = 0; i < ex->pass_ncolor && i < 8; i++)   // stand-ins of 3D BC targets go to their textures
         if (ex->color[i].image && ex->color[i].img && ex->color[i].img->image != ex->color[i].image)
             bc_copy_back(ex, &ex->color[i]);
+    if (!pass_end_virtual) vk_maskfilter_pass_end(ex);   // the shadow mask's temporal filter (REKARINA_MASK_FILTER, on in OoT)
     if (vk_dump_armed) vk_dump_pass_end(ex);
     vk_probe_pass_end(ex);   // DEBUG-PROBE
     pl_pass(ex);             // DEBUG-PASSLIST

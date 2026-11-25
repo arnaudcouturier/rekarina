@@ -4225,6 +4225,7 @@ static int prepare_draw(VkExec *ex, int prim, int32_t count, int restart) {
         if (ex->mark && vk_exec_frame.draws == ex->mark_draws0) ex->mark->first[0] = vs, ex->mark->first[1] = fs;
     }
     vk_dlaa_draw(ex);
+    vk_maskfilter_draw(ex);   // the shadow mask filter's camera (REKARINA_MASK_FILTER, on in OoT)
     vk_dlaa_pjitter(ex, NVN_STAGE_VS);
     vk_dlaa_ubodump(ex, s.vs, NULL, s.fs, 0);
     vk_mvsurvey_draw(ex);

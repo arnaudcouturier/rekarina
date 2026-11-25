@@ -1020,6 +1020,10 @@ static void ocam_vp(const float *v, double out[16]) {
         }
 }
 
+// For the shadow mask's temporal filter (vk_maskfilter.c): the same view-projection and inverse.
+void vk_dlaa_ocam_vp(const float *rows, double out[16]) { ocam_vp(rows, out); }
+int vk_dlaa_inv4(const double m[16], double out[16]) { return inv4(m, out); }
+
 // Frame generation's camera (vk_dlaa_fg_camera) from the OoT block: the projection is rows 7-10, the view rows 0-2
 // (rows: right, up, back; the camera looks down -z), m the reprojection from this frame's clip space to last frame's.
 // Each matrix is handed out transposed, for row vectors.
