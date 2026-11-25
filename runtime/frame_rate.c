@@ -172,7 +172,9 @@ int vk_fg_generating(void);   // vk_fg.cpp
 
 // REKARINA_MOVIE_FPS (default 60, 0 off): the frame rate while a movie plays. A movie's event script counts the game's updates
 // as 60 Hz frames whatever the step: above 60 fps its narration lines start early, over one another, and the closing
-// fade to black comes long before the movie ends and hides it. The movies are 60 fps, so the cap shows the same pictures.
+// fade to black comes long before the movie ends and hides it; below it (a player's 30 fps limit) the script runs at half
+// speed against the movie and its sound, which stalls the opening movie. So a movie plays at this rate whatever the limit
+// says, a lower one included. The movies are 60 fps, so the rate shows the same pictures.
 __attribute__((weak)) int codec_movie_live(void) { return 0; }
 static int movie_cap_hz(void) {
     static int hz = -1;
@@ -183,7 +185,7 @@ static int movie_cap_hz(void) {
     }
     if (!hz || !codec_movie_live()) return 0;
     static int logged;
-    if (logged++ < 3) rt_log("frame rate: a movie plays: at most %d fps until it ends (REKARINA_MOVIE_FPS)", hz);
+    if (logged++ < 3) rt_log("frame rate: a movie plays: %d fps until it ends, whatever the limit (REKARINA_MOVIE_FPS)", hz);
     return hz;
 }
 
@@ -193,7 +195,7 @@ uint64_t frame_step_cap_ns(void) {
     if (hz < LIMIT_MIN_HZ) hz = 60;   // display rate unknown (no window yet)
     if (hz > LIMIT_MAX_HZ) hz = LIMIT_MAX_HZ;
     int mhz = movie_cap_hz();
-    if (mhz && hz > mhz) hz = mhz;
+    if (mhz) hz = mhz;   // above or below: the movie's script keeps its own 60 Hz count (movie_cap_hz)
     if (vk_fg_generating()) hz /= 2;   // frame generation shows two frames for each the game draws
     return (uint64_t)(1e9 / hz + 0.5);
 }

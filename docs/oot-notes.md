@@ -944,7 +944,7 @@ Spin bench after these, three runs: first minute 99 fps, 1% low 42, 35-40 frames
 
 What is left in the window, after the pump, frames over 30 ms: +1 (207 ms: 95 ms in one alias bind of a 1600x1600 depth image, shadow atlas), +2, and a group at +28 to +37 from the second wave of registrations.
 
-Also: `REKARINA_MOVIE_FPS` (default 60) holds the frame rate while a movie plays, because the event script counts updates as 60 Hz frames, and the NV12 copy tells the page tracking about its write. The window paints black until the first present (the white flash at launch).
+Also: `REKARINA_MOVIE_FPS` (default 60) holds the frame rate while a movie plays, above and below it, because the event script counts updates as 60 Hz frames (a 30 fps limit stalled the opening movie against its sound), and the NV12 copy tells the page tracking about its write. The window paints black until the first present (the white flash at launch).
 
 ## The one-frame flicker: queue order (2026-11-09)
 
