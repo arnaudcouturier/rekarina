@@ -232,6 +232,7 @@ static void tex_init(void *p) {
     return;
 }
 static uint32_t image_serial;   // vk_texture_image_serial
+uint32_t vk_texture_image_serial_now(void) { return __atomic_load_n(&image_serial, __ATOMIC_RELAXED); }   // the last one handed out
 uint32_t vk_texture_image_serial(void) {
     uint32_t s = __atomic_add_fetch(&image_serial, 1, __ATOMIC_RELAXED);
     return s ? s : __atomic_add_fetch(&image_serial, 1, __ATOMIC_RELAXED);

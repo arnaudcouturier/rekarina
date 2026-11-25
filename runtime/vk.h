@@ -123,6 +123,16 @@ void vk_crumbs_report(void);         // logs the two codes and what they name
 // checkpoints (the extension is enabled at device creation); 0, none.
 #define VK_PASS_MARKS 4096   // power of two
 enum { VK_MARK_PASS = 1, VK_MARK_DISPATCH, VK_MARK_PROLOGUE, VK_MARK_WRITEBACK, VK_MARK_MERGE, VK_MARK_WBCOPY, VK_MARK_UI_CAPTURE };   // the last two: mirror copies in and out
+// An image as a pass mark keeps it: a copy taken while the pass is recorded, since the record it came from may be gone
+// by the time a loss is reported.
+enum { VK_MARK_IMG_SET = 1, VK_MARK_IMG_BOUND = 2, VK_MARK_IMG_MIRRORED = 4, VK_MARK_IMG_GPU_OWNED = 8, VK_MARK_IMG_STORAGE = 16 };
+typedef struct {
+    uint64_t addr;                      // storage GPU address
+    uint32_t w, h, levels, layers;
+    uint32_t serial;                    // VkTexImage.serial: images are numbered as they are made
+    VkFormat format;
+    uint8_t flags;                      // VK_MARK_IMG_*: BOUND = lies in the game's pool memory (VkTexImage.bound)
+} VkMarkImage;
 typedef struct {
     uint32_t id;                        // the mark this record belongs to (0: never written)
     uint8_t kind;                       // VK_MARK_*
@@ -133,6 +143,11 @@ typedef struct {
     uint64_t fence;                     // the submission: the timeline value it signals
     VkFormat color[8], depth;           // attachment formats (VK_FORMAT_UNDEFINED: none)
     const GfxShader *first[2], *last[2];// vertex and fragment shader of the first and last draw; a dispatch: first[0]
+    // A pass only, for the device loss report (vk_pass_mark_detail): what it renders into and what its first draw
+    // samples, so that a loss names the images the GPU stopped on, not only their formats.
+    VkMarkImage tgt;                    // the first colour target, else the depth target (flags 0: none)
+    VkMarkImage tex[3];                 // the first draw's first fragment textures at bound slots (flags 0: none)
+    int32_t count;                      // the first draw's elements; 0 until a draw is prepared
 } VkPassMark;
 // Pass marks wanted and possible (REKARINA_PASS_CRUMBS and the extensions): set by vk_crumbs_init.
 extern int vk_pass_marks_on;
@@ -147,6 +162,11 @@ void vk_pass_mark_cmd(VkCommandBuffer cb, uint32_t id, int end);
 // AMD only: the last mark the GPU started and the last it finished (0: none); 0 without buffer marks.
 int vk_pass_marks_read(uint32_t *started, uint32_t *finished);
 const VkPassMark *vk_pass_mark_record(uint32_t id);   // the ring record of mark id; NULL once a later mark took its slot
+// The mark's copy of an image record, a const VkTexImage * (vk_exec.c at a pass begin, vk_exec_draw.c at its first
+// draw); NULL: none.
+VkMarkImage vk_pass_mark_image(const void *tex_image);
+// One line for the report: the images of pass mark id (VkPassMark.tgt, tex); empty for other marks and lost records.
+void vk_pass_mark_detail(uint32_t id, char *o, size_t size);
 // The report's text for a started and a finished mark, three lines without a trailing newline: which marks (source:
 // the extension they came from), then each with its ring record. vk_pass_marks_report logs it; the probe checks it.
 void vk_pass_marks_format(const char *source, uint32_t started, uint32_t finished, char *o, size_t size);

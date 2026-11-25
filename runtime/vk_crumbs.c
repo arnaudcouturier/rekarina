@@ -156,7 +156,7 @@ int vk_pass_marks_want_nv(void) {
 
 static void pass_marks_init(VkCtx *c) {
     const char *e = cfg_get("REKARINA_PASS_CRUMBS");
-    int off = e && !strcmp(e, "0");
+    int off = e && !strcmp(e, "0"), asked_off = off;
 #ifdef GAME_OOT
     // OoT: off unless asked for (REKARINA_PASS_CRUMBS=1, or =amd for the buffer marks alone). A frame of forest
     // village has ~295 passes and dispatches, each marked at its start and at its end, and a mark at the end of the
@@ -174,8 +174,10 @@ static void pass_marks_init(VkCtx *c) {
                pm_amd && set_checkpoint ? " and " : "", set_checkpoint ? "VK_NV_device_diagnostic_checkpoints" : "",
                set_checkpoint ? "" : ", =1 adds NVIDIA checkpoints where the driver has them");
     else
-        rt_log("vk: pass marks off (%s)", off ? "REKARINA_PASS_CRUMBS=0"
-                                              : "no VK_AMD_buffer_marker; REKARINA_PASS_CRUMBS=1 asks for NVIDIA checkpoints");
+        rt_log("vk: pass marks off (%s)",
+               asked_off ? "REKARINA_PASS_CRUMBS=0"
+               : off ? "the default: REKARINA_PASS_CRUMBS=1 turns them on, and the run after a lost graphics device has them"
+                     : "no VK_AMD_buffer_marker; REKARINA_PASS_CRUMBS=1 asks for NVIDIA checkpoints");
 }
 
 static void describe_mark(uint32_t id, char *o, size_t size);
@@ -385,6 +387,44 @@ static void describe_mark(uint32_t id, char *o, size_t size) {
                  shader_id(m->first[0]), shader_id(m->first[1]), shader_id(m->last[0]), shader_id(m->last[1]));
 }
 
+VkMarkImage vk_pass_mark_image(const void *tex_image) {
+    const VkTexImage *t = tex_image;
+    if (!t) return (VkMarkImage){0};
+    return (VkMarkImage){.addr = t->addr, .w = t->width, .h = t->height, .levels = t->levels, .layers = t->layers,
+                         .serial = t->serial, .format = t->format,
+                         .flags = (uint8_t)(VK_MARK_IMG_SET | (t->bound ? VK_MARK_IMG_BOUND : 0) |
+                                            (t->mirrored ? VK_MARK_IMG_MIRRORED : 0) | (t->gpu_owned ? VK_MARK_IMG_GPU_OWNED : 0) |
+                                            (t->usage & VK_IMAGE_USAGE_STORAGE_BIT ? VK_MARK_IMG_STORAGE : 0))};
+}
+
+static size_t mark_image_text(const VkMarkImage *i, char *o, size_t size) {
+    int n = snprintf(o, size, "%ux%u format %d, %u level%s, %u layer%s, storage %#llx, %s%s%s%s, image number %u",
+                     i->w, i->h, (int)i->format, i->levels, i->levels == 1 ? "" : "s", i->layers, i->layers == 1 ? "" : "s",
+                     (unsigned long long)i->addr, i->flags & VK_MARK_IMG_BOUND ? "in the game's pool memory" : "memory of its own",
+                     i->flags & VK_MARK_IMG_MIRRORED ? ", CPU-written" : "", i->flags & VK_MARK_IMG_GPU_OWNED ? ", GPU-written" : "",
+                     i->flags & VK_MARK_IMG_STORAGE ? ", storage usage" : "", (unsigned)i->serial);
+    return n < 0 ? 0 : (size_t)n < size ? (size_t)n : size - 1;
+}
+
+void vk_pass_mark_detail(uint32_t id, char *o, size_t size) {
+    const VkPassMark *m = vk_pass_mark_record(id);
+    o[0] = 0;
+    if (!m || m->kind != VK_MARK_PASS || !(m->tgt.flags & VK_MARK_IMG_SET)) return;
+    uint32_t vk_texture_image_serial_now(void);
+    size_t n = (size_t)snprintf(o, size, "vk:   mark %u renders into ", (unsigned)id);
+    if (n < size) n += mark_image_text(&m->tgt, o + n, size - n);
+    if (n < size) n += (size_t)snprintf(o + n, size - n, " (%u images made so far)", (unsigned)vk_texture_image_serial_now());
+    if (!m->count) return;
+    if (n < size) n += (size_t)snprintf(o + n, size - n, "; its first draw, %d elements, samples", (int)m->count);
+    int k = 0;
+    for (int i = 0; i < 3 && n < size; i++) {
+        if (!(m->tex[i].flags & VK_MARK_IMG_SET)) continue;
+        n += (size_t)snprintf(o + n, size - n, "%s", k++ ? "; and " : " ");
+        if (n < size) n += mark_image_text(&m->tex[i], o + n, size - n);
+    }
+    if (!k && n < size) snprintf(o + n, size - n, " no texture at a bound slot that could be read without the lock");
+}
+
 void vk_pass_marks_format(const char *source, uint32_t started, uint32_t finished, char *o, size_t size) {
     char a[640], b[640];
     describe_mark(started, a, sizeof a);
@@ -457,6 +497,12 @@ void vk_pass_marks_report(void) {
     if (vk_pass_marks_read(&started, &finished)) {
         vk_pass_marks_format("VK_AMD_buffer_marker", started, finished, t, sizeof t);
         log_lines(t);
+        vk_pass_mark_detail(started, t, sizeof t);
+        if (t[0]) rt_log("%s", t);
+        if (finished != started) {
+            vk_pass_mark_detail(finished, t, sizeof t);
+            if (t[0]) rt_log("%s", t);
+        }
     }
     nv_report();
 }

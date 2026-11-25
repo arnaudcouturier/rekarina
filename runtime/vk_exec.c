@@ -870,6 +870,8 @@ void vk_exec_pass_begin(VkExec *ex) {
         // vk_exec_draw.c prepare_draw replaces them as it records the new state.
         vk_exec_draw_shaders(&m->first[0], &m->first[1]);
         ex->mark_draws0 = vk_exec_frame.draws;
+        m->tgt = vk_pass_mark_image(ex->color[0].image ? ex->color[0].img : d->image ? d->img : NULL);
+        m->count = 0;
     }
     {   // DEBUG-OQLOG: render pass sizes (shadow cascades: depth only)
         int vk_oqlog_on(void);
@@ -917,6 +919,18 @@ void vk_exec_pass_end(VkExec *ex) {
         uint64_t d = vk_exec_frame.draws, d0 = ex->mark_draws0;
         ex->mark->draws = (uint32_t)(d >= d0 ? d - d0 : d);
         if (ex->mark->draws) vk_exec_draw_shaders(&ex->mark->last[0], &ex->mark->last[1]);
+        {   // DEBUG-MARKDETAIL: REKARINA_MARK_DETAIL=<width>: the line a device loss would print for this pass
+            // (vk_pass_mark_detail), for the first 400 passes with draws that are at most that wide
+            static int wmax = -1, shown;
+            if (wmax < 0) { const char *e = cfg_env("REKARINA_MARK_DETAIL"); wmax = e ? atoi(e) : 0; }
+            if (wmax && ex->mark->draws && ex->mark->w <= (uint32_t)wmax && shown < 400) {
+                char t[1024];
+                shown++;
+                vk_pass_mark_detail(ex->mark->id, t, sizeof t);
+                if (t[0]) rt_log("%s (frame %llu, %u draws)", t,
+                                 (unsigned long long)__atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED), ex->mark->draws);
+            }
+        }
         vk_pass_mark_end(ex->cb, ex->mark);
         ex->mark = NULL;
     }

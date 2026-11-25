@@ -4204,14 +4204,18 @@ static int prepare_draw(VkExec *ex, int prim, int32_t count, int restart) {
         if (PM.valid) PM.s = s, PM.info = info;
     }
     uint64_t waited = w0 ? kern_now_ns() - w0 : 0;
-    static int wait_logs;
-    if (why && waited >= 2000000 && wait_logs < 200) {
+    static int wait_logs, wait_all = -1;   // DEBUG-ONESHOTLOG: REKARINA_ONESHOT_LOG=1: every such draw, however short its wait
+    if (wait_all < 0) wait_all = cfg_env("REKARINA_ONESHOT_LOG") != NULL;
+    if (why && (waited >= 2000000 || wait_all) && wait_logs < 200) {
         char tg[512];
+        const uint8_t *a = gfx_shader_input_id(s.vs), *z = s.fs ? gfx_shader_input_id(s.fs) : NULL;
+        unsigned long long ia = 0, iz = 0;
+        for (int i = 0; i < 8; i++) ia = ia << 8 | a[i], iz = iz << 8 | (z ? z[i] : 0);
         wait_logs++;
         vk_exec_targets_describe(ex, tg, sizeof tg);
-        rt_log("vk_exec: frame %llu: a draw waited %.1f ms for its pipeline (%s%s): %u vertices, pass %ux%u, %s",
-               (unsigned long long)__atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED) + 1, waited / 1e6, why,
-               pending ? ", skipped after all" : "", count, ex->pass_w, ex->pass_h, tg);
+        rt_log("vk_exec: frame %llu: a draw waited %.1f ms for its pipeline (%s%s): %u vertices, vs %016llx fs %016llx, "
+               "pass %ux%u, %s", (unsigned long long)__atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED) + 1,
+               waited / 1e6, why, pending ? ", skipped after all" : "", count, ia, iz, ex->pass_w, ex->pass_h, tg);
     }
     if (pending) return vk_exec_oq_draw_lost(ex), 0;   // a background worker is building it: the draw is skipped until it is ready
     if (!p || !info) return vk_exec_oq_draw_lost(ex), warn_once(W_PIPELINE, "a graphics pipeline could not be created: draws with it are skipped"), 0;
@@ -4223,6 +4227,33 @@ static int prepare_draw(VkExec *ex, int prim, int32_t count, int restart) {
         ex->recorded++;
         B.st = s, B.st_valid = 1;
         if (ex->mark && vk_exec_frame.draws == ex->mark_draws0) ex->mark->first[0] = vs, ex->mark->first[1] = fs;
+    }
+    if (ex->mark && !ex->mark->count && vk_exec_frame.draws == ex->mark_draws0) {
+        // The pass mark's detail (vk.h VkPassMark.tex): the first draw's fragment textures, read without the texture lock
+        // (a slot whose resolution is not current is left out). Once a pass.
+        VkPassMark *m = ex->mark;
+        static int timed = -1;   // DEBUG-MARKDETAIL: with REKARINA_MARK_DETAIL set, what these copies cost
+        if (timed < 0) timed = cfg_env("REKARINA_MARK_DETAIL") != NULL;
+        uint64_t t0 = timed ? plat_now_ns() : 0;
+        m->count = count ? count : -1;
+        memset(m->tex, 0, sizeof m->tex);
+        const GfxShaderRes *res;
+        int nres = s.fs ? gfx_shader_resources(s.fs, GFX_RES_TEX, &res) : 0, k = 0;
+        for (int r = 0; r < nres && k < 3; r++) {
+            if (res[r].slot < 0 || res[r].slot >= 128) continue;
+            uint64_t h = ex->tex[NVN_STAGE_FS][res[r].slot];
+            int hit = 0;
+            const VkTexImage *img = h ? vk_texture_by_id_fast((int)(h & 0xfffff), NULL, NULL, &hit) : NULL;
+            if (img && hit) m->tex[k++] = vk_pass_mark_image(img);
+        }
+        if (timed) {
+            static uint64_t ns, calls;
+            ns += plat_now_ns() - t0;
+            if (!(++calls & 0x3fff))
+                rt_log("MARKDETAIL first-draw copies: %llu so far, %.0f ns each (two clock reads included), frame %llu",
+                       (unsigned long long)calls, (double)ns / (double)calls,
+                       (unsigned long long)__atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED));
+        }
     }
     vk_dlaa_draw(ex);
     vk_maskfilter_draw(ex);   // the shadow mask filter's camera (REKARINA_MASK_FILTER, on in OoT)
