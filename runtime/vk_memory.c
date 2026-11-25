@@ -6532,6 +6532,38 @@ void vk_upload_end(void) { plat_rmutex_unlock(&cmd_lock); }
 static VmaPool stg_pool;
 static int stg_pool_tried;
 
+// A staging buffer the driver refused (VK_ERROR_OUT_OF_DEVICE_MEMORY / HOST_MEMORY): on 16 GB PCs the game's commit
+// reaches the system's limit (RAM plus page file; players' logs: "the system 36196 of 37058 MB") and a new 64 MiB
+// block of the staging pool is refused, also for a buffer of a few kilobytes, which ended the game. Before giving up:
+// the default pool (VMA sizes a block or a dedicated allocation to the request), then the staging of every batch the
+// GPU has finished given back, then the same with every batch in flight waited for, and short waits for the reaper
+// (which destroys them on its own thread) for up to 2 s. Each step logs once per run.
+static VkResult staging_retry(VkCtx *c, const VkBufferCreateInfo *bi, VmaAllocationCreateInfo *aci, VkBuffer *b,
+                              VmaAllocation *a, VmaAllocationInfo *info, VkResult first) {
+    static int logs;
+    VkResult r = first;
+    uint64_t t0 = plat_now_ns();
+    if (aci->pool) {
+        aci->pool = NULL;
+        r = vmaCreateBuffer(c->vma, bi, aci, b, a, info);
+    }
+    plat_rmutex_lock(&cmd_lock);
+    for (int step = 0; r != VK_SUCCESS && step < 2; step++) {
+        retire(c, step);   // 0: what the GPU has finished, 1: every batch in flight
+        for (int i = 0; i < 200 && r != VK_SUCCESS; i++) {
+            r = vmaCreateBuffer(c->vma, bi, aci, b, a, info);
+            if (r != VK_SUCCESS) plat_sleep_ms(step ? 10 : 2);
+            if (!step && i >= 10) break;
+        }
+    }
+    plat_rmutex_unlock(&cmd_lock);
+    if (logs++ < 8)
+        rt_log("vk: a staging buffer of %llu bytes was refused (%d): %s after %.1f ms (the system's memory commit is "
+               "at its limit: close other programs, or let the page file grow)", (unsigned long long)bi->size,
+               (int)first, r == VK_SUCCESS ? "made on a second try" : "still refused", (plat_now_ns() - t0) / 1e6);
+    return r;
+}
+
 void *vk_staging(VkDeviceSize size, VkBuffer *buf, VmaAllocation *alloc) {
     uint64_t sec0 = sec_begin();
     VkCtx *c = vk_ctx();
@@ -6560,6 +6592,7 @@ void *vk_staging(VkDeviceSize size, VkBuffer *buf, VmaAllocation *alloc) {
     VkBuffer b;
     VmaAllocation a;
     VkResult r = vmaCreateBuffer(c->vma, &bi, &aci, &b, &a, &info);
+    if (r != VK_SUCCESS) r = staging_retry(c, &bi, &aci, &b, &a, &info, r);
     if (r != VK_SUCCESS) rt_fatal("vk: staging buffer of %llu bytes failed (%d)", (unsigned long long)size, (int)r);
     *buf = b;
     if (alloc) *alloc = a;   // the caller destroys it (vmaDestroyBuffer) after vk_upload_flush(1)
