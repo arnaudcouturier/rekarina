@@ -57,15 +57,12 @@
 #include "platform/platform.h"
 
 #define STEP_SAMPLES 5
-#ifdef GAME_OOT
-// OoT on the console steps 1/60 s, or 1/30 s when its frame controller drops to 30 fps, never more. With
-// steps up to 1/15 s (the forest house at 15-25 fps) 11 of 13 runs crashed at the camera turn (main+0xc938d0, an
-// empty resource slot); capped at 1/30 s, three runs passed it (REKARINA_PRESENT_SYNC=c on, no white frame either). A
-// slower frame slows the game down instead, as the console's would.
-#define STEP_MAX_DEFAULT (1.0 / 30.0)
-#else
+// OoT was capped at 1/30 s from 2026-11-06: with steps up to 1/15 s (the forest house at 15-25 fps) 11 of 13 runs
+// crashed at the camera turn (main+0xc938d0, an empty resource slot). The same evening patch set resguard sent that
+// read to the function's own invalid-handle path, and the cap stayed: a PC under 30 fps ran the game in slow motion
+// (players on a GTX 1650 SUPER and an RTX 3050 laptop in the field and the Market), where another port of the game
+// keeps its speed down to 15 fps. Both games now take steps up to 1/15 s; a slower frame still slows the game down.
 #define STEP_MAX_DEFAULT (1.0 / 15.0)
-#endif
 static double STEP_MAX_S = STEP_MAX_DEFAULT;   // longest step; a longer frame slows the game down
 #define STEP_RESET_S 0.25          // a gap this long (loading, a debugger) restarts the average
 #define STEP_FIRST_S (1.0 / 60.0)
@@ -438,14 +435,22 @@ void frame_step_present(uint64_t display_ns, int interval) {
         if (dt > STEP_RESET_S || dt < 0.001) {
             sample_count = sample_next = 0;
         } else {
-            if (dt > STEP_MAX_S) dt = STEP_MAX_S;
-            samples[sample_next++ % STEP_SAMPLES] = dt;
+            // The longest step bounds the average, not each display interval. A present late by less than a period is
+            // followed by a shorter interval that keeps the pacer's phase; with each interval cut at STEP_MAX_S first,
+            // the late one lost its excess and the short one still counted, so at a frame limit equal to the longest
+            // step (30 fps in OoT before 1.2.10) every late frame took game time away for good: a player's laptop ran the game in
+            // slow motion at a 30 limit and at normal speed at 40 or 60. One interval still counts at most twice the
+            // longest step, so a hitch is made up over the next frames only in part, as before.
+            double cut = dt > 2 * STEP_MAX_S ? 2 * STEP_MAX_S : dt;
+            samples[sample_next++ % STEP_SAMPLES] = cut;
             if (sample_count < STEP_SAMPLES) sample_count++;
             double sum = 0;
             for (unsigned i = 0; i < sample_count; i++) sum += samples[i];
             step = sum / sample_count;
+            if (step > STEP_MAX_S) step = STEP_MAX_S;
             if (step < STEP_MIN_S) step = STEP_MIN_S;
             step_store((float)step);
+            if (dt > STEP_MAX_S) dt = STEP_MAX_S;   // world_clock's frame time, as before
         }
     }
     last_ns = display_ns;
