@@ -687,8 +687,23 @@ void vk_sync_start(void) {
 // The index of a command buffer the GPU no longer uses, claimed for value `fence`. Called with sub_lock held; may move
 // slots[].
 static int claim_slot(VkCtx *c, uint64_t fence) {
-    uint64_t gpu = 0;
-    vkGetSemaphoreCounterValue(c->device, c->timeline, &gpu);
+    uint64_t gpu = 0, sub = __atomic_load_n(&issued, __ATOMIC_ACQUIRE);
+    VkResult cr = vkGetSemaphoreCounterValue(c->device, c->timeline, &gpu);
+    // A lost device answers with an error, and NVIDIA's driver with the counter at its largest value (vk_memory.c
+    // collect_locked). Taken at its word, every slot looks free and every claim takes the first slot, begun again
+    // (which resets it) for each command buffer asked for: the chunks' command buffers of a draw stretch among them,
+    // while other threads still record the chunks of the stretch before (vk_sync_chain_ex hands out the next
+    // stretch's with those out), so one command buffer goes to several threads at once. A chunk's next call into it
+    // then meets a command buffer that is not recording: an access violation inside the driver in place of the device
+    // loss's report. No value past the newest one submitted can have been reached, as the completion thread knows
+    // (completion_main caps what it reads): such an answer frees no slot.
+    if (cr != VK_SUCCESS || gpu > sub) {
+        static int said;
+        if (!said) said = 1,
+            rt_log("vk: the timeline counter reads %llu (result %d), the newest value submitted is %llu: the device is lost; "
+                   "no command buffer slot is taken as free", (unsigned long long)gpu, (int)cr, (unsigned long long)sub);
+        gpu = 0;
+    }
     for (int i = 0; i < nslots; i++)
         if (slots[i].fence <= gpu) {
             slots[i].fence = fence;
