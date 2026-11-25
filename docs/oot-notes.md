@@ -4475,3 +4475,73 @@ change the flicker it was meant for. So it is off by default on AMD now (every A
 it, and `REKARINA_NONUNIFORM=1` turns it on anywhere. The libraries are kept for the life of the process and the link
 takes four of them under stage-independent set layouts, whether their modules were decorated or not; nothing points at
 our side of the link, so the driver's handling of the decorated modules is the likely fault.
+
+## 2026-11-23: foliage shadows: the cascades, the mask and the shimmer in motion
+
+Upstream's notes (00cb670), brought over with the change. They name upstream's Shadow resolution row and its set `sunfit` (map sizes up to 3072), which this fork does not have: here `shadow_scale` draws the cascades at 4x (6400 a side) on discrete cards with 12 GiB or more.
+
+Players reported tree and bush shadows that "boil" in motion on NVIDIA cards (DLSS and DLAA mostly), and shadows that
+end sooner than in other ports. Measured on the RTX 5070, 1080p, at the village (a warp to a spot by the cliff).
+
+What draws the shadows (a frame dump):
+- foliage (tree crowns, bushes, grass cards): the sun's three cascades, one D16 array of three layers, 1600 texels a
+  side (the game's quality level 1; its table holds 1000/1400/1600, 1600/2000/2200 and 3072). Cascade 0 covers the view
+  to 9.8 m and is orthographic; cascades 1 (to 32.3 m) and 2 (to 160 m) carry a perspective warp along the view. The
+  cascades hold nothing else;
+- buildings, terrain and trunks: a static 12288x12288 map made at the load;
+- characters and moving objects (the hero, a chicken, a villager, the windmill): square maps the game sizes every frame;
+  the grass: a 2400x2400 map of its own;
+- one screen-space mask, RGBA8 at the scene's size, gathers all of them before the lighting reads it: five full-screen
+  passes with the scene depth attached (the grass's and the characters' maps) and one without (the cascades and the
+  static map), MIN-blended; green holds the hard shadows, blue the grass's soft one, red the occlusion.
+
+Why they shimmer in motion: the game fits each cascade to the view every frame (main+0x713120): the two sideways axes of
+its light basis follow the camera's direction, and the box is the tightest around the cascade's slice. A world point in
+front of the camera moves in every cascade's map by 1.7 to 1.9 texels a frame while the camera turns (the field's
+drawbridge, 60 fps; median, 78 % of frame pairs more than 0.1 texel), by 1.23 / 0.55 / 0.10 texel in cascades 0 / 1 / 2
+while the hero walks, and not at all while both stand (the cascades as guest memory holds them, every frame:
+REKARINA_SUNFIT_DUMP, runtime/oot_sunfit.c). Less the whole texels the move is 0.34 texel at the median (the village):
+every frame each leaf's shadow lands on another sub-texel phase of the grid. The jitter DLSS gets does not reach the fit
+(the camera projection the fit reads stays constant in DLAA). In the mask (captured every frame with
+REKARINA_MASK_SERIES; its green warped onto the next frame by the picture's optical flow; a toggle is a step up then
+down, or down then up, of more than 24/255), base mode: 0.57 % of pixel-frames toggle standing still, 2.27 % turning,
+2.08 % walking. The console's own temporal upscaler hides most of it.
+
+In DLAA the mask toggles in about 3.1 % of pixel-frames whatever the camera does (9 % of the pixels flip in more than
+a tenth of the frames standing still): the jitter samples shadow detail finer than a pixel's footprint (on the far
+ground one pixel spans several cascade texels along the view). That is the signal DLSS integrates; standing still it
+does (the picture toggles in 0.3-0.4 % of pixel-frames, against 2.1 % in base mode). Moving the mask passes by the
+frame's jitter, so that their rays meet the jittered depth (a test build), did not lower it.
+
+What we had added on top: REKARINA_FOLIAGE_SHADOW_CULL (from cascade 1 on, one side of the double-sided cards) and
+REKARINA_FOLIAGE_SHADOW_VRS (from cascade 2 on, 2x2 shading). A card is one plane, so the cull removed the shadow of
+every card whose culled side faced the sun: beyond 9.8 m every tree's shadow had about half its cards, and the far
+ground's share in shadow rose from 6.59 % to 7.83 % of the upper half of the picture with both off. The 2x2 rate decided
+each leaf's cut-out per block of 2x2 texels, blocks that the moving grid shifted every frame. With both off, base mode:
+the mask's toggles 0.56 / 2.08 / 1.97 % (still / turn / walk), the picture's 1.69 / 4.28 / 3.35 % against 2.13 / 5.37 /
+3.55 %; DLAA, the picture's while turning 1.25 % against 1.48 and 1.62 % (whole-picture flow toggles, three runs).
+
+Both are off by default on NVIDIA now (vk_exec_draw.c foliage_shadow_default), where they bought no frame rate. Base
+mode, 1080p, 240 fps limit, the camera turning, 1,500 frames from 1,000 after the arrival, ABBA (default, off, off,
+default): the village 131.1 / 130.1 against 132.1 / 130.5 fps (1 % low 97.8 / 97.0 against 100.9 / 91.0), the forest
+127.6 / 131.4 against 131.8 / 131.0 (87.7 / 99.8 against 92.5 / 96.5), the field's drawbridge 117.8 / 109.8 against
+116.8 / 117.2 (57.9 / 62.3 against 62.0 / 60.3). The three cascades' passes take 0.07 ms of GPU a frame either way
+(REKARINA_GPU_PASSTIME, two frames: the forest 0.130 against 0.120 ms, the village 0.148 against 0.150 ms). Other cards
+keep the shortcuts (nothing measured there; a Radeon RX 9060 XT player reported frames lost with both off).
+
+The distance: the cascades end where the game ends them (9.8 / 32.3 / 160 m in the mask pass's uniform block), as in
+the other ports, none of which changes it; what looked shorter here was the culled cards.
+
+Tried first and kept out of the tree then (since in, as the Shadow resolution row: "Shadow resolution (set `sunfit`)"
+below): the game's own larger
+maps (its table's 2200 and 3072, through the size the sun's shadow object picks at main+0x4729f0) and a steady cascade 0
+(a light basis fixed in the world and carried with the sun, a square box of one size on whole texels: the approach of
+the Longshot project, own code). The steady fit kept cascade 0's texels on their points of the world (the move less
+whole texels, p50 0.000 against 0.33, turning and walking), but the mask's flicker at the village did not drop with it:
+the motion flicker is in the far half of the picture, cascades 1 and 2, which carry the perspective warp and cannot be
+held still without losing resolution (a steady square at 1600 gives 9.9 texels a metre on the ground sideways at 10 m,
+where cascade 1 has 27). The larger map lowered the mask's flicker everywhere (shortcuts off, still / turn / walk): 0.64
+/ 2.18 / 1.92 % at 1600, 0.52 / 1.93 / 1.71 % at 2200, 0.45 / 1.86 / 1.54 % at 3072 (with the steady cascade 0), at no
+cost seen on the RTX 5070: the cascades' passes take 0.07 to 0.09 ms of GPU a frame at any of the three sizes, and the
+frame rate stayed within run-to-run noise (the village 128.3 / 131.7 / 129.9 fps at 1600 / 2200 / 3072, the forest 124.8
+/ 131.5 / 131.0).

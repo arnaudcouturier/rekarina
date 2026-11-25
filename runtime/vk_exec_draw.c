@@ -5766,33 +5766,40 @@ static void op_draw_idx_ind(VkExec *ex, const p_draw_idx_ind *d) {
 // vertex and fragment stages only. The geometry stage runs as Vulkan's own (MacNativeGames and seedds/nxnative run it as
 // compute because Metal has none); task and mesh shaders run through VK_EXT_mesh_shader. Shaders are translated
 // synchronously and pipelines built on the draw's thread, so these draws are never skipped for a missing pipeline.
-// REKARINA_FOLIAGE_SHADOW_CULL=<layer>[f] (0 to 3, default 1; 3 turns it off): the foliage's mesh draws into the sun's
-// shadow cascades from this array layer on drop one side of their cards ("f": the front faces, else the back faces).
-// The game draws them double-sided, and stacks of alpha-tested cards seen from the sun reach about 1,000 million
-// fragments in one draw of the far cascade, where half the cards still cover the same texels. Cull mode is dynamic
-// state, so this needs no other pipeline.
+// REKARINA_FOLIAGE_SHADOW_CULL=<layer>[f] (0 to 3; 3 turns it off): the foliage's mesh draws into the sun's shadow
+// cascades from this array layer on drop one side of their cards ("f": the front faces, else the back faces). The game
+// draws them double-sided, and stacks of alpha-tested cards seen from the sun reach about 1,000 million fragments in one
+// draw of the far cascade. The cascades hold nothing but foliage (buildings, terrain and trunks are in the static map),
+// and a card is one plane: the cards whose culled side faces the sun cast no shadow at all, so from cascade 1 (about
+// 10 m) on every tree's and bush's shadow lost about half its cards, lighter and full of holes (players: shorter shadow
+// distance than other ports). Off by default on NVIDIA, where it bought no measurable frame time (vk_exec_draw.c
+// foliage_shadow_default); layer 1 elsewhere. Cull mode is dynamic state, so this needs no other pipeline.
+static int foliage_shadow_default(int other) { return vk_ctx()->props.vendorID == 0x10de ? 3 : other; }
 static void foliage_shadow_cull(const VkExec *ex, VkPipeState *s) {
     static int from = -1, face;
     if (from < 0) {
         const char *e = cfg_get("REKARINA_FOLIAGE_SHADOW_CULL");
-        from = e && *e ? atoi(e) : 1;
+        from = e && *e ? atoi(e) : foliage_shadow_default(1);
         face = e && strchr(e, 'f') ? NVN_FACE_FRONT : NVN_FACE_BACK;
     }
     if (!ex->color[0].image && ex->depth.image && (int)ex->depth.base_layer >= from && s->poly.cull == NVN_FACE_NONE)
         s->poly.cull = (unsigned)face;
 }
 
-// REKARINA_FOLIAGE_SHADOW_VRS (0 to 3, default 2; 3 turns it off): the foliage's mesh draws in the shadow cascades from this
-// array layer on shade one fragment per 2x2 pixels. A leaf's alpha test then runs a quarter as often, and the far
-// cascades' texels are metres across the forest floor, where the coarser cut-out does not show. A mesh pipeline has
-// the rate as dynamic state, so every mesh draw sets it.
+// REKARINA_FOLIAGE_SHADOW_VRS (0 to 3; 3 turns it off): the foliage's mesh draws in the shadow cascades from this array
+// layer on shade one fragment per 2x2 pixels. A leaf's alpha test then runs a quarter as often, and its cut-out is
+// decided per 2x2 block of texels: blocky leaf shadows from cascade 2 (about 32 m) on, and since the game fits its
+// cascades to the view every frame, the blocks land elsewhere on the leaves in each frame while the camera moves, and
+// on every sway of a leaf: the far trees' shadows flickered more (measured: docs/oot-notes.md, "Foliage shadows").
+// Off by default on NVIDIA (foliage_shadow_default), layer 2 elsewhere. A mesh pipeline has the rate as dynamic state,
+// so every mesh draw sets it.
 static void mesh_shading_rate(VkExec *ex) {
     static PFN_vkCmdSetFragmentShadingRateKHR fn;
     static int looked, from;
     if (!looked) {
         looked = 1;
         const char *e = cfg_get("REKARINA_FOLIAGE_SHADOW_VRS");
-        from = e && *e ? atoi(e) : 2;
+        from = e && *e ? atoi(e) : foliage_shadow_default(2);
         if (vk_ctx()->has_vrs)
             fn = (PFN_vkCmdSetFragmentShadingRateKHR)vkGetDeviceProcAddr(vk_ctx()->device, "vkCmdSetFragmentShadingRateKHR");
     }
