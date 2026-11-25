@@ -1070,10 +1070,34 @@ static int pred_ready(void) {
 static void pred_flush(VkExec *ex) {
     if (!npcq) return;
     // runs of consecutive slots into consecutive words go in one copy (the prepass's ~750 a frame are mostly one run)
+    // The copy does not wait for its queries on NVIDIA's driver (REKARINA_PRED_WAIT: 0 never waits, 1 always, unset:
+    // by the driver). With the WAIT bit the GPU waits for every query of the run to become available, and a query that
+    // was reset and never ended makes it wait without end: no bad address, no fault record, the device lost seconds
+    // later. That is the picture of the losses with video memory to spare (39 NVIDIA logs read on 2026-11-25: every
+    // one of the 14 without memory pressure has no fault address and stops at a part's start or in the scene pass's
+    // stretch, which this copy follows). No path that leaves a slot unwritten was found in the code, so whether this
+    // ends those losses is for the players who had them to tell. Without the bit the words are filled with 1 first (a
+    // draw whose query is not available is drawn), then the copy writes the queries that are available and leaves
+    // the others. On the RTX 5070 the queries are there either way: the 1440p tour of the field and the Market, wait /
+    // no wait / no wait / wait: 95.0 and 96.6 fps against 96.8 and 96.6 in the field, 98.2 and 100.2 against 98.2
+    // and 99.1 in the Market, the GPU's time a frame 9.53 and 9.55 ms against 9.46 and 9.50, 7.42 and 7.51 against
+    // 7.48 and 7.36 (more draws would show there). Other drivers keep the wait until it is measured on them.
+    static int pred_wait = -1;
+    if (pred_wait < 0) {
+        const char *pw = cfg_get("REKARINA_PRED_WAIT");
+        pred_wait = pw && *pw ? atoi(pw) != 0 : vk_ctx()->props.vendorID != 0x10de;
+        rt_log("vk: predicate copies %s (REKARINA_PRED_WAIT)", pred_wait ? "wait for their queries"
+               : "do not wait for their queries: an unavailable one counts as visible");
+    }
     for (int i = 0, j; i < npcq; i = j) {
         for (j = i + 1; j < npcq && pcq[j].q == pcq[j - 1].q + 1 && pcq[j].off == pcq[j - 1].off + 4; j++) {}
+        if (!pred_wait) {
+            vkCmdFillBuffer(ex->cb, pred_buf, pcq[i].off, 4ull * (uint32_t)(j - i), 1);
+            ex->recorded++;
+            vk_exec_barrier(ex);   // the fill before the copy into the same words
+        }
         vkCmdCopyQueryPoolResults(ex->cb, oq_pool, pcq[i].q, (uint32_t)(j - i), pred_buf, pcq[i].off, 4,
-                                  VK_QUERY_RESULT_WAIT_BIT);
+                                  pred_wait ? VK_QUERY_RESULT_WAIT_BIT : 0);
         ex->recorded++;
     }
     for (int i = 0; i < npcq; i++) {
