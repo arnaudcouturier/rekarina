@@ -246,6 +246,7 @@
  "oot.no_exefs": "{path} にゲームコード（ExeFS）が入っていません。",
  "oot.other_version": "{path} はゲームのバージョン {version} ではありません。次のファイルが異なります: {files}。Rekarina がビルドするのはバージョン {version} です（ゲーム本体と {version} の更新データが1つのコンテナに入ったもの）。",
  "oot.no_space": "{path} の空き容量が足りません。必要: {need} GB、空き: {free} GB。",
+ "oot.protected_folder": "ゲームフォルダー {path} は Program Files か Windows フォルダーの中にあります。そこには管理者権限がないと書き込めませんが、ゲームはログ、キャッシュ、設定、セーブデータを自分のフォルダーに書き込みます。それ以外の場所、たとえば任意のドライブの Games フォルダーを選んでください。",
  "oot.extract_failed": "ゲームコードを抽出できませんでした。詳細: {log}",
  "oot.lift_failed": "ゲームコードの変換に失敗しました（コード {code}）。詳細: {log}",
  "oot.compile_failed": "ゲームのコンパイルに失敗しました（コード {code}）。詳細: {log}",

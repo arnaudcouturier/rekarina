@@ -246,6 +246,7 @@
  "oot.no_exefs": "{path} bevat geen spelcode (ExeFS).",
  "oot.other_version": "{path} is niet versie {version} van het spel: deze bestanden wijken af: {files}. Rekarina bouwt versie {version} (basisspel met de update {version} in één container).",
  "oot.no_space": "Niet genoeg vrije ruimte op {path}: {need} GB nodig, {free} GB vrij.",
+ "oot.protected_folder": "De spelmap {path} staat in Program Files of in de Windows-map. Daar laat Windows alleen schrijven met beheerdersrechten, en het spel schrijft zijn log, caches, instellingen en opslagbestanden in zijn eigen map. Kies een map daarbuiten, bijvoorbeeld Games op een willekeurige schijf.",
  "oot.extract_failed": "De spelcode kon niet worden uitgepakt. Details: {log}",
  "oot.lift_failed": "De spelcode vertalen is mislukt (code {code}). Details: {log}",
  "oot.compile_failed": "Het spel compileren is mislukt (code {code}). Details: {log}",

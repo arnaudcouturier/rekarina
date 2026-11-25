@@ -254,6 +254,7 @@
  "oot.no_exefs": "{path} 中没有游戏代码（ExeFS）。",
  "oot.other_version": "{path} 不是游戏的 {version} 版本，以下文件不同：{files}。Rekarina 构建的是 {version} 版本（基础游戏和 {version} 更新在同一个容器中）。",
  "oot.no_space": "{path} 的可用空间不足：需要 {need} GB，可用 {free} GB。",
+ "oot.protected_folder": "游戏文件夹 {path} 位于 Program Files 或 Windows 文件夹内。Windows 只允许以管理员权限写入那里，而游戏会把日志、缓存、设置和存档写进自己的文件夹。请选择其他位置的文件夹，例如任意磁盘上的 Games 文件夹。",
  "oot.extract_failed": "无法提取游戏代码。详情：{log}",
  "oot.lift_failed": "游戏代码转换失败（代码 {code}）。详情：{log}",
  "oot.compile_failed": "编译游戏失败（代码 {code}）。详情：{log}",

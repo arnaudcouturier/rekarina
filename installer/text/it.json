@@ -246,6 +246,7 @@
  "oot.no_exefs": "{path} non contiene codice di gioco (ExeFS).",
  "oot.other_version": "{path} non è la versione {version} del gioco: questi file sono diversi: {files}. Rekarina compila la versione {version} (gioco base con l'aggiornamento {version} in un unico contenitore).",
  "oot.no_space": "Spazio libero insufficiente su {path}: servono {need} GB, liberi {free} GB.",
+ "oot.protected_folder": "La cartella del gioco {path} si trova in Program Files o nella cartella di Windows. Lì Windows consente di scrivere solo con i diritti di amministratore, e il gioco scrive registro, cache, impostazioni e salvataggi nella propria cartella. Scegli una cartella al di fuori, ad esempio Games su un disco qualsiasi.",
  "oot.extract_failed": "Impossibile estrarre il codice del gioco. Dettagli: {log}",
  "oot.lift_failed": "Traduzione del codice del gioco non riuscita (codice {code}). Dettagli: {log}",
  "oot.compile_failed": "Compilazione del gioco non riuscita (codice {code}). Dettagli: {log}",

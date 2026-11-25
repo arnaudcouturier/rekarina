@@ -246,6 +246,7 @@
  "oot.no_exefs": "{path}에 게임 코드(ExeFS)가 없습니다.",
  "oot.other_version": "{path}: 게임의 {version} 버전이 아닙니다. 다음 파일이 다릅니다: {files}. Rekarina는 {version} 버전(기본 게임과 {version} 업데이트가 하나의 컨테이너에 들어 있는 것)을 빌드합니다.",
  "oot.no_space": "{path}의 여유 공간이 부족합니다: {need} GB 필요, {free} GB 남음.",
+ "oot.protected_folder": "게임 폴더 {path}이(가) Program Files 또는 Windows 폴더 안에 있습니다. Windows는 그곳에 관리자 권한으로만 쓸 수 있게 하는데, 게임은 로그, 캐시, 설정, 저장 데이터를 자기 폴더에 씁니다. 그 밖의 폴더, 예를 들어 아무 드라이브의 Games 폴더를 선택하세요.",
  "oot.extract_failed": "게임 코드를 추출하지 못했습니다. 자세한 내용: {log}",
  "oot.lift_failed": "게임 코드를 변환하지 못했습니다(코드 {code}). 자세한 내용: {log}",
  "oot.compile_failed": "게임 컴파일에 실패했습니다(코드 {code}). 자세한 내용: {log}",

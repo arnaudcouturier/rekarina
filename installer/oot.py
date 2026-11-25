@@ -252,6 +252,23 @@ def work_folder(default, asked, dest):
     return here, None
 
 
+def protected_folder(path):
+    """The Windows folder under which path lies where Windows lets a program write only with administrator rights
+    (Program Files, Program Files (x86), the Windows folder), or None. The game writes its log, caches, settings and
+    saves into its own folder: installed there, it starts only as administrator (a player's report, 2026-11-24)."""
+    if os.name != 'nt':
+        return None
+    p = os.path.normcase(os.path.abspath(str(path)))
+    for var in ('ProgramFiles', 'ProgramFiles(x86)', 'ProgramW6432', 'SystemRoot'):
+        base = os.environ.get(var)
+        if not base:
+            continue
+        b = os.path.normcase(os.path.abspath(base)).rstrip('\\/')
+        if p == b or p.startswith(b + os.sep):
+            return base
+    return None
+
+
 def free_bytes(path):
     p = Path(path)
     while not p.exists():
@@ -660,6 +677,12 @@ class Check(Step):
                 rep.log(f'{game_ini(ctx.dest).name}: the game now reads its data from {ctx.nup}')
         except OSError as e:
             raise InstallError('cleanup.ini_failed', ini_file=INI, detail=str(e)) from None
+        guarded = protected_folder(ctx.dest)
+        if guarded:   # a first install is refused; one already there is told, and goes on (it may run as administrator)
+            if not (ctx.dest / GAME_EXE).is_file():
+                raise InstallError('oot.protected_folder', path=str(ctx.dest))
+            rep.log(f'the game folder {ctx.dest} lies in {guarded}: the game writes into its own folder there only as '
+                    f'administrator; moving the folder elsewhere ends that')
         rep.progress(self.id, 'space', force=True)
         ctx.dest.mkdir(parents=True, exist_ok=True)
         ctx.temp.mkdir(parents=True, exist_ok=True)
