@@ -40,7 +40,8 @@ void gfx_present_reflex_frame(uint64_t id);
 
 #define WEAK __attribute__((weak))
 
-typedef struct { VkImage image; VkFormat format; int w, h, has_crop, crop[4]; uint64_t frame, at, queued, value, reflex_id; } PresentJob;
+typedef struct { VkImage image; VkFormat format; int w, h, has_crop, crop[4]; uint64_t frame, at, queued, value, reflex_id;
+                 const CfgRenderState *settings; } PresentJob;
 
 static PlatMutex pl = PLAT_MUTEX_INIT;
 static PlatCond pcv = PLAT_COND_INIT;   // job queued, job taken, job submitted
@@ -111,6 +112,9 @@ static void present_main(void *arg) {
         if (__builtin_expect(pacelog_on(), 0)) pacelog_mark(PL_FLIP, j.frame, kern_now_ns());   // DEBUG-PACELOG: the host present
         if (tagged) f = present_release(&j);
         vk_completion_add(f, frame_blit_done, (void *)(uintptr_t)j.frame);   // the frame clock (perf.c)
+        cfg_render_use(previous_settings);
+        cfg_render_release(j.settings);
+        cfg_render_publish();
         // REKARINA_TRACE=present: one line per present: the host present's interval, the interval of the game's present
         // calls (when the host present went out before back-edge pacing), the wait and how far past its target it went
         if (rt_trace & RT_TRACE_PRESENT)
@@ -471,7 +475,7 @@ static void vk_be_present(const tex_t *t, const int crop[4], uint64_t at_ns, Gfx
         { void prof_hwwatch_tick(uint64_t); prof_hwwatch_tick(frame); }   // DEBUG-HWWATCH
         perf_present(frame);   // before vk_exec_frame_log, which resets the frame's exec counts the flight recorder reads
         ftrace_frame(frame);
-        present_image(t, crop, at_ns, kern_now_ns(), frame, 0, encoding);
+        present_image(t, crop, at_ns, kern_now_ns(), frame, 0);
         cfg_render_use(previous);
         cfg_render_release(settings);
         return;
@@ -490,7 +494,7 @@ static void vk_be_present(const tex_t *t, const int crop[4], uint64_t at_ns, Gfx
     perf_present(frame);
     ftrace_frame(frame);
     if (frame % 1800 == 0) replay_log(frame, 0);
-    ReplayItem it = {.kind = RI_PRESENT, .tex = t, .at = at_ns, .queued = kern_now_ns(), .encoding = encoding,
+    ReplayItem it = {.kind = RI_PRESENT, .tex = t, .at = at_ns, .queued = kern_now_ns(),
                      .settings = cfg_render_frame_acquire()};
     if (crop) {
         it.has_crop = 1;
@@ -784,6 +788,8 @@ static void vk_be_cpu_synced(uint64_t fence) {
 }
 
 static void vk_be_frame_start(void) {
+    // Pin the last published settings without waiting for Present; a live edit can arrive a frame later.
+    cfg_render_frame_begin();
     if (vk_dlssg_swapchain_ready()) vk_dlssg_frame_start();
     else vk_reflex_frame_start();
 }
