@@ -46,8 +46,7 @@ static void vi_hdr_status(Cpu *c) {
     uint8_t *on = arg_p(c, 0);
     uint32_t *fmt = arg_p(c, 1);
     uint16_t *peak = arg_p(c, 2);
-    int capability = vi_hdr_capability();
-    if (capability) {
+    if (vi_hdr_capability()) {
         double p = cfg_double("REKARINA_HDR_PEAK_NITS");
         if (p < 80.0) p = 80.0;
         if (p > 10000.0) p = 10000.0;
