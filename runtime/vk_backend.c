@@ -40,7 +40,8 @@ void gfx_present_reflex_frame(uint64_t id);
 
 #define WEAK __attribute__((weak))
 
-typedef struct { VkImage image; VkFormat format; int w, h, has_crop, crop[4]; uint64_t frame, at, queued, value, reflex_id;
+typedef struct { VkImage image; VkFormat format; GfxOutputEncoding encoding; int w, h, has_crop, crop[4];
+                 uint64_t frame, at, queued, value, reflex_id;
                  const CfgRenderState *settings; } PresentJob;
 
 static PlatMutex pl = PLAT_MUTEX_INIT;
@@ -162,7 +163,7 @@ static void present_image(const tex_t *t, const int crop[4], uint64_t at_ns, uin
         return;
     }
     PresentJob j = {.image = img->image, .format = img->format, .w = (int)img->width, .h = (int)img->height, .frame = frame,
-                    .at = at_ns, .queued = queued, .value = value, .reflex_id = vk_reflex_current_id()};
+                    .at = at_ns, .queued = queued, .value = value, .reflex_id = vk_reflex_current_id(), .encoding = encoding};
     vk_hdr_present_source(img, &j.image, &j.format);   // REKARINA_HDR: the float picture the game copied into it, same size
     if (vk_interface_coverage_enabled() || vk_dlaa_prebloom_enabled()) {
         vk_present_drain();
@@ -475,7 +476,7 @@ static void vk_be_present(const tex_t *t, const int crop[4], uint64_t at_ns, Gfx
         { void prof_hwwatch_tick(uint64_t); prof_hwwatch_tick(frame); }   // DEBUG-HWWATCH
         perf_present(frame);   // before vk_exec_frame_log, which resets the frame's exec counts the flight recorder reads
         ftrace_frame(frame);
-        present_image(t, crop, at_ns, kern_now_ns(), frame, 0);
+        present_image(t, crop, at_ns, kern_now_ns(), frame, 0, encoding);
         cfg_render_use(previous);
         cfg_render_release(settings);
         return;
@@ -494,7 +495,7 @@ static void vk_be_present(const tex_t *t, const int crop[4], uint64_t at_ns, Gfx
     perf_present(frame);
     ftrace_frame(frame);
     if (frame % 1800 == 0) replay_log(frame, 0);
-    ReplayItem it = {.kind = RI_PRESENT, .tex = t, .at = at_ns, .queued = kern_now_ns(),
+    ReplayItem it = {.kind = RI_PRESENT, .tex = t, .at = at_ns, .queued = kern_now_ns(), .encoding = encoding,
                      .settings = cfg_render_frame_acquire()};
     if (crop) {
         it.has_crop = 1;
