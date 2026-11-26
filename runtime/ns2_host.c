@@ -61,9 +61,6 @@ static void vi_hdr_status(Cpu *c) {
         if (fmt) *fmt = 0;
         if (peak) *peak = 0;
     }
-    static int32_t logged_capability = -1;
-    if ((rt_trace & RT_TRACE_GFX) && plat_xchg32(&logged_capability, capability) != capability)
-        rt_log("ns2: vi HDR capability query: %d", capability);
     cfg_render_use(previous_settings);
     cfg_render_release(settings);
     ret_x(c, 0);
