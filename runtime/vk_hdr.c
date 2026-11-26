@@ -1666,6 +1666,16 @@ static int is_float(VkFormat f) {
            f == VK_FORMAT_R32G32B32A32_SFLOAT;
 }
 
+// A presented window texture: the one target whose draws vk_hdr_draw notes. Only stretches drawing into it need the
+// serial replay; every other stretch keeps the parallel chunks (turning them off for the whole frame cost ~5 ms of
+// frame prep in the busy scenes, the lake and night: 47 against 60 fps).
+int vk_hdr_window_target(VkImage image) {
+    if (!image) return 0;
+    for (int i = 0; i < 4; i++)
+        if (__atomic_load_n(&recs[i].win, __ATOMIC_RELAXED) == image) return 1;
+    return 0;
+}
+
 void vk_hdr_draw(VkExec *ex, const VkPipeInfo *info) {
     const VkExecTarget *t = &ex->color[0];
     if (!t->image) return;
