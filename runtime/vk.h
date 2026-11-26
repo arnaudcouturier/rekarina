@@ -209,17 +209,12 @@ void vk_hdr_metadata(VkSwapchainKHR sc, int new_sc);
 void vk_hdr_set_active(int on);
 int vk_hdr_active(void);
 #ifdef GAME_OOT
-int gfx_hdr_surface_capable(void);
-extern uint64_t vk_hdr_output_pending_frame;
 int vk_hdr_output_pending(void);
-int vk_hdr_output_track_enabled(void);
-void vk_hdr_output_set_guest_pq(int on);
-int vk_hdr_output_targets_pending(VkImage image, uint64_t address);
 void vk_hdr_output_overwrite(VkImage image, uint64_t address);
-void vk_hdr_record_output(uint32_t serial, VkImage image, uint64_t address, GfxOutputEncoding encoding, const VkGuestPq *pq);
-GfxOutputEncoding vk_hdr_written_output(uint32_t serial, uint64_t frame, VkGuestPq *pq);
+void vk_hdr_record_output(uint32_t serial, VkImage image, uint64_t address, GfxOutputEncoding encoding);
+GfxOutputEncoding vk_hdr_written_output(uint32_t serial, uint64_t frame);
 #endif
-VkImage vk_hdr_encode(VkCommandBuffer cb, unsigned slot, VkImage src, VkFormat fmt, const int crop[4], const VkGuestPq *pq);
+VkImage vk_hdr_encode(VkCommandBuffer cb, unsigned slot, VkImage src, VkFormat fmt, const int crop[4]);
 VkImageView vk_hdr_ui_target(VkCommandBuffer cb, uint32_t w, uint32_t h);
 void vk_hdr_ui_compose(VkCommandBuffer cb, VkImageView dst_view, VkFormat fmt, uint32_t w, uint32_t h);
 void vk_hdr_to_srgb8(const uint8_t *in, uint8_t *out, size_t px, int a2r);
