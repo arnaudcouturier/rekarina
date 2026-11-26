@@ -1668,7 +1668,7 @@ static int is_float(VkFormat f) {
 
 // A presented window texture: the one target whose draws vk_hdr_draw notes. Only stretches drawing into it need the
 // serial replay; every other stretch keeps the parallel chunks (turning them off for the whole frame cost ~5 ms of
-// frame prep in the busy scenes, Lake Hylia and night: 47 against 60 fps).
+// frame prep in the busy scenes, the lake and night: 47 against 60 fps).
 int vk_hdr_window_target(VkImage image) {
     if (!image) return 0;
     for (int i = 0; i < 4; i++)
