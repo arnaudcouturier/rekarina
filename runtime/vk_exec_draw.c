@@ -3980,8 +3980,8 @@ static int prepare_draw(VkExec *ex, int prim, int32_t count, int restart) {
                        (unsigned long long)ex->render_cond.addr, (int)ex->render_cond.mode, ex->dbg_zero,
                        (unsigned long long)(ex->prog ? ex->prog->serial : 0));
         }
-        int vk_dump_active_dbg(void);
-        if (vk_dump_armed && cfg_env("REKARINA_DRAWDBG") && vk_dump_active_dbg()) {
+        int vk_dump_active_dbg(void), vk_dump_drawdbg(void);
+        if (vk_dump_armed && vk_dump_drawdbg() && vk_dump_active_dbg()) {
             uint64_t a = ex->render_cond.addr, x = 0, y = 0;
             VkMemSpan sp;
             if (ex->has_render_cond && vk_mem_resolve(a, 24, &sp) && !sp.alloc) memcpy(&x, (void *)(uintptr_t)a, 8), memcpy(&y, (void *)(uintptr_t)(a + 16), 8);
@@ -5581,8 +5581,8 @@ static uint64_t dbg_fnv(const uint8_t *p, uint64_t n) {
     return h;
 }
 static void dbg_draw(VkExec *ex, int count) {
-    int vk_dump_active_dbg(void);
-    if (!vk_dump_armed || !cfg_env("REKARINA_DRAWDBG") || !ex->depth.img || !vk_dump_active_dbg()) return;
+    int vk_dump_active_dbg(void), vk_dump_drawdbg(void);
+    if (!vk_dump_armed || !vk_dump_drawdbg() || !ex->depth.img || !vk_dump_active_dbg()) return;
     uint64_t da = ex->depth.img->addr;
     if (da != 0x8000000000ull && da != 0x8001518e00ull) return;
     char line[1024];

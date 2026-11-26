@@ -1150,8 +1150,8 @@ void vk_exec_cond_end(VkExec *ex) {
 static void report_counter(VkExec *ex, const p_report_counter *p) {
     int samples = p->type == NVN_COUNTER_TYPE_SAMPLES_PASSED && oq_ready();
     {   // DEBUG-DRAWDBG
-        int vk_dump_active_dbg(void);
-        if (vk_dump_armed && cfg_env("REKARINA_DRAWDBG") && vk_dump_active_dbg()) {
+        int vk_dump_active_dbg(void), vk_dump_drawdbg(void);
+        if (vk_dump_armed && vk_dump_drawdbg() && vk_dump_active_dbg()) {
             dbg_oq_lines = 1;
             rt_log("DRAWDBG REPORT type %u addr %#llx samples %d fence %llu depth %#llx keep %d counting %d", p->type,
                    (unsigned long long)p->addr, samples, (unsigned long long)ex->fence,
