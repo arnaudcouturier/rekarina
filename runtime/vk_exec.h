@@ -206,6 +206,7 @@ void vk_exec_bc_gone(VkImage image);
 // vk_hdr.c: with REKARINA_HDR=1, notes a draw into a presented window texture (vk_hdr_track: set by the first present).
 extern int vk_hdr_track;
 void vk_hdr_draw(VkExec *ex, const VkPipeInfo *info);
+int vk_hdr_window_target(VkImage image);   // a presented window texture (vk_exec.c: only its stretches stay serial)
 // Scissor 0 clipped to the render area of the open pass; extent 0: nothing to draw.
 VkRect2D vk_exec_scissor(const VkExec *ex);
 void vk_exec_noatt_dims(const VkExec *ex, uint32_t *w, uint32_t *h);   // pass size when no attachment is set

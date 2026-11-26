@@ -1409,6 +1409,14 @@ static int par_dlss_bars(void) {
 }
 
 int vk_exec_mesh_emulated(void);   // vk_exec_draw.c: mesh draws run emulated, each ending the pass (mesh_emulate)
+// REKARINA_HDR_SERIAL=1: with the RenoDX present, every stretch replays serially (the old way); 0, the default, only
+// the stretches drawing into a presented window texture (vk_hdr_window_target).
+static int par_hdr_serial(void) {
+    static int on = -1;
+    if (on < 0) on = rt_knob("HDR_SERIAL", "0");
+    return on;
+}
+
 static int par_is_draw(uint32_t op) {
     return op == OP_DRAW || op == OP_DRAW_IDX || op == OP_DRAW_IDX_IND
 #ifdef GAME_NS2
@@ -1700,7 +1708,8 @@ static const op_hdr *par_try(VkExec *ex, const op_hdr *h) {
     PAR.no_from = h, PAR.no_until = e;   // whatever comes of it, the draws up to e do not ask again
     // the frame dump lists draws in order: no chunks in the frames it logs (armed and waiting, it leaves them be: the
     // faults it is armed to catch can depend on them)
-    if (nd < (uint32_t)PAR.min_draws || vk_exec_ac_value || resuming || (vk_dump_armed && vk_dump_active_dbg()) || vk_hdr_track || par_dlss_bars() ||
+    if (nd < (uint32_t)PAR.min_draws || vk_exec_ac_value || resuming || (vk_dump_armed && vk_dump_active_dbg()) ||
+        (vk_hdr_track && (par_hdr_serial() || vk_hdr_window_target(ex->color[0].image))) || par_dlss_bars() ||
         vk_mvprev_on() || vk_exec_wait_deferred())
         return NULL;
     if (!ex->in_pass) {
