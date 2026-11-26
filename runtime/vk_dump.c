@@ -482,6 +482,14 @@ static int active(void) {
 }
 static uint64_t frame_now(void) { return __atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED) + 1; }
 int vk_dump_active_dbg(void) { return active(); }   // DEBUG-DRAWDBG
+// REKARINA_DRAWDBG, read once. Its callers run at every draw and counter report while the dump is armed, and an
+// environment lookup each time took a third of the replay thread at the lake (~5,000 draws a frame): frames of 25 to
+// 50 ms there while the dump waited for its frame.
+int vk_dump_drawdbg(void) {
+    static int on = -1;
+    if (on < 0) on = cfg_env("REKARINA_DRAWDBG") != NULL;
+    return on;
+}
 
 typedef struct { char *s; size_t n, cap; } Str;
 
