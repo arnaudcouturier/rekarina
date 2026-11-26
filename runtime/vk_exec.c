@@ -1570,6 +1570,20 @@ static void par_thread(void *arg) {
         int i = __atomic_fetch_add(&n, 1, __ATOMIC_RELAXED);
         if (i < 16) prof_par_tid[i] = plat_thread_id();
     }
+    {   // REKARINA_PAR_PRIO: the host priority of the chunk threads, read with rt_knob like REKARINA_SUBMIT_PRIO
+        // (nvn_api_core.c, nvnQueueSubmitCommands): 0 normal, "ab" highest, any other value above normal; unset, it takes the value
+        // of REKARINA_SUBMIT_PRIO, so both end up at the same priority. That one raises the thread that replays above
+        // the game's own threads; its chunks must go with it, or it waits at the join for a chunk thread the scheduler
+        // left out for a whole quantum (two 15.6 ms clock ticks on a desktop Windows). The lake, 8 cores, 60 fps limit: 3 frames of
+        // 40 ms in 41 s at normal priority, each with the replay thread 32 ms off its core (SUB_OFFCPU); none in 46 s
+        // with both at 1, 2026-11-25.
+        static int pp = -1;
+        if (pp < 0) {
+            const char *sub = cfg_get("REKARINA_SUBMIT_PRIO");
+            pp = rt_knob("PAR_PRIO", sub && *sub ? sub : "0");
+        }
+        if (pp > 0) plat_thread_priority(pp > 1 ? PLAT_PRIO_HIGHEST : PLAT_PRIO_ABOVE_NORMAL);
+    }
     for (int idle = 0;;) {
         if (par_take_run()) { idle = 0; continue; }
         // chunks are out or a stretch is being walked: the next comes within tens of microseconds; the thread sleeps
