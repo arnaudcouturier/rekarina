@@ -383,15 +383,7 @@ static void dlss_init(void) {
            driver ? "; the driver needs an update" : "");
 }
 
-int vk_dlaa_backend_available(void) {
-#ifdef GAME_OOT
-    if (fsr1()) return 1;
-    if (fsr3()) return ffx_available && vk_ffx_upscale_available();
-    return N.available;
-#else
-    return N.available;
-#endif
-}
+int vk_dlaa_backend_available(void) { return N.available; }
 
 int vk_dlaa_available(void) { return vk_dlaa_wanted() && vk_dlaa_backend_available(); }
 
