@@ -67,8 +67,8 @@ class File:
 
 
 SOURCES = {
-    'dlss': Source('NVIDIA DLSS', '310.9.1', 'NVIDIA RTX SDKs License',
-                   'https://github.com/NVIDIA/DLSS/blob/v310.9.1/LICENSE.txt'),
+    'dlss': Source('NVIDIA DLSS', '310.9.16', 'NVIDIA RTX SDKs License',
+                   'https://github.com/NVIDIA/DLSS/blob/v310.9.16/LICENSE.txt'),
     'dlssg': Source('NVIDIA DLSS Frame Generation', '310.9.16', 'NVIDIA RTX SDKs License',
                     'https://github.com/NVIDIA/DLSS/blob/v310.9.16/LICENSE.txt'),
     'streamline': Source('NVIDIA Streamline', '2.14.16', 'MIT License (Streamline), NVIDIA RTX SDKs License (Reflex)',
@@ -90,16 +90,15 @@ def streamline(name, size, sha256, group='dlssg'):
 # The versions the game was developed and tested with. The Streamline files are the production (signed) ones of the
 # SDK archive's bin/x64, not those of bin/x64/development.
 FILES = (
-    # the loader and the two effect libraries it loads from beside itself (runtime/vk_ffx.cpp); the game still takes the
-    # single amd_fidelityfx_vk.dll of SDK 1.1.4 when an older install has only that
+    # The loader and the two effect libraries it loads from beside itself (runtime/vk_ffx.cpp).
     File('amd_fidelityfx_loader_vk.dll', 'fsr', 'fsr', FSR_RAW.format('amd_fidelityfx_loader_vk.dll'), 39184,
          '38a56a01fb3565c0757d9f5c1e4e69de4b65e5f2e5769b323b200dc1f142bab9'),
     File('amd_fidelityfx_upscaler_vk.dll', 'fsr', 'fsr', FSR_RAW.format('amd_fidelityfx_upscaler_vk.dll'), 36135696,
          '4a7e895af6e0b615d40a84d59eb8c2b1054ad91cdd0c739567940270d51bdab7'),
     File('amd_fidelityfx_framegeneration_vk.dll', 'fsr', 'fsr', FSR_RAW.format('amd_fidelityfx_framegeneration_vk.dll'),
          36806928, 'd002dabff8c5e71eaa715fc99438cd4dc81230262a7897b16bc402efec3498b4'),
-    File('nvngx_dlss.dll', 'dlss', 'dlss', DLSS_RAW.format('310.9.1', 'nvngx_dlss.dll'), 58956912,
-         '3975567b8943c53acce397f2b72380092f84f162d00b0d2c7d08a1025c563983'),
+    File('nvngx_dlss.dll', 'dlss', 'dlss', DLSS_RAW.format(SOURCES['dlss'].version, 'nvngx_dlss.dll'), 58956912,
+         'd00b5b0ab29c3ca101b70c3a5ecb3a01b7ef33766a3383a28a18623083e6123e'),
     streamline('sl.interposer.dll', 652928, 'b1d7395aebd7b9722841d64dcf7433680020b6a8e421f851c16d5ba0c2182edf', 'dlss'),
     streamline('sl.common.dll', 843904, '38eea3b4209afc455636ea372b5933d65fcc13becec6c84d101dcfc4d8648f75', 'dlss'),
     streamline('sl.dlss.dll', 422016, '18871eea87c90345da97d8109faa81ea7d5840e8d99b51b55b0e46cfa177f84e', 'dlss'),
