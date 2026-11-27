@@ -239,7 +239,7 @@ void vk_dlaa_instance_exts(const char **ext, uint32_t *n, uint32_t max) {
     unsigned ni = 0, nd = 0;
     const char **ie = NULL, **de = NULL;
     if (vk_sl_sr_requested()) return;
-    if (!vk_dlaa_wanted() || fsr3() || fsr1() || !core_load() || !NGX_OK(N.req_ext(&ni, &ie, &nd, &de))) return;
+    if (!vk_dlaa_prepare_sl_sr() || !core_load() || !NGX_OK(N.req_ext(&ni, &ie, &nd, &de))) return;
     for (unsigned i = 0; i < ni; i++)
         if (!listed(ext, *n, ie[i]) && *n < max) ext[(*n)++] = ie[i];
 }
@@ -249,7 +249,7 @@ void vk_dlaa_device_exts(const VkExtensionProperties *have, uint32_t nhave, cons
     unsigned ni = 0, nd = 0;
     const char **ie = NULL, **de = NULL;
     if (vk_sl_sr_requested()) return;
-    if (!vk_dlaa_wanted() || fsr3() || fsr1() || !core_load() || !NGX_OK(N.req_ext(&ni, &ie, &nd, &de))) return;
+    if (!vk_dlaa_prepare_sl_sr() || !core_load() || !NGX_OK(N.req_ext(&ni, &ie, &nd, &de))) return;
     for (unsigned i = 0; i < nd; i++) {
         int ok = 0;
         for (uint32_t k = 0; k < nhave && !ok; k++) ok = !strcmp(have[k].extensionName, de[i]);
@@ -312,34 +312,34 @@ void vk_dlaa_init(void) {
 #ifdef GAME_OOT   // the bloom draw it looks for is OoT's
     pre_bloom_on = rt_knob("DLAA_PRE_BLOOM", "0");
     rt_log("dlaa: pre-bloom resolve %s (REKARINA_DLAA_PRE_BLOOM=%d)", pre_bloom_on ? "on" : "off", pre_bloom_on);
-#endif
-    if (vk_dlaa_wanted() && fsr1()) {   // nothing to load: the shaders are the runtime's own
+    dlss_init();
+    if (!vk_dlaa_wanted() || fsr1()) return;
+    if (fsr3()) {
+        ffx_available = vk_ffx_load();
+        if (ffx_available && !vk_ffx_upscale_available())
+            rt_log("dlaa: FSR upscaling provider '%s' is not available on this device; using the game's scaling",
+                   cfg_value("REKARINA_FSR_VERSION"));
+    } else if (!N.available && (ffx_available = vk_ffx_load())) {
+        fsr3_on = 1;
+        if (vk_ffx_upscale_available()) rt_log("dlaa: DLSS cannot run here: AMD FSR takes its place");
+        else rt_log("dlaa: DLSS is unavailable and FSR upscaling provider '%s' is not available; using the game's scaling",
+                    cfg_value("REKARINA_FSR_VERSION"));
+    }
+#else
+    if (!vk_dlaa_wanted()) return;
+    if (fsr1()) {   // nothing to load: the shaders are the runtime's own
         N.available = 1;
         rt_log("dlaa: the upscaler is AMD FSR 1 (spatial, EASU + RCAS)");
         return;
     }
     if (fsr3()) {
         N.available = vk_ffx_load();
-#ifdef GAME_OOT
-        if (N.available && !vk_ffx_upscale_available()) {
-            rt_log("dlaa: FSR upscaling provider '%s' is not available on this device; using the game's scaling",
-                   cfg_value("REKARINA_FSR_VERSION"));
-            return;
-        }
-#endif
         rt_log("dlaa: the temporal upscaler is AMD FSR%s", N.available ? "" : ", which is missing: the game's own scaling");
         return;
     }
     dlss_init();
     if (!N.available && vk_ffx_load()) {
         fsr3_on = 1, N.available = 1;
-#ifdef GAME_OOT
-        if (!vk_ffx_upscale_available()) {
-            rt_log("dlaa: DLSS is unavailable and FSR upscaling provider '%s' is not available; using the game's scaling",
-                   cfg_value("REKARINA_FSR_VERSION"));
-            return;
-        }
-#endif
         rt_log("dlaa: DLSS cannot run here: AMD FSR takes its place");
     }
 #endif
@@ -350,7 +350,7 @@ static int use_streamline_sr;
 static void dlss_init(void) {
     use_streamline_sr = 0;
 #ifdef _WIN32
-    if (vk_dlaa_wanted() && vk_sl_sr_requested()) {
+    if (vk_sl_sr_requested()) {
         use_streamline_sr = 1;
         N.available = vk_sl_sr_available();
         rt_log("dlaa: Streamline DLSS %s", N.available ? "available" : "unavailable");
@@ -399,9 +399,12 @@ static void dlss_init(void) {
 
 int vk_dlaa_backend_available(void) {
 #ifdef GAME_OOT
-    if (N.available && fsr3()) return vk_ffx_upscale_available();
-#endif
+    if (fsr1()) return 1;
+    if (fsr3()) return ffx_available && vk_ffx_upscale_available();
     return N.available;
+#else
+    return N.available;
+#endif
 }
 
 int vk_dlaa_available(void) { return vk_dlaa_wanted() && vk_dlaa_backend_available(); }
@@ -2210,7 +2213,7 @@ static void evaluate(VkExec *ex, const VkExecTarget *dst, enum SceneEvaluation e
 #else
     int need_mv = !spatial || vk_fg_wanted() || vk_dlssg_wanted();
 #endif
-    if (sl || fsr3()) D.fg_cam_ok = 0;
+    if (sl) D.fg_cam_ok = 0;
     int mv = need_mv ? mv_pass(ex, e, zv, jx, jy, projection_camera, projection_camera ? &next : NULL) : MV_DISABLED;
     if (need_mv && mv != 1) {
         VkClearColorValue zero = {{0, 0, 0, 0}};
