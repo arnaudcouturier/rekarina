@@ -71,6 +71,8 @@ typedef NgxResult (*PFN_DestroyParams)(NgxParam *);
 typedef NgxResult (*PFN_Create)(VkCommandBuffer, int feature, NgxParam *, NgxHandle **);
 typedef NgxResult (*PFN_Evaluate)(VkCommandBuffer, const NgxHandle *, const NgxParam *, void *callback);
 typedef NgxResult (*PFN_Release)(NgxHandle *);
+// The driver export takes an output count; the public SDK wrapper supplies it.
+typedef NgxResult (*PFN_Shutdown)(VkDevice, unsigned *remaining);
 
 static struct {
     void *core;   // the NGX core library (an HMODULE on Windows)
@@ -81,6 +83,8 @@ static struct {
     PFN_Create create;
     PFN_Evaluate evaluate;
     PFN_Release release;
+    PFN_Shutdown shutdown;
+    int initialized;
     int tried, loaded, available;
     int wanted;   // -1 not read yet
 } N = {.wanted = -1};
@@ -156,6 +160,14 @@ static int fsr1(void) {
 }
 int vk_dlaa_fsr1(void) { return vk_dlaa_wanted() && fsr1(); }
 int vk_dlaa_fsr3(void) { return vk_dlaa_wanted() && fsr3(); }
+int vk_dlaa_prepare_sl_sr(void) {
+#ifdef GAME_OOT
+    // The Vulkan device must support DLSS even if the first frame uses a different backend.
+    return 1;
+#else
+    return vk_dlaa_wanted() && !fsr3() && !fsr1();
+#endif
+}
 
 static int core_load(void) {
     if (N.tried) return N.loaded;
@@ -205,8 +217,10 @@ static int core_load(void) {
     FN(create, "NVSDK_NGX_VULKAN_CreateFeature");
     FN(evaluate, "NVSDK_NGX_VULKAN_EvaluateFeature");
     FN(release, "NVSDK_NGX_VULKAN_ReleaseFeature");
+    FN(shutdown, "NVSDK_NGX_VULKAN_Shutdown1");
 #undef FN
-    if (!N.init || !N.req_ext || !N.caps || !N.alloc_params || !N.create || !N.evaluate || !N.release) {
+    if (!N.init || !N.req_ext || !N.caps || !N.alloc_params || !N.destroy_params || !N.create || !N.evaluate ||
+        !N.release || !N.shutdown) {
         rt_log("dlaa: the NGX core %s lacks Vulkan entry points: DLAA off", path);
         return 0;
     }
@@ -298,20 +312,20 @@ void vk_dlaa_init(void) {
 #ifdef GAME_OOT   // the bloom draw it looks for is OoT's
     pre_bloom_on = rt_knob("DLAA_PRE_BLOOM", "0");
     rt_log("dlaa: pre-bloom resolve %s (REKARINA_DLAA_PRE_BLOOM=%d)", pre_bloom_on ? "on" : "off", pre_bloom_on);
+    // When Streamline is loaded, record SR availability even if DLAA/DLSS is off at start (live selection).
+    // When Streamline is absent, avoid eagerly loading native _nvngx.dll unless DLSS is actually requested (ADR-0002).
+    if (vk_sl_sr_requested() || (vk_dlaa_wanted() && !fsr3() && !fsr1())) dlss_init();
     if (!vk_dlaa_wanted() || fsr1()) return;
     if (fsr3()) {
         ffx_available = vk_ffx_load();
         if (ffx_available && !vk_ffx_upscale_available())
             rt_log("dlaa: FSR upscaling provider '%s' is not available on this device; using the game's scaling",
                    cfg_value("REKARINA_FSR_VERSION"));
-    } else {
-        dlss_init();
-        if (!N.available && (ffx_available = vk_ffx_load())) {
-            fsr3_on = 1;
-            if (vk_ffx_upscale_available()) rt_log("dlaa: DLSS cannot run here: AMD FSR takes its place");
-            else rt_log("dlaa: DLSS is unavailable and FSR upscaling provider '%s' is not available; using the game's scaling",
-                        cfg_value("REKARINA_FSR_VERSION"));
-        }
+    } else if (!N.available && (ffx_available = vk_ffx_load())) {
+        fsr3_on = 1;
+        if (vk_ffx_upscale_available()) rt_log("dlaa: DLSS cannot run here: AMD FSR takes its place");
+        else rt_log("dlaa: DLSS is unavailable and FSR upscaling provider '%s' is not available; using the game's scaling",
+                    cfg_value("REKARINA_FSR_VERSION"));
     }
 #else
     if (!vk_dlaa_wanted()) return;
@@ -333,15 +347,19 @@ void vk_dlaa_init(void) {
 #endif
 }
 
+static int use_streamline_sr;
+
 static void dlss_init(void) {
+    use_streamline_sr = 0;
 #ifdef _WIN32
-    if (vk_dlaa_wanted() && vk_sl_sr_requested()) {
+    if (vk_sl_sr_requested()) {
+        use_streamline_sr = 1;
         N.available = vk_sl_sr_available();
         rt_log("dlaa: Streamline DLSS %s", N.available ? "available" : "unavailable");
         return;
     }
 #endif
-    if (!vk_dlaa_wanted() || !core_load()) return;
+    if (!core_load()) return;
 #ifdef _WIN32
     wchar_t wdir[MAX_PATH];
     DWORD len = GetModuleFileNameW(NULL, wdir, MAX_PATH);
@@ -366,12 +384,15 @@ static void dlss_init(void) {
         rt_log("dlaa: NGX init failed (%08x): DLAA off", (unsigned)r);
         return;
     }
+    N.initialized = 1;
     if (!vtable_ok()) return;
     NgxParam *caps = NULL;
     int avail = 0, driver = 0;
     if (NGX_OK(N.caps(&caps)) && caps) {
         p_geti(caps, "SuperSampling.Available", &avail);
         p_geti(caps, "SuperSampling.NeedsUpdatedDriver", &driver);
+        r = N.destroy_params(caps);
+        if (!NGX_OK(r)) rt_log("dlaa: NGX capability parameter release failed (%08x)", (unsigned)r);
     }
     N.available = avail != 0;
     rt_log("dlaa: NGX up; DLSS %s%s", avail ? "available" : "NOT available (is " DLSS_MODEL " next to the executable?)",
@@ -767,6 +788,25 @@ static void destroy_size(struct Size *e) {
     }
     if (e->feat && N.release) N.release(e->feat);
     memset(e, 0, sizeof *e);
+}
+
+void vk_dlaa_release_ngx(VkDevice device) {
+    if (!N.initialized) return;
+    for (size_t i = 0; i < sizeof D.sizes / sizeof *D.sizes; ++i) {
+        if (!D.sizes[i].feat) continue;
+        NgxResult r = N.release(D.sizes[i].feat);
+        if (!NGX_OK(r)) rt_log("dlaa: NGX feature release failed (%08x)", (unsigned)r);
+        D.sizes[i].feat = NULL;
+    }
+    if (D.params) {
+        NgxResult r = N.destroy_params(D.params);
+        if (!NGX_OK(r)) rt_log("dlaa: NGX parameter release failed (%08x)", (unsigned)r);
+        D.params = NULL;
+    }
+    unsigned remaining = 0;
+    NgxResult r = N.shutdown(device, &remaining);
+    if (!NGX_OK(r)) rt_log("dlaa: NGX shutdown failed (%08x)", (unsigned)r);
+    N.initialized = N.available = 0;
 }
 
 static void free_size(struct Size *e) {
@@ -2147,7 +2187,7 @@ static void evaluate(VkExec *ex, const VkExecTarget *dst, enum SceneEvaluation e
         rt_log("dlaa: the scene is %ux%u now (output %ux%u, %llu frames so far)", w, h, ow, oh, (unsigned long long)D.evals);
     }
     if (spatial && dst == t) return;   // FSR 1 at the picture's own size: nothing to scale, the scene stays as drawn
-    const int sl = !fsr3() && !spatial && vk_sl_sr_available();
+    const int sl = !fsr3() && !spatial && use_streamline_sr && vk_sl_sr_available();
     if (!fsr3() && !spatial && !sl && !D.params && !NGX_OK(N.alloc_params(&D.params))) return dl_fail(evaluation, "parameter allocation", 0);
     NgxParam *p = D.params;
     VkImageView zv = vk_exec_target_view(z->img, z->format, VK_IMAGE_VIEW_TYPE_2D, VK_IMAGE_ASPECT_DEPTH_BIT, z->level,
@@ -3744,7 +3784,7 @@ int vk_dlaa_sharpens(void) {
 // first frame of the scene (2.3 s measured). One feature made and dropped before the guest starts leaves the next
 // creations some 100 ms (the guest is not running: the graphics queue is free, this thread submits alone).
 void vk_dlaa_warm(void) {
-    if (!vk_dlaa_available() || vk_sl_sr_available() || fsr3() || fsr1() || !cfg_bool("REKARINA_DLAA") || !rt_knob("DLAA_WARM", "1")) return;
+    if (!vk_dlaa_available() || use_streamline_sr || fsr3() || fsr1() || !cfg_bool("REKARINA_DLAA") || !rt_knob("DLAA_WARM", "1")) return;
     VkCtx *c = vk_ctx();
     uint64_t t0 = plat_now_ns();
     VkCommandPoolCreateInfo pi = {.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,

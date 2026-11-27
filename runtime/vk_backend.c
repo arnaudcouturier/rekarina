@@ -815,7 +815,7 @@ static void vk_be_cpu_synced(uint64_t fence) {
 static void vk_be_frame_start(void) {
     // Pin the last published settings without waiting for Present; a live edit can arrive a frame later.
     cfg_render_frame_begin();
-    if (vk_dlssg_swapchain_ready()) vk_dlssg_frame_start();
+    if (vk_dlssg_owns_swapchain()) vk_dlssg_frame_start();
     else vk_reflex_frame_start();
 }
 

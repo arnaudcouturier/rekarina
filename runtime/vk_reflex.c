@@ -264,7 +264,7 @@ int vk_reflex_available(void) { return __atomic_load_n(&reflex.ready, __ATOMIC_A
 int vk_reflex_offered(void) { return vk_reflex_available() || vk_dlssg_reflex_available(); }
 
 int vk_reflex_active(void) {
-    if (vk_dlssg_swapchain_ready()) return vk_dlssg_active() || vk_reflex_wanted_mode() > 0;
+    if (vk_dlssg_owns_swapchain()) return vk_dlssg_active() || vk_reflex_wanted_mode() > 0;
     plat_mutex_lock(&reflex.lock);
     int active = active_locked();
     plat_mutex_unlock(&reflex.lock);
@@ -285,7 +285,7 @@ int vk_reflex_swapchain_next(VkSwapchainCreateInfoKHR *create_info, VkSwapchainL
 }
 
 int vk_reflex_swapchain_stale(void) {
-    if (vk_dlssg_swapchain_ready()) return 0;
+    if (vk_dlssg_owns_swapchain()) return 0;
     plat_mutex_lock(&reflex.lock);
     int stale = reflex.ready &&
                 reflex.swapchain != VK_NULL_HANDLE &&
@@ -457,7 +457,7 @@ void vk_reflex_device_init(VkDevice device, int present_id_supported) { (void)de
 void vk_reflex_device_release(VkDevice device) { (void)device; }
 int vk_reflex_available(void) { return 0; }
 int vk_reflex_offered(void) { return vk_dlssg_reflex_available(); }
-int vk_reflex_active(void) { return vk_dlssg_swapchain_ready() && (vk_dlssg_active() || vk_reflex_wanted_mode() > 0); }
+int vk_reflex_active(void) { return vk_dlssg_owns_swapchain() && (vk_dlssg_active() || vk_reflex_wanted_mode() > 0); }
 int vk_reflex_wanted_mode(void) { int m = cfg_int("REKARINA_REFLEX"); return m < 0 ? 0 : m > 2 ? 2 : m; }
 int vk_reflex_swapchain_stale(void) { return 0; }
 void vk_reflex_swapchain_created(VkSwapchainKHR swapchain, int latency_enabled) { (void)swapchain; (void)latency_enabled; }

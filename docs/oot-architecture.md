@@ -72,6 +72,25 @@ The checked OoT 1.1.1 compositor allocation can use signed RGBA16F instead of R1
 default). The HDR encoder supports the guest's RGB-to-nits PQ transform without finished-picture grading, and `hdr_ui`
 supports linear menu output prior to guest encoding.
 
+If Vulkan swapchain creation retires the previous swapchain and then fails, retries do not reuse the retired handle.
+If DLSS Frame Generation is unavailable on OoT, frame generation stays off rather than switching to AMD FSR.
+DLSS and DLAA use the backend selected at initialization. Selecting AMD frame generation at startup does not by
+itself disable Streamline DLSS or DLAA, while Streamline Reflex and swapchain hooks yield whenever AMD FSR SDK 2 is
+the active Swapchain Owner (ADR-0002). Native NGX remains available on the legacy path and is not eagerly loaded when
+Streamline is absent and DLSS is not requested.
+
+AMD FSR requires the split SDK 2 Vulkan libraries. On OoT, AMD FSR SDK 2 frame generation uses the renderer's chosen
+output only if it is compatible (8-bit UNORM for SDR or RGB10A2 for HDR10). Output changes drain pending AMD presents
+before replacing its swapchain and frame-generation context, or switching away from AMD if the new output is
+unsupported. An AMD SDK 2 interpolation dispatch error requests a rebuild without AMD frame generation, draining
+pending presents before fallback (and reporting a fatal error if three drains fail). The SDK 2 interpolation context
+uses the swapchain's HDR10 state and the first eligible camera's depth flags, pausing when camera data or depth
+conventions mismatch and resetting history on resume. The performance overlay names the active frame-generation backend
+separately from the scene upscaler.
+
+For temporal upscaling, `REKARINA_FSR_VERSION=auto` picks FSR 4 when available and otherwise tries FSR 3. An explicit
+request for an unavailable provider leaves the game's scaling active instead of selecting another FSR generation.
+
 ## Where a frame goes (2026-11-08 morning, realtime = 1, unlocked: forest porch 60-63 fps, lighter scenes 92-103 fps)
 
 - GPU ~16 ms of work a frame: the game's passes and dispatches ~11 ms (the lighting's full-screen material passes
