@@ -407,16 +407,9 @@ extern "C" void vk_fg_frame(VkCommandBuffer cb, VkSwapchainKHR sc, VkFormat fmt,
         ffxReturnCode_t r = vk_ffx_create(&F.fg, &d.header);
         if (r != FFX_API_RETURN_OK) return F.fg = nullptr, fail("the frame generation context", r);
         F.fg_ext = ext, F.fg_fmt = fmt, F.fg_max = max_render;
-        F.fg_hdr = hdr != 0;
-        F.fg_depth_flags = depth_flags;
-        ffxQueryGetProviderVersion provider = {};
-        provider.header.type = FFX_API_QUERY_DESC_TYPE_GET_PROVIDER_VERSION;
-        const char *name = vk_ffx_query(&F.fg, &provider.header) == FFX_API_RETURN_OK ? provider.versionName : nullptr;
-        F.fg_method = name && !strncmp(name, "4.", 2) ? "FSR4 FG" :
-                      name && !strncmp(name, "3.", 2) ? "FSR3 FG" : "FSR FG";
         reset = 1;
-        rt_log("fg: frame generation context for %ux%u%s, render size up to %ux%u (%s)", ext.width, ext.height,
-               hdr ? " (HDR)" : "", max_render.width, max_render.height, name ? name : "provider unknown");
+        rt_log("fg: frame generation context for %ux%u%s, render size up to %ux%u", ext.width, ext.height,
+               hdr_format(fmt) ? " (HDR)" : "", max_render.width, max_render.height);
     }
     if (have && depth_flags != F.fg_depth_flags) {
         static bool told;
@@ -506,5 +499,4 @@ extern "C" void vk_fg_release(void) {
     __atomic_store_n(&F.handle, VK_NULL_HANDLE, __ATOMIC_RELEASE);
     F.fg_ext = {0, 0};
     __atomic_store_n(&F.on, 0, __ATOMIC_RELAXED);
-    fg_guard_disarm(FG_GUARD_FSR);
 }
