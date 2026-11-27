@@ -55,8 +55,6 @@ struct {
     VkExtent2D fg_ext = {0, 0};
     VkExtent2D fg_max = {0, 0};   // the context's largest render size
     VkFormat fg_fmt = VK_FORMAT_UNDEFINED;
-    bool fg_hdr = false;
-    uint32_t fg_depth_flags = 0;
     const char *fg_method = "FSR FG";
     ffxQueryDescSwapchainReplacementFunctionsVK fn = {};
     uint64_t frame = 0;
@@ -219,7 +217,15 @@ extern "C" int vk_fg_generating(void) { return vk_fg_active() && __atomic_load_n
 
 extern "C" const char *vk_fg_method(void) { return F.fg ? F.fg_method : "FSR FG"; }
 
-// SDK 2 remakes the swapchain in place, passing the handle (not the context) as the last argument.
+// AMD's swapchain made again (a resize, the fullscreen switch at start, a present mode change). The two forms of the
+// library take this differently. FSR SDK 2's create replacement remakes the swapchain in place and takes the swapchain
+// itself as its last argument; its destroy deletes the swapchain for good (FidelityFX SDK 2.4.0,
+// ffx_provider_framegenerationswapchain_vk.cpp ffxApiCreateSwapchainVK, ffxApiDestroySwapchainVK). SDK 1's create
+// takes the swapchain context and makes a new swapchain once the old one is destroyed through that context
+// (FidelityFX SDK 1.1.4, ffx_provider_framegenerationswapchain_vk.cpp vkCreateSwapchainFFXAPI). 1.2.1 to 1.2.3 used
+// SDK 1's order with SDK 2's library: the destroy deleted the swapchain and the create took the context for one, a
+// call to an address outside every module at the first re-creation (a fullscreen window at start: the game never
+// started with AMD's frame generation on).
 static VkResult remake(const VkSwapchainCreateInfoKHR *ci, VkSwapchainKHR *sc) {
     VkDevice dev = vk_ctx()->device;
     VkResult r;
@@ -407,6 +413,8 @@ extern "C" void vk_fg_frame(VkCommandBuffer cb, VkSwapchainKHR sc, VkFormat fmt,
         ffxQueryGetProviderVersion provider = {};
         provider.header.type = FFX_API_QUERY_DESC_TYPE_GET_PROVIDER_VERSION;
         const char *name = vk_ffx_query(&F.fg, &provider.header) == FFX_API_RETURN_OK ? provider.versionName : nullptr;
+        F.fg_method = name && !strncmp(name, "4.", 2) ? "FSR4 FG" :
+                      name && !strncmp(name, "3.", 2) ? "FSR3 FG" : "FSR FG";
         rt_log("fg: frame generation context for %ux%u%s, render size up to %ux%u (%s)", ext.width, ext.height,
                hdr_format(fmt) ? " (HDR)" : "", max_render.width, max_render.height, name ? name : "provider unknown");
     }
