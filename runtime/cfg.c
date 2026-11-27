@@ -74,7 +74,7 @@ static const char *const known[] = {
     "SWKBD_ANSWER",
     "FSR_VERSION", "CS_KEEP", "MOVIE_UNET", "MESH_INDICES", "MESH_TASK", "VRAM_BUDGET_MB", "VMA_DUMP", "SNAP_RING_MB", "TEX_EVICT_CLASS", "TPOOL_HIDE", "POOLTAB", "VMA_BLOCK_MB", "TEX_SUBALLOC_KB",
     "SWKBD_TEST", "TEST_PAD", "UPDATE_CHECK", "TEST_PREPARE_SHADERS", "TEST_STALL", "FIXED_SCENE", "FRAMEGEN", "REFLEX", "REFLEX_LOG", "GAME_ASPECT", "GAME_RES", "SCENE_SCALE", "SHADOW_COMPARE", "TAA", "TEX_ALIAS", "TEX_MEMO", "TEX_QUALITY", "TEX_SAME_REG", "DLAA_WARM", "DLAA_SHARPEN", "TPOOL_PUMP_MS", "MOVIE_FPS", "TEX_VRAM_PRESSURE", "TIMER_1MS", "PROCESS_PRIORITY", "RENDER_CORE", "GPU_LOAD_ZERO", "GPU_PASSTIME", "OQLOG", "PRED_ZERO", "RES_GUARD", "TPOOL", "TPOOL_MS", "TPOOL_REGBITS", "PAR_UB_JOIN", "HEAP_CHECK", "EVICT_QUIET", "USNAP_HELD_LOCK", "TPOOL_OLD_MS", "EVICT_HOLD_MS", "PRESSURE_KEEP_USED", "TRACE", "TXD_TRANSPOSE", "UBO_SNAPSHOT", "UPSCALER", "VK_DYN_A2C", "VK_DYN_VERTEX", "VK_NO_FLOAT64",
-    "VK_PRESENT", "VK_RECORDER", "VK_SSBO_ALIGN", "VK_SUBGROUP", "VK_SUBGROUP_PIN", "VK_VALIDATION", "VOICE_LANG", "VOLUME", "VRAM_HEADROOM", "VS_OUTS",
+    "VK_PRESENT", "VK_RECORDER", "VK_SSBO_ALIGN", "VK_SUBGROUP", "VK_SUBGROUP_PIN", "VK_VALIDATION", "VOICE_LANG", "VOICE_OPT", "VOLUME", "VRAM_HEADROOM", "VS_OUTS",
     "WALK_KEY", "WALK_SCALE", "STICK_DASH", "DASH_KEY", "WB_EXACT", "WB_FENCE_LIMIT", "WB_MERGE", "WINDOW_SIZE", "XLATE", "XLATE_ID", "XLATE_KEEP", "XLATE_PROCS",
     "ZSTD_CHECK", "ZSTD_NATIVE",
 };
@@ -206,7 +206,7 @@ static const CfgMeta metas[] = {
     {"LANG", "", "ja|en-US|fr|de|it|es|zh-CN|ko|nl|pt|ru|zh-TW|en-GB|fr-CA|es-419|zh-Hans|zh-Hant|pt-BR|pl", RESTART},
     {"OPERATION_MODE", "docked", "docked|handheld", RESTART},
     {"FAST_TEXT", "0", "0|1", RESTART},   // OoT: romfs-patches-fasttext at start (romfs.c)
-    {"VOICE_LANG", "game", "game|en|ja|de|fr|it|es|es-419|pt-BR|fr-CA", RESTART},   // OoT: voice_lang.c
+    {"VOICE_LANG", "game", "game|en|ja|de|fr|it|es|es-419|pt-BR|fr-CA", LIVE},   // OoT: voice_lang.c + oot_fps.c voiceopt
     {"ASSUME_FOCUS", "1", "0|1", LIVE},   // read on every focus change (ov_system.c)
     {"HEAP_CHECK", "0", NULL, LIVE},      // test runs: the process heap checked every n presents (perf.c heap_check)
     {"DLSSG_UNAVAILABLE", "0", "0|1", RESTART},   // test runs: DLSS-G counted missing, AMD's takes over (vk_dlssg.c)

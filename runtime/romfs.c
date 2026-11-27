@@ -1963,14 +1963,6 @@ uint32_t romfs_open(uint64_t *out, const char *path, int mode) {
     const char *p = romfs_path_relative(mount_of(path), path, rel, sizeof rel);
     if (!p) return FS_R_PATH_NOT_FOUND;
     uint64_t i = file_index(p);
-    char vbuf[4096];   // a voice file in the voice language's place (voice_lang.c), when that language has it
-    const char *v = voice_lang_path(p, vbuf, sizeof vbuf);
-    uint64_t vi = v ? file_index(v) : UINT64_MAX;
-    if (vi != UINT64_MAX) {
-        static int told;
-        if (__atomic_fetch_add(&told, 1, __ATOMIC_RELAXED) < 3) rt_log("voice: %s served as %s", p, v);
-        i = vi;
-    }
     if (i == UINT64_MAX) return FS_R_PATH_NOT_FOUND;
     uint32_t ov = overlay_slot(i);
     PlatFile *f = NULL;
@@ -2156,9 +2148,7 @@ uint32_t romfs_entry_type(int *out, const char *path) {
     char rel[4096];
     const char *p = romfs_path_relative(mount_of(path), path, rel, sizeof rel);
     if (!p) return FS_R_PATH_NOT_FOUND;
-    char vbuf[4096];
-    const char *v = voice_lang_path(p, vbuf, sizeof vbuf);
-    if (file_index(p) != UINT64_MAX || (v && file_index(v) != UINT64_MAX)) {   // as romfs_open serves it
+    if (file_index(p) != UINT64_MAX) {
         *out = FS_ENTRY_FILE;
         return 0;
     }

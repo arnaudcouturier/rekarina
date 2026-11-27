@@ -1051,6 +1051,19 @@ static void row_game_lang(void) {
     opt_choice_list("REKARINA_LANG", UI_MENU_GAME_LANG, vals, names, n + 1, UI_MENU_GAME_LANG_DESC, cur);
 }
 
+#ifdef GAME_OOT
+// Spoken voice language apart from text/subtitles (voice_lang.c, REKARINA_VOICE_LANG): matches the order of values
+// in cfg.c metas[] (game|en|ja|de|fr|it|es|es-419|pt-BR|fr-CA).
+static void row_voice_lang(void) {
+    static const UiTextId voices[] = {UI_MENU_VOICE_LANG_GAME, UI_MENU_LANGNAME_EN,     UI_MENU_LANGNAME_JA,
+                                      UI_MENU_LANGNAME_DE,     UI_MENU_LANGNAME_FR,     UI_MENU_LANGNAME_IT,
+                                      UI_MENU_LANGNAME_ES,     UI_MENU_LANGNAME_ES_419, UI_MENU_LANGNAME_PT_BR,
+                                      UI_MENU_LANGNAME_FR_CA};
+    opt_choice("REKARINA_VOICE_LANG", UI_MENU_VOICE_LANG, voices, sizeof voices / sizeof *voices,
+               UI_MENU_VOICE_LANG_DESC);
+}
+#endif
+
 // The frame limit (frame_rate.c): unset, the older fps60 = 0 still means 30. The monitor choice shows the rate it gives.
 static void row_fps_limit() {
     // 40 and 45: the Steam Deck's screen runs at 40 to 60 Hz (the OLED to 90); 40 divides 40 and 120 Hz evenly
@@ -1348,6 +1361,7 @@ static void tab_game(float scale) {
     row_fps_limit();
     row_game_lang();
 #ifdef GAME_OOT
+    row_voice_lang();
     opt_toggle("REKARINA_FAST_TEXT", UI_MENU_FAST_TEXT, UI_MENU_FAST_TEXT_DESC);
 #endif
     static const UiTextId mode[] = {UI_MENU_MODE_DOCKED, UI_MENU_MODE_HANDHELD};

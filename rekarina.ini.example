@@ -316,9 +316,9 @@
 # operation_mode = docked
 # OoT: 1 = faster dialogue, the game's messages without the pauses between phrases (romfs-patches-fasttext, at start).
 # fast_text = 0
-# OoT: the language the game speaks in, apart from its text: game (the text's language), en, ja, de, fr, it, es,
-# es-419 or pt-BR (fr-CA has a few lines only). Voice files of that language replace the text language's at
-# start; text and menus stay as they are.
+# OoT: the language the game speaks in, apart from its text: game (the game's own setting), en, ja, de, fr, it, es,
+# es-419, pt-BR or fr-CA. Drives the game's own Voice Language option natively (live in the F1 Game tab); text,
+# subtitles and menus stay in `lang`.
 # voice_lang = game
 # Language of the settings menu and the overlay: en, de, es, fr, it, nl, pt, pt-BR, ru, ja, ko, zh-Hans or zh-Hant.
 # Default: the Windows display language, English if it is none of them.

@@ -485,3 +485,15 @@ site wide_ui main 152cd98 ad4207e0 ad4207e0 94e5cfd6                            
 site wide_ui main 152cdd4 b9403008 b9403008 94e5cfc3                               # parent transform: ldr w8, [x0, #0x30]; bl page+0xce0
 site wide_ui main 152ce64 fc04c263 fc04c263 94e5cf9b                               # translation stored: stur d3, [x19, #0x4c]; bl page+0xcd0
 site wide_ui main 152ac40 2d4b0400 2d4b0400 94e5d820                               # drawn size: ldp s0, s1, [x0, #0x58]; bl page+0xcc0
+
+set voiceopt REKARINA_VOICE_OPT 1
+
+# The game's own Voice Language option (saved in option.sav) applied after a restart. The voice resource's update
+# (main+0xa7ca30) applies the text language's default on its first update and afterwards only when GameDataMgr reports
+# OptionData.VoiceLanguage (hash 0xa2dcdc9d) in its written-flags list (main+0xa7d1c0). When option.sav finishes
+# loading after that first update, its value replaces the enum in place without being listed, so the game's Options
+# screen shows the saved language while the voices stay the default. The site replaces that call with runtime/oot_fps.c
+# voice_option (page+0xcb0), which calls main+0xa7d1c0 and also returns 1 when the enum's value changed since the
+# previous update. What the game does here is from the Longshot project (PR #970, GPL-3.0, read for what the game does;
+# the runtime implementation is our own).
+site voiceopt main a7ca98 940001ca 95109086   # bl main+0xa7d1c0 -> bl page+0xcb0

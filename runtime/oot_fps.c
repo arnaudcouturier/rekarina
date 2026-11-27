@@ -15,6 +15,7 @@
 #include <string.h>
 
 #include "cfg.h"
+#include "fs.h"
 #include "host.h"
 #include "platform/platform.h"
 
@@ -1043,6 +1044,112 @@ static void preload_hold(Cpu *c) {
     }
 }
 
+// ---- set voiceopt
+//
+// The game's own Voice Language option (OptionData.VoiceLanguage, saved in option.sav) applied after a restart. The
+// voice resource's update (main+0xa7ca30) sets the text language's default on its first update and afterwards only
+// updates the active voice language when GameDataMgr reports OptionData.VoiceLanguage (hash 0xa2dcdc9d) in its
+// written-flags list (main+0xa7d1c0(mgr, hash)). When option.sav finishes loading after that first update, its value
+// replaces the enum in place without being listed, leaving the voices on the default while the game's Options screen
+// shows the saved language. Here the host calls main+0xa7d1c0 and also sets bit 0 of w0 when the enum's value hash
+// changed since the previous update, so the game's own branch reads and applies it. What the game does here is from
+// the Longshot project (PR #970, GPL-3.0, read for what the game does; the runtime implementation is our own).
+#define HOST_VOICE_OPTION (RT_PATCH_PAGE + 0xcb0)
+#define VOICE_OPTION_HASH 0xa2dcdc9du
+void f_7000a7d1c0(Cpu *c);   // lifted: whether a GameDataMgr flag hash was written since the last pass (bit 0 of w0)
+
+// GameDataMgr's Enum container: +0x250 count, +0x258 entries (0x38 bytes each, value hash at +0x1c), +0x260 hash table
+// of {hash, index} pairs, +0x26c slot count (probed linearly from hash % slots, hash 0 ends the probe). Returns the
+// guest address of OptionData.VoiceLanguage's uint32_t value field (1 found, 0 not).
+static int voice_enum_addr(uint64_t mgr, uint64_t *out_addr) {
+    uint64_t table = 0, entries = 0;
+    uint32_t slots = 0, count = 0;
+    if (!mgr || !plat_mem_read(mgr + 0x260, &table, 8) || !table ||
+        !plat_mem_read(mgr + 0x26c, &slots, 4) || !slots ||
+        !plat_mem_read(mgr + 0x258, &entries, 8) || !entries ||
+        !plat_mem_read(mgr + 0x250, &count, 4))
+        return 0;
+    uint32_t start = VOICE_OPTION_HASH % slots, i = start;
+    do {
+        uint32_t kv[2];
+        if (!plat_mem_read(table + (uint64_t)i * 8, kv, 8) || !kv[0]) return 0;
+        if (kv[0] == VOICE_OPTION_HASH) {
+            uint32_t idx = kv[1] < count ? kv[1] : 0;
+            uint64_t at = entries + (uint64_t)idx * 0x38 + 0x1c;
+            if (!plat_mem_readable(at, 4)) return 0;
+            *out_addr = at;
+            return 1;
+        }
+        i = i + 1 >= slots ? 0 : i + 1;
+    } while (i != start);
+    return 0;
+}
+
+static struct { int known, override_on, logged; uint32_t value, game_value; } voice_opt;
+static PlatMutex voice_opt_lock = PLAT_MUTEX_INIT;
+
+static void voice_option(Cpu *c) {
+    uint64_t mgr = c->x[0];
+    int ours = (uint32_t)c->x[1] == VOICE_OPTION_HASH;
+    f_7000a7d1c0(c);
+    if (!ours) return;
+    uint64_t at = 0;
+    uint32_t cur = 0;
+    if (!voice_enum_addr(mgr, &at) || !plat_mem_read(at, &cur, 4)) return;
+    uint32_t want = voice_lang_enum_hash();
+    int apply = 0, write_val = 0, log_kind = 0;
+    uint32_t to_write = 0, prev = 0;
+    plat_mutex_lock(&voice_opt_lock);
+    if (want) {
+        // Remember the game's own option before overriding (or if option.sav / the game's Options updated it).
+        if (!voice_opt.override_on) voice_opt.game_value = cur;
+        else if (cur != voice_opt.value) voice_opt.game_value = cur;
+        if (cur != want) {
+            to_write = want;
+            write_val = 1;
+        }
+        if (!voice_opt.override_on || voice_opt.value != want || cur != want) {
+            prev = voice_opt.known ? voice_opt.value : cur;
+            apply = 1;
+            if (voice_opt.logged < 16) voice_opt.logged++, log_kind = 1;
+        }
+        voice_opt.value = want;
+        voice_opt.override_on = 1;
+        voice_opt.known = 1;
+    } else if (voice_opt.override_on) {
+        // REKARINA_VOICE_LANG switched back to "game" live: restore the game's own option.
+        voice_opt.override_on = 0;
+        if (voice_opt.game_value && cur != voice_opt.game_value) {
+            prev = cur;
+            to_write = voice_opt.game_value;
+            write_val = 1;
+            apply = 1;
+            if (voice_opt.logged < 16) voice_opt.logged++, log_kind = 2;
+            voice_opt.value = voice_opt.game_value;
+        } else {
+            voice_opt.value = cur;
+        }
+        voice_opt.known = 1;
+    } else {
+        if (voice_opt.known && cur != voice_opt.value && !(c->x[0] & 1)) {
+            prev = voice_opt.value;
+            apply = 1;
+            if (voice_opt.logged < 8) voice_opt.logged++, log_kind = 3;
+        }
+        voice_opt.value = cur;
+        voice_opt.game_value = cur;
+        voice_opt.known = 1;
+    }
+    plat_mutex_unlock(&voice_opt_lock);
+    if (write_val) memcpy((void *)(uintptr_t)at, &to_write, 4);
+    if (apply) {
+        c->x[0] |= 1;
+        if (log_kind == 1) rt_log("voice: applying voice_lang override (%#x -> %#x)", prev, want);
+        else if (log_kind == 2) rt_log("voice: restoring game's Voice Language option (%#x -> %#x)", prev, to_write);
+        else if (log_kind == 3) rt_log("voice: saved Voice Language option changed (%#x -> %#x): applied", prev, cur);
+    }
+}
+
 __attribute__((constructor)) static void oot_fps_register(void) {
     rt_register_host(HOST_DAY_CLOCK, day_clock);
     rt_register_host(HOST_SOUND_GATE, sound_gate);
@@ -1065,6 +1172,7 @@ __attribute__((constructor)) static void oot_fps_register(void) {
     rt_register_host(HOST_DOF_SCALE, dof_scale);
     rt_register_host(HOST_PROMPT_GLYPHS, prompt_glyphs);
     rt_register_host(HOST_PRELOAD_HOLD, preload_hold);
+    rt_register_host(HOST_VOICE_OPTION, voice_option);
 }
 
 #endif

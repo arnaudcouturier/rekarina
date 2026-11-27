@@ -50,10 +50,10 @@ int romfs_patches_loaded(void);                            // a romfs-patches ma
 enum { ROMFS_PROMPTS_OK, ROMFS_PROMPTS_MISSING, ROMFS_PROMPTS_FAILED, ROMFS_PROMPTS_SHAPE, ROMFS_PROMPTS_MODS,
        ROMFS_PROMPTS_PATCHES };
 const char *romfs_prompts(void);
-// The voice language apart from the text language (voice_lang.c, REKARINA_VOICE_LANG): read at start; a voice file's
-// path with the chosen language's code into buf, NULL when the setting is off or path is not a voice file.
+// The voice language apart from the text language (voice_lang.c, REKARINA_VOICE_LANG): drives GameDataMgr's
+// OptionData.VoiceLanguage natively through oot_fps.c (set voiceopt); 0 follows the game's own setting.
 void voice_lang_init(void);
-const char *voice_lang_path(const char *path, char *buf, size_t n);
+uint32_t voice_lang_enum_hash(void);
 int romfs_prompts_live(void);   // each present: applies a changed prompts setting to the running game where it can
 void romfs_hint_pad_layout(int layout);   // input.c: the open gamepad's layout (PAD_LAYOUT_*), for the action hint's places
 int romfs_prompts_can_change(void);            // 1: the sets change in the running game (prompts-live.bin)
