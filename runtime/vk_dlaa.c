@@ -786,6 +786,25 @@ static void destroy_size(struct Size *e) {
     memset(e, 0, sizeof *e);
 }
 
+void vk_dlaa_release_ngx(VkDevice device) {
+    if (!N.initialized) return;
+    for (size_t i = 0; i < sizeof D.sizes / sizeof *D.sizes; ++i) {
+        if (!D.sizes[i].feat) continue;
+        NgxResult r = N.release(D.sizes[i].feat);
+        if (!NGX_OK(r)) rt_log("dlaa: NGX feature release failed (%08x)", (unsigned)r);
+        D.sizes[i].feat = NULL;
+    }
+    if (D.params) {
+        NgxResult r = N.destroy_params(D.params);
+        if (!NGX_OK(r)) rt_log("dlaa: NGX parameter release failed (%08x)", (unsigned)r);
+        D.params = NULL;
+    }
+    unsigned remaining = 0;
+    NgxResult r = N.shutdown(device, &remaining);
+    if (!NGX_OK(r)) rt_log("dlaa: NGX shutdown failed (%08x)", (unsigned)r);
+    N.initialized = N.available = 0;
+}
+
 static void free_size(struct Size *e) {
     vk_queue_lock(), vkDeviceWaitIdle(vk_ctx()->device), vk_queue_unlock();   // evicted images may still be in flight
     destroy_size(e);

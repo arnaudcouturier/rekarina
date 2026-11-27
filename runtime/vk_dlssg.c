@@ -510,9 +510,6 @@ void vk_dlssg_release(void) {
     S.avail = 0;
     S.sr_requested = S.sr_ready = 0;
     if (S.loaded > 0) S.loaded = 0;
-#ifdef GAME_OOT
-    fg_guard_disarm(FG_GUARD_DLSS);
-#endif
 }
 
 int vk_sl_sr_requested(void) { return S.loaded > 0 && S.sr_requested; }
