@@ -286,8 +286,9 @@ static int test_unavailable(void) {
 }
 
 void vk_dlssg_device_ready(VkDevice dev) {
-    if (S.loaded <= 0) {   // asked for, and our library or Streamline did not load: AMD's in its place
+    if (S.loaded <= 0) {
         fg_guard_disarm(FG_GUARD_DLSS);
+#ifndef GAME_OOT
         if (S.asked && S.wanted) vk_fg_take_over(S.why ? S.why : "DLSS Frame Generation did not load");
 #endif
         return;
