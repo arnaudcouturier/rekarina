@@ -958,6 +958,8 @@ NVN_API(nvnQueuePresentTexture) {
     encoding = oot_take_guest_output((uintptr_t)o);
 #endif
     gfx_backend()->present(t, crop, slot, encoding);
+    cfg_render_use(previous_settings);
+    cfg_render_release(settings);
     o->pfence[o->presents % 8] = nvn_fence_last();   // the acquire sync of the image this present releases
     {   // The present waits for the GPU (OoT). The game reads GPU results of the frame it just presented
         // without an NVN sync of their own, during its next frame: the luminance its auto exposure adapts to, the
