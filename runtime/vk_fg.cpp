@@ -112,8 +112,8 @@ void fail(const char *what, unsigned r) {
 }
 
 #ifdef GAME_OOT
-// Swapchain creation can precede publication of the first frame's upscaler consumer flags.
-bool temporal_inputs_available() { return vk_dlaa_wanted() && !vk_dlaa_fsr1() && vk_dlaa_backend_available(); }
+// Until frame generation has its own motion producer, it needs the temporal upscaler's inputs.
+bool temporal_inputs_available() { return vk_dlaa_available() && !vk_dlaa_fsr1(); }
 #endif
 
 }  // namespace
@@ -131,9 +131,8 @@ extern "C" int vk_fg_wanted(void) {
         }
     }
 #ifdef GAME_OOT
-    // Until frame generation has its own motion producer, it needs the temporal upscaler's inputs.
     return F.present && !strcmp(cfg_value("REKARINA_FRAMEGEN"), "fsr3") && !fg_guard_blocked() &&
-           vk_dlaa_available() && !vk_dlaa_fsr1();
+           temporal_inputs_available();
 #else
     return F.wanted;
 #endif
