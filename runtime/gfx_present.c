@@ -610,8 +610,7 @@ static int create_swapchain(void) {
     // an unsupported output or a failed backend leaves the window to the other swapchain paths below.
     VkResult r = VK_ERROR_FEATURE_NOT_PRESENT;
     if (vk_fg_swapchain() || (vk_fg_wanted() && !vk_fg_failed())) {
-        destroy_replaced_swapchain(c->device, VK_NULL_HANDLE);   // drop the views before AMD replaces its images
-        if (old && !vk_fg_swapchain()) vkDestroySwapchainKHR(c->device, old, NULL);
+        destroy_replaced_swapchain(c->device, vk_fg_swapchain() ? VK_NULL_HANDLE : old);
         ci.oldSwapchain = VK_NULL_HANDLE;
         old = g_sc = VK_NULL_HANDLE;
         if (replace_fg) {
