@@ -72,22 +72,17 @@ VkResult submit_game(uint32_t n, const VkSubmitInfo *si, VkFence fence) {
     return r;
 }
 
-#ifdef GAME_OOT
 void stop_running();
-#endif
 
 ffxReturnCode_t generate(ffxDispatchDescFrameGeneration *d, void *user) {
     const ffxReturnCode_t result = vk_ffx_dispatch((ffxContext *)user, &d->header);
     if (result == FFX_API_RETURN_OK && d->numGeneratedFrames) {
         __atomic_add_fetch(&F.generated, d->numGeneratedFrames, __ATOMIC_RELAXED);
         fg_guard_running(FG_GUARD_FSR);
-    }
-#ifdef GAME_OOT
-    if (result != FFX_API_RETURN_OK) {
-        rt_log("fg: interpolation dispatch failed (%u); requesting ordinary presentation", (unsigned)result);
+    } else if (result != FFX_API_RETURN_OK) {
+        rt_log("fg: interpolation dispatch failed (%u); returning to ordinary presentation", (unsigned)result);
         stop_running();
     }
-#endif
     return result;
 }
 
