@@ -113,7 +113,7 @@ int vk_dlssg_early(void) {
     if (!vk_dlssg_wanted()) return 0;
     if (S.loaded) return S.loaded > 0;
     S.loaded = -1;
-    if (S.asked) fg_guard_arm("dlss");   // a crash from here to the first generated frames: the next start goes without (report.c)
+    if (S.asked) fg_guard_arm(FG_GUARD_DLSS);   // a crash from here to the first generated frames: the next start goes without (report.c)
 #ifdef _WIN32
     wchar_t dir[MAX_PATH], path[MAX_PATH + 32];
     DWORD n = GetModuleFileNameW(NULL, dir, MAX_PATH);
@@ -415,8 +415,7 @@ int vk_dlssg_frame(VkCommandBuffer cb, VkExtent2D ext, VkImage hudless, VkImageV
     else if (on) went_on = 1;
     if (on && have && S.retains && !was_on) reset = 1;
     was_on = on;
-    static uint64_t generating;
-    if (on) fg_guard_running(++generating);
+    if (on) fg_guard_running(FG_GUARD_DLSS);
     Nx2SlImage zd = {d.image, dv, d.format, d.width, d.height, VK_IMAGE_LAYOUT_GENERAL,
                      VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT};
     Nx2SlImage zm = {m.image, mvv, m.format, m.width, m.height, VK_IMAGE_LAYOUT_GENERAL,

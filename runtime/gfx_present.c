@@ -34,6 +34,7 @@
 #include "vk_dlssg.h"
 #include "vk_reflex.h"
 #ifdef GAME_OOT
+#include "vk_ffx.h"
 #include "vk_present_format.h"
 #endif
 #include "renderer_mcp.h"
@@ -350,6 +351,12 @@ static void window_settings_live(void) {
         if (started) plat_xchg32(&g_dirty, 1);
     }
     if (started && vk_hdr_wanted() != g_sc_hdr_wanted) plat_xchg32(&g_dirty, 1);
+#ifdef GAME_OOT
+    static int fg_wanted = -1;
+    int want_fg = vk_fg_wanted();
+    if (started && want_fg != fg_wanted) plat_xchg32(&g_dirty, 1);
+    fg_wanted = want_fg;
+#endif
     vk_dlssg_reflex_sync();
     if (started && vk_reflex_swapchain_stale()) plat_xchg32(&g_dirty, 1);
     if (started) gfx_window_apply_settings();
@@ -469,7 +476,7 @@ static void flip_locked(void) {
                                  .presentStageQueries = VK_PRESENT_STAGE_IMAGE_FIRST_PIXEL_VISIBLE_BIT_EXT};
     VkPresentTimingsInfoEXT tis = {.sType = VK_STRUCTURE_TYPE_PRESENT_TIMINGS_INFO_EXT, .pNext = &pid, .swapchainCount = 1,
                                    .pTimingInfos = &ti};
-    int dlssg_sc = vk_dlssg_swapchain_ready(), fg_sc = vk_fg_swapchain();
+    int fg_sc = vk_fg_swapchain(), dlssg_sc = !fg_sc && vk_dlssg_swapchain_ready();
     int timed = pt_on && pt_id && !dlssg_sc && !fg_sc;
     if (timed) pi.pNext = &tis;
     VkPresentIdKHR rpid = {0};
@@ -501,7 +508,19 @@ static void free_capture(void) {
     g_cap_valid = 0;
 }
 
-// Returns 1 with a usable swapchain, 0 when the window has no area (minimised). Called with g_pl held.
+static void destroy_replaced_swapchain(VkDevice device, VkSwapchainKHR old) {
+    for (uint32_t i = 0; i < g_sc_n; i++) {
+        vkDestroySemaphore(device, g_render_done[i], NULL);
+        if (g_sc_view[i]) vkDestroyImageView(device, g_sc_view[i], NULL);
+        g_sc_view[i] = VK_NULL_HANDLE;
+    }
+    g_sc_n = 0;
+    if (old && vk_dlssg_swapchain_ready()) vk_dlssg_destroy_swapchain(device, old);
+    else if (old) vkDestroySwapchainKHR(device, old, NULL);
+}
+
+// Returns 1 on replacement. Preflight failures leave the prior chain usable; a failed Vulkan creation may retire it.
+// Called with g_pl held.
 static int create_swapchain(void) {
     flip_locked();   // the acquired image goes out before its swapchain is replaced
     VkCtx *c = vk_ctx();
@@ -526,11 +545,11 @@ static int create_swapchain(void) {
     }
     if (!ext.width || !ext.height) return 0;
     uint32_t nf = 0;
-    vkGetPhysicalDeviceSurfaceFormatsKHR(c->phys, g_surface, &nf, NULL);
+    if (vkGetPhysicalDeviceSurfaceFormatsKHR(c->phys, g_surface, &nf, NULL) != VK_SUCCESS || !nf) return 0;
     VkSurfaceFormatKHR fmts[64];
     if (nf > 64) nf = 64;
-    vkGetPhysicalDeviceSurfaceFormatsKHR(c->phys, g_surface, &nf, fmts);
-    if (!nf) return 0;
+    VkResult formats_result = vkGetPhysicalDeviceSurfaceFormatsKHR(c->phys, g_surface, &nf, fmts);
+    if ((formats_result != VK_SUCCESS && formats_result != VK_INCOMPLETE) || !nf) return 0;
     // UNORM: the blit writes the bytes the game wrote (no sRGB encode). REKARINA_HDR: HDR10 when the surface offers it.
     VkSurfaceFormatKHR sf = fmts[0];
 #ifdef GAME_OOT
@@ -559,6 +578,29 @@ static int create_swapchain(void) {
     if (caps.maxImageCount && count > caps.maxImageCount) count = caps.maxImageCount;
     if (count > 8) count = 8;
 
+    const int had_fg = vk_fg_swapchain();
+    int want_fg = vk_fg_wanted() && !vk_fg_failed();
+#ifdef GAME_OOT
+    if (want_fg && !vk_present_amd_fg_compatible(sf)) {
+        rt_log("gfx: AMD frame generation suspended: the selected %s swapchain format %d is unsupported",
+               hdr ? "HDR10" : "SDR", (int)sf.format);
+        want_fg = 0;
+    } else if (want_fg && !had_fg && !vk_ffx_load()) {
+        want_fg = 0;
+    }
+#endif
+    const int replace_fg = had_fg && want_fg && (g_sc_fmt != sf.format || g_sc_hdr != hdr ||
+                                                  g_sc_ext.width != ext.width || g_sc_ext.height != ext.height);
+    // Pending SDK presents can still submit work, so drain them before taking the queue lock.
+    const int drain_fg = had_fg && (replace_fg || !want_fg);
+    static unsigned failed_fg_drain_attempts;
+    if (drain_fg && !vk_fg_wait_for_presents()) {
+        if (vk_fg_failed() && ++failed_fg_drain_attempts >= 3)
+            rt_fatal("gfx: could not drain the failed AMD swapchain after three attempts; cannot switch safely");
+        plat_xchg32(&g_dirty, 1);
+        return 0;
+    }
+    failed_fg_drain_attempts = 0;
     vk_queue_lock();
     vkDeviceWaitIdle(c->device);
     vk_reflex_swapchain_destroyed();
@@ -571,23 +613,21 @@ static int create_swapchain(void) {
         .imageSharingMode = VK_SHARING_MODE_EXCLUSIVE, .preTransform = caps.currentTransform,
         .compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR, .presentMode = pick_present_mode(c->phys), .clipped = VK_TRUE,
         .oldSwapchain = old};
-    // Frame generation (vk_fg.cpp): AMD's swapchain in this one's place. A plain swapchain leaves the surface before
-    // AMD's is made; AMD's own is made again by vk_fg_create_swapchain (in place with FSR SDK 2), never destroyed for
-    // it. Frame generation that failed while its swapchain was the window's gives the window a plain swapchain again
-    // here, and a first creation that fails leaves the plain swapchain below: the game goes on without generation.
+    // AMD can remake the same output in place with SDK 2. A changed compatible output gets a fresh context;
+    // an unsupported output or a failed backend leaves the window to the other swapchain paths below.
     VkResult r = VK_ERROR_FEATURE_NOT_PRESENT;
-    if (vk_fg_swapchain() || (vk_fg_wanted() && !vk_fg_failed())) {
-        for (uint32_t i = 0; i < g_sc_n; i++) {   // views of AMD's images, which its re-creation or release replaces
-            vkDestroySemaphore(c->device, g_render_done[i], NULL);
-            if (g_sc_view[i]) vkDestroyImageView(c->device, g_sc_view[i], NULL);
-            g_sc_view[i] = VK_NULL_HANDLE;
-        }
-        g_sc_n = 0;
-        if (old && !vk_fg_swapchain()) vkDestroySwapchainKHR(c->device, old, NULL);
+    if (had_fg || want_fg) {
+        destroy_replaced_swapchain(c->device, had_fg ? VK_NULL_HANDLE : old);
         ci.oldSwapchain = VK_NULL_HANDLE;
         old = g_sc = VK_NULL_HANDLE;
-        if (!vk_fg_failed()) r = vk_fg_create_swapchain(&ci, &g_sc);
-        if (r != VK_SUCCESS && vk_fg_swapchain() && !vk_fg_failed()) {   // AMD's swapchain stays: again at the next present
+        if (replace_fg) {
+            rt_log("gfx: AMD frame generation output changed: replacing %s format %d with %s format %d",
+                   g_sc_hdr ? "HDR10" : "SDR", (int)g_sc_fmt, hdr ? "HDR10" : "SDR", (int)sf.format);
+            vk_fg_release();
+        }
+        if (want_fg) r = vk_fg_create_swapchain(&ci, &g_sc);
+        // A callback can stop AMD after preflight. Leave an undrained chain owned by AMD and retry outside the lock.
+        if (r != VK_SUCCESS && vk_fg_swapchain() && !drain_fg) {
             static volatile int32_t n_fail;
             if (plat_inc32(&n_fail) <= 5) rt_log("gfx: frame generation swapchain %ux%u failed (%d); trying again", ext.width, ext.height, (int)r);
             g_sc = VK_NULL_HANDLE;
@@ -596,7 +636,7 @@ static int create_swapchain(void) {
             return 0;
         }
         if (r != VK_SUCCESS && vk_fg_swapchain()) {   // frame generation stopped: its swapchain goes, a plain one follows
-            rt_log("gfx: frame generation stopped: the window gets a plain swapchain");
+            if (vk_fg_failed()) rt_log("gfx: frame generation stopped: replacing its swapchain");
             vk_fg_release();
             g_sc = VK_NULL_HANDLE;
         }
@@ -616,6 +656,11 @@ static int create_swapchain(void) {
         int reflex_lat = 0;
 #endif
         r = vkCreateSwapchainKHR(c->device, &ci, NULL, &g_sc);
+        if (r != VK_SUCCESS && old) {
+            // The failed call retired old; destroy it before retrying without an old swapchain.
+            destroy_replaced_swapchain(c->device, old);
+            old = ci.oldSwapchain = g_sc = VK_NULL_HANDLE;
+        }
         if (r != VK_SUCCESS && want_pt) {
             rt_log("gfx: swap chain with present timing refused (%d): without it", (int)r);
             ci.flags &= ~(VkSwapchainCreateFlagsKHR)(VK_SWAPCHAIN_CREATE_PRESENT_TIMING_BIT_EXT | VK_SWAPCHAIN_CREATE_PRESENT_ID_2_BIT_KHR);
@@ -632,19 +677,18 @@ static int create_swapchain(void) {
         else pt_on = 0;
         if (r == VK_SUCCESS) vk_reflex_swapchain_created(g_sc, reflex_lat);
     }
+    destroy_replaced_swapchain(c->device, old);
     if (r != VK_SUCCESS) {
         rt_log("gfx: vkCreateSwapchainKHR failed (%d)", (int)r);
-        g_sc = old;
+        g_sc = VK_NULL_HANDLE;
+#ifdef GAME_OOT
+        g_sc_hdr = 0;
+        vk_hdr_set_active(0);
+#endif
         vk_queue_unlock();
+        plat_xchg32(&g_dirty, 1);
         return 0;
     }
-    for (uint32_t i = 0; i < g_sc_n; i++) {
-        vkDestroySemaphore(c->device, g_render_done[i], NULL);
-        if (g_sc_view[i]) vkDestroyImageView(c->device, g_sc_view[i], NULL);
-        g_sc_view[i] = VK_NULL_HANDLE;
-    }
-    if (old && vk_dlssg_swapchain_ready()) vk_dlssg_destroy_swapchain(c->device, old);
-    else if (old) vkDestroySwapchainKHR(c->device, old, NULL);
     g_sc_fmt = sf.format;
     g_sc_hdr = hdr;
     g_sc_hdr_wanted = vk_hdr_wanted();
@@ -1104,14 +1148,24 @@ void gfx_fit_rect(int cw, int ch, int dw, int dh, int out[4]) {
 // The display's frame rate with frame generation: the frames it got, generated ones included, over half a second,
 // sampled at each of the game's presents (the performance overlay shows it beside the game's own rate).
 static volatile double g_out_fps;
+static const char *g_out_fg_method;
 static void output_rate(void) {
     static uint64_t t0, n0;
-    uint64_t n = vk_dlssg_active() ? vk_dlssg_shown() : vk_fg_presents(g_sc), t = plat_now_ns();
+    const int dlss = vk_dlssg_active();
+    const char *method = dlss ? "DLSS FG" : vk_fg_active() ? vk_fg_method() : NULL;
+    if (method != g_out_fg_method) {
+        g_out_fps = 0;
+        t0 = 0;
+        g_out_fg_method = method;
+    }
+    uint64_t n = dlss ? vk_dlssg_shown() : vk_fg_presents(g_sc), t = plat_now_ns();
     if (!n) { g_out_fps = 0, t0 = 0; return; }
-    if (!t0 || n < n0) { t0 = t, n0 = n; return; }
+    if (!t0 || n < n0) { g_out_fps = 0; t0 = t, n0 = n; return; }
     if (t - t0 >= 500000000ull) g_out_fps = (double)(n - n0) * 1e9 / (double)(t - t0), t0 = t, n0 = n;
 }
 double gfx_output_fps(void) { return g_out_fps; }
+// The overlay reads the label under g_pl, the same lock held by output_rate.
+const char *gfx_output_fg_method(void) { return g_out_fg_method; }
 
 // Frame generation's picture without the HUD, at the swapchain's size and format: generation tells the HUD apart with
 // it and keeps it out of the generated frames. VK_NULL_HANDLE when this frame has none.
@@ -1401,14 +1455,14 @@ static int present_image(VkImage src, VkImageLayout layout, VkFormat fmt, int w,
         goto out;
     }
     uint32_t idx = 0;
-    VkResult r = vk_dlssg_swapchain_ready() ? vk_dlssg_acquire(c->device, g_sc, 1000000000ull, g_acquire[slot], &idx)
-               : vk_fg_swapchain() ? vk_fg_acquire(g_sc, 1000000000ull, g_acquire[slot], &idx)
+    VkResult r = vk_fg_swapchain() ? vk_fg_acquire(g_sc, 1000000000ull, g_acquire[slot], &idx)
+               : vk_dlssg_swapchain_ready() ? vk_dlssg_acquire(c->device, g_sc, 1000000000ull, g_acquire[slot], &idx)
                                 : vkAcquireNextImageKHR(c->device, g_sc, 1000000000ull, g_acquire[slot], VK_NULL_HANDLE, &idx);
     if (r == VK_ERROR_OUT_OF_DATE_KHR) {
         plat_xchg32(&g_dirty, 1);
         if (!create_swapchain()) goto out;
-        r = vk_dlssg_swapchain_ready() ? vk_dlssg_acquire(c->device, g_sc, 1000000000ull, g_acquire[slot], &idx)
-          : vk_fg_swapchain() ? vk_fg_acquire(g_sc, 1000000000ull, g_acquire[slot], &idx)
+        r = vk_fg_swapchain() ? vk_fg_acquire(g_sc, 1000000000ull, g_acquire[slot], &idx)
+          : vk_dlssg_swapchain_ready() ? vk_dlssg_acquire(c->device, g_sc, 1000000000ull, g_acquire[slot], &idx)
                            : vkAcquireNextImageKHR(c->device, g_sc, 1000000000ull, g_acquire[slot], VK_NULL_HANDLE, &idx);
     }
     vk_device_fault_report(r);
@@ -1603,7 +1657,7 @@ static int present_image(VkImage src, VkImageLayout layout, VkFormat fmt, int w,
         last_write = 0;
         record_thumb(cb, dst, slot);
     }
-    if (src) vk_fg_frame(cb, g_sc, g_sc_fmt, g_sc_ext, hudless, g_hl_view, to);   // frame generation: this frame's preparation
+    if (src) vk_fg_frame(cb, g_sc, g_sc_fmt, g_sc_ext, hudless, g_sc_hdr, to);
     if (src) output_rate();
     if (src) tagged = vk_dlssg_frame(cb, g_sc_ext, hudless, g_hl_view, g_sc_fmt, interface_coverage, interface_coverage_view);
     sync_barrier(cb, dst, last, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, last_stage, last_write, VK_PIPELINE_STAGE_2_NONE, 0);
@@ -1779,14 +1833,14 @@ void gfx_present_prep_frame(void) {
     if (vkWaitForFences(c->device, 1, &g_fence[slot], VK_TRUE, 5000000000ull) != VK_SUCCESS) goto out;
     uint32_t idx = 0;
     // as present_image: a frame generation swapchain (set at its start from the settings) hands out its own images
-    VkResult r = vk_dlssg_swapchain_ready() ? vk_dlssg_acquire(c->device, g_sc, 1000000000ull, g_acquire[slot], &idx)
-               : vk_fg_swapchain() ? vk_fg_acquire(g_sc, 1000000000ull, g_acquire[slot], &idx)
+    VkResult r = vk_fg_swapchain() ? vk_fg_acquire(g_sc, 1000000000ull, g_acquire[slot], &idx)
+               : vk_dlssg_swapchain_ready() ? vk_dlssg_acquire(c->device, g_sc, 1000000000ull, g_acquire[slot], &idx)
                                 : vkAcquireNextImageKHR(c->device, g_sc, 1000000000ull, g_acquire[slot], VK_NULL_HANDLE, &idx);
     if (r == VK_ERROR_OUT_OF_DATE_KHR) {
         plat_xchg32(&g_dirty, 1);
         if (!create_swapchain()) goto out;
-        r = vk_dlssg_swapchain_ready() ? vk_dlssg_acquire(c->device, g_sc, 1000000000ull, g_acquire[slot], &idx)
-          : vk_fg_swapchain() ? vk_fg_acquire(g_sc, 1000000000ull, g_acquire[slot], &idx)
+        r = vk_fg_swapchain() ? vk_fg_acquire(g_sc, 1000000000ull, g_acquire[slot], &idx)
+          : vk_dlssg_swapchain_ready() ? vk_dlssg_acquire(c->device, g_sc, 1000000000ull, g_acquire[slot], &idx)
                            : vkAcquireNextImageKHR(c->device, g_sc, 1000000000ull, g_acquire[slot], VK_NULL_HANDLE, &idx);
     }
     if (r != VK_SUCCESS && r != VK_SUBOPTIMAL_KHR) goto out;

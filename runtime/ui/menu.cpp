@@ -75,6 +75,9 @@ int vk_dlssg_offered(const char **why);   // vk_dlssg.c: DLSS Frame Generation c
 int vk_fg_offered(const char **why);      // vk_fg.cpp: AMD FSR frame generation can run here
 int vk_fg_instead(void);                  // vk_fg.cpp: AMD's runs in place of DLSS's
 int vk_fg_active(void);
+#ifdef GAME_OOT
+int vk_fg_restart_needed(void);
+#endif
 int vk_hdr_wanted(void);                  // vk_hdr.c: HDR requested / active / native / restart state
 int vk_hdr_active(void);
 int vk_hdr_native(void);
@@ -1138,6 +1141,11 @@ static void rows_color(void) {
 extern "C" int wide_available(void);
 extern "C" int wide_ui_available(void);
 extern "C" const char *vk_ffx_versions(void);   // vk_ffx.cpp: "" until AMD's library is loaded
+#ifdef GAME_OOT
+extern "C" int vk_dlaa_fsr3(void);
+extern "C" int vk_ffx_upscale_available(void);
+extern "C" int vk_ffx_fsr4_available(void);
+#endif
 
 static void tab_screen(float scale) {
     opt_begin("##screen", scale);
@@ -1230,7 +1238,7 @@ static void tab_screen(float scale) {
     // missing. Turned on from the base mode it turns DLSS / DLAA on with it, whose depth and motion vectors it takes
     // (the start does the same for a rekarina.ini line: vk_dlaa.c vk_dlaa_wanted). It applies at the next start, as the
     // device's queues and the swapchain are made for it. Asked for at start but not running: the row says why, as the log
-    // does; DLSS asked for where it cannot run: AMD's runs in its place (vk_fg.cpp vk_fg_take_over), and the row says so.
+    // does. Only TotK can fall back to AMD when DLSS frame generation is unavailable.
     {
         const char *why_dlss = nullptr, *why_fsr = nullptr;
         int dlss_ok = vk_dlssg_offered(&why_dlss), fsr_ok = vk_fg_offered(&why_fsr), n = 0;
@@ -1241,6 +1249,10 @@ static void tab_screen(float scale) {
         const char *why = !strcmp(fg_now, "dlss") ? vk_dlssg_off_why() : !strcmp(fg_now, "fsr3") ? vk_fg_off_why() : nullptr;
         static char fg_note[192];
         const char *note = nullptr;
+#ifdef GAME_OOT
+        if (vk_fg_restart_needed()) note = menu_text(UI_MENU_AFTER_RESTART);
+        else
+#endif
         if (why) snprintf(fg_note, sizeof fg_note, menu_text(UI_MENU_FRAMEGEN_OFF), why), note = fg_note;
         else if (!strcmp(fg_now, "dlss") && vk_fg_instead() && vk_fg_active()) note = menu_text(UI_MENU_FRAMEGEN_INSTEAD);
         else if (!dlss_ok) note = why_dlss;
@@ -1271,11 +1283,21 @@ static void tab_screen(float scale) {
         opt_choice_list("REKARINA_DLSS_PRESET", UI_MENU_DLSS_PRESET, preset, preset_names, 6, UI_MENU_DLSS_PRESET_DESC);
     }
     {   // the FSR upscaler's version; under the value, the versions AMD's library offers on this card once it is loaded
-        static const char *const fsr[] = {"auto", "4", "3"};
+        const char *fsr[] = {"auto", "4", "3"};
         const char *fsr_names[] = {menu_text(UI_MENU_DLSS_PRESET_DEFAULT), "FSR 4.1", "FSR 3.1"};
         const char *have = vk_ffx_versions();
-        opt_choice_list("REKARINA_FSR_VERSION", UI_MENU_FSR_VERSION, fsr, fsr_names, 3, UI_MENU_FSR_VERSION_DESC, -1,
-                        *have ? have : nullptr);
+        const char *note = *have ? have : nullptr;
+        int count = 3;
+#ifdef GAME_OOT
+        const bool known = *have || vk_dlaa_fsr3();
+        if (known && !vk_ffx_upscale_available()) note = menu_text(UI_MENU_TAA_UNAVAILABLE);
+        if (known && !vk_ffx_fsr4_available() && strcmp(cfg_value("REKARINA_FSR_VERSION"), "4")) {
+            fsr[1] = fsr[2];
+            fsr_names[1] = fsr_names[2];
+            count = 2;
+        }
+#endif
+        opt_choice_list("REKARINA_FSR_VERSION", UI_MENU_FSR_VERSION, fsr, fsr_names, count, UI_MENU_FSR_VERSION_DESC, -1, note);
     }
 #ifndef GAME_OOT
     opt_toggle("REKARINA_FXAA", UI_MENU_FXAA, UI_MENU_FXAA_DESC);
@@ -2086,6 +2108,7 @@ static int tab_index(int tab) {
 }
 
 extern "C" double gfx_output_fps(void);
+extern "C" const char *gfx_output_fg_method(void);
 
 static void layout_menu(const MenuTarget *t, float scale) {
     const float W = (float)t->width, H = (float)t->height;
@@ -2271,6 +2294,9 @@ static void layout_menu(const MenuTarget *t, float scale) {
     if (bw * 3 + gap * 2 > avail_w) bw = floorf((avail_w - gap * 2) / 3);
     bool restart_needed = cfg_restart_pending() || mods_changed() || cheats_rebuild_pending();
 #ifdef GAME_OOT
+    restart_needed |= vk_fg_restart_needed();
+#endif
+#ifdef GAME_OOT
     restart_needed = restart_needed || vk_hdr_needs_restart() != 0;
 #endif
     ImGui::SetCursorScreenPos(ImVec2(pa.x + inner, btn_y));
@@ -2449,7 +2475,9 @@ static void perf_tick(uint64_t now, const MenuTarget *t) {
             double out_fps = gfx_output_fps();
             int n = snprintf(g_perf_text, sizeof g_perf_text, menu_text(UI_PERF_LINE_FPS),
                              out_fps > 0 ? out_fps : g_perf_frames * 1e9 / g_perf_win_ns);
-            if (out_fps > 0 && n > 0 && n < (int)sizeof g_perf_text - 4) snprintf(g_perf_text + n, sizeof g_perf_text - n, " FG");
+            const char *method = gfx_output_fg_method();
+            if (out_fps > 0 && method && n > 0 && n < (int)sizeof g_perf_text)
+                snprintf(g_perf_text + n, sizeof g_perf_text - n, " %s", method);
             g_perf_win_ns = g_perf_max_ns = 0;
             g_perf_frames = 0;
         }
@@ -2498,8 +2526,13 @@ static int perf_picture(const MenuTarget *t, const UiTextId **labels_out, char v
     static const UiTextId labels[7] = {UI_MENU_OV_WINDOW, UI_MENU_OV_OUTPUT, UI_MENU_OV_SCENE,
                                        UI_MENU_OV_SCALING, UI_MENU_OV_LIMIT, UI_MENU_OV_PRESENT, UI_MENU_OV_FG_RATE};
     double fg = gfx_output_fps();   // with frame generation: what the display gets, generated frames included
+    const char *method = gfx_output_fg_method();
     int rows = fg > 0 ? 7 : 6;
-    if (fg > 0) snprintf(v[6], 64, menu_text(UI_MENU_OV_FPS), fg);
+    if (fg > 0 && method) {
+        char rate[24];
+        snprintf(rate, sizeof rate, menu_text(UI_MENU_OV_FPS), fg);
+        snprintf(v[6], 64, "%s \xc2\xb7 %s", method, rate);
+    } else if (fg > 0) snprintf(v[6], 64, menu_text(UI_MENU_OV_FPS), fg);
     else v[6][0] = 0;
     *labels_out = labels;
     return rows;
@@ -2534,6 +2567,8 @@ static void perf_full_draw(const MenuTarget *t, float scale) {
     // stand beside it with the factor between the two.
     const double shown = gfx_output_fps();
     const bool generated = shown > 0 && s.fps > 0;
+    const char *method = gfx_output_fg_method();
+    const char *badge = method ? method : "FG";
     char rendered[48] = "";
     fmt(fps, sizeof fps, UI_MENU_OV_FMT_FPS, generated ? (float)shown : s.fps);
     if (generated) snprintf(rendered, sizeof rendered, "%.0f FPS × %.0f", s.fps, floor(shown / s.fps + 0.5));
@@ -2584,7 +2619,7 @@ static void perf_full_draw(const MenuTarget *t, float scale) {
         snprintf(row_value[rows], 64, "%s", "");
         // the panel's width: the widest row (label, a gap, value), the meters with a bar at least 5 em wide, the header
         const float pad = floorf(16 * scale), gap = floorf(fs * 1.4f), lh = floorf(fs * 1.34f);
-        float inner = fmaxf(big_w(fps) + width(sfs, " FPS FG  ") + gap +
+        float inner = fmaxf(big_w(fps) + width(sfs, " FPS  ") + (generated ? width(sfs, badge) + sfs * 0.7f : 0) + gap +
                                 fmaxf(fmaxf(width(sfs, low[0]), width(sfs, low[1])), generated ? width(sfs, rendered) : 0),
                             fmaxf(width(sfs, foot), width(sfs, ver)));
         for (int i = 0; i < rows; i++) inner = fmaxf(inner, width(fs, row_label[i]) + gap + width(fs, row_value[i]));
@@ -2613,9 +2648,9 @@ static void perf_full_draw(const MenuTarget *t, float scale) {
         float after = x0 + big_w(fps) + fs * 0.35f;
         text(sfs, after, y + big - sfs * 1.32f, label, "FPS");
         if (generated) {   // the FG mark: an amber plate with dark letters, as a switch's lit half
-            float tw = width(sfs, "FG"), bx = after + width(sfs, "FPS") + fs * 0.4f, by = floorf(y + big - sfs * 1.42f);
+            float tw = width(sfs, badge), bx = after + width(sfs, "FPS") + fs * 0.4f, by = floorf(y + big - sfs * 1.42f);
             dl->AddRectFilled(ImVec2(bx, by), ImVec2(bx + tw + sfs * 0.7f, by + sfs * 1.25f), amber);
-            text(sfs, bx + sfs * 0.35f, by + sfs * 0.1f, IM_COL32(30, 22, 12, 255), "FG");
+            text(sfs, bx + sfs * 0.35f, by + sfs * 0.1f, IM_COL32(30, 22, 12, 255), badge);
             right(sfs, x1, y + big * 0.5f - sfs * 1.7f, cream, rendered);
             right(sfs, x1, y + big * 0.5f - sfs * 0.55f, dim, low[0]);
             right(sfs, x1, y + big * 0.5f + sfs * 0.6f, dim, low[1]);

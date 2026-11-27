@@ -115,9 +115,10 @@ static int p_getp(const NgxParam *p, const char *n, void **v) { return NGX_OK(((
 #define DLSS_MODEL "libnvidia-ngx-dlss.so.<version>"
 #endif
 
-// NGX is brought up only when dlaa is on at start: its device extensions can only be asked for at device creation, and
-// loading the driver's NGX core on every NVIDIA machine would cost start time and change the device with DLAA off. So
-// dlaa applies after a restart; switched off, nothing else of DLAA runs.
+#ifdef GAME_OOT
+static int ffx_available;
+#endif
+
 // Frame generation (vk_dlssg.c, vk_fg.cpp) takes the temporal upscaler's depth and motion vectors: asked for, it has
 // switched dlaa on in the settings at start (cfg.c cfg_init). FSR 1 has no motion vectors: FSR 3.1 takes its place then.
 static int fg_asked(void) {
@@ -297,22 +298,39 @@ void vk_dlaa_init(void) {
 #ifdef GAME_OOT   // the bloom draw it looks for is OoT's
     pre_bloom_on = rt_knob("DLAA_PRE_BLOOM", "0");
     rt_log("dlaa: pre-bloom resolve %s (REKARINA_DLAA_PRE_BLOOM=%d)", pre_bloom_on ? "on" : "off", pre_bloom_on);
-#endif
-    if (vk_dlaa_wanted() && fsr1()) {   // nothing to load: the shaders are the runtime's own
+    if (!vk_dlaa_wanted() || fsr1()) return;
+    if (fsr3()) {
+        ffx_available = vk_ffx_load();
+        if (ffx_available && !vk_ffx_upscale_available())
+            rt_log("dlaa: FSR upscaling provider '%s' is not available on this device; using the game's scaling",
+                   cfg_value("REKARINA_FSR_VERSION"));
+    } else {
+        dlss_init();
+        if (!N.available && (ffx_available = vk_ffx_load())) {
+            fsr3_on = 1;
+            if (vk_ffx_upscale_available()) rt_log("dlaa: DLSS cannot run here: AMD FSR takes its place");
+            else rt_log("dlaa: DLSS is unavailable and FSR upscaling provider '%s' is not available; using the game's scaling",
+                        cfg_value("REKARINA_FSR_VERSION"));
+        }
+    }
+#else
+    if (!vk_dlaa_wanted()) return;
+    if (fsr1()) {   // nothing to load: the shaders are the runtime's own
         N.available = 1;
         rt_log("dlaa: the upscaler is AMD FSR 1 (spatial, EASU + RCAS)");
         return;
     }
-    if (vk_dlaa_wanted() && fsr3()) {
+    if (fsr3()) {
         N.available = vk_ffx_load();
         rt_log("dlaa: the temporal upscaler is AMD FSR%s", N.available ? "" : ", which is missing: the game's own scaling");
         return;
     }
     dlss_init();
-    if (vk_dlaa_wanted() && !N.available && vk_ffx_load()) {
+    if (!N.available && vk_ffx_load()) {
         fsr3_on = 1, N.available = 1;
         rt_log("dlaa: DLSS cannot run here: AMD FSR takes its place");
     }
+#endif
 }
 
 static void dlss_init(void) {
@@ -360,7 +378,17 @@ static void dlss_init(void) {
            driver ? "; the driver needs an update" : "");
 }
 
-int vk_dlaa_available(void) { return vk_dlaa_wanted() && N.available; }
+int vk_dlaa_backend_available(void) {
+#ifdef GAME_OOT
+    if (fsr1()) return 1;
+    if (fsr3()) return ffx_available && vk_ffx_upscale_available();
+    return N.available;
+#else
+    return N.available;
+#endif
+}
+
+int vk_dlaa_available(void) { return vk_dlaa_wanted() && vk_dlaa_backend_available(); }
 
 // ---------------------------------------------------------------- where DLAA runs in the game's frame
 // Measured (REKARINA_DUMP, frame 2100 at the first town, 2560x1440 scene): the G-buffer passes draw into five targets with
@@ -689,7 +717,7 @@ int vk_dlaa_fg_inputs(VkFfxImage *depth, VkFfxImage *mv, float *jx, float *jy, i
 const VkTexImage *vk_dlaa_swap_img;
 VkImageView vk_dlaa_swap_view;
 
-static int dl_active(void) { return N.available && !D.failed && D.on; }
+static int dl_active(void) { return !D.failed && D.on; }
 int vk_dlaa_active(void) { return dl_active(); }
 int vk_dlaa_fg_only(void) { return 0; }
 
@@ -1063,16 +1091,19 @@ static double plane_dist(const double P[16], double k) {
 }
 
 // Extract near/far planes and depth orientation from the frame's projection and NVN depth mode.
-static void proj_planes(const double P[16], VkDlaaCamera *c) {
+static int proj_planes(const double P[16], VkDlaaCamera *c) {
     int minus_w = nvn_depth_minus_w();
     double at0 = plane_dist(P, minus_w ? -1.0 : 0.0), at1 = plane_dist(P, 1.0);
     int inverted = !(at0 < at1);
     double n = inverted ? at1 : at0, f = inverted ? at0 : at1;
-    if (!(n > 0) || !isfinite(n)) return;
+    if (!(n > 0 && n < VK_DLAA_FAR_INFINITE && f > n)) return 0;
+    const int infinite = f >= VK_DLAA_FAR_INFINITE;
+    const float near_plane = (float)n, far_plane = infinite ? VK_DLAA_FAR_INFINITE : (float)f;
+    if (!(near_plane > 0 && far_plane > near_plane)) return 0;
     c->inverted = inverted;
-    c->znear = (float)n;
-    c->infinite = !(f < VK_DLAA_FAR_INFINITE);
-    c->zfar = c->infinite ? VK_DLAA_FAR_INFINITE : (float)f;
+    c->znear = near_plane;
+    c->infinite = infinite;
+    c->zfar = far_plane;
     static float logged_n, logged_f;
     static int logged_inv = -1, lines;
     if (lines < 20 && (inverted != logged_inv || fabsf(c->znear - logged_n) > 1e-4f * logged_n ||
@@ -1085,6 +1116,7 @@ static void proj_planes(const double P[16], VkDlaaCamera *c) {
                "w row %.6g %.6g %.6g %.6g)", c->znear, fz, inverted ? "inverted (1 near)" : "0 near, 1 far",
                minus_w ? "-w..w" : "0..w", P[8], P[9], P[10], P[11], P[12], P[13], P[14], P[15]);
     }
+    return 1;
 }
 
 static void fg_camera(const float *v, const double m[16]) {
@@ -1111,7 +1143,7 @@ static void fg_camera(const float *v, const double m[16]) {
     c->fov_y = P[5] != 0 ? 2.0f * (float)atan(1.0 / fabs(P[5])) : 1.0f;
     c->aspect = P[0] != 0 ? (float)fabs(P[5] / P[0]) : 1.777f;
     if (!(c->znear > 0)) c->znear = 0.1f, c->zfar = VK_DLAA_FAR_INFINITE, c->infinite = 1;
-    proj_planes(P, c);
+    c->depth_planes_valid = proj_planes(P, c);
     D.fg_cam_ok = 1;
 }
 
@@ -1907,6 +1939,14 @@ static void projection_commit(const SceneProjection *projection, const Projectio
     D.projection_resolved = 1;
 }
 
+static void publish_fg(const struct Size *e, const VkExecTarget *z, VkImageView zv, float jx, float jy) {
+    D.fg_depth = (VkFfxImage){z->image, z->format, e->w, e->h, 0};
+    D.fg_mv = (VkFfxImage){e->mv, VK_FORMAT_R16G16_SFLOAT, e->w, e->h, 1};
+    D.fg_depth_view = zv, D.fg_mv_view = e->mv_view;
+    D.fg_viewport_jitter[0] = jx, D.fg_viewport_jitter[1] = jy;
+    __atomic_add_fetch(&D.fg_fresh, 1, __ATOMIC_ACQ_REL);
+}
+
 static int projection_target(const VkExecTarget *t, uint64_t serial, const view_t *view) {
     return t->tex && serial && t->tex->serial == serial && t->layers == 1 &&
            t->level == (view->set_levels ? view->base_level : 0) &&
@@ -2058,6 +2098,10 @@ static const char *pre_bloom_blocked(const VkExec *ex) {
 }
 
 static void evaluate(VkExec *ex, const VkExecTarget *dst, enum SceneEvaluation evaluation) {
+#ifdef GAME_OOT
+    // Replay can see a new provider before the present path updates activation.
+    if (fsr3() && !vk_ffx_upscale_available()) return;
+#endif
     const VkExecTarget *t = &D.scene.color, *z = &D.scene.depth;
     const int pre_bloom = evaluation == EVALUATE_NATIVE_PREBLOOM;
     if (!dst) dst = t;
@@ -2127,8 +2171,12 @@ static void evaluate(VkExec *ex, const VkExecTarget *dst, enum SceneEvaluation e
     }
     const float tjx = projection_camera ? jx : jx * jt[0], tjy = projection_camera ? jy : jy * jt[1];
     // FSR 1 reads no motion; frame generation still does (vk_dlaa_fg_inputs)
+#ifdef GAME_OOT
+    int need_mv = !spatial || vk_fg_wanted() || vk_dlssg_active();
+#else
     int need_mv = !spatial || vk_fg_wanted() || vk_dlssg_wanted();
-    if (sl) D.fg_cam_ok = 0;
+#endif
+    if (sl || fsr3()) D.fg_cam_ok = 0;
     int mv = need_mv ? mv_pass(ex, e, zv, jx, jy, projection_camera, projection_camera ? &next : NULL) : MV_DISABLED;
     if (need_mv && mv != 1) {
         VkClearColorValue zero = {{0, 0, 0, 0}};
@@ -2157,10 +2205,12 @@ static void evaluate(VkExec *ex, const VkExecTarget *dst, enum SceneEvaluation e
         D.last_eval_ns = now;
         VkFfxImage fc = {t->image, t->format, w, h, 0}, fz = {z->image, z->format, w, h, 0},
                    fm = {e->mv, VK_FORMAT_R16G16_SFLOAT, w, h, 1}, fo = {e->out, VK_FORMAT_R16G16B16A16_SFLOAT, ow, oh, 1};
-        if (!vk_ffx_upscale(cb, &fc, &fz, &fm, &fo, tjx, tjy, D.reset, dt > 0 && dt < 100 ? (float)dt : 16.67f, 0))
-            return dl_fail(evaluation, "FSR 3.1", 0);
+        VkDlaaCamera camera;
+        float fov = vk_dlaa_fg_camera(&camera) ? camera.fov_y : 0.0f;
+        if (!vk_ffx_upscale(cb, &fc, &fz, &fm, &fo, tjx, tjy, D.reset, dt > 0 && dt < 100 ? (float)dt : 16.67f, fov))
+            return dl_fail(evaluation, "FSR upscaling", 0);
         static int told;
-        if (!told++) rt_log("dlaa: FSR 3.1 at %ux%u -> %ux%u (scene format %d, depth format %d)", w, h, ow, oh,
+        if (!told++) rt_log("dlaa: FSR upscaling at %ux%u -> %ux%u (scene format %d, depth format %d)", w, h, ow, oh,
                             (int)t->format, (int)z->format);
         goto evaluated;
     }
@@ -2321,13 +2371,8 @@ evaluated:
     vk_exec_draw_new_cb();   // NGX bound pipelines and descriptor sets of its own: the next draw binds everything again
     D.jdepth = z->image;
     // for frame generation at this frame's present (vk_dlaa_fg_inputs)
-    D.fg_depth = (VkFfxImage){z->image, z->format, w, h, 0};
-    D.fg_mv = (VkFfxImage){e->mv, VK_FORMAT_R16G16_SFLOAT, w, h, 1};
-    D.fg_depth_view = zv, D.fg_mv_view = e->mv_view;
     if (!projection_camera) D.projection_history.token = 0;
-    D.fg_viewport_jitter[0] = projection_camera ? 0.0f : jx;
-    D.fg_viewport_jitter[1] = projection_camera ? 0.0f : jy;
-    __atomic_add_fetch(&D.fg_fresh, 1, __ATOMIC_ACQ_REL);
+    publish_fg(e, z, zv, projection_camera ? 0.0f : jx, projection_camera ? 0.0f : jy);
     next_jitter(w, ow);
     if (++D.evals == 1 || D.evals == 300 || D.evals % 3600 == 0)   // 300: one early line with the frames counted
         rt_log("dlaa: %llu frames anti-aliased (scene %ux%u, output %ux%u; %llu frames without the DLAA point, %llu with camera "
@@ -3844,7 +3889,7 @@ void vk_dlaa_frame(void) {
     __atomic_store_n(&D.presents, D.presents + 1, __ATOMIC_RELAXED);
     dlss_mode();
     preset_check();
-    int on = N.available && cfg_bool("REKARINA_DLAA");
+    int on = vk_dlaa_backend_available() && cfg_bool("REKARINA_DLAA");
     __atomic_store_n(&motion_record_consumer, on && !D.failed && !fsr1(), __ATOMIC_RELAXED);
     D.pre_bloom.tried = 0;
     D.pre_bloom.resolved = 0;

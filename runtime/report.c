@@ -397,65 +397,177 @@ void report_fatal_box(const char *text) {
 // catch a crash in, and they are set up at the start, before the settings menu could switch them off: 1.2.2's AMD
 // swapchain crashed at every start with a fullscreen window, and the player had to edit rekarina.ini to play again.
 // So a crash from the start of their set-up (fg_guard_arm) until they have generated FG_GUARD_FRAMES frames
-// (fg_guard_running), within ten minutes of it, leaves logs/framegen-stopped.txt with this build's version and the
-// setting (fg_guard_crashed, from main.c's crash handler). A start of the same version with the same setting then runs
-// without frame generation, says so in the log and in the menu's row (fg_guard_blocked), and keeps the file: the setting
-// in rekarina.ini is the player's and stays. Choosing frame generation in the menu removes the file (fg_guard_clear),
-// and a new version tries again by itself.
-static volatile int32_t fg_armed;
-static volatile uint64_t fg_frames, fg_armed_ns;
-static char fg_kind[16], fg_setting[16];   // the frame generation being set up; the setting that asked for it
+// (fg_guard_running), within ten minutes of it, leaves a marker with this build's version and the setting.
+// OoT records each backend separately, and checks the DLSS marker even when preparing Streamline with generation off.
+// Choosing a backend in the menu removes its marker for the next start; the saved setting is not rewritten.
+// A crash can interrupt any thread. Read the backend, setting, progress and start time as one snapshot.
+static uint64_t fg_guard_state;
+enum { FG_GUARD_FRAMES = 300, FG_COUNT_MASK = 511, FG_BACKEND_SHIFT = 9, FG_SETTING_SHIFT = 11, FG_TIME_SHIFT = 13 };
 
-static int fg_guard_path(char *out, size_t n) {
+static FgGuardBackend fg_guard_backend(uint64_t state) {
+    return (FgGuardBackend)((state >> FG_BACKEND_SHIFT) & 3);
+}
+
+static const char *fg_guard_name(FgGuardBackend backend) {
+    return backend == FG_GUARD_DLSS ? "dlss" : "fsr3";
+}
+
+static int fg_guard_path(char *out, size_t n, FgGuardBackend backend) {
     char dir[PLAT_PATH_MAX * 3];
     if (!game_folder(dir, sizeof dir)) return 0;
-    snprintf(out, n, "%s/logs/framegen-stopped.txt", dir);
+    int len = backend ? snprintf(out, n, "%s/logs/framegen-stopped-%s.txt", dir, fg_guard_name(backend))
+                      : snprintf(out, n, "%s/logs/framegen-stopped.txt", dir);
+    if (len < 0 || (size_t)len >= n) return 0;
     return 1;
 }
 
-int fg_guard_blocked(void) {
-    static int known = -1;
-    if (known >= 0) return known;
-    known = 0;
-    char p[PLAT_PATH_MAX * 3 + 64], want[96];
-    if (!fg_guard_path(p, sizeof p)) return 0;
+static unsigned fg_guard_blocked_mask;
+#ifdef GAME_OOT
+static unsigned fg_guard_cleared_mask;
+
+static FgGuardBackend fg_guard_selected(void) {
+    const char *selection = cfg_value("REKARINA_FRAMEGEN");
+    if (!strcmp(selection, "dlss")) return FG_GUARD_DLSS;
+    if (!strcmp(selection, "fsr3")) return FG_GUARD_FSR;
+    return 0;
+}
+#endif
+
+static FgGuardBackend fg_guard_read(const char *path, FgGuardBackend expected, int remove_stale) {
     uint64_t size = 0;
-    char *b = (char *)plat_file_read(p, &size);
+    char *b = (char *)plat_file_read(path, &size);
     if (!b) return 0;
-    snprintf(want, sizeof want, "%s %s", rt_port_version, cfg_value("REKARINA_FRAMEGEN"));
-    known = size >= strlen(want) && !strncmp(b, want, strlen(want)) && (size == strlen(want) || b[strlen(want)] == '\n');
+    FgGuardBackend marker = 0;
+    for (FgGuardBackend backend = FG_GUARD_DLSS; backend <= FG_GUARD_FSR; ++backend) {
+        if (expected && backend != expected) continue;
+        const char *setting = fg_guard_name(backend);
+#ifndef GAME_OOT
+        if (strcmp(setting, cfg_value("REKARINA_FRAMEGEN"))) continue;
+#endif
+        char want[96];
+        int n = snprintf(want, sizeof want, "%s %s", rt_port_version, setting);
+        if (n > 0 && n < (int)sizeof want && size >= (uint64_t)n && !memcmp(b, want, (size_t)n) &&
+            (size == (uint64_t)n || b[n] == '\n')) {
+            marker = backend;
+            break;
+        }
+    }
     free(b);
-    if (known) rt_log("fg: frame generation off for this start: the last start stopped while it was being set up (%s; "
-                      "choosing frame generation again in the settings menu tries it once more)", p);
-    else plat_file_delete(p);   // another version or another setting: it is tried again
-    return known;
+    if (!marker && remove_stale) plat_file_delete(path);
+    return marker;
 }
 
-void fg_guard_arm(const char *kind) {
-    if (fg_armed) return;
-    snprintf(fg_kind, sizeof fg_kind, "%s", kind);
-    snprintf(fg_setting, sizeof fg_setting, "%s", cfg_value("REKARINA_FRAMEGEN"));   // dlss when AMD's runs in its place
-    fg_armed_ns = plat_now_ns();
-    __atomic_store_n(&fg_armed, 1, __ATOMIC_RELEASE);
+static void fg_guard_load(FgGuardBackend backend) {
+    char p[PLAT_PATH_MAX * 3 + 64];
+    if (!fg_guard_path(p, sizeof p, backend)) return;
+    FgGuardBackend marker = fg_guard_read(p, backend, 1);
+    if (marker) {
+        unsigned bit = 1u << marker;
+        if (!(fg_guard_blocked_mask & bit))
+            rt_log("fg: frame generation (%s) blocked for this run: a previous run stopped during setup (%s; "
+                   "choosing frame generation again in the settings menu retries on the next start)", fg_guard_name(marker), p);
+        fg_guard_blocked_mask |= bit;
+    }
 }
 
-void fg_guard_running(uint64_t frames) { fg_frames = frames; }
+static void fg_guard_read_markers(void *unused) {
+    (void)unused;
+#ifdef GAME_OOT
+    fg_guard_load(FG_GUARD_DLSS);
+    fg_guard_load(FG_GUARD_FSR);
+#endif
+    fg_guard_load(0);   // Legacy shared marker.
+}
+
+static unsigned fg_guard_markers(void) {
+    static PlatOnce once = PLAT_ONCE_INIT;
+    plat_once(&once, fg_guard_read_markers, NULL);
+    return fg_guard_blocked_mask;
+}
+
+int fg_guard_blocked(void) {
+#ifdef GAME_OOT
+    return fg_guard_backend_blocked(fg_guard_selected());
+#else
+    return fg_guard_markers() != 0;
+#endif
+}
+
+#ifdef GAME_OOT
+int fg_guard_backend_blocked(FgGuardBackend backend) { return (fg_guard_markers() & (1u << backend)) != 0; }
+
+int fg_guard_retry_pending(void) {
+    const unsigned bit = 1u << fg_guard_selected();
+    return (__atomic_load_n(&fg_guard_cleared_mask, __ATOMIC_ACQUIRE) & fg_guard_markers() & bit) != 0;
+}
+#endif
+
+void fg_guard_arm(FgGuardBackend backend) {
+    if (fg_guard_backend(__atomic_load_n(&fg_guard_state, __ATOMIC_RELAXED)) == backend) return;
+#ifdef GAME_OOT
+    const FgGuardBackend setting = backend;
+#else
+    const FgGuardBackend setting = !strcmp(cfg_value("REKARINA_FRAMEGEN"), "dlss") ? FG_GUARD_DLSS : backend;
+#endif
+    const uint64_t state = (plat_now_ns() / 1000000ull << FG_TIME_SHIFT) |
+                          ((uint64_t)setting << FG_SETTING_SHIFT) | ((uint64_t)backend << FG_BACKEND_SHIFT);
+    __atomic_store_n(&fg_guard_state, state, __ATOMIC_RELAXED);
+}
+
+void fg_guard_running(FgGuardBackend backend) {
+    uint64_t state = __atomic_load_n(&fg_guard_state, __ATOMIC_RELAXED);
+    if (fg_guard_backend(state) == backend && (state & FG_COUNT_MASK) < FG_GUARD_FRAMES)
+        __atomic_compare_exchange_n(&fg_guard_state, &state, state + 1, 0, __ATOMIC_RELAXED, __ATOMIC_RELAXED);
+}
+
+void fg_guard_disarm(FgGuardBackend backend) {
+    uint64_t state = __atomic_load_n(&fg_guard_state, __ATOMIC_RELAXED);
+    while (fg_guard_backend(state) == backend &&
+           !__atomic_compare_exchange_n(&fg_guard_state, &state, 0, 0, __ATOMIC_RELAXED, __ATOMIC_RELAXED)) {}
+}
+
+#ifdef GAME_OOT
+static int fg_guard_remove(const char *p) {
+    plat_file_delete(p);
+    if (!plat_file_exists(p)) return 1;
+    rt_log("fg: could not clear the startup crash marker (%s)", p);
+    return 0;
+}
+#endif
 
 void fg_guard_clear(void) {
     char p[PLAT_PATH_MAX * 3 + 64];
-    if (fg_guard_path(p, sizeof p)) plat_file_delete(p);
+#ifdef GAME_OOT
+    const FgGuardBackend backend = fg_guard_selected();
+    if (!backend) return;   // Off is not a request to retry either backend.
+    fg_guard_markers();      // Preserve the startup block in this process after deleting its files.
+    char legacy[PLAT_PATH_MAX * 3 + 64];
+    if (!fg_guard_path(p, sizeof p, backend) || !fg_guard_path(legacy, sizeof legacy, 0)) return;
+    int cleared = fg_guard_remove(p);
+    if (fg_guard_read(legacy, backend, 0) == backend && !fg_guard_remove(legacy)) cleared = 0;
+    if (cleared) __atomic_fetch_or(&fg_guard_cleared_mask, 1u << backend, __ATOMIC_RELEASE);
+#else
+    if (fg_guard_path(p, sizeof p, 0)) plat_file_delete(p);
+#endif
 }
 
 void fg_guard_crashed(void) {
-    if (!__atomic_load_n(&fg_armed, __ATOMIC_ACQUIRE) || fg_frames >= FG_GUARD_FRAMES ||
-        plat_now_ns() - fg_armed_ns > 600ull * 1000000000ull)
+    const uint64_t state = __atomic_load_n(&fg_guard_state, __ATOMIC_RELAXED);
+    const unsigned frames = (unsigned)(state & FG_COUNT_MASK);
+    if (!state || frames >= FG_GUARD_FRAMES || plat_now_ns() / 1000000ull - (state >> FG_TIME_SHIFT) > 600000)
         return;
     char p[PLAT_PATH_MAX * 3 + 64], line[96];
-    if (!fg_guard_path(p, sizeof p)) return;
-    int n = snprintf(line, sizeof line, "%s %s\n", rt_port_version, fg_setting);
+    const FgGuardBackend setting = (FgGuardBackend)((state >> FG_SETTING_SHIFT) & 3);
+#ifdef GAME_OOT
+    if (!fg_guard_path(p, sizeof p, setting)) return;
+#else
+    if (!fg_guard_path(p, sizeof p, 0)) return;
+#endif
+    int n = snprintf(line, sizeof line, "%s %s\n", rt_port_version, fg_guard_name(setting));
     if (plat_file_write(p, line, (size_t)n))
         rt_log("fg: the game stopped while frame generation (%s) was being set up (%llu frames generated): the next start "
-               "runs without it (%s)", fg_kind, (unsigned long long)fg_frames, p);
+               "runs without it (%s)", fg_guard_name(fg_guard_backend(state)), (unsigned long long)frames, p);
+    else rt_log("fg: could not write the startup crash marker (%s)", p);
 }
 
 int report_main(void) {
