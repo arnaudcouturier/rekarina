@@ -3813,31 +3813,6 @@ static void dbg_skipcount(VkExec *ex, int skipped) {   // DEBUG-SKIPLOG: REKARIN
     if (ex->has_render_cond) ncond++;
     if (skipped) nskip++;
 }
-#include "interface_coverage_spirv.h"
-
-static const GfxShader *interface_coverage_shader(const GfxShader *shader) {
-    static struct {
-        const GfxShader *original, *coverage;
-    } variants[256];
-    static unsigned variant_count;
-    for (unsigned index = 0; index < variant_count; ++index)
-        if (variants[index].original == shader) return variants[index].coverage;
-    if (variant_count == sizeof variants / sizeof variants[0]) return NULL;
-    uint64_t source_words = 0, result_words = 0;
-    const uint32_t *source = gfx_shader_spirv(shader, &source_words);
-    uint32_t *result = interface_coverage_spirv(source, source_words, &result_words);
-    const GfxShader *variant = result ? gfx_shader_with_spirv(shader, result, result_words) : NULL;
-    free(result);
-    variants[variant_count++] = (typeof(variants[0])){shader, variant};
-    return variant;
-}
-
-static int interface_legacy_passes(void) {
-    static _Thread_local int enabled = -1;
-    if (enabled < 0) enabled = rt_knob("DLSS_UI_ALPHA_LEGACY_PASSES", "0");
-    return enabled;
-}
-
 static int interface_shader_writes_storage(const GfxShader *shader) {
     const GfxShaderRes *resources = NULL;
     int count = gfx_shader_resources(shader, GFX_RES_SSBO, &resources);
@@ -3857,9 +3832,8 @@ static void interface_replay_state(VkPipeState *coverage) {
     coverage->blend[0].eq_a = NVN_BLEND_EQUATION_ADD;
 }
 
-static VkImageView interface_coverage_pipeline(VkExec *execution, VkPipeState *state, uint32_t feedback,
-                                               VkPipeline *pipeline, const VkPipeInfo **information) {
-    if (!vk_interface_coverage_candidate(execution)) return VK_NULL_HANDLE;
+static void interface_prepare_replay(VkExec *execution, const VkPipeState *state, uint32_t feedback) {
+    if (!vk_interface_coverage_candidate(execution)) return;
     const VkExecTarget *target = &execution->color[0];
     const blend_st *blend = &state->blend[0];
     // Use shader alpha as best-effort coverage for non-source-over blends without changing the game's color blend.
@@ -3879,46 +3853,21 @@ static VkImageView interface_coverage_pipeline(VkExec *execution, VkPipeState *s
                    target->level, target->base_layer, state->raster_discard, state->ms.a2c, state->ms.cov2color_en,
                    state->fs ? interface_shader_writes_storage(state->fs) : 0);
         vk_interface_coverage_reject("draw state");
-        return VK_NULL_HANDLE;
+        return;
+    }
+    if (execution->gpu_cond) {
+        vk_interface_coverage_reject("conditional replay draw");
+        return;
     }
     VkPipeState coverage = *state;
-    if (vk_interface_coverage_replay()) {
-        if (execution->gpu_cond) {
-            vk_interface_coverage_reject("conditional replay draw");
-            return VK_NULL_HANDLE;
-        }
-        interface_replay_state(&coverage);
-        const VkPipeInfo *replay_info = NULL;
-        VkPipeline replay_pipeline = vk_pipeline_graphics(&coverage, &replay_info);
-        VkImageView replay_view = replay_pipeline && replay_info ? vk_interface_coverage_begin(execution) : VK_NULL_HANDLE;
-        if (!replay_view) vk_interface_coverage_reject("alpha replay pipeline or checkpoint");
-        execution->interface_replay_pipeline = replay_pipeline;
-        execution->interface_replay_info = replay_info;
-        execution->interface_replay_view = replay_view;
-        return VK_NULL_HANDLE;
-    }
-    coverage.fs = interface_coverage_shader(state->fs);
-    if (!coverage.fs) {
-        vk_interface_coverage_reject("fragment shader output");
-        return VK_NULL_HANDLE;
-    }
-    coverage.color_fmt[1] = NVN_FORMAT_R8;
-    coverage.chmask.mask = (coverage.chmask.mask & ~0xf0u) | 0x10;
-    coverage.color.blend_en |= 2;
-    coverage.blend[1] = (blend_st){.target = 1, .src_rgb = NVN_BLEND_FUNC_ONE,
-        .dst_rgb = NVN_BLEND_FUNC_ONE_MINUS_SRC_ALPHA, .src_a = NVN_BLEND_FUNC_ONE,
-        .dst_a = NVN_BLEND_FUNC_ONE_MINUS_SRC_ALPHA, .eq_rgb = NVN_BLEND_EQUATION_ADD, .eq_a = NVN_BLEND_EQUATION_ADD};
-    const VkPipeInfo *coverage_information = NULL;
-    VkPipeline coverage_pipeline = vk_pipeline_graphics(&coverage, &coverage_information);
-    VkImageView view = coverage_pipeline && coverage_information ? vk_interface_coverage_begin(execution) : VK_NULL_HANDLE;
-    if (!view) {
-        vk_interface_coverage_reject(coverage_pipeline && coverage_information ? "matching checkpoint" : "coverage pipeline");
-        return VK_NULL_HANDLE;
-    }
-    *pipeline = coverage_pipeline;
-    *information = coverage_information;
-    *state = coverage;
-    return view;
+    interface_replay_state(&coverage);
+    const VkPipeInfo *info = NULL;
+    VkPipeline pipeline = vk_pipeline_graphics(&coverage, &info);
+    VkImageView view = pipeline && info ? vk_interface_coverage_begin(execution) : VK_NULL_HANDLE;
+    if (!view) vk_interface_coverage_reject("alpha replay pipeline or checkpoint");
+    execution->interface_replay_pipeline = pipeline;
+    execution->interface_replay_info = info;
+    execution->interface_replay_view = view;
 }
 
 void vk_dlaa_direct_draw(const VkExecTarget *target, uint32_t source, int encode);
@@ -3994,7 +3943,6 @@ static int prepare_draw(VkExec *ex, int prim, int32_t count, int restart) {
     if (stages_has(ex, NVN_STAGE_GS)) {
         vk_exec_resolve_targets(ex);
         if (vk_interface_coverage_candidate(ex)) vk_interface_coverage_reject("geometry stage");
-        if (ex->interface_coverage_view) vk_exec_pass_end(ex);
         return prepare_stages(ex, 0, prim, restart);
     }
 #endif
@@ -4141,21 +4089,9 @@ static int prepare_draw(VkExec *ex, int prim, int32_t count, int restart) {
     s.y_flip = 1;
     s.prim_restart = (uint8_t)(restart != 0);
     const VkPipeInfo *info = NULL;
-    VkPipeline coverage_pipeline = VK_NULL_HANDLE;
     ex->interface_replay_view = VK_NULL_HANDLE;
-    VkImageView coverage_view = interface_coverage_pipeline(ex, &s, fbl, &coverage_pipeline, &info);
-    if (!coverage_view && ex->in_pass && ex->interface_coverage_view && !interface_legacy_passes()) {
-        // Keep the rendering instance compatible without writing coverage for this draw.
-        s.color_fmt[1] = NVN_FORMAT_R8;
-        s.chmask.mask &= ~0xf0u;
-        s.color.blend_en &= ~2u;
-        coverage_view = ex->interface_coverage_view;
-    }
-    if (ex->interface_coverage_view != coverage_view || !ex->in_pass) {
-        vk_exec_pass_end(ex);
-        ex->interface_coverage_view = coverage_view;
-        vk_exec_pass_begin(ex);
-    }
+    interface_prepare_replay(ex, &s, fbl);
+    if (!ex->in_pass) vk_exec_pass_begin(ex);
     int pending;
     // A draw of at most 6 vertices over half the render area or more (a full-screen triangle or quad, a tile) waits for
     // its pipeline: skipping it can leave a black tile. The waits share 50 ms per presented frame
@@ -4179,9 +4115,7 @@ static int prepare_draw(VkExec *ex, int prim, int32_t count, int restart) {
     VkPipeline p;
     const char *why = NULL;
     uint64_t w0 = 0;
-    if (coverage_pipeline) {
-        p = coverage_pipeline, pending = 0;
-    } else if (pipe_memo_on() && PM.valid && !memcmp(&PM.s, &s, sizeof s)) {
+    if (pipe_memo_on() && PM.valid && !memcmp(&PM.s, &s, sizeof s)) {
         info = PM.info, pending = 0;
         p = __atomic_load_n(&info->pipeline, __ATOMIC_ACQUIRE);
     } else {
@@ -7074,8 +7008,6 @@ void vk_exec_op_draw(VkExec *ex, uint32_t op, const void *payload) {
         ex->direct_draw_source = 0;
         ex->interface_copy_source = VK_NULL_HANDLE;
         if (vk_interface_coverage_enabled()) vk_interface_coverage_check_draw(ex);
-        if (!ex->interface_draw && ex->interface_coverage_view && interface_legacy_passes())
-            vk_exec_pass_end(ex);
     }
     if (dc_on < 0) {
         dc_on = cfg_env("REKARINA_DRAW_CRUMBS") != NULL;

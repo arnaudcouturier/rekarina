@@ -36,13 +36,10 @@ handling that command, independently of the bloom role.
 `Advanced → DLSSG UI Reconstruction` opts into the Streamline 2.14.16 path with a version 6 bridge.
 The change takes effect after restart. It enables the checked pre-bloom path unless explicitly disabled.
 Ordinary draws before the HUD checkpoint can use replay workers. Checked interface draws and
-checkpoint-dependent work stay on the replay thread. For benchmarks,
-`REKARINA_DLSS_UI_ALPHA_FORCE_SERIAL=1` restores fully serial replay while tracking is active.
+checkpoint-dependent work stay on the replay thread.
 For a supported draw onto the tracked post-upscale picture, replay snapshots that picture before the first interface
-fragment. By default it draws the game UI normally, then replays the draw with its original shader into an alpha-only
-attachment. For A/B measurements, `REKARINA_DLSS_UI_ALPHA_REPLAY=0` switches to single-draw MRT, where a runtime
-SPIR-V variant writes the original fragment alpha to a private red attachment. Both paths accumulate coverage as
-`new_alpha + old_coverage * (1 - new_alpha)`. The game's original blend is unchanged.
+fragment. It draws the game UI normally, then replays the draw with its original shader into an alpha-only attachment.
+Coverage accumulates as `new_alpha + old_coverage * (1 - new_alpha)`. The game's original blend is unchanged.
 Additive, modulate, and other blend modes use shader alpha as best-effort coverage; the blend mode alone does not
 turn recomposition off. A draw that cannot write coverage safely or a later write that invalidates the mask can
 still invalidate the pair. The runtime log reports why a frame's
@@ -63,10 +60,6 @@ ordinary Frame Generation in use. If Streamline accepts both UI tags but rejects
 ordinary Frame Generation with the accepted tags intact. A visible host overlay does not by itself pause DLSS Frame Generation.
 Alpha replay supports direct and indexed-indirect game draws, and fits their accumulated alpha at presentation.
 Its fitted image retains storage usage across frames with no game UI, so extraction can resume without reallocating it.
-In MRT mode, once bound, the coverage attachment stays attached until that rendering instance ends. Draws
-that do not contribute to coverage disable its writes without restarting rendering.
-Use `REKARINA_DLSS_UI_ALPHA_TRACK_ONLY=1` to build either mask without submitting it to Streamline.
-In that mode, `REKARINA_DLSS_UI_ALPHA_CHECKPOINT_AB=1` alternates mask production in 300-frame A/B/B/A blocks, starting at the first eligible HUD draw. Match the logged switch frames with `REKARINA_FRAMETIMES` and discard samples near switches and loading transitions. This comparison includes any change in HUD-less presentation, not just mask work. Set `REKARINA_DLSS_UI_ALPHA_SKIP_HUDLESS_PRESENT=1` to withhold that picture and the fitted mask in both blocks and measure game-side work only.
 
 ## Where a frame goes (2026-11-08 morning, realtime = 1, unlocked: forest porch 60-63 fps, lighter scenes 92-103 fps)
 

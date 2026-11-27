@@ -144,7 +144,7 @@ Every guest thread is a host thread. TotK assumes Horizon's scheduler: three app
   the uniform snapshot keeps both) and writes the difference into the motion image. `REKARINA_MV_CHECK` measures the
   vectors against the picture, `REKARINA_DLAA_TIMES` times the passes on the GPU. `fxaa` switches the game's own FXAA pass.
   OoT 1.1.1 jitters the projection on the CPU instead of the viewport (`patch_scene_projection`, on by default; after
-  ShortFuse's NX2navi port, MIT); DLSS still resolves at the game's scaling dispatch. Two patched calls
+  ShortFuse's NX2navi port, MIT); DLSS still resolves at the game's scaling dispatch by default. Two patched calls
   (`scene_projection_impl.h` `scene_projection_build`, `scene_projection_complete`) follow the scene's owner and view,
   offset the projection the game builds by a Halton phase (16 phases at DLAA) and record a scene-complete sample with
   the extents of its colour and depth attachments. The resolve takes that CPU camera sample and checks the settings,
@@ -157,6 +157,25 @@ Every guest thread is a host thread. TotK assumes Horizon's scheduler: three app
   (`scene_motion_projection.h`), and the depth guard (`shaders/model_motion.frag`) adds last frame's raster jitter
   where it reads last frame's depth. DLSS and FSR 3.1 get the same render-pixel jitter, and frame generation reads the
   committed sample. With the patch off, the viewport jitter above applies.
+
+  For comparison, `dlaa_pre_bloom = 1` (`REKARINA_DLAA_PRE_BLOOM`, off by default, read at start) opts into the
+  native NVIDIA DLAA path on OoT when [checked pre-bloom DLSS](./oot-architecture.md#experimental-pre-bloom-dlss)
+  is disabled. It resolves before bloom so bloom and tone mapping read the anti-aliased scene
+  (`vk_dlaa.c` `pre_bloom_draw`). DLSS writes back into the R11G11B10F light target right before the bloom chain's first
+  draw: a pass of two R11G11B10F targets without depth whose fragment shader's input id begins `865a04d320227ae3` and
+  samples the armed scene at slot 0 (the refraction and depth of field passes before it read the scene at smaller
+  sizes). The check sits in `vk_dlaa_skip_draw`, which every draw already calls before binding its state; the draw's
+  pass ends around the evaluation and begins again. At SMAA compose's dispatch, which reads the tone-mapped float
+  picture and packs RGB9E5 into the light target, the picture is copied into a staging image of the runtime's own
+  (`pre_bloom_stage`): the game's image may share physical-pool memory with others. At the scaling dispatch (compute
+  shader `df55fc291b0f86ba`), `pre_bloom_scaler` copies the staged picture at 1:1 into the HUD's target. The game's
+  scaler enhances fine edges even at 1:1, so replacing it avoids the dark outlines it adds over DLAA. The SMAA dispatches
+  run for their guest writes. The copy keeps the results point and the HUD's target as frame generation's HUD-less
+  source. If a check fails, the game's scaler runs and the log names the failed check.
+  A frame where the draw is not found, or the evaluation fails, resolves at the scaling dispatch; the log names the
+  reason once per change (`dlaa: pre-bloom waiting: ...`), and DLSS's history resets when the input switches.
+  `REKARINA_DLAA_PATHLOG=<frame>:<count>` traces the scene samples, resolve and handoff. A frame dump records the
+  HUD's target after the copy, before the HUD, as `dlaa_hud_destination`.
 - Occlusion queries never block the CPU; a result that is not ready counts as visible.
 - ASTC textures are uploaded as they are where the device reports `textureCompressionASTC_LDR`, and decoded by a compute shader everywhere else (`vk_astc.c`, `REKARINA_ASTC`). The CPU decoder (`tex_astc*.c`) is the fallback and the test oracle.
 - Draw state. A draw whose program, bound state and textures repeat reuses the previous draw's shaders and skips rebuilding its descriptor sets; descriptor sets are written through update templates (`vk_exec_draw.c`, `vk_pipeline.c`).

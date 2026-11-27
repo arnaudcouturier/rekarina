@@ -61,7 +61,6 @@ typedef struct VkExec {
     uint32_t direct_draw_source;
     unsigned scene_output_role;
     VkImage interface_copy_source;      // confirmed window-encode input, committed only after the draw is recorded
-    VkImageView interface_coverage_view; // private second attachment of the open rendering instance
     VkImageView interface_replay_view;
     VkPipeline interface_replay_pipeline;
     const VkPipeInfo *interface_replay_info;
@@ -249,6 +248,7 @@ VkDescriptorBufferInfo vk_exec_probe_support(void);                     // DEBUG
 void vk_probe_draw(VkExec *ex, uint32_t count, uint32_t instances);   // DEBUG-PROBE: an indexed draw after its binds
 void vk_dump_draw(VkExec *ex, const VkPipeState *s, VkPipeline p, const VkPipeInfo *info);   // after a draw's binds
 void vk_dump_dispatch(VkExec *ex, const GfxShader *cs, VkPipeline p, const VkPipeInfo *info, const p_dispatch *d);
+void vk_dump_dlaa_copy(VkExec *ex, const VkTexImage *target);   // native pre-bloom DLAA's HUD target after its copy
 void vk_dump_copy(VkExec *ex, uint32_t op, const void *payload);   // before a copy or texture clear is replayed
 void vk_dump_present(uint64_t frame);    // vk_be_present: waits for the dump frame's copies and closes the logs
 

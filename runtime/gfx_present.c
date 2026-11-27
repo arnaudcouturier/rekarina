@@ -32,8 +32,8 @@
 #include "vk_dlaa.h"
 #include "vk_fg.h"
 #include "vk_dlssg.h"
-#include "renderer_mcp.h"
 #include "vk_reflex.h"
+#include "renderer_mcp.h"
 
 #define FRAMES 2
 #define MAX_IMAGES 16
@@ -466,13 +466,12 @@ static void flip_locked(void) {
     FT(FT_NOTE, 1, 0, 0);
     vk_queue_lock();
     vk_drv_urgent(1);
-    int present_route = vk_dlssg_interposed() ? 1 : vk_fg_swapchain() ? 2 : 0;
-    VkResult r = present_route == 1 ? vk_dlssg_present(vk_ctx()->gfx_queue, &pi)
-               : present_route == 2 ? vk_fg_present(&pi) : vkQueuePresentKHR(vk_ctx()->gfx_queue, &pi);
+    VkResult r = dlssg_sc ? vk_dlssg_present(vk_ctx()->gfx_queue, &pi)
+               : fg_sc ? vk_fg_present(&pi) : vkQueuePresentKHR(vk_ctx()->gfx_queue, &pi);
     vk_drv_urgent(-1);
     vk_queue_unlock();
-    renderer_mcp_present(g_sc_ext.width, g_sc_ext.height, g_sc_hdr, present_route, r);
     if (!dlssg_sc && !fg_sc) vk_reflex_present_end(rpid_val);
+    renderer_mcp_present(g_sc_ext.width, g_sc_ext.height, g_sc_hdr, dlssg_sc ? 1 : fg_sc ? 2 : 0, r);
     FT(FT_NOTE, 2, 0, 0);
     vk_device_fault_report(r);
     if (r == VK_SUCCESS) gfx_window_presented();
@@ -1460,8 +1459,7 @@ static int present_image(VkImage src, VkImageLayout layout, VkFormat fmt, int w,
     }
     // frame generation's picture without the HUD, through the same path; after the menu's live picture, which reads the
     // colour adjustment's image that this makes again
-    // Isolate replay-side tracking with identical Frame Generation inputs in both benchmark modes.
-    VkImage hudless = src && !rt_knob("DLSS_UI_ALPHA_SKIP_HUDLESS_PRESENT", "0") ?
+    VkImage hudless = src ?
         hudless_record(bt_frame_next, cb, slot, w, h, rect, to, general) : VK_NULL_HANDLE;
     hlshot = hlshot && hudless && hlcap_buffer();
     if (hlshot) {   // DEBUG-HLSHOT
@@ -1483,7 +1481,7 @@ static int present_image(VkImage src, VkImageLayout layout, VkFormat fmt, int w,
     VkImage interface_coverage = VK_NULL_HANDLE;
     VkImageView interface_coverage_view = VK_NULL_HANDLE;
     if (hudless && g_hl_view && general && vk_interface_coverage_enabled() &&
-        !rt_knob("DLSS_UI_ALPHA_SKIP_FIT", "0") && (!overlay || menu_overlay_prepare_coverage()))
+        (!overlay || menu_overlay_prepare_coverage()))
         vk_interface_coverage_present(cb, bt_frame_next, src, (VkExtent2D){(uint32_t)w, (uint32_t)h},
                                       g_sc_ext, rect, to, &interface_coverage, &interface_coverage_view);
     if (overlay) {
@@ -1540,11 +1538,6 @@ static int present_image(VkImage src, VkImageLayout layout, VkFormat fmt, int w,
     }
     if (src) vk_fg_frame(cb, g_sc, g_sc_fmt, g_sc_ext, hudless, g_hl_view, to);   // frame generation: this frame's preparation
     if (src) output_rate();
-    // Benchmark mask production without enabling Streamline recomposition.
-    if (interface_coverage && rt_knob("DLSS_UI_ALPHA_TRACK_ONLY", "0")) {
-        interface_coverage = VK_NULL_HANDLE;
-        interface_coverage_view = VK_NULL_HANDLE;
-    }
     if (src) tagged = vk_dlssg_frame(cb, g_sc_ext, hudless, g_hl_view, g_sc_fmt, interface_coverage, interface_coverage_view);
     sync_barrier(cb, dst, last, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, last_stage, last_write, VK_PIPELINE_STAGE_2_NONE, 0);
     vk_crumb(cb, VK_CRUMB_PRESENT_END, crumb);

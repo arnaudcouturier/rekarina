@@ -8,11 +8,6 @@ int vk_dlaa_prebloom_enabled(void) {
     return rt_patch_enabled(prebloom_set);
 }
 
-void vk_dlaa_prebloom_extent(unsigned output[2]) {
-    if (rt_knob("DLSS_PREBLOOM_CUSTOM", "0")) res_wanted(output);
-    else wide_picture(&output[0], &output[1]);
-}
-
 int scene_projection_enabled(void) {
     if (scene_projection_set < 0 || !rt_patch_enabled(scene_projection_set)) return 0;
     static _Thread_local unsigned version;
@@ -227,17 +222,7 @@ int scene_projection_binding(uint64_t address, p_scene_projection *out) {
     plat_mutex_lock(&projection_lock);
     SceneProjection sample = pending;
     plat_mutex_unlock(&projection_lock);
-    if (!sample.token || sample.camera != address) {
-        static unsigned missed;
-        if (rt_knob("SCENE_CAMERA_TRACE", "0")) {
-            unsigned n = __atomic_fetch_add(&missed, 1, __ATOMIC_RELAXED);
-            if (n < 16 || n % 256 == 0)
-                rt_log("scene camera: unkeyed bind %#llx pending camera %#llx token %#llx",
-                       (unsigned long long)address, (unsigned long long)sample.camera,
-                       (unsigned long long)sample.token);
-        }
-        return 0;
-    }
+    if (!sample.token || sample.camera != address) return 0;
     uint64_t bundle = scene_read64(sample.owner + 0x520), registry = scene_registry();
     uint8_t cv[16] = {0}, dv[16] = {0};
     const void *color = scene_attachment(bundle, 0x20, registry, cv);

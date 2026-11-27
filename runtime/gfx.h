@@ -101,7 +101,6 @@ void gfx_shader_release_private(const GfxShader *s);
 const uint32_t *gfx_shader_spirv(const GfxShader *s, uint64_t *words);
 // A shader of the runtime's own (SPIR-V and a .res.json text as the translator writes them), outside the cache and
 // never freed; its key is the sha256 of both. NULL when the SPIR-V is malformed.
-const GfxShader *gfx_shader_with_spirv(const GfxShader *shader, const uint32_t *spirv, uint64_t words);
 const GfxShader *gfx_shader_own(const uint32_t *spirv, uint64_t words, const char *res_json);
 // vk_hdr.c: when the HDR path is armed, splices (OoT) or replaces (TotK) the game's tonemap fragment shader SPIR-V
 // (malloc'd, *words long) and removes output clamps in its FSR pass; gfx_shader.c calls it as fragment shaders load.

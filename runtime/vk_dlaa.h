@@ -53,21 +53,14 @@ int vk_dlaa_sharpens(void);        // DLSS's picture is sharpened at the present
 // frame (vk_dlaa_frame).
 typedef struct VkExec VkExec;
 typedef struct VkExecTarget VkExecTarget;
-enum { VK_BLOOM_EXTRACT = 1, VK_BLOOM_AUXILIARY, VK_BLOOM_TONEMAP, VK_BLOOM_PYRAMID,
-       VK_BLOOM_ROLE_MASK = 7, VK_BLOOM_LEVEL_SHIFT = 3 };
 int vk_dlaa_prebloom_enabled(void);
-void vk_dlaa_prebloom_extent(unsigned output[2]);
 int vk_dlaa_prebloom_tonemap(VkExec *execution, VkExecTarget *target);
 void vk_dlaa_prebloom_finish_tonemap(VkExec *execution, const VkExecTarget *guest_tonemap_target);
-unsigned scene_bloom_draw_role(uint64_t return_address);
-unsigned scene_output_draw_role(uint64_t return_address);
-int scene_interface_draw_active(void);
 int vk_interface_coverage_enabled(void);
 int vk_interface_coverage_serial_required(void);
 void vk_interface_coverage_release(void);
 int vk_interface_coverage_candidate(const struct VkExec *execution);
 VkImageView vk_interface_coverage_begin(struct VkExec *execution);
-int vk_interface_coverage_replay(void);
 void vk_interface_coverage_reject(const char *reason);
 void vk_interface_coverage_write(VkImage image, uint64_t address);
 void vk_interface_coverage_check_draw(struct VkExec *execution);
@@ -121,6 +114,7 @@ void vk_mvcheck_final(VkCommandBuffer cb, uint64_t fence, VkImage mv, VkImage ci
                       uint32_t layer, uint32_t w, uint32_t h, float jx, float jy);
 const char *vk_mvobj_frame_masks(void);   // vk_exec_draw.c: the last motion list, per position and changed banks
 void vk_mvcheck_output(VkCommandBuffer cb, VkImage out, uint32_t ow, uint32_t oh);   // after DLSS on a check frame
-// vk_exec_draw.c, once a draw's fragment shader is known: 1 skips the draw (the game's FXAA while REKARINA_FXAA is 0, its
-// scaling draw when DLSS wrote the scaled picture).
-int vk_dlaa_skip_draw(VkExec *execution, const GfxShader *fs);
+// vk_exec_draw.c, once a draw's fragment shader is known and before its state is bound: 1 skips the draw (the game's FXAA
+// while REKARINA_FXAA is 0, its scaling draw when DLSS wrote the scaled picture). It also runs OoT's resolve before the
+// bloom (vk_dlaa.c pre_bloom_draw).
+int vk_dlaa_skip_draw(VkExec *ex, const GfxShader *fs);

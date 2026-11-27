@@ -9,7 +9,7 @@ typedef enum { SCENE_ROUTE_ORIGINAL, SCENE_ROUTE_BLOOM, SCENE_ROUTE_NO_BLOOM, SC
 typedef struct {
     SceneReplayKey key;
     SceneReplayRoute route;
-    unsigned rw, rh, uw, uh, bw, bh, sw, sh;
+    unsigned rw, rh, uw, uh, bw, bh;
     uint32_t light, tonemap, packed, output, window;
     uint32_t direct_composite, direct_window;
     unsigned direct_w, direct_h;

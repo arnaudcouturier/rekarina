@@ -700,10 +700,6 @@ const GfxShader *gfx_shader_own(const uint32_t *spirv, uint64_t words, const cha
     return s;
 }
 
-const GfxShader *gfx_shader_with_spirv(const GfxShader *shader, const uint32_t *spirv, uint64_t words) {
-    return gfx_shader_own(spirv, words, shader->reflection);
-}
-
 int gfx_shader_meshc(const GfxShader *s, uint32_t *vec4s, uint32_t *max_meshlets, const uint8_t **locs) {
     if (!s || s->stage != GFX_STAGE_MSC || !s->emu_vec4s || !s->emu_max) return 0;
     *vec4s = s->emu_vec4s, *max_meshlets = s->emu_max, *locs = s->emu_loc;
