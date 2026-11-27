@@ -3,9 +3,9 @@
 // SDK 2.4.0); they are C++ in places, hence this file. Nothing of it runs unless the upscaler or frame generation asks
 // for FSR.
 //
-// SDK 2 (amd_fidelityfx_loader_vk.dll with amd_fidelityfx_upscaler_vk.dll and
+// This runtime uses FSR SDK 2 (amd_fidelityfx_loader_vk.dll with amd_fidelityfx_upscaler_vk.dll and
 // amd_fidelityfx_framegeneration_vk.dll): FSR Upscaling 4.1 (the machine-learning one) on the Radeon cards it supports,
-// FSR 3.1.6 on other supported cards. The player may choose a version (REKARINA_FSR_VERSION).
+// FSR 3.1.6 on every other card, and the player may name the version (REKARINA_FSR_VERSION, fsr_version).
 //
 // FSR takes the same inputs vk_dlaa.c makes for DLSS: the scene's light target (linear HDR), its D32F depth
 // (OpenGL-style, an infinite far plane, not inverted) and the camera motion vectors in render pixels from the current
@@ -110,8 +110,11 @@ uint64_t listed(const char *want) {
     return 0;
 }
 
-// OoT resolves saved "auto" to an offered FSR 4 or FSR 3 provider so the menu names the selected generation.
-// Explicit requests never substitute a different generation on OoT. Zero means no provider override.
+// REKARINA_FSR_VERSION (applies to the next context; the menu changes it live): auto leaves the choice to the library,
+// which takes FSR 4 where the card runs it; a number takes the first listed version of that generation ("4", "3"), a
+// full name that one ("3.1.6"). 0: no override (auto or a version the device does not list, said once).
+// FSR 4 needs two device extensions the library cannot enable itself (vk_device.c, fsr4_ready): where the library lists
+// FSR 4 but the device was made without them, FSR 3.1 runs in its place, for auto and for "4" alike.
 uint64_t fsr_version() {
 #ifdef GAME_OOT
     const CfgRenderValues *settings = cfg_render_values();
@@ -227,9 +230,7 @@ extern "C" ffxCreateContextDescHeader *vk_ffx_backend(void) {
     return &be.header;
 }
 
-extern "C" int vk_ffx_upscale_available(void) { return A.ok && fsr_version() != UINT64_MAX; }
-
-extern "C" int vk_ffx_fsr4_available(void) { return A.ok && vk_ctx()->fsr4_ready && listed("4"); }
+extern "C" int vk_ffx_sdk2(void) { return vk_ffx_load(); }
 
 // The menu's note beside the FSR rows: the upscaler versions this card offers ("4.1.2, 3.1.6, 2.3.4"), or the version
 // running when the list is not known. Empty before the library is asked.
