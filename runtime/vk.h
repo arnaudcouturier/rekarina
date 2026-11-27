@@ -124,6 +124,14 @@ void vk_crumbs_report(void);         // logs the two codes and what they name
 // checkpoints (the extension is enabled at device creation); 0, none.
 #define VK_PASS_MARKS 4096   // power of two
 enum { VK_MARK_PASS = 1, VK_MARK_DISPATCH, VK_MARK_PROLOGUE, VK_MARK_WRITEBACK, VK_MARK_MERGE, VK_MARK_WBCOPY, VK_MARK_UI_CAPTURE };   // the last two: mirror copies in and out
+enum { VK_MARK_IMG_SET = 1, VK_MARK_IMG_BOUND = 2, VK_MARK_IMG_MIRRORED = 4, VK_MARK_IMG_GPU_OWNED = 8, VK_MARK_IMG_STORAGE = 16 };
+typedef struct {
+    uint64_t addr;
+    uint32_t w, h, levels, layers;
+    uint32_t serial;
+    VkFormat format;
+    uint8_t flags;                      // VK_MARK_IMG_*
+} VkMarkImage;
 typedef struct {
     uint32_t id;                        // the mark this record belongs to (0: never written)
     uint8_t kind;                       // VK_MARK_*

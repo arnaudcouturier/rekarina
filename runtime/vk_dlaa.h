@@ -89,6 +89,9 @@ unsigned vk_dlaa_resolve_consumers(CfgTaa taa, int wanted);
 // vk_exec_draw.c, each draw before its fixed state is recorded: notes the scene camera block (vk_dlaa_draw), and moves
 // the viewport of the scene's draws by the frame's jitter (vk_dlaa_viewport, when the viewport is recorded).
 void vk_dlaa_draw(VkExec *execution);
+// Row-major view-projection and its inverse for the shadow mask filter.
+void vk_dlaa_ocam_vp(const float *rows, double out[16]);
+int vk_dlaa_inv4(const double m[16], double out[16]);
 void vk_dlaa_pjitter(VkExec *execution, int stage);   // the scene camera block's projection jitter (REKARINA_DLAA_PJITTER)
 // vk_exec.c, at the start of a submission's recording: the projection jitter in the game's own scene context blocks
 // (REKARINA_DLAA_PJITTER=2), before the uniform and mirror copies are taken
