@@ -56,6 +56,7 @@ struct {
     VkExtent2D fg_max = {0, 0};   // the context's largest render size
     VkFormat fg_fmt = VK_FORMAT_UNDEFINED;
     bool fg_hdr = false;
+    uint32_t fg_depth_flags = 0;
     const char *fg_method = "FSR FG";
     ffxQueryDescSwapchainReplacementFunctionsVK fn = {};
     uint64_t frame = 0;
@@ -352,14 +353,16 @@ extern "C" void vk_fg_frame(VkCommandBuffer cb, VkSwapchainKHR sc, VkFormat fmt,
     int have = vk_dlaa_fg_inputs(&depth, &mv, &jx, &jy, &reset);
     VkDlaaCamera cam;
     have = have && vk_dlaa_fg_camera(&cam);
-    if (have && (!cam.infinite || cam.inverted)) {
+    if (have && !cam.depth_planes_valid) {
         static bool told;
         if (!told) {
             told = true;
-            rt_log("fg: skipping interpolation for finite or reversed depth; AMD context expects infinite forward depth");
+            rt_log("fg: skipping interpolation without valid camera depth planes");
         }
         have = 0;
     }
+    const uint32_t depth_flags = have ? (cam.infinite ? FFX_FRAMEGENERATION_ENABLE_DEPTH_INFINITE : 0) |
+                                        (cam.inverted ? FFX_FRAMEGENERATION_ENABLE_DEPTH_INVERTED : 0) : 0;
     // The context's largest render size covers the depth and motion vectors it is given. They have the scene's size,
     // which DLAA and the widescreen pictures make larger than the window, and a context made for the window's size alone
     // wrote past its own resources: a crash in amd_fidelityfx_vk.dll, device faults, striped frames. The scene is never
@@ -396,7 +399,7 @@ extern "C" void vk_fg_frame(VkCommandBuffer cb, VkSwapchainKHR sc, VkFormat fmt,
         ffxCreateContextDescFrameGeneration d = {};
         d.header.type = FFX_API_CREATE_CONTEXT_DESC_TYPE_FRAMEGENERATION;
         d.header.pNext = &hl.header;
-        d.flags = FFX_FRAMEGENERATION_ENABLE_DEPTH_INFINITE | (hdr ? FFX_FRAMEGENERATION_ENABLE_HIGH_DYNAMIC_RANGE : 0);
+        d.flags = depth_flags | (hdr ? FFX_FRAMEGENERATION_ENABLE_HIGH_DYNAMIC_RANGE : 0);
         d.displaySize = {ext.width, ext.height};
         d.maxRenderSize = {max_render.width, max_render.height};
         d.backBufferFormat = ffxApiGetSurfaceFormatVK(fmt);
@@ -404,12 +407,13 @@ extern "C" void vk_fg_frame(VkCommandBuffer cb, VkSwapchainKHR sc, VkFormat fmt,
         if (r != FFX_API_RETURN_OK) return F.fg = nullptr, fail("the frame generation context", r);
         F.fg_ext = ext, F.fg_fmt = fmt, F.fg_max = max_render;
         F.fg_hdr = hdr != 0;
-        reset = 1;
+        F.fg_depth_flags = depth_flags;
         ffxQueryGetProviderVersion provider = {};
         provider.header.type = FFX_API_QUERY_DESC_TYPE_GET_PROVIDER_VERSION;
         const char *name = vk_ffx_query(&F.fg, &provider.header) == FFX_API_RETURN_OK ? provider.versionName : nullptr;
         F.fg_method = name && !strncmp(name, "4.", 2) ? "FSR4 FG" :
                       name && !strncmp(name, "3.", 2) ? "FSR3 FG" : "FSR FG";
+        reset = 1;
         rt_log("fg: frame generation context for %ux%u%s, render size up to %ux%u (%s)", ext.width, ext.height,
                hdr ? " (HDR)" : "", max_render.width, max_render.height, name ? name : "provider unknown");
     }
