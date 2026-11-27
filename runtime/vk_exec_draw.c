@@ -3872,9 +3872,41 @@ static void interface_prepare_replay(VkExec *execution, const VkPipeState *state
 
 void vk_dlaa_direct_draw(const VkExecTarget *target, uint32_t source, int encode);
 
+#ifdef GAME_OOT
+static void scene_output_pq(VkExec *ex) {
+    const p_bind_buf *u = &ex->ubo[NVN_STAGE_FS][0];   // the checked PQ shader reads guest cbuf 3
+    const uint64_t offset = 18 * 16;
+    VkGuestPq *pq = &ex->output_pq;
+    if (!u->addr || u->size < offset + sizeof pq->row) return;
+    uint64_t address = u->addr + offset;
+    VkMemSpan span;
+    if (!upd_read(ex, address, pq->row, sizeof pq->row)) {
+        if (nvn_gpu_only(address) || !vk_mem_resolve(address, sizeof pq->row, &span) || span.alloc ||
+            span.avail < sizeof pq->row) return;
+        memcpy(pq->row, (const void *)(uintptr_t)address, sizeof pq->row);
+    }
+    for (unsigned r = 0; r < 3; r++)
+        for (unsigned c = 0; c < 3; c++)
+            if (!__builtin_isfinite(pq->row[r][c])) return;
+    pq->valid = 1;
+}
+#endif
+
+static int display_composite_format(VkFormat format) {
+    return format == VK_FORMAT_B10G11R11_UFLOAT_PACK32 || format == VK_FORMAT_R16G16B16A16_SFLOAT;
+}
+
 static void scene_output_draw(VkExec *execution, const VkPipeState *state, const VkPipeInfo *information, int count) {
-    if (!execution->scene_output_role || (!vk_dlaa_prebloom_enabled() && !vk_interface_coverage_enabled())) return;
+    if (!execution->scene_output_role) return;
     const int encode = execution->scene_output_role == DRAW_ROLE_SCENE_ENCODE;
+    const int prebloom = vk_dlaa_prebloom_enabled(), coverage = vk_interface_coverage_enabled();
+#ifdef GAME_OOT
+    // ADR-0001: only record Output Proof when Guest PQ or RT_TRACE_GFX is active so SDR/Host HDR pay zero cost.
+    const int track_output = encode && vk_hdr_output_track_enabled();
+    if (!track_output && !prebloom && !coverage) return;
+#else
+    if (!prebloom && !coverage) return;
+#endif
     const VkExecTarget *destination = &execution->color[0];
     if (!encode && vk_dlaa_pathlog())
         rt_log("PATHLOG direct composite draw: count %d prim %d targets %d layers %u depth %d/%d mask %#x",
@@ -3884,9 +3916,15 @@ static void scene_output_draw(VkExec *execution, const VkPipeState *state, const
         execution->gpu_cond || state->feedback || state->raster_discard || (state->color.blend_en & 1) ||
         state->color.logic_op != NVN_LOGIC_OP_COPY || vk_pipeline_target_wmask(state, 0) != 15 ||
         count != (encode ? 6 : 3)) return;
+    const int srgb_target = destination->format == VK_FORMAT_R8G8B8A8_SRGB || destination->format == VK_FORMAT_B8G8R8A8_SRGB;
+#ifdef GAME_OOT
+    const int pq_target = destination->format == VK_FORMAT_A2B10G10R10_UNORM_PACK32;
+#else
+    const int pq_target = 0;
+#endif
     if (!destination->img || destination->samples != 1 || destination->level || destination->base_layer || destination->is3d ||
-        (encode ? execution->depth.image || (destination->format != VK_FORMAT_R8G8B8A8_SRGB && destination->format != VK_FORMAT_B8G8R8A8_SRGB)
-                : destination->format != VK_FORMAT_B10G11R11_UFLOAT_PACK32)) return;
+        (encode ? execution->depth.image || (!srgb_target && !pq_target)
+                : !display_composite_format(destination->format))) return;
     VkViewport viewport = draw_viewport(execution);
     VkRect2D scissor = vk_exec_scissor(execution);
     if (viewport.x != 0 || viewport.y != (float)destination->height || viewport.width != (float)destination->width ||
@@ -3903,14 +3941,28 @@ static void scene_output_draw(VkExec *execution, const VkPipeState *state, const
     view_t view = {0};
     int has_view = 0;
     const VkTexImage *source = vk_texture_by_id(NVN_HANDLE_TEX(execution->tex[NVN_STAGE_FS][sampled->slot]), &view, &has_view);
-    if (!source || source->samples != 1 ||
+    if (!source || source->samples != 1 || source->image == destination->image ||
         source->width != destination->width || source->height != destination->height) return;
     TexVkFormat sampled_format;
     if (has_view && ((view.set_levels && view.base_level) || (view.set_layers && view.min_layer) || view.set_swizzle ||
                      (view.set_format && (!tex_vk_format(view.format, &sampled_format) || sampled_format.vk != source->format)))) return;
-    if (vk_dlaa_prebloom_enabled() && source->format == VK_FORMAT_B10G11R11_UFLOAT_PACK32)
+#ifdef GAME_OOT
+    if (track_output && state->fs && source->image != destination->image &&
+        destination->image == destination->img->image) {
+        static const uint8_t sdr[] = {0xea, 0x16, 0x31, 0x08, 0xd2, 0xa8, 0x2e, 0x96};
+        execution->output_pq = (VkGuestPq){0};
+        if (pq_target && gfx_shader_guest_pq(state->fs)) {
+            execution->output_encoding = GFX_OUTPUT_PQ;
+            scene_output_pq(execution);
+        } else if (srgb_target && !memcmp(gfx_shader_input_id(state->fs), sdr, sizeof sdr))
+            execution->output_encoding = GFX_OUTPUT_SDR;
+    }
+#endif
+    if (pq_target) return;  // The existing pre-bloom and interface handoffs only recognize the SDR encode.
+    if (prebloom && (source->format == VK_FORMAT_B10G11R11_UFLOAT_PACK32 ||
+                    (encode && display_composite_format(source->format))))
         execution->direct_draw_source = source->serial;
-    if (encode && !vk_hdr_active() && vk_interface_coverage_enabled() && vk_interface_coverage_source(source->image))
+    if (encode && !vk_hdr_active() && coverage && vk_interface_coverage_source(source->image))
         execution->interface_copy_source = source->image;
 }
 
@@ -5433,8 +5485,22 @@ static void interface_replay_end(VkExec *ex) {
     B.st_valid = 0;
 }
 
+static inline void hdr_output_draw_written(VkExec *ex) {
+#ifdef GAME_OOT
+    if (__builtin_expect(!vk_hdr_output_pending_frame || vk_par_worker, 1)) return;
+    if (!vk_hdr_output_pending()) return;
+    for (int i = 0; i < ex->pass_ncolor; i++) {
+        const VkExecTarget *t = &ex->color[i];
+        vk_hdr_output_overwrite(t->image, t->img ? t->img->addr : 0);
+    }
+#else
+    (void)ex;
+#endif
+}
+
 static void interface_draw_arrays(VkExec *ex, uint32_t count, uint32_t instances, uint32_t first, uint32_t base) {
     vkCmdDraw(ex->cb, count, instances, first, base);
+    hdr_output_draw_written(ex);
     if (interface_replay_begin(ex)) {
         vkCmdDraw(ex->cb, count, instances, first, base);
         interface_replay_end(ex);
@@ -5443,6 +5509,7 @@ static void interface_draw_arrays(VkExec *ex, uint32_t count, uint32_t instances
 
 static void interface_draw_indexed(VkExec *ex, uint32_t count, uint32_t instances, uint32_t first, int32_t vertex, uint32_t base) {
     vkCmdDrawIndexed(ex->cb, count, instances, first, vertex, base);
+    hdr_output_draw_written(ex);
     if (interface_replay_begin(ex)) {
         vkCmdDrawIndexed(ex->cb, count, instances, first, vertex, base);
         interface_replay_end(ex);
@@ -5715,6 +5782,7 @@ static void op_draw_idx_ind(VkExec *ex, const p_draw_idx_ind *d) {
     GPU_COND_BEGIN(ex);
     vkCmdDrawIndexedIndirect(ex->cb, ip.buffer, ip.offset, 1, sizeof(VkDrawIndexedIndirectCommand));
     GPU_COND_END(ex);
+    hdr_output_draw_written(ex);
     if (interface_replay_begin(ex)) {
         vkCmdDrawIndexedIndirect(ex->cb, ip.buffer, ip.offset, 1, sizeof(VkDrawIndexedIndirectCommand));
         interface_replay_end(ex);
@@ -6261,6 +6329,7 @@ static void mesh_emulate(VkExec *ex, const p_draw_mesh *d, const p_draw_mesh_ind
         vkCmdBindVertexBuffers2(ex->cb, 0, 1, &emu_buf, &vo, NULL, NULL);   // the recorder wraps this one (the stride is static)
         vkCmdBindIndexBuffer(ex->cb, emu_buf, VK_MESH_EMU_INDEX_OFFSET, VK_INDEX_TYPE_UINT32);
         vkCmdDrawIndexedIndirect(ex->cb, emu_buf, 0, 1, sizeof(VkDrawIndexedIndirectCommand));
+        hdr_output_draw_written(ex);
         ex->recorded++;
         B.vb_valid = 0, ibs_buf = VK_NULL_HANDLE;   // the next draw binds its own vertex and index buffers
         vk_pipeline_dynamic_forget();
@@ -6376,6 +6445,7 @@ static void op_draw_mesh(VkExec *ex, const p_draw_mesh *d, const p_draw_mesh_ind
     if (di) vk_pipeline_draw_mesh_indirect(ex->cb, ib, io);
     else vk_pipeline_draw_mesh(ex->cb, d->count);
     if (cond) GPU_COND_END(ex);
+    if (di || d->count > 0) hdr_output_draw_written(ex);
     ex->recorded++;
 }
 #endif
@@ -7006,6 +7076,9 @@ void vk_exec_op_draw(VkExec *ex, uint32_t op, const void *payload) {
         ex->interface_draw = (recorded_role & DRAW_ROLE_INTERFACE) != 0;
         ex->scene_output_role = recorded_role & DRAW_ROLE_SCENE_OUTPUT;
         ex->direct_draw_source = 0;
+#ifdef GAME_OOT
+        ex->output_encoding = GFX_OUTPUT_UNSPECIFIED;
+#endif
         ex->interface_copy_source = VK_NULL_HANDLE;
         if (vk_interface_coverage_enabled()) vk_interface_coverage_check_draw(ex);
     }
@@ -7139,6 +7212,12 @@ void vk_exec_op_draw(VkExec *ex, uint32_t op, const void *payload) {
                 vk_dlaa_direct_draw(&ex->color[0], ex->direct_draw_source, ex->scene_output_role == DRAW_ROLE_SCENE_ENCODE);
             if (drew && ex->interface_copy_source && ex->color[0].img)
                 vk_interface_coverage_copy(ex->interface_copy_source, ex->color[0].image, ex->color[0].img->addr, 1);
+#ifdef GAME_OOT
+            if (drew && ex->output_encoding && ex->color[0].img) {
+                const VkTexImage *img = ex->color[0].img;
+                vk_hdr_record_output(img->serial, img->image, img->addr, ex->output_encoding, &ex->output_pq);
+            }
+#endif
         }
         ex->scene_output_role = 0;
         ex->interface_draw = 0;

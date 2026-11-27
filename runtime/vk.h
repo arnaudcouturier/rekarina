@@ -182,7 +182,8 @@ void vk_pass_marks_report(void);    // vk_device_fault_report: the AMD words and
 void vk_present_image(VkImage src, VkImageLayout layout, VkFormat fmt, int w, int h, const int crop[4]);
 // vk_present_image split in two: vk_present_blit submits the blit and leaves the present waiting, vk_present_flip
 // queues it. The next blit or a swapchain rebuild queues a waiting present first.
-int vk_present_blit(VkImage src, VkImageLayout layout, VkFormat fmt, int w, int h, const int crop[4]); // nonzero: DLSS-G inputs must survive the flip
+typedef struct { float row[3][4]; int valid; } VkGuestPq;
+int vk_present_blit(VkImage src, VkImageLayout layout, VkFormat fmt, int w, int h, const int crop[4], GfxOutputEncoding encoding); // nonzero: DLSS-G inputs must survive the flip
 // FSR 1 on the present (vk_fsr.c): records EASU (+ RCAS) of src's crop rectangle {x, y, w, h} into the rectangle out
 // {x, y, w, h} of dst, a swapchain image in TRANSFER_DST; src is in GENERAL and fmt its format. 0 = nothing recorded
 // (the setting says bilinear, no upscale is needed, or FSR is not available): the caller blits.
@@ -218,7 +219,18 @@ int vk_hdr_surface_format(const VkSurfaceFormatKHR *f, uint32_t n, VkSurfaceForm
 void vk_hdr_metadata(VkSwapchainKHR sc, int new_sc);
 void vk_hdr_set_active(int on);
 int vk_hdr_active(void);
-VkImage vk_hdr_encode(VkCommandBuffer cb, unsigned slot, VkImage src, VkFormat fmt, const int crop[4]);
+#ifdef GAME_OOT
+int gfx_hdr_surface_capable(void);
+extern uint64_t vk_hdr_output_pending_frame;
+int vk_hdr_output_pending(void);
+int vk_hdr_output_track_enabled(void);
+void vk_hdr_output_set_guest_pq(int on);
+int vk_hdr_output_targets_pending(VkImage image, uint64_t address);
+void vk_hdr_output_overwrite(VkImage image, uint64_t address);
+void vk_hdr_record_output(uint32_t serial, VkImage image, uint64_t address, GfxOutputEncoding encoding, const VkGuestPq *pq);
+GfxOutputEncoding vk_hdr_written_output(uint32_t serial, uint64_t frame, VkGuestPq *pq);
+#endif
+VkImage vk_hdr_encode(VkCommandBuffer cb, unsigned slot, VkImage src, VkFormat fmt, const int crop[4], const VkGuestPq *pq);
 VkImageView vk_hdr_ui_target(VkCommandBuffer cb, uint32_t w, uint32_t h);
 void vk_hdr_ui_compose(VkCommandBuffer cb, VkImageView dst_view, VkFormat fmt, uint32_t w, uint32_t h);
 void vk_hdr_to_srgb8(const uint8_t *in, uint8_t *out, size_t px, int a2r);

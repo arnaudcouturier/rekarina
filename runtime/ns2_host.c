@@ -31,7 +31,14 @@ static uint64_t bound_event(Cpu *c, int signalled) {   // a SystemEvent the host
     return ev;
 }
 
-// ---- vi: HDR, VRR, refresh rate. With REKARINA_HDR=native, report an HDR10 display at the configured peak and paper white.
+// ---- vi: HDR, VRR, refresh rate.
+static int vi_hdr_capability(void) {
+#ifdef GAME_OOT
+    return vk_hdr_native() && gfx_hdr_surface_capable();
+#else
+    return vk_hdr_native();
+#endif
+}
 // Result QueryDisplayHdrStatus(bool *on, HdrOutputFormat *fmt, u16 *peak, const Display *)
 static void vi_hdr_status(Cpu *c) {
     const CfgRenderState *settings = cfg_render_frame_acquire();
@@ -39,7 +46,8 @@ static void vi_hdr_status(Cpu *c) {
     uint8_t *on = arg_p(c, 0);
     uint32_t *fmt = arg_p(c, 1);
     uint16_t *peak = arg_p(c, 2);
-    if (vk_hdr_native()) {
+    int capability = vi_hdr_capability();
+    if (capability) {
         double p = cfg_double("REKARINA_HDR_PEAK_NITS");
         if (p < 80.0) p = 80.0;
         if (p > 10000.0) p = 10000.0;
@@ -53,6 +61,9 @@ static void vi_hdr_status(Cpu *c) {
         if (fmt) *fmt = 0;
         if (peak) *peak = 0;
     }
+    static int32_t logged_capability = -1;
+    if ((rt_trace & RT_TRACE_GFX) && plat_xchg32(&logged_capability, capability) != capability)
+        rt_log("ns2: vi HDR capability query: %d", capability);
     cfg_render_use(previous_settings);
     cfg_render_release(settings);
     ret_x(c, 0);
@@ -62,7 +73,7 @@ static void vi_reference_white(Cpu *c) {   // Result QueryDisplayHdrPaperWhite(u
     const CfgRenderState *previous = cfg_render_use(settings);
     uint16_t *nits = arg_p(c, 0);
     if (nits) {
-        if (vk_hdr_native()) {
+        if (vi_hdr_capability()) {
             double g = cfg_double("REKARINA_HDR_GAME_NITS");
             if (g < 48.0) g = 48.0;
             if (g > 500.0) g = 500.0;

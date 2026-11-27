@@ -60,6 +60,10 @@ typedef struct VkExec {
     unsigned draw_role;                // scoped to a checked postprocess draw
     uint32_t direct_draw_source;
     unsigned scene_output_role;
+#ifdef GAME_OOT
+    GfxOutputEncoding output_encoding;
+    VkGuestPq output_pq;
+#endif
     VkImage interface_copy_source;      // confirmed window-encode input, committed only after the draw is recorded
     VkImageView interface_replay_view;
     VkPipeline interface_replay_pipeline;

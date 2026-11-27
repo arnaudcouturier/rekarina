@@ -61,6 +61,17 @@ ordinary Frame Generation with the accepted tags intact. A visible host overlay 
 Alpha replay supports direct and indexed-indirect game draws, and fits their accumulated alpha at presentation.
 Its fitted image retains storage usage across frames with no game UI, so extraction can resume without reallocating it.
 
+Output proof tracks checked output draws when Guest PQ or `RT_TRACE_GFX` is active, keeping SDR and Host HDR frames
+on the zero-cost parallel replay path (ADR-0001). A later write or aliased write to a recorded output image invalidates
+the proof. In Guest PQ mode, swapchain selection follows the verified output rather than the guest's request or image
+format alone, bypasses host re-encoding, and omits the HUD-less input until encoding and scaling match end-to-end.
+An unverified frame during confirmed Guest PQ is not presented. Native HDR is advertised to the guest only on an
+HDR10-capable surface, and a surface capability change prompts the guest to query again.
+
+The checked OoT 1.1.1 compositor allocation can use signed RGBA16F instead of R11G11B10F (`hdr_compositor`, off by
+default). The HDR encoder supports the guest's RGB-to-nits PQ transform without finished-picture grading, and `hdr_ui`
+supports linear menu output prior to guest encoding.
+
 ## Where a frame goes (2026-11-08 morning, realtime = 1, unlocked: forest porch 60-63 fps, lighter scenes 92-103 fps)
 
 - GPU ~16 ms of work a frame: the game's passes and dispatches ~11 ms (the lighting's full-screen material passes

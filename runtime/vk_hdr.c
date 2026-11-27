@@ -145,7 +145,7 @@ static Nits nits(void) {
             for (int i = 0; i < 10; i++) pct[i] = clampf((float)cfg_double(keys[i]), 0.0f, 100.0f);
             float *t = n->tm;
             t[0] = n->peak, t[1] = n->game, t[2] = n->ui, t[3] = mapper;
-            t[4] = clampf((float)cfg_double("REKARINA_HDR_EXPOSURE"), 0.0f, 200.0f) / 100.0f;
+            t[4] = clampf((float)cfg_double("REKARINA_HDR_EXPOSURE"), 0.0f, 800.0f) / 100.0f;
             t[5] = pct[0] / 50.0f, t[6] = pct[1] / 50.0f, t[7] = pct[2] / 50.0f;
             t[8] = pct[3] / 50.0f, t[9] = pct[4] / 50.0f, t[10] = pct[5] / 100.0f, t[11] = pct[6] / 50.0f;
             t[12] = pct[7] / 100.0f;
@@ -1659,7 +1659,82 @@ void vk_hdr_set_active(int on) {
     plat_xchg32(&g_active, on);
     if (!on) vk_hdr_track = 0;
 }
-int vk_hdr_active(void) { return plat_cas32(&g_active, 0, 0); }
+int vk_hdr_active(void) { return __atomic_load_n(&g_active, __ATOMIC_ACQUIRE); }
+
+#ifdef GAME_OOT
+// Both the checked output draw and present sealing run in replay order.
+// ADR-0001: keep SDR and Host HDR at zero per-draw cost by only arming Output Proof when Guest PQ or RT_TRACE_GFX is active.
+static struct {
+    uint64_t frame;
+    VkImage image;
+    uint64_t address;
+    uint32_t serial;
+    GfxOutputEncoding encoding;
+    VkGuestPq pq;
+} written_outputs[8];
+static unsigned next_written_output;
+uint64_t vk_hdr_output_pending_frame;
+static int32_t g_guest_pq_active;
+
+int vk_hdr_output_track_enabled(void) {
+    return vk_hdr_native() || __atomic_load_n(&g_guest_pq_active, __ATOMIC_ACQUIRE) || (rt_trace & RT_TRACE_GFX);
+}
+
+void vk_hdr_output_set_guest_pq(int on) {
+    __atomic_store_n(&g_guest_pq_active, on ? 1 : 0, __ATOMIC_RELEASE);
+}
+
+int vk_hdr_output_pending(void) {
+    if (!vk_hdr_output_pending_frame) return 0;
+    if (vk_hdr_output_pending_frame == __atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED) + 1) return 1;
+    vk_hdr_output_pending_frame = 0;
+    return 0;
+}
+
+int vk_hdr_output_targets_pending(VkImage image, uint64_t address) {
+    if (!vk_hdr_output_pending()) return 0;
+    for (unsigned i = 0; i < 8; i++) {
+        if (written_outputs[i].frame != vk_hdr_output_pending_frame) continue;
+        if ((image && written_outputs[i].image == image) || (address && written_outputs[i].address == address))
+            return 1;
+    }
+    return 0;
+}
+
+void vk_hdr_output_overwrite(VkImage image, uint64_t address) {
+    if (!vk_hdr_output_pending()) return;
+    int remaining = 0;
+    for (unsigned i = 0; i < 8; i++) {
+        if (written_outputs[i].frame != vk_hdr_output_pending_frame) continue;
+        if ((image && written_outputs[i].image == image) || (address && written_outputs[i].address == address))
+            written_outputs[i].frame = 0;
+        else remaining = 1;
+    }
+    if (!remaining) vk_hdr_output_pending_frame = 0;
+}
+
+void vk_hdr_record_output(uint32_t serial, VkImage image, uint64_t address, GfxOutputEncoding encoding, const VkGuestPq *pq) {
+    uint64_t frame = __atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED) + 1;
+    vk_hdr_output_pending_frame = frame;
+    unsigned index = 8;
+    for (unsigned i = 0; i < 8; i++) {
+        if (written_outputs[i].frame != frame || written_outputs[i].serial != serial) continue;
+        index = i;
+        break;
+    }
+    if (index == 8) index = next_written_output++ % 8;
+    written_outputs[index] = (typeof(written_outputs[0])){frame, image, address, serial, encoding, *pq};
+}
+
+GfxOutputEncoding vk_hdr_written_output(uint32_t serial, uint64_t frame, VkGuestPq *pq) {
+    for (unsigned i = 0; i < 8; i++) {
+        if (written_outputs[i].frame != frame || written_outputs[i].serial != serial) continue;
+        *pq = written_outputs[i].pq;
+        return written_outputs[i].encoding;
+    }
+    return GFX_OUTPUT_UNSPECIFIED;
+}
+#endif
 
 static int is_float(VkFormat f) {
     return f == VK_FORMAT_B10G11R11_UFLOAT_PACK32 || f == VK_FORMAT_R16G16B16A16_SFLOAT ||
@@ -1791,7 +1866,7 @@ static void barrier(VkCommandBuffer cb, VkImage img, VkImageLayout from, VkImage
     vkCmdPipelineBarrier2(cb, &d);
 }
 
-typedef struct { VkImage img; VmaAllocation alloc; VkImageView view; uint32_t w, h; } Img;
+typedef struct { VkImage img; VmaAllocation alloc; VkImageView view; uint32_t w, h; VkFormat format; } Img;
 
 static void img_free(VkCtx *c, Img *m) {
     if (m->view) vkDestroyImageView(c->device, m->view, NULL);
@@ -1800,7 +1875,7 @@ static void img_free(VkCtx *c, Img *m) {
 }
 
 static int img_ensure(VkCtx *c, Img *m, uint32_t w, uint32_t h, VkFormat fmt, VkImageUsageFlags usage) {
-    if (m->img && m->w == w && m->h == h) return 1;
+    if (m->img && m->w == w && m->h == h && m->format == fmt) return 1;
     if (m->img) {
         vk_queue_lock();
         vkDeviceWaitIdle(c->device);
@@ -1823,7 +1898,7 @@ static int img_ensure(VkCtx *c, Img *m, uint32_t w, uint32_t h, VkFormat fmt, Vk
         img_free(c, m);
         return 0;
     }
-    m->w = w, m->h = h;
+    m->w = w, m->h = h, m->format = fmt;
     return 1;
 }
 
@@ -1880,7 +1955,7 @@ static int init(VkCtx *c) {
                               .addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, .maxLod = 0};
     if (!H.push || vkCreateSampler(c->device, &si, NULL, &H.sampler) != VK_SUCCESS ||
         !(H.dsl_enc = set_layout(c, enc, 2)) || !(H.dsl_ui = set_layout(c, &ui, 1)) ||
-        !(H.enc_layout = pipe_layout(c, &H.dsl_enc, VK_SHADER_STAGE_COMPUTE_BIT, 64)) ||
+        !(H.enc_layout = pipe_layout(c, &H.dsl_enc, VK_SHADER_STAGE_COMPUTE_BIT, 112)) ||
         !(H.ui_layout = pipe_layout(c, &H.dsl_ui, VK_SHADER_STAGE_FRAGMENT_BIT, 16))) {
         rt_log("hdr: the present passes could not be created; the picture goes out unconverted");
         return 0;
@@ -1899,8 +1974,8 @@ static int init(VkCtx *c) {
     return H.ok = 1;
 }
 
-VkImage vk_hdr_encode(VkCommandBuffer cb, unsigned slot, VkImage src, VkFormat fmt, const int crop[4]) {
-    if (vk_hdr_native_picture(fmt)) return VK_NULL_HANDLE;   // game already encoded PQ Rec. 2020
+VkImage vk_hdr_encode(VkCommandBuffer cb, unsigned slot, VkImage src, VkFormat fmt, const int crop[4], const VkGuestPq *pq) {
+    if (!pq && vk_hdr_native_picture(fmt)) return VK_NULL_HANDLE;   // game already encoded PQ Rec. 2020
     VkCtx *c = vk_ctx();
     if (!H.tried) init(c);
     if (!H.ok || !img_ensure(c, &H.out, (uint32_t)crop[2], (uint32_t)crop[3], VK_FORMAT_R16G16B16A16_SFLOAT,
@@ -1917,7 +1992,7 @@ VkImage vk_hdr_encode(VkCommandBuffer cb, unsigned slot, VkImage src, VkFormat f
     }
     Nits n = nits();
     float adj[4] = {0, 1, 1, 1};
-    int grade = vk_color_hdr(adj, crop);
+    int grade = !pq && vk_color_hdr(adj, crop);
     int decode = fmt == VK_FORMAT_R8G8B8A8_UNORM || fmt == VK_FORMAT_B8G8R8A8_UNORM;
     const VkPipelineStageFlags2 CS = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, ALL = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
     barrier(cb, src, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_GENERAL, ALL, VK_ACCESS_2_MEMORY_WRITE_BIT, CS,
@@ -1933,9 +2008,10 @@ VkImage vk_hdr_encode(VkCommandBuffer cb, unsigned slot, VkImage src, VkFormat f
          .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, .pImageInfo = &oi}};
     vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, H.enc);
     rec_push(H.push, cb, VK_PIPELINE_BIND_POINT_COMPUTE, H.enc_layout, 0, 2, w);
-    struct { int32_t offset[2], size[2]; float p[4], adj[4], q[4]; } pc = {
+    struct { int32_t offset[2], size[2]; float p[4], adj[4], q[4], rows[3][4]; } pc = {
         {crop[0], crop[1]}, {crop[2], crop[3]}, {n.ui, n.peak, decode ? 1.0f : 0.0f, n.gamma},
-        {adj[0], adj[1], adj[2], adj[3]}, {grade ? 1.0f : 0.0f, n.game / n.ui, n.p3, 0}};
+        {adj[0], adj[1], adj[2], adj[3]}, {grade ? 1.0f : 0.0f, n.game / n.ui, n.p3, pq ? 1.0f : 0.0f}, {{0}}};
+    if (pq) memcpy(pc.rows, pq->row, sizeof pc.rows);
     vkCmdPushConstants(cb, H.enc_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof pc, &pc);
     vkCmdDispatch(cb, ((uint32_t)crop[2] + 7) / 8, ((uint32_t)crop[3] + 7) / 8, 1);
     barrier(cb, src, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_GENERAL, CS, 0, ALL, 0);
@@ -2011,12 +2087,13 @@ static int ui_pipeline(VkCtx *c, VkFormat fmt) {
     return 1;
 }
 
-void vk_hdr_ui_compose(VkCommandBuffer cb, VkImageView dst_view, VkFormat fmt, uint32_t w, uint32_t h) {
+static int ui_compose(VkCommandBuffer cb, VkImageView dst_view, VkFormat fmt, uint32_t w, uint32_t h,
+                      const float pc[4]) {
     VkCtx *c = vk_ctx();
-    if (!H.ok || !H.menu.img || !ui_pipeline(c, fmt)) return;
-    barrier(cb, H.menu.img, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+    if (!H.ok || !H.menu.img || !ui_pipeline(c, fmt)) return 0;
+    barrier(cb, H.menu.img, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL,
             VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
-            VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+            VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
     VkRenderingAttachmentInfo ca = {.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO, .imageView = dst_view,
                                     .imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                                     .loadOp = VK_ATTACHMENT_LOAD_OP_LOAD, .storeOp = VK_ATTACHMENT_STORE_OP_STORE};
@@ -2028,15 +2105,19 @@ void vk_hdr_ui_compose(VkCommandBuffer cb, VkImageView dst_view, VkFormat fmt, u
     VkRect2D s = {{0, 0}, {w, h}};
     vkCmdSetViewport(cb, 0, 1, &v);
     vkCmdSetScissor(cb, 0, 1, &s);
-    VkDescriptorImageInfo ii = {H.sampler, H.menu.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    VkDescriptorImageInfo ii = {H.sampler, H.menu.view, VK_IMAGE_LAYOUT_GENERAL};
     VkWriteDescriptorSet wr = {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstBinding = 0, .descriptorCount = 1,
                                .descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .pImageInfo = &ii};
     rec_push(H.push, cb, VK_PIPELINE_BIND_POINT_GRAPHICS, H.ui_layout, 0, 1, &wr);
-    Nits n = nits();
-    float pc[4] = {n.ui, n.gamma, 0, 0};
-    vkCmdPushConstants(cb, H.ui_layout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof pc, pc);
+    vkCmdPushConstants(cb, H.ui_layout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(float) * 4, pc);
     vkCmdDraw(cb, 3, 1, 0, 0);
     vkCmdEndRendering(cb);
+    return 1;
+}
+
+void vk_hdr_ui_compose(VkCommandBuffer cb, VkImageView dst_view, VkFormat fmt, uint32_t w, uint32_t h) {
+    Nits n = nits();
+    ui_compose(cb, dst_view, fmt, w, h, (float[4]){n.ui, n.gamma, 0, 0});
 }
 
 void vk_hdr_images_release(void) {

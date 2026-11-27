@@ -1695,6 +1695,9 @@ static const op_hdr *exec_op_(VkExec *ex, const op_hdr *h, int depth, int holdab
 static const op_hdr *par_try(VkExec *ex, const op_hdr *h) {
     if (h >= PAR.no_from && h < PAR.no_until) return NULL;
     uint32_t nd = 0, nc = 0;
+#ifdef GAME_OOT
+    int has_img_bind = 0;
+#endif
     const op_hdr *e = h;
     for (;; e = nvn_op_next(e)) {
         uint32_t op = e->op;
@@ -1718,6 +1721,9 @@ static const op_hdr *par_try(VkExec *ex, const op_hdr *h) {
             if (((const p_report_counter *)nvn_op_payload(e))->type != NVN_COUNTER_TYPE_SAMPLES_PASSED) break;
             continue;
         }
+#ifdef GAME_OOT
+        if (op == OP_BIND_IMG) has_img_bind = 1;
+#endif
         if (op == OP_SET_RT || op == OP_END || !vk_exec_op_quiet(op)) break;
 #ifdef GAME_NS2
         if (op == OP_DRAW_MESH_IND || op == OP_DRAW_MESH) break;   // (a direct one reaches here only emulated)
@@ -1735,6 +1741,15 @@ static const op_hdr *par_try(VkExec *ex, const op_hdr *h) {
         vk_exec_pass_begin(ex);
     }
     if (ex->pass_noatt || ex->nfbl || ex->fbl_mask || vk_interface_coverage_serial_required()) return NULL;
+#ifdef GAME_OOT
+    // ADR-0001: serialize only when Guest PQ / RT_TRACE_GFX Output Proof is pending AND this stretch can overwrite it.
+    if (__builtin_expect(vk_hdr_output_pending_frame != 0, 0) && vk_hdr_output_pending()) {
+        if (has_img_bind) return NULL;
+        for (uint32_t i = 0; i < ex->pass_ncolor && i < 8; i++)
+            if (vk_hdr_output_targets_pending(ex->color[i].image, ex->color[i].img ? ex->color[i].img->addr : 0))
+                return NULL;
+    }
+#endif
     for (uint32_t i = 0; i < ex->pass_ncolor && i < 8; i++)
         if (ex->color[i].image && ex->color[i].img && ex->color[i].img->image != ex->color[i].image) return NULL;
     uint64_t t0 = plat_now_ns();

@@ -5,6 +5,8 @@
 #include "nvn_obj.h"
 
 // ---- moved from ov.h
+typedef enum { GFX_OUTPUT_UNSPECIFIED, GFX_OUTPUT_SDR, GFX_OUTPUT_PQ } GfxOutputEncoding;
+
 enum { OE_MSG_FOCUS_STATE_CHANGED = 15, OE_MSG_OPERATION_MODE_CHANGED = 30, OE_MSG_PERFORMANCE_MODE_CHANGED = 31 };
 void oe_push_message(uint32_t message);                   // ov_system.c
 void oe_set_focus(int in_focus);                          // ov_system.c: GetCurrentFocusState; REKARINA_ASSUME_FOCUS pins 1
@@ -105,6 +107,9 @@ const GfxShader *gfx_shader_own(const uint32_t *spirv, uint64_t words, const cha
 // vk_hdr.c: when the HDR path is armed, splices (OoT) or replaces (TotK) the game's tonemap fragment shader SPIR-V
 // (malloc'd, *words long) and removes output clamps in its FSR pass; gfx_shader.c calls it as fragment shaders load.
 int vk_hdr_shader_swap(uint32_t **spirv, uint64_t *words);   // returns the added meter binding, or 0
+#ifdef GAME_OOT
+int gfx_shader_guest_pq(const GfxShader *s);
+#endif
 uint64_t gfx_shader_failures(void);                         // failed translations; feeds GfxStats.shader_failures
 // Reflection: parsed once per shader from the translator's .res.json and the SPIR-V before it enters the cache.
 enum { GFX_RES_UBO, GFX_RES_SSBO, GFX_RES_TEX, GFX_RES_IMG, GFX_RES_KINDS };
@@ -178,7 +183,7 @@ typedef struct {
     void (*results_seen)(uint64_t value);
     // Queues the present and returns at once; the host present goes out at at_ns (kern_now_ns clock), at once when that
     // has passed or at_ns is 0.
-    void (*present)(const tex_t *t, const int crop[4], uint64_t at_ns);
+    void (*present)(const tex_t *t, const int crop[4], uint64_t at_ns, GfxOutputEncoding encoding);
     // The present call is about to return, its wait for the GPU (nvn_api_obj.c REKARINA_PRESENT_SYNC) over: waited is the
     // value whose results that wait found done, 0 when it waited for none. NULL: nothing.
     void (*present_end)(uint64_t waited);

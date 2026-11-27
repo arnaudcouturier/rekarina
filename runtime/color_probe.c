@@ -206,10 +206,10 @@ static int upload(VkCtx *c, Img *sdr, Img *hdr) {
 
 // One pass (hdr 0: vk_color_record on the SDR picture, 1: vk_hdr_encode on the float one, both rows) read back as
 // RGBA16F texels into out (rows of N). 0 when the pass recorded nothing or on a Vulkan failure.
-static int run_pass(VkCtx *c, int hdr, const Img *sdr, const Img *hdri, float out[2][N][3]) {
+static int run_pass(VkCtx *c, int hdr, const Img *sdr, const Img *hdri, float out[2][N][3], const VkGuestPq *transform) {
     const int crop[4] = {0, 0, N, hdr ? 2 : 1};
     VkCommandBuffer cb = vk_upload_begin();
-    VkImage o = hdr ? vk_hdr_encode(cb, 0, hdri->img, VK_FORMAT_R16G16B16A16_SFLOAT, crop)
+    VkImage o = hdr ? vk_hdr_encode(cb, 0, hdri->img, VK_FORMAT_R16G16B16A16_SFLOAT, crop, transform)
                     : vk_color_record(cb, 0, sdr->img, VK_FORMAT_R8G8B8A8_UNORM, crop);
     VkBuffer rb = VK_NULL_HANDLE;
     VmaAllocation ra = NULL;
@@ -259,12 +259,12 @@ static void profile_case(VkCtx *c, const Img *sdr, const Img *hdri, const char *
     set_num("REKARINA_COLOR_SATURATION", p.s), set_num("REKARINA_COLOR_GAMMA", p.g);
     int on = p.b || p.k != 100 || p.s != 100 || p.g != 1;
     static float so[2][N][3], ho[2][N][3];
-    int sdr_ran = run_pass(c, 0, sdr, hdri, so);
+    int sdr_ran = run_pass(c, 0, sdr, hdri, so, NULL);
     if (sdr_ran != on) {
         printf("probe-color: FAIL %s: the SDR pass %s\n", name, sdr_ran ? "ran with the profile off" : "did not run");
         g_bad++;
     }
-    if (!run_pass(c, 1, sdr, hdri, ho)) {
+    if (!run_pass(c, 1, sdr, hdri, ho, NULL)) {
         printf("probe-color: FAIL %s: the HDR10 pass did not run\n", name);
         g_bad++;
         return;
@@ -294,11 +294,56 @@ static void profile_case(VkCtx *c, const Img *sdr, const Img *hdri, const char *
     printf("\n");
 }
 
+static void guest_pq_case(VkCtx *c, const Img *sdr, const Img *hdr) {
+    const VkGuestPq transform = {.row = {{127, 74, 2, -99}, {14, 186, 3, -99}, {-20, 4, 219, -99}}, .valid = 1};
+    const char *name = "guest-matrix HUD-less PQ";
+    float out[2][N][3];
+    if (!run_pass(c, 1, sdr, hdr, out, &transform)) {
+        printf("probe-color: FAIL guest-matrix PQ pass did not run\n");
+        g_bad++;
+        return;
+    }
+    for (int i = 0; i < N; i++) {
+        const float *rgb = hdr_row[0][i];
+        for (int k = 0; k < 3; k++) {
+            const float *row = transform.row[k];
+            double v = fma(rgb[2], row[2], fma(rgb[0], row[0], (double)rgb[1] * row[1]));
+            double nits = fabs(v);
+            check(out[0][i][k], pq(nits), 1, name, i, k);
+        }
+    }
+    printf("probe-color: %s (%d channels compared)\n", name, N * 3);
+}
+
 int probe_color(void) {
-    static const char *const vars[] = {"REKARINA_COLOR_BRIGHTNESS", "REKARINA_COLOR_CONTRAST", "REKARINA_COLOR_SATURATION",
-                                       "REKARINA_COLOR_GAMMA", "REKARINA_HDR_GAME_NITS", "REKARINA_HDR_UI_NITS",
-                                       "REKARINA_HDR_PEAK_NITS", "REKARINA_HDR_GAMMA"};
-    for (size_t i = 0; i < sizeof vars / sizeof *vars; i++) plat_setenv(vars[i], NULL);
+    static const char *const vars[] = {"COLOR_BRIGHTNESS", "COLOR_CONTRAST", "COLOR_SATURATION",
+                                       "COLOR_GAMMA", "HDR_GAME_NITS", "HDR_UI_NITS", "HDR_PEAK_NITS",
+                                       "HDR_GAMMA", "HDR_COLOR_SPACE", "HDR", "HDR_EXPOSURE"};
+    for (size_t i = 0; i < sizeof vars / sizeof *vars; i++) {
+        char modern[64], legacy[64];
+        snprintf(modern, sizeof modern, "REKARINA_%s", vars[i]);
+        snprintf(legacy, sizeof legacy, "TOTK_%s", vars[i]);
+        plat_setenv(modern, NULL);
+        plat_setenv(legacy, NULL);
+    }
+    cfg_set("REKARINA_HDR", "0");
+#ifdef GAME_OOT
+    cfg_set("REKARINA_HDR_COLOR_SPACE", "bt709");
+    static const struct { const char *percent; float gain; } exposure[] = {
+        {"0", 0.0f}, {"12.5", 0.125f}, {"100", 1.0f}, {"200", 2.0f}, {"800", 8.0f},
+    };
+    for (size_t i = 0; i < sizeof exposure / sizeof *exposure; i++) {
+        float params[4 * VK_HDR_PARAMS];
+        cfg_set("REKARINA_HDR_EXPOSURE", exposure[i].percent);
+        vk_hdr_support(params);
+        if (params[4] != exposure[i].gain) {
+            printf("probe-color: FAIL exposure %s%% gave %g, expected %g\n", exposure[i].percent,
+                   params[4], exposure[i].gain);
+            return 1;
+        }
+    }
+    cfg_set("REKARINA_HDR_EXPOSURE", "100");
+#endif
     if (!vk_init()) {
         printf("probe-color: FAIL vk_init\n");
         return 1;
@@ -318,6 +363,7 @@ int probe_color(void) {
     profile_case(c, &sdr, &hdri, "vivid (300 nits white, HUD 203)", (Profile){0, 115, 135, 0.95}, bright);
     profile_case(c, &sdr, &hdri, "off (300 nits white, HUD 203)", (Profile){0, 100, 100, 1}, bright);
     profile_case(c, &sdr, &hdri, "off + gamma 2.2 (203 nits, peak 1000)", (Profile){0, 100, 100, 1}, std22);
+    guest_pq_case(c, &sdr, &hdri);
     vk_defer_image(sdr.img, sdr.alloc);
     vk_defer_image(hdri.img, hdri.alloc);
     vk_upload_flush(1);
