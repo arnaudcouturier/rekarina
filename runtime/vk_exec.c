@@ -92,6 +92,7 @@ static struct {
     int chunks;                          // chunks per stretch at most
     int min_draws, spin;                 // REKARINA_PAR_MIN, REKARINA_PAR_SPIN (pauses before a chunk thread sleeps)
     int per;                             // REKARINA_PAR_PER: draws per chunk
+    int prio;                            // REKARINA_PAR_PRIO: 0 normal, 1 above normal, 2 highest (par_on)
     ParJob job[PAR_JOBS];
     volatile int32_t jstate[PAR_JOBS];   // 0 free or being made, 1 to be recorded, 2 taken, 3 recorded
     volatile int32_t njobs;              // chunks handed out since the last join
@@ -1546,14 +1547,18 @@ done:
     cfg_render_use(settings);
 }
 
-static int par_take_run(void) {
+// prio: the chunk thread's raised priority while it records a chunk (PAR.prio), 0 for the thread that replays, which
+// keeps its own
+static int par_take_run(int prio) {
     int n = __atomic_load_n(&PAR.njobs, __ATOMIC_ACQUIRE);
     for (int i = 0; i < n; i++) {
         int32_t one = 1;
         if (__atomic_load_n(&PAR.jstate[i], __ATOMIC_RELAXED) != 1 ||
             !__atomic_compare_exchange_n(&PAR.jstate[i], &one, 2, 0, __ATOMIC_ACQ_REL, __ATOMIC_RELAXED))
             continue;
+        if (prio > 0) plat_thread_priority(prio > 1 ? PLAT_PRIO_HIGHEST : PLAT_PRIO_ABOVE_NORMAL);
         par_run(&PAR.job[i]);
+        if (prio > 0) plat_thread_priority(PLAT_PRIO_NORMAL);
         __atomic_store_n(&PAR.jstate[i], 3, __ATOMIC_RELEASE);
         __atomic_fetch_add(&PAR.ndone, 1, __ATOMIC_RELEASE);
         return 1;
@@ -1570,22 +1575,8 @@ static void par_thread(void *arg) {
         int i = __atomic_fetch_add(&n, 1, __ATOMIC_RELAXED);
         if (i < 16) prof_par_tid[i] = plat_thread_id();
     }
-    {   // REKARINA_PAR_PRIO: the host priority of the chunk threads, read with rt_knob like REKARINA_SUBMIT_PRIO
-        // (nvn_api_core.c, nvnQueueSubmitCommands): 0 normal, "ab" highest, any other value above normal; unset, it takes the value
-        // of REKARINA_SUBMIT_PRIO, so both end up at the same priority. That one raises the thread that replays above
-        // the game's own threads; its chunks must go with it, or it waits at the join for a chunk thread the scheduler
-        // left out for a whole quantum (two 15.6 ms clock ticks on a desktop Windows). The lake, 8 cores, 60 fps limit: 3 frames of
-        // 40 ms in 41 s at normal priority, each with the replay thread 32 ms off its core (SUB_OFFCPU); none in 46 s
-        // with both at 1, 2026-11-25.
-        static int pp = -1;
-        if (pp < 0) {
-            const char *sub = cfg_get("REKARINA_SUBMIT_PRIO");
-            pp = rt_knob("PAR_PRIO", sub && *sub ? sub : "0");
-        }
-        if (pp > 0) plat_thread_priority(pp > 1 ? PLAT_PRIO_HIGHEST : PLAT_PRIO_ABOVE_NORMAL);
-    }
     for (int idle = 0;;) {
-        if (par_take_run()) { idle = 0; continue; }
+        if (par_take_run(PAR.prio)) { idle = 0; continue; }
         // chunks are out or a stretch is being walked: the next comes within tens of microseconds; the thread sleeps
         // only after a while without one
         if (__atomic_load_n(&PAR.active, __ATOMIC_ACQUIRE) || idle < PAR.spin) { idle++; _mm_pause(); continue; }
@@ -1628,6 +1619,24 @@ static int par_on(void) {
     PAR.spin = (int)plat_spin_count(sp && *sp ? (uint32_t)atoi(sp) : 3000);   // as long on any processor (platform.h)
     const char *pe = cfg_get("REKARINA_PAR_PER");
     PAR.per = pe && atoi(pe) > 0 ? atoi(pe) : 64;
+    // REKARINA_PAR_PRIO: the host priority of a chunk thread while it records a chunk: 0 normal, 1 above normal, 2 highest.
+    // Unset, it is the priority of the thread that replays, so that thread does not wait at the join (vk_exec_par_join)
+    // for a chunk thread the scheduler left out for a whole quantum (two 15.6 ms clock ticks on a desktop Windows):
+    // REKARINA_REPLAY_PRIO (replay_main in vk_backend.c, above normal by default) with async replay, else
+    // REKARINA_SUBMIT_PRIO (nvnQueueSubmitCommands in nvn_api_core.c). The lake, 8 cores, 60 fps limit, with the
+    // chunk threads raised for good: 3 frames of 40 ms in 41 s at normal priority, each with the replay thread 32 ms off
+    // its core (SUB_OFFCPU); none in 46 s with both at 1, 2026-11-25. Raised only while a chunk is recorded, not while the
+    // thread spins for the next one or sleeps, so it does not take cores from the game's own threads in between.
+    {
+        const char *pp = cfg_get("REKARINA_PAR_PRIO");
+        if (pp && *pp) PAR.prio = atoi(pp);
+        else if (gfx_replay_async()) {
+            const char *rp = cfg_get("REKARINA_REPLAY_PRIO");
+            PAR.prio = rp && *rp ? atoi(rp) : 1;
+        } else
+            PAR.prio = rt_knob("SUBMIT_PRIO", "0");
+        if (PAR.prio < 0) PAR.prio = 0;
+    }
     int started = 1;
     for (int i = 1; i < n; i++)
         if (plat_thread_spawn(par_thread, (void *)(intptr_t)(i - 1), "vk replay chunk", 0)) started++;
@@ -1660,7 +1669,7 @@ void vk_exec_par_join(void) {
     int why = par_why & 127, open = PAR.njobs - __atomic_load_n(&PAR.ndone, __ATOMIC_ACQUIRE);   // DEBUG-PARWHY
     par_why = 0;
     uint64_t s0 = sec_begin();
-    while (par_take_run()) {}
+    while (par_take_run(0)) {}
     uint64_t s1 = s0 ? sec_clock() : 0;
     int n = PAR.njobs;
     for (int i = 0; i < n; i++)
