@@ -290,17 +290,17 @@ extern "C" VkResult vk_fg_create_swapchain(const VkSwapchainCreateInfoKHR *ci, V
                      ? fn.pOutDestroySwapchainFFXAPI : F.fn.pOutDestroySwapchainFFXAPI;
         if (none && !destroy)
             rt_fatal("fg: AMD created a swapchain without a destroy hook; cannot fall back to Vulkan safely");
+        const bool sdk2 = vk_ffx_sdk2();
+        if (none && !sdk2) destroy(c->device, none, nullptr, F.sc);
         r = vk_ffx_destroy(&F.sc);
         if (r != FFX_API_RETURN_OK)
             rt_fatal("fg: could not destroy the incomplete AMD swapchain context (%u)", (unsigned)r);
         F.sc = nullptr;
-        if (none) destroy(c->device, none, nullptr, nullptr);
-        fg_guard_disarm(FG_GUARD_FSR);
+        if (none && sdk2) destroy(c->device, none, nullptr, nullptr);
         return VK_ERROR_INITIALIZATION_FAILED;
     }
     F.fn = fn;
-    *sc = none;
-    __atomic_store_n(&F.handle, none, __ATOMIC_RELEASE);
+    *sc = F.handle = none;
     ffxQueryGetProviderVersion pv = {};
     pv.header.type = FFX_API_QUERY_DESC_TYPE_GET_PROVIDER_VERSION;
     vk_ffx_query(&F.sc, &pv.header);
