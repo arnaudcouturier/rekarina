@@ -914,8 +914,9 @@ NVN_API(nvnQueueSubmitCommands) {
         plat_mutex_unlock(&submit_lock);
         if (hs != local) free(hs);
     } else {
-        // DEBUG-SUBMITPRIO: REKARINA_SUBMIT_PRIO=1 (above normal) or 2 (highest): the host priority of this thread while
-        // it replays; 0, the default, leaves it as it is
+        // DEBUG-SUBMITPRIO: REKARINA_SUBMIT_PRIO=1 (above normal) or "ab" (highest; rt_knob reads "2" as 1): the host
+        // priority of this thread while it replays; 0, the default, leaves it as it is. Without async replay, the chunk
+        // threads take the same priority while they record unless REKARINA_PAR_PRIO is set (par_on in vk_exec.c)
         static int sp = -1;
         if (sp < 0) sp = rt_knob("SUBMIT_PRIO", "0");
         int was = sp > 0 ? plat_thread_priority_get() : 0;
