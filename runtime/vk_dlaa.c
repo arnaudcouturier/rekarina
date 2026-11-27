@@ -2242,7 +2242,10 @@ static void evaluate(VkExec *ex, const VkExecTarget *dst, enum SceneEvaluation e
         D.last_eval_ns = now;
         VkFfxImage fc = {t->image, t->format, w, h, 0}, fz = {z->image, z->format, w, h, 0},
                    fm = {e->mv, VK_FORMAT_R16G16_SFLOAT, w, h, 1}, fo = {e->out, VK_FORMAT_R16G16B16A16_SFLOAT, ow, oh, 1};
-        if (!vk_ffx_upscale(cb, &fc, &fz, &fm, &fo, tjx, tjy, D.reset, dt > 0 && dt < 100 ? (float)dt : 16.67f, 0))
+        c0 = timed ? kern_now_ns() : 0;
+        int ok = vk_ffx_upscale(cb, &fc, &fz, &fm, &fo, tjx, tjy, D.reset, dt > 0 && dt < 100 ? (float)dt : 16.67f, 0);
+        if (timed) T.cpu_upscale += kern_now_ns() - c0;
+        if (!ok)
             return dl_fail(evaluation, "FSR upscaling", 0);
         static int told;
         if (!told++) rt_log("dlaa: FSR upscaling at %ux%u -> %ux%u (scene format %d, depth format %d)", w, h, ow, oh,
@@ -2269,7 +2272,7 @@ static void evaluate(VkExec *ex, const VkExecTarget *dst, enum SceneEvaluation e
         c0 = timed ? kern_now_ns() : 0;
         int ok = vk_sl_sr_evaluate(cb, &color, &depth, &motion, &output, &camera, (uint32_t)D.presents,
                                    preset_value(), D.reset, tjx, tjy, mode);
-        if (timed) T.cpu_ngx += kern_now_ns() - c0;
+        if (timed) T.cpu_upscale += kern_now_ns() - c0;
         renderer_mcp_dlss(RENDERER_MCP_STREAMLINE, w, h, ow, oh, ok, 0);
         if (!ok) return dl_fail(evaluation, "Streamline DLSS evaluation", 0);
         goto evaluated;
@@ -2314,7 +2317,7 @@ static void evaluate(VkExec *ex, const VkExecTarget *dst, enum SceneEvaluation e
     p_setf(p, "FrameTimeDeltaInMsec", dt > 0 && dt < 100 ? (float)dt : 16.67f);
     c0 = timed ? kern_now_ns() : 0;
     NgxResult r = N.evaluate(cb, e->feat, p, NULL);
-    if (timed) T.cpu_ngx += kern_now_ns() - c0;
+    if (timed) T.cpu_upscale += kern_now_ns() - c0;
     renderer_mcp_dlss(RENDERER_MCP_NGX, w, h, ow, oh, NGX_OK(r), (uint32_t)r);
     if (!NGX_OK(r)) return dl_fail(evaluation, "DLSS evaluation", r);
 evaluated:
