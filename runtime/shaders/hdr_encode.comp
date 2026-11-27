@@ -78,7 +78,7 @@ void main() {
         for (int i = 0; i < 3; ++i) {
             vec3 r = pc.guest_row[i].xyz;
             float v = fma(c.z, r.z, fma(c.x, r.x, c.y * r.y));
-            nits[i] = pc.q.w > 1.5 ? max(v, 0.0) : abs(v);
+            nits[i] = abs(v);
         }
         vec3 y = pow(nits * 0.0001, vec3(0.1593017578125));
         vec3 code = pow(fma(y, vec3(18.8515625), vec3(0.8359375)) / fma(y, vec3(18.6875), vec3(1.0)), vec3(78.84375));
