@@ -222,8 +222,16 @@ extern "C" const char *vk_fg_method(void) { return F.fg ? F.fg_method : "FSR FG"
 // SDK 2 remakes the swapchain in place, passing the handle (not the context) as the last argument.
 static VkResult remake(const VkSwapchainCreateInfoKHR *ci, VkSwapchainKHR *sc) {
     VkDevice dev = vk_ctx()->device;
-    VkResult r = F.fn.pOutCreateSwapchainFFXAPI(dev, ci, nullptr, sc, (void *)F.handle);
-    *sc = F.handle;
+    VkResult r;
+    if (vk_ffx_sdk2()) {
+        r = F.fn.pOutCreateSwapchainFFXAPI(dev, ci, nullptr, sc, (void *)F.handle);
+        *sc = F.handle;   // the same swapchain, remade
+    } else {
+        if (F.handle) F.fn.pOutDestroySwapchainFFXAPI(dev, F.handle, nullptr, F.sc);
+        __atomic_store_n(&F.handle, VK_NULL_HANDLE, __ATOMIC_RELEASE);
+        r = F.fn.pOutCreateSwapchainFFXAPI(dev, ci, nullptr, sc, F.sc);
+        if (r == VK_SUCCESS) __atomic_store_n(&F.handle, *sc, __ATOMIC_RELEASE);
+    }
     if (r == VK_SUCCESS) {
         F.remake_failed = 0;
     } else if (++F.remake_failed >= 3 || !F.handle) {   // the window cannot go on without a swapchain
@@ -295,7 +303,8 @@ extern "C" VkResult vk_fg_create_swapchain(const VkSwapchainCreateInfoKHR *ci, V
         return VK_ERROR_INITIALIZATION_FAILED;
     }
     F.fn = fn;
-    *sc = F.handle = none;
+    *sc = none;
+    __atomic_store_n(&F.handle, none, __ATOMIC_RELEASE);
     ffxQueryGetProviderVersion pv = {};
     pv.header.type = FFX_API_QUERY_DESC_TYPE_GET_PROVIDER_VERSION;
     vk_ffx_query(&F.sc, &pv.header);
@@ -489,8 +498,13 @@ extern "C" void vk_fg_release(void) {
         vk_ffx_configure(&F.fg, &off.header);
     }
     if (F.fg) vk_ffx_destroy(&F.fg), F.fg = nullptr;
-    if (F.sc) vk_ffx_destroy(&F.sc);
-    if (F.handle && F.fn.pOutDestroySwapchainFFXAPI) F.fn.pOutDestroySwapchainFFXAPI(dev, F.handle, nullptr, nullptr);
+    if (vk_ffx_sdk2()) {
+        if (F.sc) vk_ffx_destroy(&F.sc);
+        if (F.handle && F.fn.pOutDestroySwapchainFFXAPI) F.fn.pOutDestroySwapchainFFXAPI(dev, F.handle, nullptr, nullptr);
+    } else {
+        if (F.handle && F.sc && F.fn.pOutDestroySwapchainFFXAPI) F.fn.pOutDestroySwapchainFFXAPI(dev, F.handle, nullptr, F.sc);
+        if (F.sc) vk_ffx_destroy(&F.sc);
+    }
     F.sc = nullptr;
     __atomic_store_n(&F.handle, VK_NULL_HANDLE, __ATOMIC_RELEASE);
     F.fg_ext = {0, 0};
