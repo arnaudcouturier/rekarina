@@ -336,7 +336,7 @@ static int use_streamline_sr;
 static void dlss_init(void) {
     use_streamline_sr = 0;
 #ifdef _WIN32
-    if (vk_sl_sr_requested()) {
+    if (vk_dlaa_wanted() && vk_sl_sr_requested()) {
         use_streamline_sr = 1;
         N.available = vk_sl_sr_available();
         rt_log("dlaa: Streamline DLSS %s", N.available ? "available" : "unavailable");
@@ -2147,7 +2147,7 @@ static void evaluate(VkExec *ex, const VkExecTarget *dst, enum SceneEvaluation e
         rt_log("dlaa: the scene is %ux%u now (output %ux%u, %llu frames so far)", w, h, ow, oh, (unsigned long long)D.evals);
     }
     if (spatial && dst == t) return;   // FSR 1 at the picture's own size: nothing to scale, the scene stays as drawn
-    const int sl = !fsr3() && !spatial && vk_sl_sr_available();
+    const int sl = !fsr3() && !spatial && use_streamline_sr && vk_sl_sr_available();
     if (!fsr3() && !spatial && !sl && !D.params && !NGX_OK(N.alloc_params(&D.params))) return dl_fail(evaluation, "parameter allocation", 0);
     NgxParam *p = D.params;
     VkImageView zv = vk_exec_target_view(z->img, z->format, VK_IMAGE_VIEW_TYPE_2D, VK_IMAGE_ASPECT_DEPTH_BIT, z->level,
