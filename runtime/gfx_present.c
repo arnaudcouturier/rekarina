@@ -470,7 +470,7 @@ static void flip_locked(void) {
                                  .presentStageQueries = VK_PRESENT_STAGE_IMAGE_FIRST_PIXEL_VISIBLE_BIT_EXT};
     VkPresentTimingsInfoEXT tis = {.sType = VK_STRUCTURE_TYPE_PRESENT_TIMINGS_INFO_EXT, .pNext = &pid, .swapchainCount = 1,
                                    .pTimingInfos = &ti};
-    int dlssg_sc = vk_dlssg_swapchain_ready(), fg_sc = vk_fg_swapchain();
+    int fg_sc = vk_fg_swapchain(), dlssg_sc = !fg_sc && vk_dlssg_swapchain_ready();
     int timed = pt_on && pt_id && !dlssg_sc && !fg_sc;
     if (timed) pi.pNext = &tis;
     VkPresentIdKHR rpid = {0};
