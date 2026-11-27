@@ -23,12 +23,18 @@ A replay-time record proving which output encoder pass produced a presented imag
 _Avoid_: checked draw, written encoding
 
 **Guest PQ**:
-HDR10 PQ output encoded directly by the game and presented on an HDR10 swapchain without host re-encoding.
+HDR10 PQ output encoded directly by the game's output pass and presented on an HDR10 swapchain without host re-encoding, used on `OoT` for both Vanilla HDR and RenoDX HDR.
 _Avoid_: native HDR, game HDR
 
 **Host HDR**:
-Host-side RenoDX grading, tonemapping, and PQ encoding applied over the game's float or SDR picture.
+Host-side PQ encoding applied over a linear float picture; used for `TotK` presentation and for `OoT` HUD-less frame-generation captures.
 _Avoid_: legacy HDR
+
+**Signed Compositor**:
+A signed floating-point scene compositor surface selected for wide-gamut tonemapping so out-of-gamut values survive until the game's final BT.2020 PQ encode.
+
+**Guest-Compositor Menu**:
+Host settings menu and performance overlay blended in linear light into the game's float compositor before the game's final SDR or PQ output pass.
 
 ### Replay & Presentation
 
@@ -36,7 +42,13 @@ _Avoid_: legacy HDR
 Chunked multi-threaded Vulkan command recording used for draw stretches that do not require strict serial ordering against host hooks.
 
 **Window Target**:
-An image backing a guest presentation surface—the only target class that requires serial replay under **Host HDR**, keeping **Parallel Replay** active for off-screen scene work.
+An image backing a guest presentation surface—the only target class that requires serial replay under `TotK` **Host HDR**, keeping **Parallel Replay** active for off-screen scene work.
+
+**Pre-HUD RCAS**:
+Contrast-adaptive sharpening applied directly to the 3D scene before HUD drawing, independent of final display scaling.
+
+**Stock-Scaler Frame Generation**:
+Frame generation running with motion inputs gathered alongside the game's stock or spatial scaler without forcing DLSS or FSR temporal upscaling.
 
 **Swapchain Owner**:
 The single presentation backend (ordinary Vulkan, Streamline DLSS-G, or AMD FSR SDK 2) exclusively responsible for swapchain creation, acquire, present, and destruction.
