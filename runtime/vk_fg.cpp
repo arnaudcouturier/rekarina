@@ -357,18 +357,9 @@ extern "C" void vk_fg_frame(VkCommandBuffer cb, VkSwapchainKHR sc, VkFormat fmt,
     float jx = 0, jy = 0;
     int reset = 0;
     int have = vk_dlaa_fg_inputs(&depth, &mv, &jx, &jy, &reset);
+    const bool sdk2 = vk_ffx_sdk2();
     VkDlaaCamera cam;
-    have = have && vk_dlaa_fg_camera(&cam);
-    if (have && !cam.depth_planes_valid) {
-        static bool told;
-        if (!told) {
-            told = true;
-            rt_log("fg: skipping interpolation without valid camera depth planes");
-        }
-        have = 0;
-    }
-    const uint32_t depth_flags = have ? (cam.infinite ? FFX_FRAMEGENERATION_ENABLE_DEPTH_INFINITE : 0) |
-                                        (cam.inverted ? FFX_FRAMEGENERATION_ENABLE_DEPTH_INVERTED : 0) : 0;
+    if (have && sdk2) have = vk_dlaa_fg_camera(&cam);
     // The context's largest render size covers the depth and motion vectors it is given. They have the scene's size,
     // which DLAA and the widescreen pictures make larger than the window, and a context made for the window's size alone
     // wrote past its own resources: a crash in amd_fidelityfx_vk.dll, device faults, striped frames. The scene is never
@@ -400,7 +391,7 @@ extern "C" void vk_fg_frame(VkCommandBuffer cb, VkSwapchainKHR sc, VkFormat fmt,
         // the HUD-less picture has the swapchain's format (gfx_present.c hudless_record)
         ffxCreateContextDescFrameGenerationHudless hl = {};
         hl.header.type = FFX_API_CREATE_CONTEXT_DESC_TYPE_FRAMEGENERATION_HUDLESS;
-        hl.header.pNext = &api.header;
+        hl.header.pNext = sdk2 ? &api.header : api.header.pNext;
         hl.hudlessBackBufferFormat = ffxApiGetSurfaceFormatVK(fmt);
         ffxCreateContextDescFrameGeneration d = {};
         d.header.type = FFX_API_CREATE_CONTEXT_DESC_TYPE_FRAMEGENERATION;
@@ -455,25 +446,46 @@ extern "C" void vk_fg_frame(VkCommandBuffer cb, VkSwapchainKHR sc, VkFormat fmt,
     double dt = last_ns ? (now - last_ns) / 1e6 : 16.67;
     last_ns = now;
     float dt_ms = dt > 0 && dt < 100 ? (float)dt : 16.67f;
-    ffxDispatchDescFrameGenerationPrepareV2 p = {};
-    p.header.type = FFX_API_DISPATCH_DESC_TYPE_FRAMEGENERATION_PREPARE_V2;
-    p.frameID = F.frame;
-    p.commandList = cb;
-    p.renderSize = {depth.width, depth.height};
-    p.jitterOffset = {jx, jy};
-    p.motionVectorScale = {1.0f, 1.0f};   // render pixels, current to previous (vk_dlaa.c mv_pass), as FSR takes them
-    p.frameTimeDelta = dt_ms;
-    p.reset = reset != 0;
-    p.cameraNear = cam.znear;
-    p.cameraFar = cam.zfar;
-    p.cameraFovAngleVertical = cam.fov_y > 0 ? cam.fov_y : 1.0f;
-    p.viewSpaceToMetersFactor = 0.01f;
-    p.depth = image(&depth);
-    p.motionVectors = image(&mv);
-    for (int i = 0; i < 3; i++)
-        p.cameraPosition[i] = cam.pos[i], p.cameraUp[i] = cam.up[i], p.cameraRight[i] = cam.right[i],
-        p.cameraForward[i] = cam.fwd[i];
-    r = vk_ffx_dispatch(&F.fg, &p.header);
+    if (sdk2) {
+        ffxDispatchDescFrameGenerationPrepareV2 p = {};
+        p.header.type = FFX_API_DISPATCH_DESC_TYPE_FRAMEGENERATION_PREPARE_V2;
+        p.frameID = F.frame;
+        p.commandList = cb;
+        p.renderSize = {depth.width, depth.height};
+        p.jitterOffset = {jx, jy};
+        p.motionVectorScale = {1.0f, 1.0f};   // render pixels, current to previous (vk_dlaa.c mv_pass), as FSR takes them
+        p.frameTimeDelta = dt_ms;
+        p.reset = reset != 0;
+        p.cameraNear = 0.1f;   // OoT's projection: near 0.1, far at infinity (vk_ffx.cpp)
+        p.cameraFar = 1e8f;
+        p.cameraFovAngleVertical = cam.fov_y > 0 ? cam.fov_y : 1.0f;
+        p.viewSpaceToMetersFactor = 0.01f;
+        p.depth = image(&depth);
+        p.motionVectors = image(&mv);
+        for (int i = 0; i < 3; i++)
+            p.cameraPosition[i] = cam.pos[i], p.cameraUp[i] = cam.up[i], p.cameraRight[i] = cam.right[i],
+            p.cameraForward[i] = cam.fwd[i];
+        r = vk_ffx_dispatch(&F.fg, &p.header);
+    } else {
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+        ffxDispatchDescFrameGenerationPrepare p = {};
+        p.header.type = FFX_API_DISPATCH_DESC_TYPE_FRAMEGENERATION_PREPARE;
+        p.frameID = F.frame;
+        p.commandList = cb;
+        p.renderSize = {depth.width, depth.height};
+        p.jitterOffset = {jx, jy};
+        p.motionVectorScale = {1.0f, 1.0f};
+        p.frameTimeDelta = dt_ms;
+        p.cameraNear = 0.1f;
+        p.cameraFar = 1e8f;
+        p.cameraFovAngleVertical = 1.0f;
+        p.viewSpaceToMetersFactor = 0.01f;
+        p.depth = image(&depth);
+        p.motionVectors = image(&mv);
+        r = vk_ffx_dispatch(&F.fg, &p.header);
+#pragma GCC diagnostic pop
+    }
     if (r != FFX_API_RETURN_OK) return fail("frame generation preparation", r);
     const bool first_hudless = hudless && ++F.hudless == 1;
     const uint64_t generated = __atomic_load_n(&F.generated, __ATOMIC_RELAXED);
@@ -481,7 +493,7 @@ extern "C" void vk_fg_frame(VkCommandBuffer cb, VkSwapchainKHR sc, VkFormat fmt,
     F.reported_generation |= first_generated;
     if (first_hudless || first_generated || F.frame == 2 || F.frame % 3600 == 0)
         rt_log("fg: cumulative: %llu frames configured, %llu generated by SDK, HUD-less input on %llu frames, "
-               "paused %llu (menu), %llu without depth and motion; current swapchain: %llu presents",
+               "paused %llu (menu), %llu missing required inputs; current swapchain: %llu presents",
                (unsigned long long)F.frame, (unsigned long long)generated, (unsigned long long)F.hudless,
                (unsigned long long)F.paused, (unsigned long long)F.no_inputs, (unsigned long long)vk_fg_presents(sc));
 }
