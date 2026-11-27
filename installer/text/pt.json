@@ -443,6 +443,7 @@
  "ui.oot_components_title": "A transferir os componentes opcionais",
  "ui.oot_components_failed": "Não foi possível transferir alguns componentes",
  "preset.rtx_framegen": "DLSS Qualidade com geração de fotogramas",
+ "preset.rtx_dlaa": "DLAA (resolução nativa)",
  "preset.rtx_dlss": "DLSS Qualidade",
  "preset.rtx_base": "modo base: imagem nítida (o FSR 1 só amplia a imagem final quando a janela é maior); o DLSS e a geração de fotogramas estão no menu do jogo",
  "preset.base": "modo base: imagem nítida (o FSR 1 só amplia a imagem final quando a janela é maior)",

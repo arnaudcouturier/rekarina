@@ -443,6 +443,7 @@
  "ui.oot_components_title": "De optionele onderdelen downloaden",
  "ui.oot_components_failed": "Enkele onderdelen konden niet worden gedownload",
  "preset.rtx_framegen": "DLSS Kwaliteit met framegeneratie",
+ "preset.rtx_dlaa": "DLAA (eigen resolutie)",
  "preset.rtx_dlss": "DLSS Kwaliteit",
  "preset.rtx_base": "basismodus: scherp beeld (FSR 1 vergroot alleen het kant-en-klare beeld als het venster groter is); DLSS en framegeneratie staan in het menu van het spel",
  "preset.base": "basismodus: scherp beeld (FSR 1 vergroot alleen het kant-en-klare beeld als het venster groter is)",

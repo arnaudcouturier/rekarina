@@ -443,6 +443,7 @@
  "ui.oot_components_title": "Downloading the optional components",
  "ui.oot_components_failed": "Some components could not be downloaded",
  "preset.rtx_framegen": "DLSS Quality with frame generation",
+ "preset.rtx_dlaa": "DLAA (native resolution)",
  "preset.rtx_dlss": "DLSS Quality",
  "preset.rtx_base": "base mode: sharp picture (FSR 1 only scales the finished picture up to a larger window); DLSS and frame generation are in the game's menu",
  "preset.base": "base mode: sharp picture (FSR 1 only scales the finished picture up to a larger window)",

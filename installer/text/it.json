@@ -443,6 +443,7 @@
  "ui.oot_components_title": "Download dei componenti facoltativi",
  "ui.oot_components_failed": "Non è stato possibile scaricare alcuni componenti",
  "preset.rtx_framegen": "DLSS Qualità con generazione fotogrammi",
+ "preset.rtx_dlaa": "DLAA (risoluzione nativa)",
  "preset.rtx_dlss": "DLSS Qualità",
  "preset.rtx_base": "modalità base: immagine nitida (FSR 1 ingrandisce solo l'immagine finale se la finestra è più grande); DLSS e la generazione dei fotogrammi sono nel menu del gioco",
  "preset.base": "modalità base: immagine nitida (FSR 1 ingrandisce solo l'immagine finale se la finestra è più grande)",

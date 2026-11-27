@@ -32,15 +32,18 @@
 # A thread waiting for a virtual core interrupts the owner when it runs game code: 1 = on, 2 = priority inheritance
 # without the interrupt, 0 = off (the old scheduling).
 # async_preempt = 1
-# Replay NVN submissions on their own thread, at most one frame behind the game, 0 or 1. Default: off. Helps where the
-# game waits for the GPU; adds up to a frame of latency.
-# replay_async = 0
+# Replay NVN submissions on their own thread, at most one frame behind the game, 0 or 1. Default: on. Overlaps replay
+# with game threads for higher frame rates and fewer replay hitches; adds up to a frame of latency.
+# replay_async = 1
 # EXPERIMENTAL, THE GAME CRASHES WITH 1. 1 lifts the virtual core gate: guest threads run without the console's limit
 # of one thread per core, and the game keeps per-core data without locks. With 1, 1.2.1 and 1.4.3 crash or hang,
 # usually at start (#212). Keep 0 to play.
 # free_cores = 0
 # Windows timer resolution of 1 ms for steadier frame pacing (0 = the Windows default).
 # timer_1ms = 1
+# Windows process priority once the game starts: normal, above (default) or high. Higher priority reduces scheduling
+# hitches from background apps; high can starve background audio or capture tools on lower-core CPUs.
+# process_priority = above
 
 # Shaders and pipelines.
 # Draws whose pipeline is still building: default waits on a reserved worker; draw is the previous scheduling.

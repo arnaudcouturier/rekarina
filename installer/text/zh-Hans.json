@@ -451,6 +451,7 @@
  "ui.oot_components_title": "正在下载可选组件",
  "ui.oot_components_failed": "部分组件无法下载",
  "preset.rtx_framegen": "DLSS 质量模式加帧生成",
+ "preset.rtx_dlaa": "DLAA（原生分辨率）",
  "preset.rtx_dlss": "DLSS 质量模式",
  "preset.rtx_base": "基础模式：清晰画面（窗口更大时，FSR 1 只负责把成品画面放大到窗口）；DLSS 和帧生成在游戏菜单中",
  "preset.base": "基础模式：清晰画面（窗口更大时，FSR 1 只负责把成品画面放大到窗口）",

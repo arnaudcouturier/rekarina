@@ -443,6 +443,7 @@
  "ui.oot_components_title": "任意のコンポーネントをダウンロードしています",
  "ui.oot_components_failed": "一部のコンポーネントをダウンロードできませんでした",
  "preset.rtx_framegen": "DLSS クオリティ + フレーム生成",
+ "preset.rtx_dlaa": "DLAA（ネイティブ解像度）",
  "preset.rtx_dlss": "DLSS クオリティ",
  "preset.rtx_base": "基本モード：シャープな映像（FSR 1 は、ウィンドウの方が大きいときに完成した映像を拡大するだけです）。DLSS とフレーム生成はゲームのメニューにあります",
  "preset.base": "基本モード：シャープな映像（FSR 1 は、ウィンドウの方が大きいときに完成した映像を拡大するだけです）",

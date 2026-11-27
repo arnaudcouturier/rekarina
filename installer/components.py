@@ -366,17 +366,17 @@ def preset(gpu, have=GROUPS):
     writes them into a NEW rekarina.ini only: a settings file that exists is the player's and is never touched. `have`
     names the component groups that are in the game folder; a preset never switches on what is not there.
 
-        id            card                                      dlaa  taa    dlss         framegen
-        rtx_base      NVIDIA RTX 20 or newer with DLSS present   0     dlss   -            off
-        base          AMD, Intel, NVIDIA GTX, unknown            0     fsr3   -            off
-        handheld      a processor's own graphics (handhelds,     1     fsr1   performance  off
+        id            card                                              dlaa  taa    dlss         framegen
+        rtx_dlaa      NVIDIA RTX 40/50 with 12+ GB and DLSS present      1     dlss   dlaa         off
+        rtx_dlss      other NVIDIA RTX 20+ with DLSS present             1     dlss   quality      off
+        base          AMD, Intel, NVIDIA GTX, unknown                    0     fsr3   -            off
+        handheld      a processor's own graphics (handhelds,             1     fsr1   performance  off
                       laptops without a card)
 
-      - rtx_base: base mode, as every card: the player's rule is a sharp picture without temporal upscaling or
-        generated frames until they choose them. taa = dlss only chooses what the menu's DLSS / DLAA row switches on
-        (DLSS rather than FSR 3.1); frame generation is a choice of the menu. Until 1.2.0 these cards started with
-        DLSS Quality (rtx_dlss) and, from RTX 40 with 12 GB, DLSS Frame Generation (rtx_framegen); a folder set up
-        then keeps its rekarina.ini.
+      - rtx_dlaa: RTX 40/50 with 12 GB or more: native-resolution DLAA with DLSS (default preset K), frame generation
+        left as a choice in the menu.
+      - rtx_dlss: RTX 20/30, RTX 40/50 under 12 GB, or unknown VRAM: DLSS Quality (67 % scene scaled up by DLSS), frame
+        generation left off in the menu. Cards with 4 GB or less fall back to FSR 1 at 67 % below.
       - base: the game's own sharp picture with FSR 1, no temporal upscaler. taa = fsr3 only chooses what the menu's
         DLSS / DLAA row would switch on (FSR 3.1, which runs on every card); it stays off.
       - handheld: the 3D scene at half of the game's 2560x1440 picture, 1280x720, scaled up by FSR 1 on the scene
@@ -390,12 +390,15 @@ def preset(gpu, have=GROUPS):
         tex   memory          tex_quality   and
         auto  8 GB or more    auto
         half  under 8 GB      half
-        quarter  4 GB or less quarter       base and rtx_base: FSR 1 at the quality mode (67 %)
+        quarter  4 GB or less quarter       base and rtx_dlss: FSR 1 at the quality mode (67 %)
     """
     rtx = gpu.rtx if gpu else None
     gb = gpu.vram / GIB if gpu and gpu.vram else None
     if rtx and rtx >= 20 and 'dlss' in have:
-        ident, settings = 'rtx_base', {'dlaa': '0', 'taa': 'dlss', 'framegen': 'off'}
+        if rtx >= 40 and gb is not None and gb >= 11.5:
+            ident, settings = 'rtx_dlaa', {'dlaa': '1', 'taa': 'dlss', 'dlss': 'dlaa', 'framegen': 'off'}
+        else:
+            ident, settings = 'rtx_dlss', {'dlaa': '1', 'taa': 'dlss', 'dlss': 'quality', 'framegen': 'off'}
     else:
         ident, settings = 'base', {'dlaa': '0', 'taa': 'fsr3', 'framegen': 'off'}
         if gpu and gpu.integrated:
@@ -403,7 +406,7 @@ def preset(gpu, have=GROUPS):
     tex = 'auto'
     if gb is not None and gb <= 4.5:      # a "4 GB" card reports a little under or over 4 GiB
         tex = 'quarter'
-        if ident in ('base', 'rtx_base'):   # FSR 1 on a scene of 67 %: the quality mode
+        if ident in ('base', 'rtx_base', 'rtx_dlss'):   # FSR 1 on a scene of 67 %: the quality mode
             settings.update({'dlaa': '1', 'taa': 'fsr1', 'dlss': 'quality'})
         # handheld: already at 50
     elif gb is not None and gb < 7.5:     # 6 GB cards; an "8 GB" card reports 7.9 to 8.2 GiB and keeps auto

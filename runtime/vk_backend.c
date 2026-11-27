@@ -12,7 +12,7 @@
 // the frame's display time from the pacer (nvn_api_obj.c), so present-to-present intervals stay even whatever the
 // replay took. Untagged frames can release replay after the blit; tagged frames keep it blocked through the flip.
 //
-// Asynchronous replay (REKARINA_REPLAY_ASYNC, default 0; 1 turns it on): nvnQueueSubmitCommands
+// Asynchronous replay (REKARINA_REPLAY_ASYNC, default 1; 0 turns it off): nvnQueueSubmitCommands
 // and nvnQueuePresentTexture only queue. Each item gets its timeline value at enqueue (vk_sync_reserve), in queue
 // order; the replay thread runs the synchronous submit and present bodies in that order, so every value is signalled
 // by the submission it was handed out for. The game runs at most one frame ahead: queueing present N waits until the

@@ -443,6 +443,7 @@
  "ui.oot_components_title": "Téléchargement des composants facultatifs",
  "ui.oot_components_failed": "Certains composants n'ont pas pu être téléchargés",
  "preset.rtx_framegen": "DLSS Qualité avec génération d'images",
+ "preset.rtx_dlaa": "DLAA (résolution native)",
  "preset.rtx_dlss": "DLSS Qualité",
  "preset.rtx_base": "mode de base : image nette (FSR 1 ne fait qu'agrandir l'image finale si la fenêtre est plus grande) ; DLSS et la génération d'images sont dans le menu du jeu",
  "preset.base": "mode de base : image nette (FSR 1 ne fait qu'agrandir l'image finale si la fenêtre est plus grande)",

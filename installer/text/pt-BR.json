@@ -451,6 +451,7 @@
  "ui.oot_components_title": "Baixando os componentes opcionais",
  "ui.oot_components_failed": "Não foi possível baixar alguns componentes",
  "preset.rtx_framegen": "DLSS Qualidade com geração de quadros",
+ "preset.rtx_dlaa": "DLAA (resolução nativa)",
  "preset.rtx_dlss": "DLSS Qualidade",
  "preset.rtx_base": "modo base: imagem nítida (o FSR 1 só amplia a imagem pronta quando a janela é maior); o DLSS e a geração de quadros ficam no menu do jogo",
  "preset.base": "modo base: imagem nítida (o FSR 1 só amplia a imagem pronta quando a janela é maior)",

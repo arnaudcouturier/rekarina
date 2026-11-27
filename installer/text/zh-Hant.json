@@ -443,6 +443,7 @@
  "ui.oot_components_title": "正在下載選用元件",
  "ui.oot_components_failed": "部分元件無法下載",
  "preset.rtx_framegen": "DLSS 品質模式加幀生成",
+ "preset.rtx_dlaa": "DLAA（原生解析度）",
  "preset.rtx_dlss": "DLSS 品質模式",
  "preset.rtx_base": "基本模式：銳利畫面（視窗較大時，FSR 1 只負責把完成的畫面放大到視窗）；DLSS 和影格生成在遊戲選單中",
  "preset.base": "基本模式：銳利畫面（視窗較大時，FSR 1 只負責把完成的畫面放大到視窗）",
