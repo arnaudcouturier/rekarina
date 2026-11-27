@@ -91,6 +91,12 @@ separately from the scene upscaler.
 For temporal upscaling, `REKARINA_FSR_VERSION=auto` picks FSR 4 when available and otherwise tries FSR 3. An explicit
 request for an unavailable provider leaves the game's scaling active instead of selecting another FSR generation.
 
+For developer diagnostics with the AMD FSR SDK 2.4 Vulkan DLLs, set `REKARINA_FSR_DEBUG_VIEW=1` before launch
+to draw the SDK debug view when the temporal upscaler runs. The view replaces the normal upscaler output,
+is off by default, and does not apply to FSR 1.
+Set `REKARINA_FSR_FG_DEBUG_VIEW=1` before launch to draw the SDK debug view on AMD-generated frames.
+This is a separate option and is also off by default.
+
 ## Where a frame goes (2026-11-08 morning, realtime = 1, unlocked: forest porch 60-63 fps, lighter scenes 92-103 fps)
 
 - GPU ~16 ms of work a frame: the game's passes and dispatches ~11 ms (the lighting's full-screen material passes

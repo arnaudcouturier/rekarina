@@ -1218,6 +1218,12 @@ static void tab_screen(float scale) {
     static const char *const aniso[] = {"game", "2", "4", "8", "16"};
     const char *aniso_names[] = {menu_text(UI_MENU_ANISO_GAME), "2x", "4x", "8x", "16x"};
     opt_choice_list("REKARINA_ANISO", UI_MENU_ANISO, aniso, aniso_names, 5, UI_MENU_ANISO_DESC);
+#ifdef GAME_OOT
+    opt_slider("REKARINA_TEXTURE_LOD_STRENGTH", UI_MENU_TEXTURE_LOD_STRENGTH, 0, 0.5f, UI_MENU_TEXTURE_LOD_STRENGTH_DESC,
+               0.025f, "%+.3f mip", nullptr, nullptr, false, 1, 0,
+               [](double strength) { return 0.005 * (100 - fmin(100, fmax(0, strength))); },
+               [](double mips) { return 100 - 200 * mips; });
+#endif
 #ifndef GAME_OOT
     row_shadow_scale();
     row_shadow_range();
@@ -1346,7 +1352,10 @@ static void tab_screen(float scale) {
                     opt_slider("REKARINA_HDR_TONE_SLOPE", UI_MENU_HDR_TONE_SLOPE, 0, 100, UI_MENU_HDR_TONE_SLOPE_DESC, 5, "%.0f");
                     opt_slider("REKARINA_HDR_HUE_CLIP", UI_MENU_HDR_HUE_CLIP, 0, 100, UI_MENU_HDR_HUE_CLIP_DESC, 5, "%.0f %%");
                 }
-                opt_slider("REKARINA_HDR_EXPOSURE", UI_MENU_HDR_EXPOSURE, 0, 200, UI_MENU_HDR_EXPOSURE_DESC, 5, "%.0f %%");
+                const char *exposure_format = cfg_double("REKARINA_HDR_EXPOSURE") <= 0 ? "0%%" : "%+.2f EV";
+                opt_slider("REKARINA_HDR_EXPOSURE", UI_MENU_HDR_EXPOSURE, -3, 3, UI_MENU_HDR_EXPOSURE_DESC, 0.05f, exposure_format,
+                           nullptr, nullptr, false, 1, 0, [](double v) { return v > 0 ? log2(v / 100) : -3.0; },
+                           [](double ev) { return 100 * exp2(ev); });
                 opt_slider("REKARINA_HDR_HIGHLIGHTS", UI_MENU_HDR_HIGHLIGHTS, 0, 100, UI_MENU_HDR_HIGHLIGHTS_DESC, 5, "%.0f");
                 opt_slider("REKARINA_HDR_SHADOWS", UI_MENU_HDR_SHADOWS, 0, 100, UI_MENU_HDR_SHADOWS_DESC, 5, "%.0f");
                 opt_slider("REKARINA_HDR_CONTRAST", UI_MENU_HDR_CONTRAST, 0, 100, UI_MENU_HDR_CONTRAST_DESC, 5, "%.0f");

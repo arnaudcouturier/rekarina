@@ -878,22 +878,20 @@ static NgxResourceVK res_image(VkImageView v, VkImage img, VkFormat f, uint32_t 
 }
 
 // ---------------------------------------------------------------- timing (REKARINA_DLAA_TIMES=1)
-// GPU timestamps around the camera motion dispatch, the per-object motion pass and DLSS's evaluation, and the CPU
-// time of NGX's call and of draining the recorder before it, summed and logged every TIMES_SUMMARY frames:
-//   dlaa times: gpu camera motion a ms, object motion b ms, DLSS c ms (frames timed); cpu: recorder drain d ms, NGX
-//   evaluate e ms, motion pass recording f ms
+// GPU timestamps around camera motion, object motion, and temporal reconstruction; CPU time spent draining the
+// recorder, calling the upscaler, and recording motion. Reports accumulate over TIMES_SUMMARY frames.
 // Each frame takes its own slot of TIMES_SLOTS; a slot's results are read when it comes round again (by then the GPU is
 // long done with it; not ready: that frame is left out).
 enum { T_MV0, T_MV1, T_OBJ, T_DL0, T_DL1, T_N };
 #define TIMES_SLOTS 8u
-#define TIMES_SUMMARY 600
+#define TIMES_SUMMARY 240
 static struct {
     int on;                      // -1 not read
     VkQueryPool pool;
     uint32_t slot;
     int used[TIMES_SLOTS];       // the slot holds a frame's timestamps (all T_N written)
-    double gpu[3];               // ms summed: camera motion, object motion, DLSS
-    uint64_t frames, cpu_drain, cpu_ngx, cpu_mv;   // ns summed
+    double gpu[3];               // ms summed: camera motion, object motion, upscaler
+    uint64_t frames, cpu_drain, cpu_upscale, cpu_mv;   // ns summed
 } T = {.on = -1};
 
 static int times_on(void) {
@@ -922,12 +920,12 @@ static void times_begin(VkCommandBuffer cb) {
             T.gpu[0] += (double)(q[T_MV1] - q[T_MV0]) * ns, T.gpu[1] += (double)(q[T_OBJ] - q[T_MV1]) * ns;
             T.gpu[2] += (double)(q[T_DL1] - q[T_DL0]) * ns;
             if (++T.frames % TIMES_SUMMARY == 0) {
-                rt_log("dlaa times: gpu camera motion %.3f ms, object motion %.3f ms, DLSS %.3f ms (%llu frames timed); "
-                       "cpu: recorder drain %.3f ms, NGX evaluate %.3f ms, motion pass recording %.3f ms",
+                rt_log("dlaa times: gpu camera motion %.3f ms, object motion %.3f ms, upscaler %.3f ms (%llu frames timed); "
+                       "cpu: recorder drain %.3f ms, upscaler call %.3f ms, motion pass recording %.3f ms",
                        T.gpu[0] / TIMES_SUMMARY, T.gpu[1] / TIMES_SUMMARY, T.gpu[2] / TIMES_SUMMARY,
-                       (unsigned long long)T.frames, T.cpu_drain / 1e6 / TIMES_SUMMARY, T.cpu_ngx / 1e6 / TIMES_SUMMARY,
+                       (unsigned long long)T.frames, T.cpu_drain / 1e6 / TIMES_SUMMARY, T.cpu_upscale / 1e6 / TIMES_SUMMARY,
                        T.cpu_mv / 1e6 / TIMES_SUMMARY);
-                T.gpu[0] = T.gpu[1] = T.gpu[2] = 0, T.cpu_drain = T.cpu_ngx = T.cpu_mv = 0;
+                T.gpu[0] = T.gpu[1] = T.gpu[2] = 0, T.cpu_drain = T.cpu_upscale = T.cpu_mv = 0;
             }
         }
     }
@@ -2245,9 +2243,12 @@ static void evaluate(VkExec *ex, const VkExecTarget *dst, enum SceneEvaluation e
         D.last_eval_ns = now;
         VkFfxImage fc = {t->image, t->format, w, h, 0}, fz = {z->image, z->format, w, h, 0},
                    fm = {e->mv, VK_FORMAT_R16G16_SFLOAT, w, h, 1}, fo = {e->out, VK_FORMAT_R16G16B16A16_SFLOAT, ow, oh, 1};
+        c0 = timed ? kern_now_ns() : 0;
         VkDlaaCamera camera;
         float fov = vk_dlaa_fg_camera(&camera) ? camera.fov_y : 0.0f;
-        if (!vk_ffx_upscale(cb, &fc, &fz, &fm, &fo, tjx, tjy, D.reset, dt > 0 && dt < 100 ? (float)dt : 16.67f, fov))
+        int ok = vk_ffx_upscale(cb, &fc, &fz, &fm, &fo, tjx, tjy, D.reset, dt > 0 && dt < 100 ? (float)dt : 16.67f, fov);
+        if (timed) T.cpu_upscale += kern_now_ns() - c0;
+        if (!ok)
             return dl_fail(evaluation, "FSR upscaling", 0);
         static int told;
         if (!told++) rt_log("dlaa: FSR upscaling at %ux%u -> %ux%u (scene format %d, depth format %d)", w, h, ow, oh,
@@ -2274,7 +2275,7 @@ static void evaluate(VkExec *ex, const VkExecTarget *dst, enum SceneEvaluation e
         c0 = timed ? kern_now_ns() : 0;
         int ok = vk_sl_sr_evaluate(cb, &color, &depth, &motion, &output, &camera, (uint32_t)D.presents,
                                    preset_value(), D.reset, tjx, tjy, mode);
-        if (timed) T.cpu_ngx += kern_now_ns() - c0;
+        if (timed) T.cpu_upscale += kern_now_ns() - c0;
         renderer_mcp_dlss(RENDERER_MCP_STREAMLINE, w, h, ow, oh, ok, 0);
         if (!ok) return dl_fail(evaluation, "Streamline DLSS evaluation", 0);
         goto evaluated;
@@ -2319,7 +2320,7 @@ static void evaluate(VkExec *ex, const VkExecTarget *dst, enum SceneEvaluation e
     p_setf(p, "FrameTimeDeltaInMsec", dt > 0 && dt < 100 ? (float)dt : 16.67f);
     c0 = timed ? kern_now_ns() : 0;
     NgxResult r = N.evaluate(cb, e->feat, p, NULL);
-    if (timed) T.cpu_ngx += kern_now_ns() - c0;
+    if (timed) T.cpu_upscale += kern_now_ns() - c0;
     renderer_mcp_dlss(RENDERER_MCP_NGX, w, h, ow, oh, NGX_OK(r), (uint32_t)r);
     if (!NGX_OK(r)) return dl_fail(evaluation, "DLSS evaluation", r);
 evaluated:
@@ -3885,14 +3886,18 @@ static void dlss_mode(void) {
             cfg_set("REKARINA_SHARPNESS", v);
         }
     }
-    int s = cfg_int("REKARINA_SHARPNESS");
-    float take = s >= 80 ? 0.0f : s <= 0 ? 0.5f : 0.5f * (float)(80 - s) / 80.0f;
+#ifdef GAME_OOT
+    const double strength = cfg_double("REKARINA_TEXTURE_LOD_STRENGTH"), full = 100;
+#else
+    const CfgRenderValues *settings = cfg_render_values();
+    const int strength = settings ? settings->sharpness : cfg_int("REKARINA_SHARPNESS"), full = 80;
+#endif
+    float take = strength >= full ? 0.0f : strength <= 0 ? 0.5f : 0.5f * (float)(full - strength) / (float)full;
     static float took = -1.0f;
     if (take != took) {
         took = take;
         vk_sampler_sharpness(take);
-        rt_log("dlaa: the game's texture sharpening (LOD bias -0.5) %s at sharpness %d %%", take == 0 ? "as the game has it" :
-               take == 0.5f ? "taken back to 0" : "partly taken back", s < 0 ? 0 : s > 100 ? 100 : s);
+        rt_log("dlaa: the game's texture LOD bias (negative biases moved toward zero by %.3f)", take);
     }
 }
 
