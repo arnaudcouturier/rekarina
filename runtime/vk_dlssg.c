@@ -123,9 +123,7 @@ int vk_dlssg_early(void) {
     if (!vk_dlssg_wanted()) return 0;
     if (S.loaded) return S.loaded > 0;
     S.loaded = -1;
-#ifndef GAME_OOT
     if (S.asked) fg_guard_arm(FG_GUARD_DLSS);
-#endif
 #ifdef _WIN32
 #ifdef GAME_OOT
     // Loading the bridge can run DLL initialization even when frame generation is off.
@@ -288,9 +286,8 @@ static int test_unavailable(void) {
 }
 
 void vk_dlssg_device_ready(VkDevice dev) {
-    if (S.loaded <= 0) {
+    if (S.loaded <= 0) {   // asked for, and our library or Streamline did not load: AMD's in its place
         fg_guard_disarm(FG_GUARD_DLSS);
-#ifndef GAME_OOT
         if (S.asked && S.wanted) vk_fg_take_over(S.why ? S.why : "DLSS Frame Generation did not load");
 #endif
         return;
