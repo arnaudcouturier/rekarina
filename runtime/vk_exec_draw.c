@@ -6356,27 +6356,7 @@ static void mesh_emulate(VkExec *ex, const p_draw_mesh *d, const p_draw_mesh_ind
         B.vb_valid = 0, ibs_buf = VK_NULL_HANDLE;   // the next draw binds its own vertex and index buffers
         vk_pipeline_dynamic_forget();
     }
-    bind_pipeline(ex, VK_PIPELINE_BIND_POINT_COMPUTE, cp);
-    twin_dispatch = 1;
-    bind_resources(ex, info);
-    twin_dispatch = 0;
-    if (task) vkCmdDispatchIndirect(ex->cb, emu_buf, VK_MESH_EMU_MESH_ARGS_OFFSET);
-    else if (di) vkCmdDispatchIndirect(ex->cb, ib, io);
-    else vkCmdDispatch(ex->cb, d->count, 1, 1);
-    ex->dispatch_end_at = ++ex->recorded;
-    vk_exec_barrier(ex);   // the meshlets are written before the draw reads them as vertices, indices and arguments
-    prep_emu_vs = vs;
-    int ok = prepare_stages(ex, 2, NVN_DRAW_PRIMITIVE_TRIANGLES, 0);
-    prep_emu_vs = NULL;
-    if (!ok) return;
-    VkDeviceSize vo = VK_MESH_EMU_VERTEX_OFFSET;
-    vkCmdBindVertexBuffers(ex->cb, 0, 1, &emu_buf, &vo);
-    vkCmdBindIndexBuffer(ex->cb, emu_buf, VK_MESH_EMU_INDEX_OFFSET, VK_INDEX_TYPE_UINT32);
-    vkCmdDrawIndexedIndirect(ex->cb, emu_buf, 0, 1, sizeof(VkDrawIndexedIndirectCommand));
-    hdr_output_draw_written(ex);
-    ex->recorded++;
-    B.vb_valid = 0, ibs_buf = VK_NULL_HANDLE;   // the next draw binds its own vertex and index buffers
-    vk_pipeline_dynamic_forget();
+    emu_step = NULL;
     if (!vk_par_worker) vk_exec_frame.draws++;
     {
         static uint8_t said;
