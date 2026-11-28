@@ -147,7 +147,8 @@ Every guest thread is a host thread. TotK assumes Horizon's scheduler: three app
   the uniform snapshot keeps both) and writes the difference into the motion image. `REKARINA_MV_CHECK` measures the
   vectors against the picture, `REKARINA_DLAA_TIMES` times the passes on the GPU. `fxaa` switches the game's own FXAA pass.
   OoT 1.1.1 jitters the projection on the CPU instead of the viewport (`patch_scene_projection`, on by default; after
-  ShortFuse's NX2navi port, MIT); DLSS still resolves at the game's scaling dispatch by default. Two patched calls
+  ShortFuse's NX2navi port, MIT); DLSS tries the checked pre-bloom route before falling back to the game's
+  scaling dispatch. Two patched calls
   (`scene_projection_impl.h` `scene_projection_build`, `scene_projection_complete`) follow the scene's owner and view,
   offset the projection the game builds by a Halton phase (16 phases at DLAA) and record a scene-complete sample with
   the extents of its colour and depth attachments. The resolve takes that CPU camera sample and checks the settings,
@@ -162,7 +163,7 @@ Every guest thread is a host thread. TotK assumes Horizon's scheduler: three app
   committed sample. With the patch off, the viewport jitter above applies.
 
   For comparison, `dlaa_pre_bloom = 1` (`REKARINA_DLAA_PRE_BLOOM`, off by default, read at start) opts into the
-  native NVIDIA DLAA path on OoT when [checked pre-bloom DLSS](./oot-architecture.md#experimental-pre-bloom-dlss)
+  native NVIDIA DLAA path on OoT when [checked pre-bloom DLSS](./oot-architecture.md#checked-pre-bloom-reconstruction)
   is disabled. It resolves before bloom so bloom and tone mapping read the anti-aliased scene
   (`vk_dlaa.c` `pre_bloom_draw`). DLSS writes back into the R11G11B10F light target right before the bloom chain's first
   draw: a pass of two R11G11B10F targets without depth whose fragment shader's input id begins `865a04d320227ae3` and

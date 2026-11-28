@@ -176,7 +176,8 @@ static void present_image(const tex_t *t, const int crop[4], uint64_t at_ns, uin
     (void)encoding;
     vk_hdr_present_source(img, &j.image, &j.format);
 #endif
-    if (vk_interface_coverage_enabled() || vk_dlaa_prebloom_enabled()) {
+    if (vk_interface_coverage_enabled() ||
+        (vk_dlaa_prebloom_enabled() && (vk_dlaa_active() || vk_dlaa_fg_only()))) {
         vk_present_drain();
         vk_dlaa_seal_scene(frame, img->image, j.image, img->serial);
     }
