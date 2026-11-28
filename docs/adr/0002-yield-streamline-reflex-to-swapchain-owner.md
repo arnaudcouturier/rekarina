@@ -1,4 +1,10 @@
+---
+status: superseded by ADR-0003
+---
+
 # Yield Streamline Reflex and Swapchain Hooks to the Active Swapchain Owner
+
+> Superseded on 2026-11-27: ShortFuse's `vk_dlssg_swapchain_ready()` and DLSS load at start are the code ([ADR-0003](0003-merge-shortfuse-renderer-work-verbatim.md)). If Streamline's Reflex sleep on an AMD-owned swapchain shows up in a log or a crash, it goes to him rather than into a patch here.
 
 To keep live upscaler and frame-generation backend switching working on `OoT` without restarting, Streamline preparation and AMD FSR SDK 2 graphics queue reservation remain available at startup, **but** Streamline Reflex, swapchain-readiness, and consumer-resolution queries must yield whenever AMD FSR SDK 2 is the active **Swapchain Owner**, and native NGX (`_nvngx.dll`) is loaded lazily on first live DLSS demand rather than eagerly at startup when Streamline is inactive and DLSS is not requested.
 
