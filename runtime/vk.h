@@ -124,15 +124,13 @@ void vk_crumbs_report(void);         // logs the two codes and what they name
 // checkpoints (the extension is enabled at device creation); 0, none.
 #define VK_PASS_MARKS 4096   // power of two
 enum { VK_MARK_PASS = 1, VK_MARK_DISPATCH, VK_MARK_PROLOGUE, VK_MARK_WRITEBACK, VK_MARK_MERGE, VK_MARK_WBCOPY, VK_MARK_UI_CAPTURE };   // the last two: mirror copies in and out
-// An image as a pass mark keeps it: a copy taken while the pass is recorded, since the record it came from may be gone
-// by the time a loss is reported.
 enum { VK_MARK_IMG_SET = 1, VK_MARK_IMG_BOUND = 2, VK_MARK_IMG_MIRRORED = 4, VK_MARK_IMG_GPU_OWNED = 8, VK_MARK_IMG_STORAGE = 16 };
 typedef struct {
-    uint64_t addr;                      // storage GPU address
+    uint64_t addr;
     uint32_t w, h, levels, layers;
-    uint32_t serial;                    // VkTexImage.serial: images are numbered as they are made
+    uint32_t serial;
     VkFormat format;
-    uint8_t flags;                      // VK_MARK_IMG_*: BOUND = lies in the game's pool memory (VkTexImage.bound)
+    uint8_t flags;                      // VK_MARK_IMG_*
 } VkMarkImage;
 typedef struct {
     uint32_t id;                        // the mark this record belongs to (0: never written)
@@ -228,11 +226,7 @@ void vk_hdr_set_active(int on);
 int vk_hdr_active(void);
 #ifdef GAME_OOT
 int gfx_hdr_surface_capable(void);
-extern uint64_t vk_hdr_output_pending_frame;
 int vk_hdr_output_pending(void);
-int vk_hdr_output_track_enabled(void);
-void vk_hdr_output_set_guest_pq(int on);
-int vk_hdr_output_targets_pending(VkImage image, uint64_t address);
 void vk_hdr_output_overwrite(VkImage image, uint64_t address);
 void vk_hdr_record_output(uint32_t serial, VkImage image, uint64_t address, GfxOutputEncoding encoding, const VkGuestPq *pq);
 GfxOutputEncoding vk_hdr_written_output(uint32_t serial, uint64_t frame, VkGuestPq *pq);

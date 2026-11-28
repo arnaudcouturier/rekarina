@@ -263,7 +263,7 @@ void vk_dlaa_instance_exts(const char **ext, uint32_t *n, uint32_t max) {
     unsigned ni = 0, nd = 0;
     const char **ie = NULL, **de = NULL;
     if (vk_sl_sr_requested()) return;
-    if (!vk_dlaa_wanted() || fsr3() || fsr1() || !core_load() || !NGX_OK(N.req_ext(&ni, &ie, &nd, &de))) return;
+    if (!vk_dlaa_prepare_sl_sr() || !core_load() || !NGX_OK(N.req_ext(&ni, &ie, &nd, &de))) return;
     for (unsigned i = 0; i < ni; i++)
         if (!listed(ext, *n, ie[i]) && *n < max) ext[(*n)++] = ie[i];
 }
@@ -273,7 +273,7 @@ void vk_dlaa_device_exts(const VkExtensionProperties *have, uint32_t nhave, cons
     unsigned ni = 0, nd = 0;
     const char **ie = NULL, **de = NULL;
     if (vk_sl_sr_requested()) return;
-    if (!vk_dlaa_wanted() || fsr3() || fsr1() || !core_load() || !NGX_OK(N.req_ext(&ni, &ie, &nd, &de))) return;
+    if (!vk_dlaa_prepare_sl_sr() || !core_load() || !NGX_OK(N.req_ext(&ni, &ie, &nd, &de))) return;
     for (unsigned i = 0; i < nd; i++) {
         int ok = 0;
         for (uint32_t k = 0; k < nhave && !ok; k++) ok = !strcmp(have[k].extensionName, de[i]);
@@ -336,9 +336,7 @@ void vk_dlaa_init(void) {
 #ifdef GAME_OOT   // the bloom draw it looks for is OoT's
     pre_bloom_on = rt_knob("DLAA_PRE_BLOOM", "0");
     rt_log("dlaa: pre-bloom resolve %s (REKARINA_DLAA_PRE_BLOOM=%d)", pre_bloom_on ? "on" : "off", pre_bloom_on);
-    // When Streamline is loaded, record SR availability even if DLAA/DLSS is off at start (live selection).
-    // When Streamline is absent, avoid eagerly loading native _nvngx.dll until DLSS is actually requested (ADR-0002).
-    if (vk_sl_sr_requested() || (vk_dlaa_wanted() && effective_taa() == CFG_TAA_DLSS)) dlss_init();
+    dlss_init();
     cfg_render_publish_present(vk_dlaa_resolve_consumers);
 #else
     if (!vk_dlaa_wanted()) return;
@@ -361,28 +359,18 @@ void vk_dlaa_init(void) {
 }
 
 static int use_streamline_sr;
-static PlatMutex dlss_init_lock = PLAT_MUTEX_INIT;
-static int dlss_probed;
 
 static void dlss_init(void) {
-    plat_mutex_lock(&dlss_init_lock);
-    if (__atomic_load_n(&dlss_probed, __ATOMIC_ACQUIRE)) { plat_mutex_unlock(&dlss_init_lock); return; }
     use_streamline_sr = 0;
 #ifdef _WIN32
     if (vk_sl_sr_requested()) {
         use_streamline_sr = 1;
         N.available = vk_sl_sr_available();
         rt_log("dlaa: Streamline DLSS %s", N.available ? "available" : "unavailable");
-        __atomic_store_n(&dlss_probed, 1, __ATOMIC_RELEASE);
-        plat_mutex_unlock(&dlss_init_lock);
         return;
     }
 #endif
-    if (!core_load()) {
-        __atomic_store_n(&dlss_probed, 1, __ATOMIC_RELEASE);
-        plat_mutex_unlock(&dlss_init_lock);
-        return;
-    }
+    if (!core_load()) return;
 #ifdef _WIN32
     wchar_t wdir[MAX_PATH];
     DWORD len = GetModuleFileNameW(NULL, wdir, MAX_PATH);
@@ -396,7 +384,7 @@ static void dlss_init(void) {
     char *cut = plat_exe_path(dir, sizeof dir) ? plat_last_sep(dir) : NULL;
     if (!cut || !utf8_to_wide((cut[1] = 0, dir), wdir, PLAT_PATH_MAX)) {
         rt_log("dlaa: cannot name the executable's folder for NGX: DLAA off");
-        goto done;
+        return;
     }
 #endif
     // 231313132: the application id NVIDIA's DLSS samples use for builds without an NVIDIA-issued id
@@ -405,10 +393,10 @@ static void dlss_init(void) {
                          vkGetDeviceProcAddr, NGX_VERSION_API, NULL);
     if (!NGX_OK(r)) {
         rt_log("dlaa: NGX init failed (%08x): DLAA off", (unsigned)r);
-        goto done;
+        return;
     }
     N.initialized = 1;
-    if (!vtable_ok()) goto done;
+    if (!vtable_ok()) return;
     NgxParam *caps = NULL;
     int avail = 0, driver = 0;
     if (NGX_OK(N.caps(&caps)) && caps) {
@@ -420,9 +408,6 @@ static void dlss_init(void) {
     N.available = avail != 0;
     rt_log("dlaa: NGX up; DLSS %s%s", avail ? "available" : "NOT available (is " DLSS_MODEL " next to the executable?)",
            driver ? "; the driver needs an update" : "");
-done:
-    __atomic_store_n(&dlss_probed, 1, __ATOMIC_RELEASE);
-    plat_mutex_unlock(&dlss_init_lock);
 }
 
 int vk_dlaa_backend_available(void) {
@@ -806,10 +791,8 @@ static int hudless_wanted(void) {
 unsigned vk_dlaa_resolve_consumers(CfgTaa taa, int wanted) {
 #ifdef GAME_OOT
     const char *fg = cfg_value("REKARINA_FRAMEGEN");
-    // ADR-0002: Streamline yields consumer ownership whenever AMD owns the swapchain; native NGX loads on demand.
-    const int dlss = !strcmp(fg, "dlss") && vk_dlssg_owns_swapchain();
+    const int dlss = !strcmp(fg, "dlss") && vk_dlssg_swapchain_ready();
     const int generate = dlss || (!strcmp(fg, "fsr3") && vk_fg_active());
-    if (wanted && taa == CFG_TAA_DLSS && !__atomic_load_n(&dlss_probed, __ATOMIC_ACQUIRE)) dlss_init();
     const int fallback = wanted && taa == CFG_TAA_DLSS && !N.available;
     if (wanted && (taa == CFG_TAA_FSR3 || fallback)) vk_ffx_load();
     const int use_fallback = fallback && vk_ffx_upscale_available();
@@ -855,6 +838,7 @@ static int image2d(uint32_t w, uint32_t h, VkFormat f, VkImageUsageFlags usage, 
 
 static void destroy_size(struct Size *e) {
     const VkCtx *c = vk_ctx();
+    vk_queue_lock(), vkDeviceWaitIdle(c->device), vk_queue_unlock();   // a third scene size: the evicted images may still be in flight
     for (unsigned index = 0; index < PRIVATE_BLOOM_TARGET_COUNT; ++index) {
         const struct PrivateBloomTarget *target = &e->bloom_targets[index];
         if (target->view) vkDestroyImageView(c->device, target->view, NULL);
@@ -891,7 +875,6 @@ void vk_dlaa_release_ngx(VkDevice device) {
     NgxResult r = N.shutdown(device, &remaining);
     if (!NGX_OK(r)) rt_log("dlaa: NGX shutdown failed (%08x)", (unsigned)r);
     N.initialized = N.available = 0;
-    __atomic_store_n(&dlss_probed, 0, __ATOMIC_RELEASE);
 }
 
 static void free_size(struct Size *e) {
@@ -2733,8 +2716,7 @@ static void interface_coverage_invalidate(VkImage image, uint64_t address) {
 
 void vk_interface_coverage_write(VkImage image, uint64_t address) {
 #ifdef GAME_OOT
-    if (__builtin_expect(vk_hdr_output_pending_frame && !vk_par_worker, 0))
-        vk_hdr_output_overwrite(image, address);
+    if (!vk_par_worker) vk_hdr_output_overwrite(image, address);
 #endif
     interface_coverage_invalidate(image, address);
 }

@@ -173,19 +173,13 @@ static void present_image(const tex_t *t, const int crop[4], uint64_t at_ns, uin
         last_request = encoding;
         last_written = written;
     }
-    // ADR-0001: arm Output Proof on OoT only when HDR + Frame Generation need the PQ matrix for HUD-less capture.
-    const CfgRenderValues *rv = cfg_render_values();
-    int fg = rv && (rv->consumers & CFG_RENDER_FRAMEGEN_MOTION);
-    vk_hdr_output_set_guest_pq(fg && (vk_hdr_active() || vk_hdr_wanted()));
 #else
     (void)encoding;
-    int fg = 0;
     vk_hdr_present_source(img, &j.image, &j.format);
 #endif
     if (vk_interface_coverage_enabled() ||
         (vk_dlaa_prebloom_enabled() && (vk_dlaa_active() || vk_dlaa_fg_only()))) {
-        // Only drain in-flight presents when FG or DLSS UIR reads sealed_scene on the present thread.
-        if (vk_interface_coverage_enabled() || fg) vk_present_drain();
+        vk_present_drain();
         vk_dlaa_seal_scene(frame, img->image, j.image, img->serial);
     }
     j.nvidia_scene_aa = vk_dlaa_nvidia_scene_aa();
@@ -811,7 +805,7 @@ static void vk_be_cpu_synced(uint64_t fence) {
 static void vk_be_frame_start(void) {
     // Pin the last published settings without waiting for Present; a live edit can arrive a frame later.
     cfg_render_frame_begin();
-    if (vk_dlssg_owns_swapchain()) vk_dlssg_frame_start();
+    if (vk_dlssg_swapchain_ready()) vk_dlssg_frame_start();
     else vk_reflex_frame_start();
 }
 

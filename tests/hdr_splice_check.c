@@ -79,11 +79,12 @@ void rec_push(PFN_vkCmdPushDescriptorSetKHR fn, VkCommandBuffer cb, VkPipelineBi
 void plat_mutex_lock(PlatMutex *m) { (void)m; }
 void plat_mutex_unlock(PlatMutex *m) { (void)m; }
 
-GfxStats gfx_counters;
-uint32_t rt_trace;
-void renderer_mcp_tonemap(unsigned width, unsigned height) { (void)width; (void)height; }
-
 #include "../runtime/vk_hdr.c"
+
+GfxStats gfx_counters;
+#ifdef _WIN32
+void renderer_mcp_tonemap(unsigned width, unsigned height) { (void)width; (void)height; }
+#endif
 
 static int fails;
 #define CHECK(cond, msg) do { if (!(cond)) { fails++; fprintf(stderr, "FAIL: %s\n", msg); } } while (0)
@@ -95,26 +96,13 @@ static void check_output_overwrite(void) {
     gfx_counters.frames = 1;
     vk_hdr_record_output(21, image, 0x1000, GFX_OUTPUT_PQ, &original);
     vk_hdr_record_output(22, VK_NULL_HANDLE, 0x2000, GFX_OUTPUT_PQ, &original);
-    CHECK(vk_hdr_output_targets_pending(image, 0) && vk_hdr_output_targets_pending(VK_NULL_HANDLE, 0x2000) &&
-          !vk_hdr_output_targets_pending((VkImage)(uintptr_t)2, 0x3000),
-          "pending target match identifies recorded images and aliased addresses only");
     vk_hdr_output_overwrite(image, 0);
     CHECK(vk_hdr_written_output(21, 2, &result) == GFX_OUTPUT_UNSPECIFIED &&
           vk_hdr_written_output(22, 2, &result) == GFX_OUTPUT_PQ && result.valid && vk_hdr_output_pending(),
           "overwriting one image invalidates its PQ proof without clearing another image's proof");
     vk_hdr_output_overwrite(VK_NULL_HANDLE, 0x2000);
-    CHECK(!vk_hdr_output_pending() && !vk_hdr_output_pending_frame &&
-          vk_hdr_written_output(22, 2, &result) == GFX_OUTPUT_UNSPECIFIED,
+    CHECK(!vk_hdr_output_pending() && vk_hdr_written_output(22, 2, &result) == GFX_OUTPUT_UNSPECIFIED,
           "an alias write invalidates the last PQ proof at the same guest address");
-    rt_trace = 0;
-    vk_hdr_output_set_guest_pq(0);
-    CHECK(!vk_hdr_output_track_enabled(), "output proof tracking stays off for SDR and Host HDR without trace");
-    vk_hdr_output_set_guest_pq(1);
-    CHECK(vk_hdr_output_track_enabled(), "output proof tracking arms while Guest PQ is active");
-    vk_hdr_output_set_guest_pq(0);
-    rt_trace = RT_TRACE_GFX;
-    CHECK(vk_hdr_output_track_enabled(), "output proof tracking arms under RT_TRACE_GFX");
-    rt_trace = 0;
 }
 
 static void emit_str_op(SpvBuf *b, uint32_t op, uint32_t id, const char *s) {

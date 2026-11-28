@@ -119,6 +119,10 @@ uint64_t fsr_version() {
     const CfgRenderValues *settings = cfg_render_values();
     const char *want = settings ? settings->fsr_version : cfg_value("REKARINA_FSR_VERSION");
     if (!*want) return UINT64_MAX;
+#else
+    const char *want = cfg_value("REKARINA_FSR_VERSION");
+#endif
+#ifdef GAME_OOT
     const bool automatic = !strcmp(want, "auto");
     const bool ready = vk_ctx()->fsr4_ready;
     if (!ready && want[0] == '4') return UINT64_MAX;
@@ -128,7 +132,6 @@ uint64_t fsr_version() {
     const uint64_t version = listed(automatic ? "3" : want);
     return version ? version : UINT64_MAX;
 #else
-    const char *want = cfg_value("REKARINA_FSR_VERSION");
     int is_auto = !want || !*want || !strcmp(want, "auto");
     if (!vk_ctx()->fsr4_ready && (is_auto || want[0] == '4')) {
         uint64_t v3 = listed("3");

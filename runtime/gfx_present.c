@@ -209,7 +209,7 @@ static int g_sc_hdr;                        // HDR10 (REKARINA_HDR, vk_hdr.c): P
 #ifdef GAME_OOT
 static VkFormat g_output_format, g_sc_request_format;
 static int32_t g_surface_pq;
-int gfx_hdr_surface_capable(void) { return __atomic_load_n(&g_surface_pq, __ATOMIC_ACQUIRE); }
+int gfx_hdr_surface_capable(void) { return plat_cas32(&g_surface_pq, 0, 0); }
 void ns2_hdr_capability_changed(void);
 #else
 static int g_sc_hdr_wanted;
@@ -508,7 +508,7 @@ static void flip_locked(void) {
 static VkResult acquire_locked(VkDevice device, VkSemaphore ready, uint32_t *index) {
     const uint64_t timeout = 1000000000ull;
     if (vk_fg_swapchain()) return vk_fg_acquire(g_sc, timeout, ready, index);
-    if (vk_dlssg_owns_swapchain()) return vk_dlssg_acquire(device, g_sc, timeout, ready, index);
+    if (vk_dlssg_swapchain_ready()) return vk_dlssg_acquire(device, g_sc, timeout, ready, index);
     vk_reflex_wsi_lock();
     VkResult r = vkAcquireNextImageKHR(device, g_sc, timeout, ready, VK_NULL_HANDLE, index);
     vk_reflex_wsi_unlock();
@@ -1389,32 +1389,27 @@ uint64_t gfx_blit_gpu_ns(uint64_t frame) {   // the completion thread
 }
 
 #ifdef GAME_OOT
-typedef struct {
+static struct {
     uint64_t frame;
     VkImage destination;
     const char *shot;
     VkImageView alpha;
     int composed;
     int preview[4];
-} GuestMenuSlot;
-static GuestMenuSlot guest_menu[4];
+} guest_menu;
 static int32_t guest_menu_wanted;
-static int32_t present_menu_active;
 
 void vk_present_guest_menu(VkExec *ex, const VkTexImage *source, VkImage destination) {
     int pq = ex->output_encoding == GFX_OUTPUT_PQ;
-    if ((!menu_is_open() && !__atomic_load_n(&guest_menu_wanted, __ATOMIC_ACQUIRE)) || (pq && !ex->output_pq.valid) ||
+    if ((!menu_is_open() && !plat_cas32(&guest_menu_wanted, 0, 0)) || (pq && !ex->output_pq.valid) ||
         source->type != VK_IMAGE_TYPE_2D || source->layers != 1 || source->aspect != VK_IMAGE_ASPECT_COLOR_BIT ||
         !(source->usage & VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT) ||
         (source->format != VK_FORMAT_B10G11R11_UFLOAT_PACK32 && source->format != VK_FORMAT_R16G16B16A16_SFLOAT))
         return;
     uint64_t frame = __atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED) + 1;
-    // Drain in-flight presents only when transitioning from present-thread overlay layout or when DLSS UIR reads H.menu.
-    if (__atomic_exchange_n(&present_menu_active, 0, __ATOMIC_ACQ_REL) || vk_interface_coverage_enabled())
-        vk_present_drain();
+    vk_present_drain();
     plat_rmutex_lock(&g_pl);
-    GuestMenuSlot *gm = &guest_menu[frame & 3];
-    if (!g_started || gm->frame == frame) goto out;
+    if (!g_started || guest_menu.frame == frame) goto out;
     vk_texture_lock();
     VkImageView compositor = vk_exec_target_view(source, source->format, VK_IMAGE_VIEW_TYPE_2D,
                                                  VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1, 0);
@@ -1425,11 +1420,11 @@ void vk_present_guest_menu(VkExec *ex, const VkTexImage *source, VkImage destina
     MenuTarget target = {c->instance, c->phys, c->device, c->gfx_family, c->gfx_queue,
                          VK_FORMAT_R8G8B8A8_UNORM, w, h, (int)w, (int)h, g_scaler, g_sc_ext.width, g_sc_ext.height,
                          vk_dlaa_nvidia_scene_aa()};
-    *gm = (GuestMenuSlot){.frame = frame, .destination = destination};
+    guest_menu = (typeof(guest_menu)){.frame = frame, .destination = destination};
     const CfgRenderState *settings = cfg_render_use(NULL);
-    int overlay = menu_overlay_frame(frame, &target, &gm->shot);
+    int overlay = menu_overlay_frame(frame, &target, &guest_menu.shot);
     cfg_render_use(settings);
-    __atomic_store_n(&guest_menu_wanted, overlay, __ATOMIC_RELEASE);
+    plat_xchg32(&guest_menu_wanted, overlay);
     if (!overlay) goto out;
     if (plat_cas32(&g_shot_req, 0, 0) && !cfg_bool("REKARINA_SCREENSHOT_OVERLAY")) goto out;
     vk_exec_barrier(ex);
@@ -1443,12 +1438,12 @@ void vk_present_guest_menu(VkExec *ex, const VkTexImage *source, VkImage destina
         vkCmdBeginRendering(ex->cb, &ri);
         menu_overlay_draw(ex->cb, 0);
         vkCmdEndRendering(ex->cb);
-        if (!menu_preview_rect(gm->preview)) memset(gm->preview, 0, sizeof gm->preview);
-        int *p = gm->preview;
+        if (!menu_preview_rect(guest_menu.preview)) memset(guest_menu.preview, 0, sizeof guest_menu.preview);
+        int *p = guest_menu.preview;
         if (p[0] < 0 || p[1] < 0 || p[2] <= 0 || p[3] <= 0 || p[0] + p[2] > (int)w || p[1] + p[3] > (int)h)
-            memset(p, 0, sizeof gm->preview);
-        gm->composed = vk_hdr_ui_guest_compose(ex->cb, source, compositor, p, pq ? &ex->output_pq : NULL);
-        if (gm->composed && menu_overlay_can_replay()) gm->alpha = menu;
+            memset(p, 0, sizeof guest_menu.preview);
+        guest_menu.composed = vk_hdr_ui_guest_compose(ex->cb, source, compositor, p, pq ? &ex->output_pq : NULL);
+        if (guest_menu.composed && menu_overlay_can_replay()) guest_menu.alpha = menu;
         // The host pipelines set guest-dynamic state statically on the same command buffer.
         vk_pipeline_dynamic_forget();
     }
@@ -1456,7 +1451,7 @@ void vk_present_guest_menu(VkExec *ex, const VkTexImage *source, VkImage destina
     vk_exec_draw_new_cb();
     ex->dirty |= VK_EXEC_DIRTY_ALL;
     vk_exec_pass_begin(ex);
-    if (gm->composed) {
+    if (guest_menu.composed) {
         static int logged[2];
         if (!logged[pq]++) rt_log("gfx: menu blended into the game compositor before the checked %s output", pq ? "PQ" : "SDR");
     }
@@ -1587,20 +1582,17 @@ static int present_image(VkImage src, VkImageLayout layout, VkFormat fmt, int w,
     };
     int overlay = 0;
 #ifdef GAME_OOT
-    const GuestMenuSlot *gm = &guest_menu[bt_frame_next & 3];
-    int pre_output_menu = gm->frame == bt_frame_next && gm->composed && gm->destination == src;
-    if (pre_output_menu) menu_shot = gm->shot;
+    int pre_output_menu = guest_menu.frame == bt_frame_next &&
+                          guest_menu.composed && guest_menu.destination == src;
+    if (pre_output_menu) menu_shot = guest_menu.shot;
     else
 #endif
     if (g_sc_view[idx]) {
-#ifdef GAME_OOT
-        __atomic_store_n(&present_menu_active, 1, __ATOMIC_RELEASE);
-#endif
         const CfgRenderState *settings = cfg_render_use(NULL);
         overlay = menu_overlay_frame(__atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED), &mt, &menu_shot);
         cfg_render_use(settings);
 #ifdef GAME_OOT
-        __atomic_store_n(&guest_menu_wanted, overlay, __ATOMIC_RELEASE);
+        plat_xchg32(&guest_menu_wanted, overlay);
 #endif
     }
 #ifdef GAME_OOT
@@ -1748,8 +1740,8 @@ static int present_image(VkImage src, VkImageLayout layout, VkFormat fmt, int w,
     const int *guest_preview = NULL;
 #ifdef GAME_OOT
     if (pre_output_menu) {
-        guest_alpha = gm->alpha;
-        guest_preview = gm->preview;
+        guest_alpha = guest_menu.alpha;
+        guest_preview = guest_menu.preview;
         if (!guest_alpha) coverage_pair = 0;
     }
 #endif
@@ -1909,9 +1901,8 @@ void gfx_window_release_vk(void) {
         if (g_surface) vkDestroySurfaceKHR(c->instance, g_surface, NULL);
         g_sc = VK_NULL_HANDLE; g_surface = VK_NULL_HANDLE; g_pool = VK_NULL_HANDLE; g_sc_n = 0;
 #ifdef GAME_OOT
-        memset(guest_menu, 0, sizeof guest_menu);
-        __atomic_store_n(&guest_menu_wanted, 0, __ATOMIC_RELEASE);
-        __atomic_store_n(&present_menu_active, 0, __ATOMIC_RELEASE);
+        memset(&guest_menu, 0, sizeof guest_menu);
+        plat_xchg32(&guest_menu_wanted, 0);
         g_output_format = g_sc_request_format = VK_FORMAT_UNDEFINED;
         plat_xchg32(&g_surface_pq, 0);
 #endif

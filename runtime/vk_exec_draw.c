@@ -3947,8 +3947,7 @@ static const VkTexImage *scene_output_draw(VkExec *execution, const VkPipeState 
         rt_log("PATHLOG guest output f %llu composite s%u fmt %d -> window s%u fmt %d",
                (unsigned long long)__atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED), source->serial, source->format,
                destination->img->serial, destination->format);
-    if (encode && state->fs && source->image != destination->image &&
-        destination->image == destination->img->image) {
+    if (encode && state->fs) {
         const uint8_t *id = gfx_shader_input_id(state->fs);
         static const uint8_t sdr[] = {0xea, 0x16, 0x31, 0x08, 0xd2, 0xa8, 0x2e, 0x96};
         if (gfx_shader_guest_pq(state->fs)) execution->output_encoding = GFX_OUTPUT_PQ;
@@ -5511,8 +5510,7 @@ static void interface_replay_end(VkExec *ex) {
 
 static inline void hdr_output_draw_written(VkExec *ex) {
 #ifdef GAME_OOT
-    if (__builtin_expect(!vk_hdr_output_pending_frame || vk_par_worker, 1)) return;
-    if (!vk_hdr_output_pending()) return;
+    if (vk_par_worker || !vk_hdr_output_pending()) return;
     for (int i = 0; i < ex->pass_ncolor; i++) {
         const VkExecTarget *t = &ex->color[i];
         vk_hdr_output_overwrite(t->image, t->img ? t->img->addr : 0);
@@ -6358,7 +6356,27 @@ static void mesh_emulate(VkExec *ex, const p_draw_mesh *d, const p_draw_mesh_ind
         B.vb_valid = 0, ibs_buf = VK_NULL_HANDLE;   // the next draw binds its own vertex and index buffers
         vk_pipeline_dynamic_forget();
     }
-    emu_step = NULL;
+    bind_pipeline(ex, VK_PIPELINE_BIND_POINT_COMPUTE, cp);
+    twin_dispatch = 1;
+    bind_resources(ex, info);
+    twin_dispatch = 0;
+    if (task) vkCmdDispatchIndirect(ex->cb, emu_buf, VK_MESH_EMU_MESH_ARGS_OFFSET);
+    else if (di) vkCmdDispatchIndirect(ex->cb, ib, io);
+    else vkCmdDispatch(ex->cb, d->count, 1, 1);
+    ex->dispatch_end_at = ++ex->recorded;
+    vk_exec_barrier(ex);   // the meshlets are written before the draw reads them as vertices, indices and arguments
+    prep_emu_vs = vs;
+    int ok = prepare_stages(ex, 2, NVN_DRAW_PRIMITIVE_TRIANGLES, 0);
+    prep_emu_vs = NULL;
+    if (!ok) return;
+    VkDeviceSize vo = VK_MESH_EMU_VERTEX_OFFSET;
+    vkCmdBindVertexBuffers(ex->cb, 0, 1, &emu_buf, &vo);
+    vkCmdBindIndexBuffer(ex->cb, emu_buf, VK_MESH_EMU_INDEX_OFFSET, VK_INDEX_TYPE_UINT32);
+    vkCmdDrawIndexedIndirect(ex->cb, emu_buf, 0, 1, sizeof(VkDrawIndexedIndirectCommand));
+    hdr_output_draw_written(ex);
+    ex->recorded++;
+    B.vb_valid = 0, ibs_buf = VK_NULL_HANDLE;   // the next draw binds its own vertex and index buffers
+    vk_pipeline_dynamic_forget();
     if (!vk_par_worker) vk_exec_frame.draws++;
     {
         static uint8_t said;
@@ -6975,11 +6993,8 @@ static VkPipeline scene_aa_dispatch(VkExec *ex, uint64_t caller, const GfxShader
     if (!a->active || a->frame != frame || a->phase != stage - 1 || a->ops[stage - 1] != vk_exec_cur_op) {
         if (stage == 2 && format[0] == VK_FORMAT_R16G16_UINT) {
             const GfxShader *mask = gfx_shader_aa_mask(*cs);
-            if (mask) *cs = mask;
-            else {
-                static int warned;
-                if (!warned) warned = 1, rt_log("vk: SMAA weights shader did not match the R16G16_UINT edge-mask splice; keeping unmodified shader");
-            }
+            if (!mask) rt_fatal("vk: the SMAA weights shader has no valid sampler for its R16G16_UINT edge mask");
+            *cs = mask;
         }
         return VK_NULL_HANDLE;
     }
@@ -7590,7 +7605,7 @@ void vk_exec_op_draw(VkExec *ex, uint32_t op, const void *payload) {
             if (drew && ex->interface_copy_source && ex->color[0].img)
                 vk_interface_coverage_copy(ex->interface_copy_source, ex->color[0].image, ex->color[0].img->addr, 1);
 #ifdef GAME_OOT
-            if (drew && ex->output_encoding && ex->color[0].img && vk_hdr_output_track_enabled()) {
+            if (drew && ex->output_encoding && ex->color[0].img) {
                 const VkTexImage *img = ex->color[0].img;
                 vk_hdr_record_output(img->serial, img->image, img->addr, ex->output_encoding, &ex->output_pq);
             }

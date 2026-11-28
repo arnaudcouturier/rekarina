@@ -35,8 +35,9 @@ The 1.1.1 interface renderer is called at `main+0x154a95c` (`main+0x15266c0`). T
 marks direct and indexed indirect draw commands recorded during that call. Vulkan replay retains the mark only while
 handling that command, independently of the bloom role.
 
-`Advanced → DLSSG UI Reconstruction` opts into the Streamline 2.14.16 path with a version 6 bridge.
-The change takes effect after restart. It enables the checked pre-bloom path unless explicitly disabled.
+`Advanced → DLSSG UI Reconstruction` is on by default and uses the Streamline 2.14.16 path with a version 6 bridge
+when DLSS Frame Generation is selected. Turning it off takes effect after restart. The checked pre-bloom path is
+controlled separately.
 Ordinary draws before the HUD checkpoint can use replay workers. Checked interface draws and
 checkpoint-dependent work stay on the replay thread.
 For a supported draw onto the tracked post-upscale picture, replay snapshots that picture before the first interface
@@ -75,18 +76,15 @@ Its fitted image retains storage usage across frames with no game UI, so extract
 The host advertises HDR only when the setting requests it and the surface offers HDR10. It asks the guest to refresh
 that capability without changing docked or handheld mode. The output can lag the request by a frame, so presentation
 follows the queued window texture: OoT 1.1.1 uses RGBA8 for SDR and RGB10A2 for HDR10. This is a game-specific contract,
-not a rule for every Switch 2 game. The checked output draw supplies the source for menu composition and, when HDR and
-frame generation are active together (or `RT_TRACE_GFX` is set), records Output Proof and the per-frame PQ matrix for
-HUD-less capture while keeping SDR and non-FG HDR frames on the zero-cost parallel replay path (ADR-0001); a later write
-or aliased write invalidates that record. If replacement retires the old swapchain and then fails, the next frame
-retries without the retired handle. It does not present PQ as SDR.
+not a rule for every Switch 2 game. The checked output draw still supplies the source for menu composition and the
+per-frame PQ matrix for HUD-less capture; a later write invalidates that matrix record. If replacement retires the
+old swapchain and then fails, the next frame retries without the retired handle. It does not present PQ as SDR.
 
 Native HDR and RenoDX HDR share the guest's HDR10 output path. On OoT 1.1.1, the allocation patch selects RGBA16F for
 RenoDX HDR at the game's float display compositor; SDR and Native HDR keep R11G11B10F. The format is chosen when the
 game allocates the target, not when the swapchain changes encoding. The menu blends into that game-owned target before
-the checked output draw, without replacing its sampled image, draining in-flight presents only on transitions from
-present-thread overlay frames or when interface coverage reads the menu alpha. The menu coverage and optional preview
-scratch do not hold a second full-size game picture.
+the checked output draw, without replacing its sampled image. The menu coverage and optional preview scratch do not
+hold a second full-size game picture.
 The Graphics tab groups settings by feature: Output, UI, Render, Tonemapping, Grading, Effects, then Advanced.
 Output owns the SDR/HDR signal, presentation and frame generation;
 UI owns the performance overlay and HUD controls. The tonemapper selects the HDR compositor without a separate switch:
@@ -128,11 +126,10 @@ before any upscaler bias. Its legacy INI value `texture_lod_strength` defaults t
 Anisotropic Filtering switches live by selecting new sampler-cache variants for tiled, mipmapped surface textures.
 Frame Generation and Reflex do not change the scene upscaler. If DLSS Frame Generation is unavailable, frame
 generation stays off rather than switching to AMD FSR. AMD frame generation switches live on a device
-with its queues. AMD owns the swapchain while it runs; Streamline Reflex, swapchain hooks, and consumer queries yield
-whenever AMD is the active Swapchain Owner (ADR-0002), and on the way back, the presenter restores the Streamline
-swapchain when its hooks are available. DLSS frame generation switches live when those hooks are already initialized.
-DLSS and DLAA prefer Streamline and can be paired with AMD frame generation. Native NGX remains available on the legacy
-path and initializes lazily on first DLSS demand when Streamline is absent (ADR-0002).
+with its queues. AMD owns the swapchain while it runs; on the way back, the
+presenter restores the Streamline swapchain when its hooks are available. DLSS frame generation switches live
+when those hooks are already initialized. DLSS and DLAA prefer Streamline and can be paired with AMD frame generation.
+Native NGX remains available on the legacy path.
 Native Reflex serializes its Vulkan swapchain calls with acquire and present, but releases the lock before waiting on
 its wake semaphore. Queued texture uploads do not poll or wait on a batch fence until the submitter has returned from
 the Vulkan call that uses it.

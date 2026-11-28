@@ -1973,7 +1973,6 @@ int vk_hdr_active(void) { return __atomic_load_n(&g_active, __ATOMIC_ACQUIRE); }
 
 #ifdef GAME_OOT
 // Both the checked output draw and present sealing run in replay order.
-// ADR-0001: keep SDR and non-FG HDR on OoT at zero per-draw cost by only arming Output Proof when HDR + FG or RT_TRACE_GFX is active.
 static struct {
     uint64_t frame;
     VkImage image;
@@ -1983,49 +1982,27 @@ static struct {
     VkGuestPq pq;
 } written_outputs[8];
 static unsigned next_written_output;
-uint64_t vk_hdr_output_pending_frame;
-static int32_t g_guest_pq_active;
-
-int vk_hdr_output_track_enabled(void) {
-    return __atomic_load_n(&g_guest_pq_active, __ATOMIC_ACQUIRE) || (rt_trace & RT_TRACE_GFX);
-}
-
-void vk_hdr_output_set_guest_pq(int on) {
-    __atomic_store_n(&g_guest_pq_active, on ? 1 : 0, __ATOMIC_RELEASE);
-}
+static uint64_t written_output_frame;
 
 int vk_hdr_output_pending(void) {
-    if (!vk_hdr_output_pending_frame) return 0;
-    if (vk_hdr_output_pending_frame == __atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED) + 1) return 1;
-    vk_hdr_output_pending_frame = 0;
-    return 0;
-}
-
-int vk_hdr_output_targets_pending(VkImage image, uint64_t address) {
-    if (!vk_hdr_output_pending()) return 0;
-    for (unsigned i = 0; i < 8; i++) {
-        if (written_outputs[i].frame != vk_hdr_output_pending_frame) continue;
-        if ((image && written_outputs[i].image == image) || (address && written_outputs[i].address == address))
-            return 1;
-    }
-    return 0;
+    return written_output_frame && written_output_frame == __atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED) + 1;
 }
 
 void vk_hdr_output_overwrite(VkImage image, uint64_t address) {
     if (!vk_hdr_output_pending()) return;
     int remaining = 0;
     for (unsigned i = 0; i < 8; i++) {
-        if (written_outputs[i].frame != vk_hdr_output_pending_frame) continue;
+        if (written_outputs[i].frame != written_output_frame) continue;
         if ((image && written_outputs[i].image == image) || (address && written_outputs[i].address == address))
             written_outputs[i].frame = 0;
         else remaining = 1;
     }
-    if (!remaining) vk_hdr_output_pending_frame = 0;
+    if (!remaining) written_output_frame = 0;
 }
 
 void vk_hdr_record_output(uint32_t serial, VkImage image, uint64_t address, GfxOutputEncoding encoding, const VkGuestPq *pq) {
     uint64_t frame = __atomic_load_n(&gfx_counters.frames, __ATOMIC_RELAXED) + 1;
-    vk_hdr_output_pending_frame = frame;
+    written_output_frame = frame;
     unsigned index = 8;
     for (unsigned i = 0; i < 8; i++) {
         if (written_outputs[i].frame != frame || written_outputs[i].serial != serial) continue;

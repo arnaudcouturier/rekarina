@@ -1693,6 +1693,10 @@ static const op_hdr *exec_op_(VkExec *ex, const op_hdr *h, int depth, int holdab
 // A stretch that begins at the draw op h: handed out in chunks, and the op after it returned; NULL: h is replayed as
 // always.
 static const op_hdr *par_try(VkExec *ex, const op_hdr *h) {
+#ifdef GAME_OOT
+    // Later draws may overwrite a checked output through an attachment or a storage image.
+    if (vk_hdr_output_pending()) return NULL;
+#endif
     if (h >= PAR.no_from && h < PAR.no_until) return NULL;
     uint32_t nd = 0, nc = 0;
 #ifdef GAME_OOT
@@ -1741,15 +1745,6 @@ static const op_hdr *par_try(VkExec *ex, const op_hdr *h) {
         vk_exec_pass_begin(ex);
     }
     if (ex->pass_noatt || ex->nfbl || ex->fbl_mask || vk_interface_coverage_serial_required(ex)) return NULL;
-#ifdef GAME_OOT
-    // ADR-0001: serialize only when HDR+FG / RT_TRACE_GFX Output Proof is pending AND this stretch can overwrite it.
-    if (__builtin_expect(vk_hdr_output_pending_frame != 0, 0) && vk_hdr_output_pending()) {
-        if (has_img_bind) return NULL;
-        for (uint32_t i = 0; i < ex->pass_ncolor && i < 8; i++)
-            if (vk_hdr_output_targets_pending(ex->color[i].image, ex->color[i].img ? ex->color[i].img->addr : 0))
-                return NULL;
-    }
-#endif
     for (uint32_t i = 0; i < ex->pass_ncolor && i < 8; i++)
         if (ex->color[i].image && ex->color[i].img && ex->color[i].img->image != ex->color[i].image) return NULL;
     uint64_t t0 = plat_now_ns();

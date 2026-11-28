@@ -694,16 +694,7 @@ void vk_sync_start(void) {
 // The index of a command buffer the GPU no longer uses, claimed for value `fence`. Called with sub_lock held; may move
 // slots[].
 static int claim_slot(VkCtx *c, uint64_t fence) {
-    uint64_t sub = __atomic_load_n(&issued, __ATOMIC_ACQUIRE);
     uint64_t gpu = timeline_counter(c->device, c->timeline);
-    // Reject non-UINT64_MAX corrupt counters past the newest submitted value so no in-use slot is recycled.
-    if (gpu > sub) {
-        static int said;
-        if (!said) said = 1,
-            rt_log("vk: the timeline counter reads %llu, the newest value submitted is %llu: the device is lost; "
-                   "no command buffer slot is taken as free", (unsigned long long)gpu, (unsigned long long)sub);
-        gpu = 0;
-    }
     for (int i = 0; i < nslots; i++)
         if (slots[i].fence <= gpu) {
             slots[i].fence = fence;
