@@ -35,8 +35,9 @@ The 1.1.1 interface renderer is called at `main+0x154a95c` (`main+0x15266c0`). T
 marks direct and indexed indirect draw commands recorded during that call. Vulkan replay retains the mark only while
 handling that command, independently of the bloom role.
 
-`Advanced → DLSSG UI Reconstruction` opts into the Streamline 2.14.16 path with a version 6 bridge.
-The change takes effect after restart. It enables the checked pre-bloom path unless explicitly disabled.
+`Advanced → DLSSG UI Reconstruction` is on by default and uses the Streamline 2.14.16 path with a version 6 bridge
+when DLSS Frame Generation is selected. Turning it off takes effect after restart. The checked pre-bloom path is
+controlled separately.
 Ordinary draws before the HUD checkpoint can use replay workers. Checked interface draws and
 checkpoint-dependent work stay on the replay thread.
 For a supported draw onto the tracked post-upscale picture, replay snapshots that picture before the first interface

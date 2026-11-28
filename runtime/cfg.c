@@ -473,7 +473,11 @@ static const CfgMeta metas[] = {
 #ifdef GAME_OOT
     {"DLSS_PREBLOOM", "1", "0|1", RESTART},   // patches.c: checked reconstruction before the guest bloom
 #endif
+#ifdef GAME_OOT
+    {"DLSS_INTERFACE_RECOMPOSITION", "1", "0|1", RESTART},
+#else
     {"DLSS_INTERFACE_RECOMPOSITION", "0", "0|1", RESTART},
+#endif
 };
 
 static int is_known(const char *key) {
