@@ -47,6 +47,7 @@ void vk_dlaa_release_ngx(VkDevice device);   // After GPU idle, before destroyin
 // 1 when dlaa is on and NGX came up with DLSS (after vk_dlaa_init): a DLSS mode's smaller scene is scaled up by DLSS.
 int vk_dlaa_available(void);
 int vk_dlaa_active(void);
+const char *vk_dlaa_nvidia_scene_aa(void);   // replay thread: label of a successful NVIDIA resolve in this frame, or NULL
 int vk_dlaa_fg_only(void);
 int vk_dlaa_pose_depth(uint64_t frame, uint32_t w, uint32_t h, VkDescriptorImageInfo *out, float history[4]);
 const SceneProjection *vk_dlaa_previous_projection(uint64_t frame);

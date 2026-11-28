@@ -56,6 +56,7 @@ typedef struct {
     int scaler;                           // how the last present scaled it to the window: 0 not, 1 bilinear blit, 2 FSR 1
 #ifdef GAME_OOT
     uint32_t window_w, window_h;          // swapchain extent, even when the menu is drawn into the game picture
+    const char *nvidia_scene_aa;          // NVIDIA resolve recorded for this frame, independent of the selected quality
 #endif
 } MenuTarget;
 // Lays out this frame's overlay; 1 when there is something to draw. frame: the presented frame (0 unknown). *shot: a

@@ -47,6 +47,10 @@ An image backing a guest presentation surface—the only target class that requi
 **Pre-HUD RCAS**:
 Contrast-adaptive sharpening applied directly to the 3D scene before HUD drawing, independent of final display scaling.
 
+**Checked Pre-Bloom Reconstruction**:
+Guest-tagged temporal upscaling (`DLSS` / `DLAA` / `FSR`) resolved before bloom and tone mapping so scenes that bypass the late scaling dispatch still reconstruct cleanly, distinct from the legacy opt-in in-place pre-bloom `DLAA` route.
+_Avoid_: experimental pre-bloom, pre-bloom DLAA
+
 **Stock-Scaler Frame Generation**:
 Frame generation running with motion inputs gathered alongside the game's stock or spatial scaler without forcing DLSS or FSR temporal upscaling.
 

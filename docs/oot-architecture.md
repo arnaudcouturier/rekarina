@@ -162,6 +162,8 @@ If AMD frame generation has stopped and the drain fails three times, presentatio
 destroying a swapchain that may still have pending work.
 AMD diagnostics report cumulative frame-generation totals and the SDK present count for the current swapchain.
 Neither measures physical display scanout. Crash protection follows the backend being set up across live switches.
+The full performance overlay labels a recorded NVIDIA scene resolve `DLAA` at equal input and output extents,
+and `DLSS` when upscaling. A selected NVIDIA mode without a recorded resolve does not get either label.
 The performance overlay names the frame-generation backend separately from the upscaler. For AMD it uses the
 interpolation provider's reported major version, or shows FSR FG if the SDK does not identify the provider.
 For upscaler comparisons `REKARINA_DLAA_TIMES=1` reports GPU reconstruction, recorder drain, and CPU SDK-call time
@@ -355,7 +357,7 @@ are the latency columns.
   pools 0.7-0.9, the game's block-compressed textures 0.8-1.1, render targets 0.6-0.7, other textures 0.4-0.7.
 
 
-## Experimental pre-bloom DLSS
+## Checked pre-bloom reconstruction
 
 On Windows, launch with `REKARINA_RENDERER_MCP=1` for read-only renderer telemetry. The log lists the local
 named pipe for that process. Point an MCP client at `python tools/renderer_mcp.py <PID>` over stdio and call
@@ -363,7 +365,7 @@ named pipe for that process. Point an MCP client at `python tools/renderer_mcp.p
 view token; it includes the route, resource serials, extents and HUD-less/coverage eligibility. The other fields
 are latest observations and may describe different frames. A null field means nothing has been recorded yet.
 
-With `REKARINA_DLSS_PREBLOOM=1` on OoT 1.1.1, a successful early DLSS evaluation gives the checked
+With `REKARINA_DLSS_PREBLOOM=1` (the default) on OoT 1.1.1, a successful early DLSS evaluation gives the checked
 bloom composite a private output-sized attachment. The checked guest draw and helper calls record
 pyramid levels for replay. Replacement extents are shifts of the reconstruction extent; replay
 does not infer a level from the guest image size. Untagged draws retain their guest targets.
@@ -375,7 +377,9 @@ or RGBA16F. Only a supported, same-format transfer to the full-size HDR target r
 otherwise the guest chain runs. The destination still feeds the HUD and need not match the
 reconstruction extent: the transfer fits the reconstructed color to the guest target without
 routing it through the render-size AA fallback or losing signed RenoDX color to a packed format.
-Frames that do not reach the early evaluation can still use the normal late DLSS path.
+Frames that do not reach the early evaluation can still use the normal late DLSS path. The equipment
+view can skip the scaling dispatch altogether, so it needs the early route. Set `dlss_prebloom = 0`
+and restart to compare with the late path.
 A pause-menu capture shows the interface sampling cached 1120×1333 crops of a 2560×1440
 composite. The active tab was not the equipment screen, so this does not establish equipment
 scene ownership. The upstream lighting draw binds a camera block that does not match the pending

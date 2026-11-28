@@ -470,6 +470,9 @@ static const CfgMeta metas[] = {
     {"MOTION_VECTORS", "hybrid", "hybrid|camera|models|off", LIVE},
     {"DLAA_REVERSE_ONLY", "0", "0|1", LIVE},
     {"DLAA_PRE_BLOOM", "0", "0|1", RESTART},   // vk_dlaa.c vk_dlaa_init
+#ifdef GAME_OOT
+    {"DLSS_PREBLOOM", "1", "0|1", RESTART},   // patches.c: checked reconstruction before the guest bloom
+#endif
     {"DLSS_INTERFACE_RECOMPOSITION", "0", "0|1", RESTART},
 };
 

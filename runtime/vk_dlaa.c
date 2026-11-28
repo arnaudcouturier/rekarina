@@ -538,6 +538,7 @@ static struct {
     int failed, reset;
     int early_full;              // the pause screens' full-size feature was made
     uint64_t evals, frames_missed;
+    const char *nvidia_scene_aa;
     uint32_t jw, jh, ev_w, ev_h, ev_ow, ev_oh;
     int stepped;
     // jitter (vk_dlaa_viewport)
@@ -780,6 +781,7 @@ VkImageView vk_dlaa_swap_view;
 
 static int dl_active(void) { return !D.failed && D.on; }
 int vk_dlaa_active(void) { return dl_active(); }
+const char *vk_dlaa_nvidia_scene_aa(void) { return D.nvidia_scene_aa; }
 static int fg_motion(void) {
 #ifdef GAME_OOT
     const CfgRenderValues *settings = cfg_render_values();
@@ -2543,6 +2545,9 @@ evaluated:
     if (!spatial || (projection_camera && zv && mv == 1 && D.fg_cam_ok))
         publish_fg(e, z, zv, projection_camera ? 0.0f : jx, projection_camera ? 0.0f : jy);
     next_jitter(w, ow);
+#ifdef GAME_OOT
+    if (!spatial && !fsr3()) D.nvidia_scene_aa = w == ow && h == oh ? "DLAA" : "DLSS";
+#endif
     if (++D.evals == 1 || D.evals == 300 || D.evals % 3600 == 0)   // 300: one early line with the frames counted
         rt_log("dlaa: %llu frames anti-aliased (scene %ux%u, output %ux%u; %llu frames without the DLAA point, %llu with camera "
                "motion, %llu without a camera, %llu jitter holds; resets: %llu size, %llu camera, %llu target; %llu target "
@@ -4444,6 +4449,7 @@ void vk_dlaa_frame_settings(void) {
 }
 
 void vk_dlaa_frame(void) {
+    D.nvidia_scene_aa = NULL;
     D.scene.replay = (SceneReplay){0};
     D.scene.capture_key = (SceneReplayKey){0};
     D.scene.capture_source = D.scene.capture_copy = VK_NULL_HANDLE;

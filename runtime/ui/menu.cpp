@@ -2648,12 +2648,16 @@ static int perf_picture(const MenuTarget *t, const UiTextId **labels_out, char v
         snprintf(v[2], 64, menu_text(UI_MENU_OV_FMT_SCENE), scene[0], scene[1], scene[0] * 100.0 / out[0]);
     const bool scaled = share > 0 && share < 0.999;
 #ifdef GAME_OOT
-    if ((scaled || vk_dlaa_fsr3()) && vk_dlaa_available()) {
-        const char *name = vk_dlaa_fsr1() ? "FSR1" : vk_dlaa_fsr3() ? (menu_fsr4_selected() ? "FSR4" : "FSR3") : "DLSS";
+    const char *name = t->nvidia_scene_aa;
+    if (!name && vk_dlaa_available()) {
+        if (scaled && vk_dlaa_fsr1()) name = "FSR1";
+        else if (vk_dlaa_fsr3()) name = menu_fsr4_selected() ? "FSR4" : "FSR3";
+    }
 #else
-    if (scaled && vk_dlaa_available() && cfg_bool("REKARINA_DLAA")) {
-        const char *name = vk_dlaa_fsr1() ? "FSR1" : vk_dlaa_fsr3() ? "FSR" : "DLSS";
+    const char *name = scaled && vk_dlaa_available() && cfg_bool("REKARINA_DLAA")
+        ? (vk_dlaa_fsr1() ? "FSR1" : vk_dlaa_fsr3() ? "FSR" : "DLSS") : nullptr;
 #endif
+    if (name) {
         size_t n = strlen(v[2]);
         snprintf(v[2] + n, 64 - n, " \xc2\xb7 %s", name);
     }
