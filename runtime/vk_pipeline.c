@@ -1722,27 +1722,26 @@ typedef struct Lib { struct Lib *next; uint64_t hash; VkPipeline pipe; uint32_t 
 static Lib *libs[LIB_BUCKETS];
 
 typedef struct { uint32_t kind, topo_class, attr_fmt[32], attr_off[32]; uint8_t attr_bind[32], rate[17], pad[3]; } ViKey;
-typedef struct { uint32_t kind, missing; const GfxShader *vs; uint8_t clamp, poly_mode, minus_w, pad; GfxShaderIo fin[32]; } PrKey;
+typedef struct { uint32_t kind, missing; const GfxShader *vs; uint8_t clamp, poly_mode, minus_w, pool; GfxShaderIo fin[32]; } PrKey;
 // nopin: no subgroup size pinned (a mesh pipeline's fragment stage where subgroups come in more than one size, as
 // stages_create builds it); 0 for every ordinary draw's
-typedef struct { uint32_t kind; uint8_t dsb, samples, a2c, nopin; const GfxShader *fs; } FsKey;
+typedef struct { uint32_t kind; uint8_t dsb, samples, a2c, nopin, pool; const GfxShader *fs; } FsKey;
 typedef struct { uint32_t kind; uint8_t n_color, samples, a2c, logic_op, blend_en, pad[3]; uint32_t color[8], depth, stencil, wmask;
                  uint8_t blend[8][6]; } FoKey;
 // A mesh pipeline's pre-rasterization library: its task shader (NULL: none) and mesh shader, bound as in stages_layout
 // (task bindings from 0, the mesh shader's after them, both in set 0), and the static rasterization state.
-typedef struct { uint32_t kind; uint8_t clamp, poly_mode, minus_w, samples; const GfxShader *ts, *ms; } PrmKey;
+typedef struct { uint32_t kind; uint8_t clamp, poly_mode, minus_w, samples, pool; const GfxShader *ts, *ms; } PrmKey;
 
 static uint64_t qpc(void) { return plat_now_ns(); }
 static double ms_since(uint64_t t0) { return (double)(qpc() - t0) / 1e6; }
 
 static VkPipelineLayout half_layout(Layout *l, int h) {
     if (l->half[h]) return l->half[h];
-    // The pool set goes in the half whose stages read it (Layout.pool), so a library of a stage that does not keeps
-    // the two-set layout it has with every other pairing.
+    // The shared pool's bindings are visible to both stage subsets, so both libraries must declare it when either uses it.
     VkDescriptorSetLayout sets[3] = {h ? VK_NULL_HANDLE : l->set, h ? l->set1 : VK_NULL_HANDLE, vk_tpool_layout()};
     VkPipelineLayoutCreateInfo pi = {.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
                                      .flags = VK_PIPELINE_LAYOUT_CREATE_INDEPENDENT_SETS_BIT_EXT,
-                                     .setLayoutCount = l->pool >> h & 1 ? 3 : 2, .pSetLayouts = sets};
+                                     .setLayoutCount = l->pool ? 3 : 2, .pSetLayouts = sets};
     if (vkCreatePipelineLayout(P.device, &pi, NULL, &l->half[h]) != VK_SUCCESS) l->half[h] = VK_NULL_HANDLE;
     return l->half[h];
 }
@@ -2055,7 +2054,7 @@ static void libs_destroy(void) {
 }
 
 // The four library keys of pipeline s (key k).
-static void lib_keys(const VkPipeState *s, const GKey *k, ViKey *v, PrKey *pk, FsKey *fk, FoKey *ok) {
+static void lib_keys(const VkPipeState *s, const GKey *k, const Layout *l, ViKey *v, PrKey *pk, FsKey *fk, FoKey *ok) {
     memset(v, 0, sizeof *v);
     v->kind = LIB_VI, v->topo_class = k->topo_class;
     memcpy(v->attr_fmt, k->attr_fmt, sizeof v->attr_fmt), memcpy(v->attr_off, k->attr_off, sizeof v->attr_off);
@@ -2068,6 +2067,7 @@ static void lib_keys(const VkPipeState *s, const GKey *k, ViKey *v, PrKey *pk, F
         if (pk->missing >> i & 1) pk->fin[i] = fin[i];
     memset(fk, 0, sizeof *fk);
     fk->kind = LIB_FS, fk->fs = s->fs, fk->dsb = k->dsb, fk->samples = k->samples, fk->a2c = k->a2c;
+    pk->pool = fk->pool = l->pool != 0;
     memset(ok, 0, sizeof *ok);
     ok->kind = LIB_FO, ok->n_color = k->n_color, ok->samples = k->samples, ok->a2c = k->a2c, ok->logic_op = k->logic_op;
     ok->blend_en = k->blend_en, ok->depth = k->depth, ok->stencil = k->stencil, ok->wmask = k->wmask;
@@ -2088,7 +2088,7 @@ static VkPipeline gpl_link(const VkPipeState *s, const GKey *k, const Layout *lc
     PrKey pk;
     FsKey fk;
     FoKey ok;
-    lib_keys(s, k, &vk_, &pk, &fk, &ok);
+    lib_keys(s, k, l, &vk_, &pk, &fk, &ok);
     int miss = 0;
     VkPipeline lib[4];
     lib[1] = lib_get(LIB_PR, s, k, l, &pk, sizeof pk, build, &miss);   // shader libraries first: no work when absent
@@ -2599,7 +2599,7 @@ static void lib_wait(const VkPipeState *s, const GKey *k, Layout *l, double end)
     PrKey pk;
     FsKey fk;
     FoKey ok;
-    lib_keys(s, k, &vk_, &pk, &fk, &ok);
+    lib_keys(s, k, l, &vk_, &pk, &fk, &ok);
     U.waits++;
     const void *key[2] = {&pk, &fk};
     uint32_t size[2] = {sizeof pk, sizeof fk};
@@ -3270,6 +3270,7 @@ static Layout *mesh_lib_keys(const GfxShader *const sh[3], const GKey *k, Bindin
     pm->ts = sh[0], pm->ms = sh[1], pm->samples = k->samples ? k->samples : 1;
     memset(fk, 0, sizeof *fk);
     fk->kind = LIB_FS, fk->fs = sh[2], fk->dsb = k->dsb, fk->samples = k->samples, fk->a2c = k->a2c;
+    pm->pool = fk->pool = l->pool != 0;
     fk->nopin = !P.sg_fixed32;   // the ordinary draws' library pins 32 lanes, which only means nothing where all are 32
     memset(ok, 0, sizeof *ok);
     ok->kind = LIB_FO, ok->n_color = k->n_color, ok->samples = k->samples, ok->a2c = k->a2c, ok->logic_op = k->logic_op;
@@ -3397,6 +3398,7 @@ static Pipe *mesh_fast(Pipe *p, const VkPipeState *t, const GfxShader *const sh[
         return NULL;
     }
     a->fast = f;
+    a->info.mesh_standin = 1;
     p->alt = a;
     MG.links++, MG.link_ms += ms;
     if (ms > MG.link_max) MG.link_max = ms;
@@ -4322,6 +4324,7 @@ static void lb_library(const GfxShader *sh, int vertex, int keep) {
     PrKey pk;
     FsKey fk;
     memset(&pk, 0, sizeof pk), memset(&fk, 0, sizeof fk);
+    pk.pool = fk.pool = gfx_shader_pool_mask(sh) != 0;
     const void *key;
     uint32_t size;
     if (vertex) {
@@ -5501,7 +5504,7 @@ enum { DY_CULL, DY_FF, DY_TOPO, DY_DT, DY_DW, DY_DOP, DY_ST, DY_SOPF, DY_SOPB, D
 // A pipeline with this state static was bound (vk_exec_draw.c mesh_emulate): the next draw sets every dynamic state.
 void vk_pipeline_dynamic_forget(void) { DS.have = 0; }
 
-void vk_pipeline_set_dynamic(VkCommandBuffer cb, const VkPipeState *s) {
+static void set_dynamic(VkCommandBuffer cb, const VkPipeState *s, int assembly) {
     if (!ensure_init()) return;
     static int shadow = -1;
     if (shadow < 0) shadow = rt_knob("DYN_SHADOW", "1");
@@ -5517,7 +5520,7 @@ void vk_pipeline_set_dynamic(VkCommandBuffer cb, const VkPipeState *s) {
     if (DY_NEW(DY_CULL, cull, cull)) vkCmdSetCullMode(cb, cull);
     if (DY_NEW(DY_FF, ff, ff)) vkCmdSetFrontFace(cb, ff);
     VkPrimitiveTopology topo = vk_pipeline_topology(s->prim);
-    if (DY_NEW(DY_TOPO, topo, topo)) vkCmdSetPrimitiveTopology(cb, topo);
+    if (assembly && DY_NEW(DY_TOPO, topo, topo)) vkCmdSetPrimitiveTopology(cb, topo);
     VkBool32 dt = d->dt, dw = d->dw;
     if (DY_NEW(DY_DT, dt, dt)) vkCmdSetDepthTestEnable(cb, dt);
     {   // REKARINA_DEPTH_EQ=le|ge|always (diagnostic): what an EQUAL depth test becomes. OoT shades its scene with EQUAL
@@ -5557,8 +5560,9 @@ void vk_pipeline_set_dynamic(VkCommandBuffer cb, const VkPipeState *s) {
     VkBool32 dbe = (pl->offset_en >> mode & 1) != 0, rd = s->raster_discard != 0, pr = s->prim_restart != 0;
     if (DY_NEW(DY_DBE, dbe, dbe)) vkCmdSetDepthBiasEnable(cb, dbe);
     if (DY_NEW(DY_RD, rd, rd)) vkCmdSetRasterizerDiscardEnable(cb, rd);
-    if (DY_NEW(DY_PR, pr, pr)) vkCmdSetPrimitiveRestartEnable(cb, pr);
-    if (P.dyn_vi && s->vs) {
+    if (assembly && DY_NEW(DY_PR, pr, pr)) vkCmdSetPrimitiveRestartEnable(cb, pr);
+    if (!assembly) DS.have &= ~(1u << DY_TOPO | 1u << DY_PR | 1u << DY_VI);
+    if (assembly && P.dyn_vi && s->vs) {
         VtxInput v;
         vertex_input_(s, &v, 0);
         if (!(DS.have & (1u << DY_VI)) || v.n_bind != DS.vi.n_bind || v.n_attr != DS.vi.n_attr ||
@@ -5575,10 +5579,10 @@ void vk_pipeline_set_dynamic(VkCommandBuffer cb, const VkPipeState *s) {
     if (P.dyn_poly && DY_NEW(DY_POLY, poly, poly)) rec_polygon_mode(P.set_poly, cb, poly);
     if (P.dyn_a2c && DY_NEW(DY_A2C, a2c, a2c)) rec_bool((PFN_vkCmdSetDepthClampEnableEXT)P.set_a2c, cb, a2c);   // the same signature
     int n = target_count(s);
-    if (!n) return;
-    VkBool32 en[8];
-    VkColorBlendEquationEXT eq[8];
-    VkColorComponentFlags wm[8];
+    // Depth-only pipelines still declare dynamic color state. Initialize it without enabling any color writes.
+    VkBool32 en[8] = {VK_FALSE};
+    VkColorBlendEquationEXT eq[8] = {{0}};
+    VkColorComponentFlags wm[8] = {0};
     for (int i = 0; i < n; i++) {
         const blend_st *b = &s->blend[i];
         en[i] = (s->color.blend_en >> i & 1) && blendable(target_format(s->color_fmt[i], NULL, NULL));
@@ -5586,6 +5590,7 @@ void vk_pipeline_set_dynamic(VkCommandBuffer cb, const VkPipeState *s) {
                                           blend_factor(b->src_a), blend_factor(b->dst_a), blend_op(b->eq_a)};
         wm[i] = target_wmask(s, i);
     }
+    if (!n) n = 1;
     // The three are kept per attachment count: a state set for fewer attachments leaves the others as they were.
     if (DS.n != n) DS.n = n, DS.have &= ~(1u << DY_EN | 1u << DY_EQ | 1u << DY_WM);
     if (P.dyn_blend_en && (!(DS.have & (1u << DY_EN)) || memcmp(DS.en, en, sizeof en[0] * (size_t)n))) {
@@ -5601,6 +5606,9 @@ void vk_pipeline_set_dynamic(VkCommandBuffer cb, const VkPipeState *s) {
         rec_write_mask(P.set_wmask, cb, 0, (uint32_t)n, wm);
     }
 }
+
+void vk_pipeline_set_dynamic(VkCommandBuffer cb, const VkPipeState *s) { set_dynamic(cb, s, 1); }
+void vk_pipeline_set_dynamic_no_assembly(VkCommandBuffer cb, const VkPipeState *s) { set_dynamic(cb, s, 0); }
 
 // ---- statistics, persistence, teardown
 

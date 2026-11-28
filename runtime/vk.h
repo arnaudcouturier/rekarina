@@ -484,6 +484,8 @@ int vk_exec_held(void);
 void vk_replay_flush_held(void);   // vk_backend.c: asynchronous replay: an empty submission that records every held rest, waited for
 int gfx_replay_async(void);
 void vk_sync_submits_drain(void);   // the driver has every batch the replay queued (vk_queue_lock calls it)
+uint64_t vk_sync_submit_upload(VkCommandBuffer cb, VkFence fence);   // 0 if the caller must submit directly
+int vk_sync_upload_submitted(uint64_t ticket, int wait);
 uint64_t vk_sync_results_done(void);
 int vk_sync_results_wait(uint64_t value, uint64_t timeout_ns);
 void vk_mem_reap_drain(void);   // returns once every object handed to the reaper thread is destroyed
@@ -834,6 +836,7 @@ typedef struct {
     // from the start of the set's descriptors. VK_NULL_HANDLE: the set is written with VkWriteDescriptorSet structs.
     VkDescriptorUpdateTemplate tpl[2];
     int pool;                              // the layout has the texture pool's set at GFX_POOL_SET (vk_texpool.c)
+    int mesh_standin;                      // the fast-linked mesh pipeline has no dynamic shading rate
     // pipe_prep (vk_exec_draw.c), once per info: bindings [set_lo, set_hi) per set, and whether a set has no template
     uint8_t prep, need_w;
     uint32_t set_lo[2], set_hi[2];
@@ -912,6 +915,7 @@ void vk_pipeline_draw_mesh_indirect(VkCommandBuffer cb, VkBuffer b, VkDeviceSize
 // write masks and references; vertex buffers with vkCmdBindVertexBuffers2 (strides NULL when
 // vk_pipeline_vertex_input_dynamic(), else from VkPipeState.vstream).
 void vk_pipeline_set_dynamic(VkCommandBuffer cb, const VkPipeState *s);
+void vk_pipeline_set_dynamic_no_assembly(VkCommandBuffer cb, const VkPipeState *s);
 int vk_pipeline_vertex_input_dynamic(void);    // 1: vertex input is VK_EXT_vertex_input_dynamic_state
 // Translator answers from the bound state: attr_type from the vertex attribute formats (vs), frag_out_type from the
 // colour target formats (fs). Other fields are left as they are; either pointer may be NULL.
