@@ -183,7 +183,7 @@ void vk_present_image(VkImage src, VkImageLayout layout, VkFormat fmt, int w, in
 // queues it. The next blit or a swapchain rebuild queues a waiting present first.
 typedef struct { float row[3][4]; int valid; } VkGuestPq;
 int vk_present_blit(VkImage src, VkImageLayout layout, VkFormat fmt, int w, int h, const int crop[4],
-                    const VkGuestPq *pq); // nonzero: DLSS-G inputs must survive the flip
+                    const VkGuestPq *pq, const char *nvidia_scene_aa); // nonzero: DLSS-G inputs must survive the flip
 // FSR 1 on the present (vk_fsr.c): records EASU (+ RCAS) of src's crop rectangle {x, y, w, h} into the rectangle out
 // {x, y, w, h} of dst, a swapchain image in TRANSFER_DST; src is in GENERAL and fmt its format. 0 = nothing recorded
 // (the setting says bilinear, no upscale is needed, or FSR is not available): the caller blits.

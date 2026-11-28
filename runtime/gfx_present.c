@@ -1418,7 +1418,8 @@ void vk_present_guest_menu(VkExec *ex, const VkTexImage *source, VkImage destina
     VkCtx *c = vk_ctx();
     const uint32_t w = source->width, h = source->height;
     MenuTarget target = {c->instance, c->phys, c->device, c->gfx_family, c->gfx_queue,
-                         VK_FORMAT_R8G8B8A8_UNORM, w, h, (int)w, (int)h, g_scaler, g_sc_ext.width, g_sc_ext.height};
+                         VK_FORMAT_R8G8B8A8_UNORM, w, h, (int)w, (int)h, g_scaler, g_sc_ext.width, g_sc_ext.height,
+                         vk_dlaa_nvidia_scene_aa()};
     guest_menu = (typeof(guest_menu)){.frame = frame, .destination = destination};
     const CfgRenderState *settings = cfg_render_use(NULL);
     int overlay = menu_overlay_frame(frame, &target, &guest_menu.shot);
@@ -1460,7 +1461,10 @@ out:
 #endif
 
 static int present_image(VkImage src, VkImageLayout layout, VkFormat fmt, int w, int h, const int crop[4], int defer,
-                         const VkGuestPq *pq) {
+                         const VkGuestPq *pq, const char *nvidia_scene_aa) {
+#ifndef GAME_OOT
+    (void)nvidia_scene_aa;
+#endif
     int tagged = 0;
     int general = layout == VK_IMAGE_LAYOUT_GENERAL;
     {   // DEBUG-FOCUS: REKARINA_TEST_FOCUS=<frame>,<frame>: the window "loses" the focus at the first frame and gains it at
@@ -1573,7 +1577,7 @@ static int present_image(VkImage src, VkImageLayout layout, VkFormat fmt, int w,
                      g_sc_hdr ? VK_FORMAT_R8G8B8A8_UNORM : g_sc_fmt, g_sc_ext.width,
                      g_sc_ext.height, cw, ch, g_scaler
 #ifdef GAME_OOT
-                     , g_sc_ext.width, g_sc_ext.height
+                     , g_sc_ext.width, g_sc_ext.height, nvidia_scene_aa
 #endif
     };
     int overlay = 0;
@@ -1841,13 +1845,13 @@ out:
 }
 
 void vk_present_image(VkImage src, VkImageLayout layout, VkFormat fmt, int w, int h, const int crop[4]) {
-    present_image(src, layout, fmt, w, h, crop, 0, NULL);
+    present_image(src, layout, fmt, w, h, crop, 0, NULL, NULL);
 }
 
 int vk_present_blit(VkImage src, VkImageLayout layout, VkFormat fmt, int w, int h, const int crop[4],
-                    const VkGuestPq *pq) {
+                    const VkGuestPq *pq, const char *nvidia_scene_aa) {
     if (!src) return 0;
-    return present_image(src, layout, fmt, w, h, crop, 1, pq);
+    return present_image(src, layout, fmt, w, h, crop, 1, pq, nvidia_scene_aa);
 }
 
 void vk_present_flip(void) {
@@ -1977,7 +1981,7 @@ void gfx_present_prep_frame(void) {
                      g_sc_hdr ? VK_FORMAT_R8G8B8A8_UNORM : g_sc_fmt, g_sc_ext.width, g_sc_ext.height,
                      (int)g_sc_ext.width, (int)g_sc_ext.height, 0
 #ifdef GAME_OOT
-                     , g_sc_ext.width, g_sc_ext.height
+                     , g_sc_ext.width, g_sc_ext.height, NULL
 #endif
     };
     const char *menu_shot = NULL;

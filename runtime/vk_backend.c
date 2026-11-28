@@ -41,7 +41,8 @@ void gfx_present_reflex_frame(uint64_t id);
 #define WEAK __attribute__((weak))
 
 typedef struct { VkImage image; VkFormat format; int w, h, has_crop, crop[4];
-                 uint64_t frame, at, queued, value, reflex_id; VkGuestPq pq; const CfgRenderState *settings; } PresentJob;
+                 uint64_t frame, at, queued, value, reflex_id; VkGuestPq pq; const CfgRenderState *settings;
+                 const char *nvidia_scene_aa; } PresentJob;
 
 static PlatMutex pl = PLAT_MUTEX_INIT;
 static PlatCond pcv = PLAT_COND_INIT;   // job queued, job taken, job submitted
@@ -100,7 +101,7 @@ static void present_main(void *arg) {
         gfx_present_reflex_frame(j.reflex_id);
         gfx_blit_frame(j.frame);   // DEBUG-PACELOG: the blit's moments and GPU timestamp
         int tagged = vk_present_blit(j.image, VK_IMAGE_LAYOUT_GENERAL, j.format, j.w, j.h,
-                                     j.has_crop ? j.crop : NULL, &j.pq);
+                                     j.has_crop ? j.crop : NULL, &j.pq, j.nvidia_scene_aa);
         // Retire tagged inputs after the actual present, not the blit. Streamline's default mode orders its work
         // on the presenting queue, so the post-present timeline also protects deferred destruction.
         uint64_t f = tagged ? 0 : present_release(&j);
@@ -181,6 +182,7 @@ static void present_image(const tex_t *t, const int crop[4], uint64_t at_ns, uin
         vk_present_drain();
         vk_dlaa_seal_scene(frame, img->image, j.image, img->serial);
     }
+    j.nvidia_scene_aa = vk_dlaa_nvidia_scene_aa();
     vk_dlaa_frame();
     if (crop) {
         j.has_crop = 1;

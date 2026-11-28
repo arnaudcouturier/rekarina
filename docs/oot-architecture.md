@@ -158,6 +158,8 @@ If AMD frame generation has stopped and the drain fails three times, presentatio
 destroying a swapchain that may still have pending work.
 AMD diagnostics report cumulative frame-generation totals and the SDK present count for the current swapchain.
 Neither measures physical display scanout. Crash protection follows the backend being set up across live switches.
+The full performance overlay labels a recorded NVIDIA scene resolve `DLAA` at equal input and output extents,
+and `DLSS` when upscaling. A selected NVIDIA mode without a recorded resolve does not get either label.
 The performance overlay names the frame-generation backend separately from the upscaler. For AMD it uses the
 interpolation provider's reported major version, or shows FSR FG if the SDK does not identify the provider.
 For upscaler comparisons `REKARINA_DLAA_TIMES=1` reports GPU reconstruction, recorder drain, and CPU SDK-call time
