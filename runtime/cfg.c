@@ -419,7 +419,7 @@ static const CfgMeta metas[] = {
     {"DISCORD_IMAGE", "totk_512x512", NULL, LIVE},
 #endif
     // Advanced: scheduling
-    {"ASYNC_PREEMPT", "1", "0|1|2", RESTART}, {"REPLAY_ASYNC", "0", "0|1", RESTART},
+    {"ASYNC_PREEMPT", "1", "0|1|2", RESTART}, {"REPLAY_ASYNC", "1", "0|1", RESTART},
     {"FREE_CORES", "0", "0|1", RESTART}, {"TIMER_1MS", "1", "0|1", RESTART},
     {"PROCESS_PRIORITY", "above", "normal|above|high", RESTART},   // main.c
     // shaders and pipelines
